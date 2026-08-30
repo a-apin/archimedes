@@ -121,30 +121,73 @@ def paper_rag_health(probe: bool = False) -> PaperRAGHealth:
     return PaperRAGHealth(status="degraded", reason="embedding model unavailable, TF-IDF fallback")
 
 
-def _weights_present() -> bool:
-    """Cheap on-disk check that the baked model cache holds our model.
+@dataclass(frozen=True)
+class CorpusEmbeddingAtRest:
+    """Whether a STORED corpus embedding exists — not whether a model is loaded.
 
-    The Docker image bakes the weights into ``HF_HOME`` at build time
-    (backend/Dockerfile:70) and runs with ``HF_HUB_OFFLINE=1``, so "the
-    directory for this model exists and is non-empty" is the strongest claim
-    available without importing torch. It is deliberately NOT reported as
-    ``live`` — presence on disk is not proof the model loads.
+    ``paper_rag_health`` answers "is a reranker available in this process". This
+    answers the different question every external claim actually depends on: are
+    there vectors on disk that survive a restart. They were conflated in
+    ``/api/health``'s ``corpus_embedded`` (#1488), whose name asserted the second
+    while its value measured the first.
     """
-    hf_home = os.getenv("HF_HOME")
-    if not hf_home:
-        return False
-    slug = _model_name().replace("/", "--")
-    root = Path(hf_home)
+
+    embedded_at_rest: bool
+    reason: str
+
+
+# Column-name fragments that would indicate stored vectors. Deliberately loose:
+# this check exists to notice a stored-embedding surface arriving, and a false
+# positive is a test failure that someone reads, while a false negative is a
+# false claim shipped to the public health endpoint.
+_VECTOR_COLUMN_HINTS = ("embedding", "embeddings", "vector")
+
+
+def corpus_embedding_at_rest() -> CorpusEmbeddingAtRest:
+    """Derive the at-rest embedding state from the live schema, never a constant.
+
+    A hard-coded ``False`` here would be the same defect as the ``True`` it
+    replaces, one release later: correct today and silently wrong the day
+    someone adds pgvector. So the answer is read off ``Base.metadata``, which is
+    what the ORM actually declares.
+
+    Three outcomes, two of which are the same boolean on purpose:
+
+    - no vector-ish column anywhere -> ``False``, and the reason says so.
+    - a vector-ish column exists but nothing here counts its rows -> still
+      ``False``, with a reason naming the column. A discovered-but-unwired store
+      must read as a loud absence, not as a claim (CLAUDE.md fail-soft). The
+      guard test in ``test_corpus_embedding_claims.py`` fails in this state, so
+      it cannot sit unnoticed.
+    - wired and populated -> ``True``. Nothing reaches this today.
+    """
     try:
-        for candidate in root.iterdir():
-            if not candidate.is_dir():
-                continue
-            name = candidate.name
-            if slug in name or name in (slug, f"models--sentence-transformers--{slug}"):
-                return any(candidate.rglob("*.safetensors")) or any(candidate.rglob("*.bin"))
-    except OSError:
-        return False
-    return False
+        from archimedes.db import Base
+    except Exception as exc:  # pragma: no cover - import-time DB failure
+        return CorpusEmbeddingAtRest(False, f"schema unreadable ({type(exc).__name__}) - reporting not-embedded")
+
+    found = [
+        f"{table.name}.{column.name}"
+        for table in Base.metadata.sorted_tables
+        for column in table.columns
+        if any(hint in column.name.lower() for hint in _VECTOR_COLUMN_HINTS)
+    ]
+    if not found:
+        return CorpusEmbeddingAtRest(False, "no stored-vector column in the schema")
+    return CorpusEmbeddingAtRest(
+        False,
+        f"stored-vector column(s) {', '.join(sorted(found))} exist but no count is wired - reporting not-embedded",
+    )
+
+
+def rerank_candidate_cap() -> int:
+    """How many keyword candidates the reranker actually scores.
+
+    Published on ``/api/health`` because it is the limit that makes "reranked"
+    an honest word: candidates past this point are appended at score 0.0 and are
+    never seen by the model.
+    """
+    return _RERANK_MAX_TEXTS
 
 
 def _semantic_enabled() -> bool:
@@ -153,13 +196,60 @@ def _semantic_enabled() -> bool:
     return val in _TRUTHY
 
 
-# ── Embedding engine ─────────────────────────────────────────────
-
 # Lazy-loaded embedding model (sentence-transformers).
 _embedding_model: Any = None
 # Sentinel: True once a load attempt has been made and failed, so repeated
 # health checks don't retry indefinitely (the result is cached after first try).
 _embedding_load_attempted: bool = False
+
+_weights_present_cache: bool | None = None
+
+
+def _weights_present() -> bool:
+    """Cheap on-disk check that the baked model cache holds our model.
+
+    The Docker image bakes the weights into ``HF_HOME`` at build time
+    (backend/Dockerfile:70-74) and runs with ``HF_HUB_OFFLINE=1``.
+
+    huggingface_hub NESTS its cache: the model lives at
+    ``$HF_HOME/hub/models--<org>--<name>/snapshots/<sha>/model.safetensors``,
+    not directly under ``$HF_HOME`` (whose top level holds only ``hub`` and
+    ``xet``). The first version of this function scanned one level with
+    ``iterdir()``, found neither, and reported ``degraded`` on a container
+    where the model loads perfectly — so search the tree instead.
+
+    Memoised: the cache is a static build artifact, and ``/health`` is polled
+    every 30s by the ALB. Presence on disk is deliberately NOT reported as
+    ``live`` — it is not proof the model loads.
+    """
+    global _weights_present_cache
+    if _weights_present_cache is not None:
+        return _weights_present_cache
+    _weights_present_cache = _scan_for_weights()
+    return _weights_present_cache
+
+
+def _scan_for_weights() -> bool:
+    hf_home = os.getenv("HF_HOME")
+    if not hf_home:
+        return False
+    slug = _model_name().replace("/", "--")
+    tail = slug.rsplit("--", 1)[-1]
+    root = Path(hf_home)
+    try:
+        for candidate in root.rglob("*"):
+            if not candidate.is_dir():
+                continue
+            name = candidate.name
+            if not (slug in name or tail in name):
+                continue
+            if next(candidate.rglob("*.safetensors"), None) is not None:
+                return True
+            if next(candidate.rglob("*.bin"), None) is not None:
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def _get_embedding_model():

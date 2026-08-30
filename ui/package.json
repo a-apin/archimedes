@@ -8,14 +8,17 @@
     "build": "vite build",
     "lint": "eslint .",
     "test": "node --test",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:orphans": "node scripts/check-orphans.mjs",
+    "check:sitemap": "node scripts/check-sitemap.mjs",
+    "check:routes": "npm run check:orphans && npm run check:sitemap"
   },
   "dependencies": {
     "@circle-fin/modular-wallets-core": "^1.0.15",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-force-graph-2d": "^1.29.1",
-    "viem": "^2.55.15"
+    "viem": "^2.56.0"
   },
   "overrides": {
     "ws": ">=8.21.0"
@@ -23,20 +26,20 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@iconify-json/cryptocurrency-color": "^1.2.4",
-    "@iconify-json/logos": "^1.2.11",
+    "@iconify-json/logos": "^1.2.13",
     "@iconify-json/lucide": "^1.2.123",
     "@iconify-json/simple-icons": "^1.2.93",
-    "@iconify-json/token-branded": "^1.2.42",
+    "@iconify-json/token-branded": "^1.2.44",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
-    "cssnano": "^8.0.5",
-    "eslint": "^10.8.1",
+    "cssnano": "^8.0.7",
+    "eslint": "^10.9.1",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.9.0",
+    "eslint-plugin-react-refresh": "^0.5.5",
+    "globals": "^17.11.0",
     "sass-embedded": "^1.102.0",
-    "unocss": "^66.7.5",
+    "unocss": "^66.8.1",
     "vite": "^8.2.1"
   }
 }

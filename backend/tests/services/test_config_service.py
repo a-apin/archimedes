@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from archimedes.chain.client import ChainEndpoint
 from archimedes.services.config_service import ConfigService
 
 
@@ -28,6 +29,14 @@ def _fake_settings() -> SimpleNamespace:
         synth_addresses={"sTSLA": "0xT", "sBTC": "0xB", "sNULL": ""},
         chain_id=5042002,
         arc_rpc_url="https://rpc.example",
+        # Two-chain endpoints (#1240), DERIVED from the single-chain values
+        # above rather than restated, so this fake cannot describe a split its
+        # own chain_id / arc_rpc_url do not support. Resolution and fallback
+        # rules are covered against real ChainSettings in
+        # backend/tests/chain/test_two_chain_config.py.
+        payments_chain=ChainEndpoint(chain_id=5042002, rpc_url="https://rpc.example", explicit=False),
+        execution_chain=ChainEndpoint(chain_id=5042002, rpc_url="https://rpc.example", explicit=False),
+        is_split_chain=False,
     )
 
 
@@ -93,7 +102,15 @@ class TestGetContractAddresses:
             assert resp.vaults == {"vault_0": "0xV0", "vault_1": "0xV1", "vault_2": "0xV2"}
 
     @pytest.mark.asyncio
-    async def test_chain_read_failure_yields_empty_dicts(self) -> None:
+    async def test_chain_read_failure_yields_null_not_empty(self) -> None:
+        """A failed chain read must render as null (unread), never {} (#1356).
+
+        {} is a real, distinct value: it means the chain was successfully
+        read and reports zero pools/vaults. Collapsing "the RPC call raised"
+        into the same {} the success path uses for a genuine zero is exactly
+        the defect #1356 exists to close — the frontend has no way to tell
+        "outage" from "measured zero" and renders a confident 0 either way.
+        """
         loader = MagicMock()
         loader.amm_router.functions.getAllPools.return_value.call = AsyncMock(side_effect=RuntimeError("rpc down"))
         loader.vault_factory.functions.getVaults.return_value.call = AsyncMock(side_effect=RuntimeError("rpc down"))
@@ -104,6 +121,5 @@ class TestGetContractAddresses:
             cc.settings = _fake_settings()
             get_loader.return_value = loader
             resp = await ConfigService().get_contract_addresses()
-            # Failures are swallowed — empty dicts, not exceptions
-            assert resp.pools == {}
-            assert resp.vaults == {}
+            assert resp.pools is None
+            assert resp.vaults is None

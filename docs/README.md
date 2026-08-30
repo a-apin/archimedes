@@ -45,6 +45,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`api/chat.md`](api/chat.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/{address}/chat*` — per-vault chat: public reads, linked-wallet writes, internal-only system events. |
 | [`api/leaderboard-and-metrics.md`](api/leaderboard-and-metrics.md) | current | Dan Browne | 2026-08-20 | `/api/leaderboard` and the public, PII-free `/api/metrics/*` traction surface. |
 | [`api/admin-private.md`](api/admin-private.md) | current | Dan Browne | 2026-08-20 | `/api/metrics/private/*` — the platform-admin-gated cost/ops dashboard and per-wallet identity roster. |
+| [`api-surface-status.md`](api-surface-status.md) | current | Dan Browne | 2026-08-20 | Census of every router `backend/archimedes/main.py` registers: prefix, auth model, status, and whether a detailed doc above covers it (15/30 do). Backed by a completeness test that fails CI if a registered router has no row. |
 
 ## Product
 
@@ -124,6 +125,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`runbooks/arc-testnet-e2e-evidence.md`](runbooks/arc-testnet-e2e-evidence.md) | evidence | Önder Akkaya | 2026-05-26 | Replayable on-chain evidence for SPEC-1. |
 | [`runbooks/spec-1-walkthrough.md`](runbooks/spec-1-walkthrough.md) | runbook | Dan Browne | — | SPEC-1 user-journey walkthrough. |
 | [`runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) | runbook | Dan Browne | — | Contract redeploy procedure and secret handling. |
+| [`runbooks/docs-site-setup.md`](runbooks/docs-site-setup.md) | runbook | Dan Browne | 2026-08-20 | GitHub Pages docs site (#1381, option B): Dan's two manual steps (Pages source + Route 53 CNAME), local `mkdocs serve` preview, and why `mkdocs build --strict` isn't used. |
 
 ## Decisions (ADRs)
 
@@ -138,6 +140,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/portfolio-constructor-decision-tree.md`](adr/portfolio-constructor-decision-tree.md) | accepted | Önder Akkaya | 2026-05-22 | Which constructor runs when. |
 | [`adr/k1-generation-external-rigor-gate.md`](adr/k1-generation-external-rigor-gate.md) | accepted | Dan Browne | 2026-05-23 | K=1 generation with an externalised rigor gate. |
 | [`adr/aws-account-migration.md`](adr/aws-account-migration.md) | accepted | Dan Browne | 2026-06-24 | Production moved to account 037613907429 / us-east-1. |
+| [`adr/generation-payment-credit-not-refund.md`](adr/generation-payment-credit-not-refund.md) | accepted | Önder Akkaya | 2026-08-29 | An undelivered generation is repaid as a durable credit, never a refund; the claim is taken before the money moves. |
 | [`adr/glm-to-bedrock-llm-migration.md`](adr/glm-to-bedrock-llm-migration.md) | accepted | Dan Browne | 2026-06-24 | GLM → Bedrock. |
 | [`adr/non-custodial-vault-owner-agent.md`](adr/non-custodial-vault-owner-agent.md) | accepted | Dan Browne | 2026-06-26 | Owner ≠ agent; non-custodial vaults. |
 | [`adr/portfolio-constructor-consolidation.md`](adr/portfolio-constructor-consolidation.md) | accepted | Önder Akkaya | 2026-06-26 | Legacy constructor paths retired; dual-signal sizer activated. |
@@ -153,7 +156,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194). |
+| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off). |
 | [`plans/2026-07-28-account-auth-app-boundary.md`](plans/2026-07-28-account-auth-app-boundary.md) | plan | Daniel Reis | 2026-07-28 | The #1194 account-auth boundary plan. |
 | [`plans/2026-08-15-core-app-visual-refresh.md`](plans/2026-08-15-core-app-visual-refresh.md) | plan | Daniel Reis | 2026-08-15 | Core-app visual refresh plan. |
 | [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |
@@ -165,7 +168,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`sprint/README.md`](sprint/README.md) | current | Dan Browne | 2026-08-16 | Index of per-session working cards for the Arc-mainnet sprint, sharded so each session reads ~50 lines instead of the full plan. |
+| [`sprint/README.md`](sprint/README.md) | current | Önder Akkaya | 2026-08-21 | Index of per-session working cards for the Arc-mainnet sprint, plus the per-card completion status and the corrections to the cards' own claims. |
 
 ## Audits and findings
 

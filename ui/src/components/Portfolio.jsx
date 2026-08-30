@@ -6,6 +6,7 @@ import {
 	NEW_CONTRACTS,
 	getUsdcBalance,
 } from "../config";
+import PaymentReceipts from "./PaymentReceipts";
 import RegimePanel from "./RegimePanel";
 import StressScenarioPanel from "./StressScenarioPanel";
 
@@ -776,6 +777,14 @@ export default function Portfolio({
 								</>
 							);
 						})()}
+				</section>
+
+				{/* Payment receipts — settled generation payments (Dan's directive:
+				    "we must provide people with their receipts"). Own records only;
+				    GET /api/payments/receipts is owner-scoped server-side. */}
+				<section className="portfolio-payments">
+					<div className="label mb-3">Payment Receipts</div>
+					<PaymentReceipts />
 				</section>
 			</div>
 		</div>

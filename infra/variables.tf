@@ -132,6 +132,12 @@ variable "archimedes_treasury_wallet" {
   default     = ""
 }
 
+variable "generation_payment_recipient" {
+  description = "Platform wallet address that receives x402 generation payments (flip-list #834). Public address, not a secret. Defaults to the platform generation-revenue DCW (Circle Console, wallet ID af3e1cf6-76a3-55db-911a-b356860058e4) so a terraform apply without the TF_VAR cannot silently un-configure the paywall; override via TF_VAR_generation_payment_recipient only to rotate the wallet."
+  type        = string
+  default     = "0xffa7abba5f17cb8471ebf150bf808bd6fb8856c1"
+}
+
 # ── Runner relocation (issue #1065 / #1043) ─────────────────────────────────
 # Draft IaC — Dan applies POST-T3.2. See infra/runner_ec2.tf, infra/kb_runner.tf,
 # infra/efs.tf, and the PR body for the full architecture + caveats.
@@ -158,4 +164,50 @@ variable "kb_runner_schedule_expression" {
   description = "EventBridge Scheduler rate/cron expression for the kb-runner scheduled Fargate task (infra/kb_runner.tf's aws_scheduler_schedule). Daily is a conservative default for a batch job that currently no-ops to a 'skipped' manifest.json (KB_PIPELINE_ENABLED unset) — tighten or loosen once the real pipeline is live and its actual runtime/cost is known."
   type        = string
   default     = "rate(1 day)"
+}
+
+variable "privacy_inbox_email" {
+  description = <<-EOT
+    Destination for mail sent to privacy@<domain> (SNS email subscription).
+
+    Empty by default and left empty in the repo ON PURPOSE: the live endpoint
+    is a personal inbox, and a personal address does not belong in a public
+    repository. Set it in infra/terraform.tfvars (gitignored) to bring the
+    existing subscription under management. Left unset, the subscription
+    resource is not created and the live one stays unmanaged — the status quo,
+    not a regression.
+
+    Mirrors the alarm_email pattern in cloudwatch.tf.
+  EOT
+  type        = string
+  default     = ""
+}
+
+# ── Email authentication (#1462) ─────────────────────────────────────────────
+
+variable "google_site_verification" {
+  description = <<-EOT
+    The Google Search Console verification token already published in the apex
+    TXT record. It is carried here because Route 53 keeps one record set per
+    (name, type): the SPF string has to share the apex TXT with it, so both
+    values must be written in the same resource. Dropping this un-verifies
+    Search Console. A published DNS value, not a secret.
+  EOT
+  type        = string
+  default     = "google-site-verification=nHeZsrl8SxRsJeKWIQx0kaSQkHOlzPDdfRZU_ZCUqk8"
+}
+
+variable "dmarc_rua_address" {
+  description = <<-EOT
+    Mailbox for DMARC aggregate reports (the rua= tag).
+
+    Reports only ARRIVE once inbound mail for this address is actually handled
+    — the zone's MX already points at SES inbound, but the receipt rule that
+    delivers it is #1460's scope. Until then the DMARC record still publishes
+    the policy signal Gmail/Yahoo bulk-sender rules look for; the reports are
+    simply not collected yet, and a reporter that cannot deliver drops them
+    silently rather than bouncing at us.
+  EOT
+  type        = string
+  default     = "dmarc-reports@archimedes-arc.com"
 }

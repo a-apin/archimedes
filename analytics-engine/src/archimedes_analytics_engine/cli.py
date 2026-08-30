@@ -12,7 +12,7 @@ from typing import Any
 import backtrader as bt
 import pandas as pd
 
-from .costs import CostModel, cost_model_fingerprint
+from .costs import DEFAULT_COST_MODEL, CostModel, cost_model_fingerprint
 from .data import fetch_ohlcv
 from .engine import (
     BACKTEST_ENGINE_TAG,
@@ -445,8 +445,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--start", default="2018-01-01")
     run.add_argument("--end", default=datetime.now(UTC).date().isoformat())
     run.add_argument("--initial-cash", type=float, default=100000.0)
-    run.add_argument("--tx-cost-bps", type=int, default=10)
-    run.add_argument("--slippage-bps", type=int, default=5)
+    # Defaults derive from DEFAULT_COST_MODEL (the cost SSOT) rather than
+    # repeating 10/5 as a third literal copy — #1242 review: this was the one
+    # DEFAULT_COST_MODEL had no production reader, so retuning the constant
+    # wouldn't have moved these and the CLI would've silently diverged from
+    # every other engine again.
+    run.add_argument("--tx-cost-bps", type=int, default=int(DEFAULT_COST_MODEL.default_bps))
+    run.add_argument("--slippage-bps", type=int, default=int(DEFAULT_COST_MODEL.slippage_bps))
     run.add_argument("--artifact-dir", default="artifacts")
     run.add_argument("--paper-arxiv-id", default=None, help="Override paper arxiv id")
     run.add_argument("--paper-title", default=None, help="Override paper title")

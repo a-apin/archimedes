@@ -12,6 +12,7 @@ from archimedes.marketplace.settlement import (
     SWEEP_MIN_DEPOSIT_RAW,
     SettlementSweeper,
 )
+from tests.gateway_fake import FakeGatewayClient
 
 
 @pytest.fixture
@@ -236,27 +237,44 @@ async def test_stage_a_below_threshold_does_not_withdraw(sweeper, pub):
 
 
 @pytest.mark.asyncio
-async def test_stage_a_above_threshold_withdraws(sweeper, pub):
-    """Available balance above threshold => withdraw called once."""
-    mock_balance = MagicMock()
-    mock_balance.available = _THRESHOLD_RAW + 5000000  # above threshold
-    mock_balance.formatted_available = "15.00"
+async def test_stage_a_above_threshold_withdraws_less_fee_reserve(sweeper, pub, monkeypatch):
+    """Available balance above threshold => withdraw called once, for an
+    amount Circle will actually accept.
 
-    mock_result = MagicMock()
-    mock_result.mint_tx_hash = "0xminttx"
+    Guard demonstration for the fee-reserve fix. ``FakeGatewayClient``
+    enforces Circle's real ``amount + fee <= available`` rule, so the previous
+    ``amount = balances.formatted_available`` raises here rather than passing
+    against an AsyncMock that accepts anything.
+    """
+    monkeypatch.delenv("GATEWAY_WITHDRAW_FEE_RESERVE_USDC", raising=False)
+    available = _THRESHOLD_RAW + 5_000_000  # $15.00
+    fake = FakeGatewayClient(available, mint_tx_hash="0xminttx")
 
     with (
         patch("archimedes.marketplace.settlement.CircleWalletSigner"),
         patch("archimedes.marketplace.settlement.CircleTxExecutor"),
-        patch("archimedes.marketplace.settlement.GatewayClient") as MockGW,
+        patch("archimedes.marketplace.settlement.GatewayClient", return_value=fake),
     ):
-        instance = MockGW.return_value
-        instance.get_gateway_balance = AsyncMock(return_value=mock_balance)
-        instance.withdraw = AsyncMock(return_value=mock_result)
-
         await sweeper._stage_a_gateway_to_wallet(pub)
 
-        instance.withdraw.assert_awaited_once_with(amount="15.00")
+    assert fake.last_withdraw["amount"] == "14.950000"  # $15.00 - $0.05 reserve
+    assert fake.last_withdraw["max_fee"] == 50_000
+
+
+@pytest.mark.asyncio
+async def test_stage_a_swallows_the_circle_rejection_and_lets_stage_b_run(sweeper, pub):
+    """Stage A already catches its own exceptions — confirm the Circle 400
+    path stays inside that contract rather than escaping the sweeper."""
+    fake = FakeGatewayClient(_THRESHOLD_RAW + 5_000_000, fee_raw=9_000_000)
+
+    with (
+        patch("archimedes.marketplace.settlement.CircleWalletSigner"),
+        patch("archimedes.marketplace.settlement.CircleTxExecutor"),
+        patch("archimedes.marketplace.settlement.GatewayClient", return_value=fake),
+    ):
+        await sweeper._stage_a_gateway_to_wallet(pub)  # must not raise
+
+    assert fake.withdraw_calls, "withdraw should have been attempted"
 
 
 # ── Stage B: wallet balance below min deposit → no action ───────────────

@@ -124,7 +124,7 @@ the machine-readable claim-integrity surface the new page should read from.
 | Contract loader | [`chain/contracts.py`](../backend/archimedes/chain/contracts.py) | ABIs from [`contracts/abis/`](../contracts/abis) |
 | Executor | [`chain/executor.py`](../backend/archimedes/chain/executor.py) | Reads portfolio state, executes rebalance trades, creates vaults. Signer: **Circle DCW preferred** ([`chain/circle_signer.py`](../backend/archimedes/chain/circle_signer.py)), raw `ARC_AGENT_PRIVATE_KEY` fallback |
 | Trace publisher | [`chain/trace_publisher.py`](../backend/archimedes/chain/trace_publisher.py) | v1 `publishTrace` (legacy/SKIP path) + v1.5 **commit/reveal** temporal binding |
-| Agent runner | [`chain/agent_runner.py`](../backend/archimedes/chain/agent_runner.py) | The rebalance tick loop (default `AGENT_INTERVAL_SECONDS=300`); lease-gated exactly-once; per-vault strategy scoping; V_check gate (line ~687); **commit → trade → reveal** ordering with a commit-guard (lines 700–830). Generated-strategy vaults execute their persisted DSL spec (PR #1076, merged 2026-07-14) |
+| Agent runner | [`chain/agent_runner.py`](../backend/archimedes/chain/agent_runner.py) | The rebalance tick loop (default `AGENT_INTERVAL_SECONDS=300`); lease-gated exactly-once; per-vault strategy scoping; V_check gate (arithmetic weights-sum + max-concentration checks — [`chain/v_check.py`](../backend/archimedes/chain/v_check.py)); **commit → trade → reveal** ordering with a commit-guard (the `Phase 1: COMMIT` block onward). Generated-strategy vaults execute their persisted DSL spec (PR #1076, merged 2026-07-14) |
 | Oracle runner | [`chain/oracle_runner.py`](../backend/archimedes/chain/oracle_runner.py), [`chain/oracle_updater.py`](../backend/archimedes/chain/oracle_updater.py) | Periodic price pushes to the per-synth `PriceOracle`s; lease-gated, fails closed |
 | Marketplace publisher | [`chain/strategy_publisher.py`](../backend/archimedes/chain/strategy_publisher.py) | On-chain strategy registration (StrategyRegistry) |
 | IPFS provenance | [`chain/provenance_publisher.py`](../backend/archimedes/chain/provenance_publisher.py), [`chain/pinata_client.py`](../backend/archimedes/chain/pinata_client.py) | Off-chain trace storage pointer for reveal |
@@ -211,11 +211,11 @@ Runbook: [`infra/runbooks/ecs-fargate-cutover.md`](../infra/runbooks/ecs-fargate
 **Rebalance loop** ([`chain/agent_runner.py`](../backend/archimedes/chain/agent_runner.py), default 300 s tick, Redis-lease singleton):
 1. Read vault state **from chain** (ground truth — hierarchy of truth; the LLM narrative never overrides it).
 2. Evaluate the strategy's signal rule / persisted DSL spec ([`services/strategy_signal_evaluator.py`](../backend/archimedes/services/strategy_signal_evaluator.py); generated-strategy DSL execution (PR #1076, merged 2026-07-14)) → target weights; drift + cost-benefit check.
-3. **V_check** ([`chain/v_check.py`](../backend/archimedes/chain/v_check.py)) — inconsistency fails the whole rebalance.
+3. **V_check** ([`chain/v_check.py`](../backend/archimedes/chain/v_check.py)) — deterministic arithmetic checks on the target weights dict (sum to 10000 BPS, max single-position concentration, and — only when a caller supplies `cost_benefit_bps`, which none do today — a minimum cost-benefit floor); any failing check aborts the rebalance.
 4. Build the canonical trace and **commit** its keccak hash + trade-intent digest to `ReasoningTraceRegistry` ([`chain/trace_publisher.py`](../backend/archimedes/chain/trace_publisher.py)); the trade arrays used for the commit are reused verbatim for execution.
 5. `Vault.rebalance(trades)` — **the contract itself reverts if no matching commitment exists** (#589, `contracts/src/Vault.sol:422`); swaps route through `AMMRouter` over per-synth pools with the oracle price floor bounding slippage.
 6. **Reveal**: upload canonical trace JSON (IPFS via [`chain/pinata_client.py`](../backend/archimedes/chain/pinata_client.py)), call `reveal(traceId, storagePointer, content)` — the contract recomputes and verifies the hash. Commit block < trade block < reveal block is user-verifiable ([`ui/src/components/Reasoning.jsx`](../ui/src/components/Reasoning.jsx)).
-7. Honest "hold" decisions are also traced. **Current operational caveat:** the runners are stranded on the detached EC2 box with no deploy path; relocation IaC (oracle+agent → small EC2, kb → scheduled Fargate, EFS) is merged (PR #1071, 2026-07-14); the `terraform apply` + first runner deploy are pending (#1065).
+7. Honest "hold" decisions are also traced. Runner liveness (whether the loop above is actually ticking on the deployed runner, not just defined in code) is surfaced live, not asserted in this doc — see [`/api/agent/status`](../backend/archimedes/api/agent_routes.py) (`alive`, from the Redis heartbeat) and § 7's deploy topology for where the runner lives today.
 
 ## 4. Flow — Marketplace (x402 nanopayments)
 
@@ -255,13 +255,15 @@ CloudFront ──▶ WAF + ALB ──▶ ECS Fargate task [nginx:8080 → backen
               Aurora PG 18.3   ElastiCache    SSM Parameter Store
                                Redis (TLS)    (pull-model secrets)
 
-STRANDED (temporary): oracle_runner · agent_runner · kb_runner on the detached-but-running
-EC2 box (no deploy path since #1058 killed the SSM compose path). Relocation IaC merged
-(PR #1071, 2026-07-14), terraform apply pending (#1065): oracle+agent → small dedicated EC2 (stateful, exactly-once);
-kb → scheduled Fargate task; EFS for corpus artifacts.
+Runners relocated (#1043, #1065; verified live 2026-08-18): oracle_runner + agent_runner
+run on a dedicated `archimedes-runner` t3.small EC2 (stateful, exactly-once, Redis-lease
+singleton — holds the scheduler lease); kb_runner runs as a scheduled ECS Fargate task
+(`infra/kb_runner.tf`). Deploy path: `.github/workflows/deploy-runners.yml` (SSM
+RunCommand pulls the fresh image + restarts the EC2 pair's systemd units; registers a new
+`archimedes-kb-runner` task-definition revision for kb).
 ```
 
-- Web tier cut over to Fargate 2026-07-09 (#1056–#1059) — decision and consequences in [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md); the EC2 box is detached from the ALB but running as a rollback window (Phase-8 decommission pending). **Note:** [`CLAUDE.md`](../CLAUDE.md) § Deployment still describes EC2/docker-compose as the live picture — superseded (§9).
+- Web tier cut over to Fargate 2026-07-09 (#1056–#1059) — decision and consequences in [`adr/ec2-to-ecs-fargate-cutover.md`](adr/ec2-to-ecs-fargate-cutover.md); the old web-tier EC2 box was stopped and snapshotted 2026-08-19 (`snap-02edf9e4a9ac7f201`) and its terraform removed (PR #1265, merged 2026-08-19) — Phase-8 decommission complete.
 - Contract-address SSOT: Foundry broadcast → [`infra/ecs.tf`](../infra/ecs.tf) env (merged PR #1079) → `GET /api/config/contracts`; [`ui/src/config.js`](../ui/src/config.js) carries the matching hand-synced set (runtime fetch is the durable fix, not yet landed).
 - Local dev parity: one [`docker-compose.yml`](../docker-compose.yml) with `localdb` + `runners` profiles mirrors prod.
 - LLM: Bedrock in-region; BYOK and Ollama keep the single-user/local path AWS-optional.
@@ -277,13 +279,13 @@ kb → scheduled Fargate task; EFS for corpus artifacts.
 | **Oracle signer** | Circle DCW (API key + entity secret + WALLET_ID trio) pushes prices; role granted on-chain by the deployer; lease-gated, fails closed | [`chain/circle_signer.py`](../backend/archimedes/chain/circle_signer.py), [`chain/oracle_runner.py`](../backend/archimedes/chain/oracle_runner.py); secrets per [`docs/runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) |
 | **Agent signer** | Circle DCW preferred; raw `ARC_AGENT_PRIVATE_KEY` fallback | [`chain/executor.py`](../backend/archimedes/chain/executor.py) |
 | **Internal-agent key** | `INTERNAL_AGENT_API_KEY` shared secret for runner→backend internal endpoints | [`chain/agent_runner.py`](../backend/archimedes/chain/agent_runner.py) env; ecs secrets |
-| **Hierarchy of truth** | Chain state outranks LLM narrative; V_check fails the rebalance on inconsistency | [`chain/v_check.py`](../backend/archimedes/chain/v_check.py), `agent_runner.py:687` |
+| **Hierarchy of truth** | Chain state outranks LLM narrative — the rebalance loop reads vault holdings from chain, never from LLM output; V_check separately caps any single position at 60% concentration and rejects a malformed weight set before the trade is committed | [`chain/v_check.py`](../backend/archimedes/chain/v_check.py), [`chain/agent_runner.py`](../backend/archimedes/chain/agent_runner.py) `read_portfolio` call |
 | **Marketplace custody** | Subscription-fee custody is **custodial-INTERIM** (Circle Gateway wallet) while vault principal stays non-custodial; migration tracked #975; `PAYMENTS_DRY_RUN=true` until then | [`marketplace/settlement.py`](../backend/archimedes/marketplace/settlement.py), decision record #958 |
 | **Exactly-once runners** | Funds-adjacent runners are Redis-lease singletons; every on-chain write gated on the live lease | [`services/runner_lease.py`](../backend/archimedes/services/runner_lease.py), runner docstrings |
 
 ## 9. Doc-vs-code disagreements found (flag for cleanup)
 
-1. **[`CLAUDE.md`](../CLAUDE.md) § Tech Stack / Deployment** — ~~said the EC2/docker-compose stack "remains the accurate live picture"~~ **fixed 2026-07-14** (same branch as this map): Fargate/ALB/Aurora/ElastiCache is the live picture, EC2 detached-but-running; "11 contracts deployed" corrected to 12 sources / 570 live instances (T3.2 census above).
+1. **[`CLAUDE.md`](../CLAUDE.md) § Tech Stack / Deployment** — ~~said the EC2/docker-compose stack "remains the accurate live picture"~~ **fixed 2026-07-14** (same branch as this map): Fargate/ALB/Aurora/ElastiCache is the live picture; the web-tier EC2 box itself was stopped, snapshotted, and its terraform removed 2026-08-19 (Phase-8 decommission complete, §7 above) — "11 contracts deployed" corrected to 12 sources / 570 live instances (T3.2 census above).
 2. **[`docs/architectural-principles.md`](architectural-principles.md)** — "three top-level agents" mermaid + `services/portfolio_agent.py` path. Generation is debate-only now ([`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py)); the file actually lives at [`agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py). The three-agent framing survived only as UI copy on the pre-#1192 Architecture page, and went away when that page was rebuilt (PR #1192, 2026-07-28).
 3. **[`docs/specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md)** — cites `backend/archimedes/services/trace_publisher.py`; actual: [`backend/archimedes/chain/trace_publisher.py`](../backend/archimedes/chain/trace_publisher.py). Spec status says "proposal / v1.5 hop"; commit-reveal is implemented and contract-enforced (`Vault.sol:422`).
 4. **[`docs/user-stories.md`](user-stories.md)** — "GLM-backed" MVP framing; live LLM is Bedrock/Nova Micro via the Converse seam. Also predates marketplace/leaderboard surfaces.
@@ -312,10 +314,18 @@ in JSX where live endpoints exist (`/health`, `/api/config/contracts`, `/api/exp
 
 One item on that staleness list was corrected in the *wrong direction*. The "keyword/TF-IDF
 today" entry was rewritten to present MiniLM reranking as a standing property of the corpus,
-on the strength of `/health`'s `corpus_embedded` field. That field describes the process, not
-the corpus: it is `paper_rag == "live"`, i.e. whether sentence-transformers loaded in *this*
+on the strength of `/health`'s `corpus_embedded` field. That field described the process, not
+the corpus: it was `paper_rag == "live"`, i.e. whether sentence-transformers loaded in *this*
 worker. The stored corpus is text either way, and prod serves the lexical path. #778 carries
 the correction; `backend/tests/test_corpus_claim_integrity.py` pins it.
+
+The field itself was the remaining hazard and is gone (#1488). `/health` now publishes
+`paper_rerank_model_live` for the process-local fact and `corpus_embedded_at_rest` for the
+corpus one, the latter derived from the ORM schema rather than declared, alongside
+`rerank_candidate_cap` — the number of keyword candidates that actually reach the model.
+`backend/tests/test_corpus_embedding_claims.py` fails if any `/health` field would let a
+reader infer stored vectors from its name alone, and fails again if a stored-vector column
+appears without the field being rewired to count it.
 
 ## 11. Stack at a glance
 

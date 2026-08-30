@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from archimedes.chain.client import ChainEndpoint
 from archimedes.db import get_session
 from archimedes.models.backtest_fixtures_store import FIXTURE_FIELDS, StrategyBacktestFixture
 from archimedes.services.backtest_mapper import (
@@ -140,6 +141,25 @@ _SETTINGS_NAMESPACE = SimpleNamespace(
         "sTSLA": "0xe1c9f2b11be97097223a66a188fca541e07873a6",
         "sSPY": "0xd8161a8eeab7c7100e2863abe3d5f346b5ff9e52",
     },
+)
+
+# Two-chain endpoints (#1240), DERIVED from the single-chain fields above rather
+# than restated, so this namespace can never describe a split its own chain_id /
+# arc_rpc_url do not support. The resolution and fallback rules themselves are
+# covered in backend/tests/chain/test_two_chain_config.py against real
+# ChainSettings; here they only have to be self-consistent.
+_SETTINGS_NAMESPACE.payments_chain = ChainEndpoint(
+    chain_id=_SETTINGS_NAMESPACE.chain_id,
+    rpc_url=_SETTINGS_NAMESPACE.arc_rpc_url,
+    explicit=False,
+)
+_SETTINGS_NAMESPACE.execution_chain = ChainEndpoint(
+    chain_id=_SETTINGS_NAMESPACE.chain_id,
+    rpc_url=_SETTINGS_NAMESPACE.arc_rpc_url,
+    explicit=False,
+)
+_SETTINGS_NAMESPACE.is_split_chain = (
+    _SETTINGS_NAMESPACE.payments_chain.chain_id != _SETTINGS_NAMESPACE.execution_chain.chain_id
 )
 
 
@@ -382,6 +402,85 @@ class TestStrategyRoutes:
                 f"got {a['out_of_sample_sharpe']}"
             )
 
+    def test_list_strategies_reports_degraded_when_provider_raises(self, client):
+        """#1356: a provider failure must be visible on the wire as
+        degraded=True with a reason, not silently rendered as
+        total=0/strategies=[] — indistinguishable from a real empty library."""
+        with patch(
+            "archimedes.api.strategies_routes.strategy_provider",
+            side_effect=RuntimeError("provider down"),
+        ):
+            resp = client.get("/api/strategies/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"]
+        # The raw exception string must never reach the client (it can carry
+        # DB/RPC internals — CLAUDE.md / docs/api/*.md convention).
+        # `degraded_reason` is a fixed category string, not an interpolation
+        # of `exc`; assert against the literal so a reintroduced f-string
+        # fails this test even if the mock message happens not to.
+        assert "provider down" not in data["degraded_reason"]
+        assert data["degraded_reason"] == "strategy provider unavailable"
+
+    def test_list_strategies_reports_degraded_when_library_empty_but_corpus_present(self, client):
+        """#1356 review-fix: count_strategy_files() > 0 but discovery still
+        returned nothing (e.g. every file failed to parse, or a shared-
+        helper import error skipped them all) is a real degradation distinct
+        from the corpus-missing-from-build case, and must be distinguished
+        from it — mirrors test_leaderboard_reports_degraded_when_curated_
+        cohort_empty_but_corpus_present, so the two routes over the same
+        corpus agree."""
+        empty_provider = MagicMock()
+        empty_provider.list_strategies.return_value = []
+
+        with (
+            patch("archimedes.api.strategies_routes.strategy_provider", return_value=empty_provider),
+            patch("archimedes.services.strategy_provider.count_strategy_files", return_value=5),
+        ):
+            resp = client.get("/api/strategies/")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == "library is empty"
+
+    def test_list_strategies_reports_degraded_when_corpus_missing_from_build(self, client):
+        """#1356: an empty (non-raising) library must still say WHY —
+        count_strategy_files()==0 is the #1039 corpus-missing-from-build
+        signal /health already reports; this route must say the same thing
+        rather than render a confident "0 strategies" indistinguishable from
+        a genuinely empty library."""
+        empty_provider = MagicMock()
+        empty_provider.list_strategies.return_value = []
+
+        with (
+            patch("archimedes.api.strategies_routes.strategy_provider", return_value=empty_provider),
+            patch("archimedes.services.strategy_provider.count_strategy_files", return_value=0),
+        ):
+            resp = client.get("/api/strategies/")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["strategies"] == []
+        assert data["total"] == 0
+        assert data["degraded"] is True
+        assert data["degraded_reason"] == "strategy corpus not found in build"
+
+    def test_list_strategies_not_degraded_when_library_populated(self, client, seeded_db):
+        """Negative case: a populated, non-raising library must NOT be marked
+        degraded — the empty-cohort branch above must not fire when there is
+        real data."""
+        resp = client.get("/api/strategies/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] > 0, "seeded_db must provide real strategies for this assertion to be meaningful"
+        assert data["degraded"] is False
+
 
 class TestRiskRoutes:
     def test_risk_profiles(self, client):
@@ -466,6 +565,81 @@ class TestConfigRoutes:
         # Pool/vault enumeration returns empty under the mocked loader.
         assert data["pools"] == {}
         assert data["vaults"] == {}
+
+    def test_contracts_serves_both_chain_blocks(self, chain_settings_client):
+        """/api/config/contracts names the payments and execution chains (#1240).
+
+        Both blocks are served unconditionally, not only once the two chains
+        differ, so a client never has to infer a missing block or fall back to
+        the legacy `chain_id` and guess which role it meant.
+
+        Fails against dropping either block from the response, against serving
+        `explicit: true` for an inherited chain, and against computing
+        `split_chain` as anything other than a comparison of the two ids.
+        """
+        mock_loader = MagicMock()
+        mock_loader.amm_router.functions.getAllPools.return_value.call = AsyncMock(return_value=[])
+        mock_loader.vault_factory.functions.getVaults.return_value.call = AsyncMock(return_value=[])
+        with patch("archimedes.chain.contracts.get_contract_loader", return_value=mock_loader):
+            resp = chain_settings_client.get("/api/config/contracts")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        for role in ("payments_chain", "execution_chain"):
+            assert role in data, f"{role} must be served unconditionally"
+            assert data[role]["chain_id"] == 5042002
+            assert data[role]["rpc_url"] == "https://rpc.testnet.arc.network"
+            # Nothing has been split yet, so neither role was chosen.
+            assert data[role]["explicit"] is False, f"{role} was inherited, not chosen"
+
+        assert data["split_chain"] is False
+        # The legacy field keeps meaning the execution chain, which is where
+        # every contract address in this response lives.
+        assert data["chain_id"] == data["execution_chain"]["chain_id"]
+
+    def test_contracts_does_not_swap_the_two_chain_blocks(self, chain_settings_client, monkeypatch):
+        """Each block must carry ITS OWN chain, proven on a genuinely split config.
+
+        The sibling test above cannot show this: today both roles resolve to the
+        same id and RPC, so `payments_chain` and `execution_chain` are identical
+        and serving one in the other's slot is invisible. Passing the same
+        literal to both sides of the boundary the bug lives on is exactly the
+        shape that makes a test pass against broken code, so this one installs
+        the post-cutover shape — payments on mainnet, execution on testnet —
+        where a swap changes the bytes.
+
+        Fails against `payments_chain=_endpoint(settings.execution_chain)` and
+        the reverse, neither of which the sibling test detects.
+        """
+        from archimedes.chain.client import chain_client as patched_client
+
+        monkeypatch.setattr(
+            patched_client.settings,
+            "payments_chain",
+            ChainEndpoint(chain_id=99999, rpc_url="https://payments.example", explicit=True),
+            raising=False,
+        )
+        monkeypatch.setattr(patched_client.settings, "is_split_chain", True, raising=False)
+
+        mock_loader = MagicMock()
+        mock_loader.amm_router.functions.getAllPools.return_value.call = AsyncMock(return_value=[])
+        mock_loader.vault_factory.functions.getVaults.return_value.call = AsyncMock(return_value=[])
+        with patch("archimedes.chain.contracts.get_contract_loader", return_value=mock_loader):
+            resp = chain_settings_client.get("/api/config/contracts")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["payments_chain"] == {
+            "chain_id": 99999,
+            "rpc_url": "https://payments.example",
+            "explicit": True,
+        }
+        assert data["execution_chain"]["chain_id"] == 5042002
+        assert data["split_chain"] is True
+        # The legacy field follows execution, so an existing client that reads
+        # it keeps talking to the chain the contract addresses are deployed on
+        # rather than silently following the payment rail to mainnet.
+        assert data["chain_id"] == 5042002
 
 
 class TestAssetRoutes:
@@ -894,6 +1068,90 @@ class TestAdvisorRoutes:
         # The plain (non-tool) fallback call must carry the same map.
         assert "plain" in captured
         assert captured["plain"][-1] == statuses
+
+    def test_advisor_rigor_summary_dsr_threshold_matches_badge_floor_direction(self, client, seeded_db):
+        """#1358 round-2 review: ``dsr_significant``/``dsr_significant_threshold``
+        must count HIGH-confidence strategies (>= the STRICTEST_LEVEL badge
+        floor — 0.90 today, rigor_profiles.py) — the SAME direction
+        RigorExplainer.jsx ("confidence >= 0.90 (badge)") and
+        RigorStrictnessControl.jsx ("DSR confidence >= dsr_p_min") already use.
+        Pre-fix, a ``< 0.05`` comparator counted the WORST (lowest-confidence)
+        strategies under this positive-sounding stat. ``dsr_p_value`` is
+        ``norm.cdf(z)`` in ``_rigor_helpers._dsr_from_stats`` — Prob(true SR >
+        best-of-N null), the Bailey-LdP DSR itself rather than a frequentist
+        p-value — so higher is better and ``>=`` is the correct direction."""
+        from archimedes.api import strategies_routes as sr
+        from archimedes.services.rigor_evaluator import RigorGateResult
+        from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
+
+        badge_floor = get_profile(STRICTEST_LEVEL).dsr_p_min
+
+        def fake_batch(strategies):
+            results = {}
+            for i, s in enumerate(strategies):
+                # Alternate: even index confidently ABOVE the badge floor,
+                # odd index confidently BELOW it.
+                dsr_p = badge_floor + 0.02 if i % 2 == 0 else max(badge_floor - 0.30, 0.0)
+                results[s.id] = RigorGateResult(
+                    strategy_id=s.id,
+                    deflated_sharpe=1.0,
+                    dsr_p_value=dsr_p,
+                    num_trials=1,
+                    pbo_score=0.1,
+                    oos_sharpe=0.5,
+                    look_ahead_passed=True,
+                )
+            return results
+
+        with patch.object(sr, "_live_rigor_results_for_strategies", side_effect=fake_batch):
+            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
+        assert resp.status_code == 200
+        body = resp.json()
+        summary = body["rigor_summary"]
+        allocations = body["allocations"]
+        assert allocations, "advisor returned no allocations to check"
+
+        assert summary["dsr_significant_threshold"] == pytest.approx(badge_floor)
+        expected = sum(1 for a in allocations if a.get("dsr_p_value") is not None and a["dsr_p_value"] >= badge_floor)
+        assert expected > 0, "fixture must produce >=1 above-floor allocation for this test to be meaningful"
+        assert summary["dsr_significant"] == expected
+
+    def test_build_rigor_summary_empty_branch_carries_same_keys_as_populated_branch(self):
+        """#1358 round-2 review: ``_build_rigor_summary``'s ``n == 0`` early
+        return must carry the SAME key set as its populated-case return, so
+        every consumer that reads ``dsr_significant_threshold`` /
+        ``pbo_acceptable_threshold`` unconditionally (``rigor_summary`` is
+        built unconditionally at both call sites in this route) gets the
+        honest floor value rather than ``undefined``/a ``KeyError``. There is
+        no UI consumer at all on ``main`` — ``PortfolioAdvisor.jsx`` was
+        deleted as dead code in 2fccecf6 — which makes the wire contract the
+        only thing holding this shape, not a guard in some component.
+
+        Source-text assertion (not a live route call): every reachable path
+        through ``get_portfolio_advisor`` short-circuits to a *different*,
+        ``rigor_summary``-free error shape (``if not scored: return
+        {"error": ..., "allocations": []}``) before ``_build_rigor_summary``
+        is ever called with an empty list, so the ``n == 0`` branch is
+        currently unreachable via the live endpoint — this test guards the
+        function's internal key-symmetry contract directly.
+        """
+        import inspect
+
+        from archimedes.api import strategies_routes as sr
+
+        src = inspect.getsource(sr)
+        fn_start = src.index("def _build_rigor_summary(")
+        n0_start = src.index("if n == 0:", fn_start)
+        n0_body_start = src.index("return {", n0_start)
+        n0_body_end = src.index("}", n0_body_start)
+        n0_body = src[n0_body_start : n0_body_end + 1]
+
+        assert '"dsr_significant_threshold"' in n0_body, (
+            f"n==0 branch is missing dsr_significant_threshold — got: {n0_body}"
+        )
+        assert '"pbo_acceptable_threshold"' in n0_body, (
+            f"n==0 branch is missing pbo_acceptable_threshold — got: {n0_body}"
+        )
 
 
 class TestFusionEvaluatorIntegration:

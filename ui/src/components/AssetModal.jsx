@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import PriceHistoryChart, { fmtPrice } from './PriceHistoryChart'
+import { changeWindowLabel } from '../statUtils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const RANGES = ['1D', '1W', '1M', '1Y', '5Y', '10Y', 'MAX']
@@ -151,7 +152,9 @@ export default function AssetModal({ asset, onClose }) {
             </div>
           </div>
           <div>
-            <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>24h change</div>
+            <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>
+              {changeWindowLabel(asset)} change
+            </div>
             <div
               className={`mono ${changeClass(asset.change_24h_pct)}`}
               style={{ fontSize: '1.1rem', fontWeight: 600 }}
@@ -239,7 +242,14 @@ export default function AssetModal({ asset, onClose }) {
               {asset.realized_vol_30d != null ? asset.realized_vol_30d.toFixed(2) : '—'}
             </div>
           </div>
-          {asset.oracle_address && (
+          {/* oracle_address is a capability marker (populated whenever a deployed
+              PriceOracle contract exists for this symbol, regardless of whether
+              its price is actually being displayed — see asset_market_service.py's
+              "capability marker" comment, issue #346). Rendering it whenever it's
+              merely present implied every card with an address was oracle-priced;
+              gate on price_source === 'oracle' too, so the address only shows for
+              a card whose displayed price actually came from that oracle (#1371). */}
+          {asset.oracle_address && asset.price_source === 'oracle' && (
             <div>
               <div className="caption" style={{ color: 'var(--text-4)', fontSize: '0.7rem' }}>Oracle address</div>
               <div className="mono" style={{ fontSize: '0.72rem', wordBreak: 'break-all' }}>

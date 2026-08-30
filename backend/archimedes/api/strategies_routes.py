@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import math
+import os
 from datetime import UTC
 
 import numpy as np
@@ -38,6 +39,28 @@ from archimedes.services.rigor_evaluator import RigorGateResult
 logger = logging.getLogger(__name__)
 
 strategies_router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+
+
+def _display_metrics_source(s, bt) -> str:
+    """Which link of the display-metric fallback chain actually supplied values.
+
+    The chain is `s.real_* -> bt.* -> s.stub_*`, and its last link is a hardcoded
+    placeholder. Unlike the rigor fields (whose fallback #1187/#1340 removed
+    outright) these are descriptive stats, so the chain stays — but an
+    un-named chain means a stub renders identically to a real backtest.
+
+    Keyed on `real_sharpe` / `sharpe_ratio` as the representative field: the whole
+    block is populated from one link, so one probe describes all of them.
+    """
+    if s.real_sharpe is not None:
+        # NOT "measured": for the curated library this traces to the #1187
+        # fixture snapshot. It is what the strategy record stores, no more.
+        return "strategy_record"
+    if bt is not None and bt.sharpe_ratio is not None:
+        return "persisted_backtest"
+    if s.stub_sharpe is not None:
+        return "stub_placeholder"
+    return "unavailable"
 
 
 def _to_strategy_response(
@@ -174,6 +197,13 @@ def _to_strategy_response(
         # "pass" | "fail" | "pending" | "degenerate".
         passes_rigor_gate=verdict.passes,
         rigor_gate_status=verdict.status,
+        # A3: name the source of the numbers instead of leaving the reader to
+        # infer it. "live_gate" iff the live gate actually produced a result for
+        # this strategy; otherwise every rigor field above is None and this says
+        # so. No "persisted_backtest" branch exists here on purpose — see
+        # StrategyResponse.metrics_source.
+        metrics_source=("live_gate" if rigor_result is not None else "unavailable"),
+        display_metrics_source=_display_metrics_source(s, bt),
         # is_backtest_placeholder: True when no BacktestResultRecord row exists.
         # ``has_real`` is now bt is not None so this is the honest gate.
         is_backtest_placeholder=not has_real,
@@ -344,6 +374,8 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
         # context — same fix as selection_bias_routes.py's valid_returns filter
         # (#868), so avg_correlation/pbo_scores here match that route's cohort gate
         # exactly rather than drifting apart on this input.
+        # TODO(A7): cohort filter here diverges from live_rigor_gate's cohort — see
+        # docs/sprint/cluster-4-strategies-route.md
         valid_returns = {
             k: v
             for k, v in returns_by_strategy.items()
@@ -515,7 +547,45 @@ async def list_strategies(
     # Bonus: the cache key (see cohort_key) is derived from the cohort's ids, so
     # grading the full library collapses the previous one-cohort-computation-per
     # -offset AND per-status-filter (~6s each) into a single shared entry.
-    library = strategy_provider().list_strategies()
+    #
+    # Provider failure must be visible on the wire, not a silent empty list
+    # (#1356: `total=len(strats)` used to render as a confident, honest-
+    # looking "0 strategies" whether the provider raised or the library was
+    # genuinely empty — the caller had no way to tell the two apart).
+    try:
+        library = strategy_provider().list_strategies()
+    except Exception as exc:
+        # Full exception detail is logged server-side only — never echoed to
+        # the client (DB/chain internals, per docs/api/*.md convention).
+        # `degraded_reason` stays a fixed, named category string.
+        logger.warning("list_strategies: strategy provider unavailable: %s", exc)
+        return StrategyListResponse(
+            strategies=[],
+            total=0,
+            degraded=True,
+            degraded_reason="strategy provider unavailable",
+        )
+
+    degraded = False
+    degraded_reason = ""
+    if not library:
+        # The dominant real cause is the strategy corpus missing from the
+        # build (#1039) — count_strategy_files()'s own docstring already
+        # names this for /health; reuse the same signal here instead of
+        # rendering "0 strategies" as if the library is legitimately empty.
+        # But the corpus CAN be present on disk while discovery still comes
+        # back empty (e.g. a shared-helper import error skips every file) —
+        # that's a different, real degradation and must say so too, so this
+        # route agrees with GET /api/leaderboard over the same corpus.
+        from archimedes.services.strategy_provider import count_strategy_files
+
+        if count_strategy_files() == 0:
+            degraded = True
+            degraded_reason = "strategy corpus not found in build"
+        else:
+            degraded = True
+            degraded_reason = "library is empty"
+
     rigor_results = _live_rigor_results_for_strategies(library)
 
     # Filter/paginate only AFTER grading. Delegated to the provider rather than
@@ -537,6 +607,8 @@ async def list_strategies(
     return StrategyListResponse(
         strategies=responses,
         total=total,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
     )
 
 
@@ -563,6 +635,16 @@ async def list_generated_strategies(
     caller = get_linked_wallet_address(request)  # None when anonymous — never an error
 
     rows: list[dict] = []
+    # Honest degradation signal (#1356 review round 2): this route used to
+    # swallow a DB/store exception into a 200 with a measured `total: 0`,
+    # indistinguishable on the wire from a genuinely-empty store. The Library's
+    # default tab then painted "No generated strategies yet" with a Generate
+    # CTA — the exact false-empty-state shape #1356 was filed to kill,
+    # unfixed on the one route the issue's own Summary names first. Mirrors
+    # the `degraded`/`degraded_reason` contract `StrategyListResponse` already
+    # carries for GET /api/strategies/ — see that route above.
+    degraded = False
+    degraded_reason = ""
     try:
         with get_session() as session:  # type: _Session
             query = session.query(StrategyRecord).filter(StrategyRecord.is_example.is_(False))
@@ -592,11 +674,16 @@ async def list_generated_strategies(
                 d["generation_cost"] = costs.get(r.id)
                 rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
+        # Full exception detail is logged server-side only — never echoed to
+        # the client (DB/chain internals, per docs/api/*.md convention).
+        # `degraded_reason` stays a fixed, named category string.
         import logging as _logging
 
         _logging.getLogger(__name__).warning("list_generated_strategies failed: %s", exc)
         rows = []
-    return {"strategies": rows, "total": len(rows)}
+        degraded = True
+        degraded_reason = "strategy store unavailable"
+    return {"strategies": rows, "total": len(rows), "degraded": degraded, "degraded_reason": degraded_reason}
 
 
 @strategies_router.get("/signals", response_model=StrategySignalsResponse)
@@ -976,17 +1063,41 @@ async def get_portfolio_advisor(
         }
 
     def _build_rigor_summary(active_rows: list[dict]) -> dict:
+        # dsr_p_value reads "higher = more confident" throughout this codebase
+        # (RigorExplainer.jsx "confidence ≥ 0.90 (badge)", RigorStrictnessControl.jsx
+        # "DSR confidence ≥ dsr_p_min", RejectedCandidates.jsx's dsrBad = dsr_p_value
+        # < 0.95) — the SAME badge floor rigor_profiles.py uses at STRICTEST_LEVEL
+        # (level 1, the Archimedes Verified bar). This tile must use the identical
+        # floor+direction: a `< 0.05` comparator here previously counted the LOWEST-
+        # confidence strategies (round-2 review, #1358) — the opposite of what the
+        # "DSR significant" name claims. `dsr_p_value` is `norm.cdf(z)` in
+        # `_rigor_helpers._dsr_from_stats`, i.e. Prob(true SR > best-of-N null) —
+        # the Bailey-LdP DSR itself, not a frequentist p-value — so higher IS
+        # better and `>=` is the correct direction.
+        #
+        # No UI reads this today: PortfolioAdvisor.jsx, the tile's only consumer,
+        # was deleted as dead code in 2fccecf6. `GET /api/strategies/advisor` is
+        # still live and still emits these fields, so the wire value has to be
+        # honest regardless of whether anything renders it.
+        from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
+
+        dsr_badge_floor = get_profile(STRICTEST_LEVEL).dsr_p_min
+
         n = len(active_rows)
         if n == 0:
             return {
                 "total_picks": 0,
                 "passes_rigor_gate": 0,
                 "dsr_significant": 0,
+                "dsr_significant_threshold": dsr_badge_floor,
                 "pbo_acceptable": 0,
+                "pbo_acceptable_threshold": 0.50,
                 "oos_positive": 0,
             }
         passes = sum(1 for r in active_rows if r.get("passes_rigor_gate"))
-        dsr_sig = sum(1 for r in active_rows if r.get("dsr_p_value") is not None and r["dsr_p_value"] < 0.05)
+        dsr_sig = sum(
+            1 for r in active_rows if r.get("dsr_p_value") is not None and r["dsr_p_value"] >= dsr_badge_floor
+        )
         pbo_ok = sum(1 for r in active_rows if r.get("pbo_score") is not None and r["pbo_score"] < 0.5)
         oos_pos = sum(
             1 for r in active_rows if r.get("out_of_sample_sharpe") is not None and r["out_of_sample_sharpe"] > 0
@@ -997,7 +1108,7 @@ async def get_portfolio_advisor(
             "total_picks": n,
             "passes_rigor_gate": passes,
             "dsr_significant": dsr_sig,
-            "dsr_significant_threshold": 0.05,
+            "dsr_significant_threshold": dsr_badge_floor,
             "pbo_acceptable": pbo_ok,
             "pbo_acceptable_threshold": 0.50,
             "oos_positive": oos_pos,
@@ -1699,7 +1810,62 @@ def _generation_cost_for(strategy_id: str, session) -> dict | None:
         return None
 
 
-def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
+# Sentinel distinguishing "no returns were prefetched for this call" from "the
+# prefetch ran and this strategy genuinely has no persisted series". The two
+# must not collapse: the first means we do not know, the second is a fact.
+_RETURNS_NOT_PREFETCHED = object()
+
+
+def _rollback_quietly(session) -> None:
+    """Roll back after a swallowed read so the transaction is usable again.
+
+    Postgres aborts the whole transaction on a failed statement; every later
+    statement then raises InFailedSqlTransaction. sqlite does not, so a suite
+    that runs on sqlite cannot observe the difference — which is why this is
+    written down rather than left to the reader.
+    """
+    try:
+        session.rollback()
+    except Exception:  # pragma: no cover — nothing useful to do if rollback fails
+        pass
+
+
+def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, bool]:
+    """Tri-state + degenerate status for a generated/fusion passport row.
+
+    Returns ``(status, is_placeholder)``.
+
+    #1184: the stored aggregate alone cannot tell a zero-variance persisted
+    series apart from an ungraded one. Both leave ``record.sharpe_ratio`` NULL,
+    so reading the aggregate by itself reported a flat, broken, or zero-trade
+    backtest as ``"pending"`` — "we have not graded this yet", which is a claim,
+    and a false one. The curated path already answers this correctly via
+    ``_verdict_from_result``; this is the same predicate applied to the persisted
+    series the passport path had never loaded.
+
+    ``daily_returns`` empty means no persisted series was found, which is the
+    genuine "not graded yet" case — the aggregate three-way is then correct.
+    """
+    if daily_returns:
+        from archimedes.services.rigor_evaluator import (
+            is_oos_zero_variance_series,
+            is_zero_variance_series,
+        )
+
+        # OR'd exactly as run_rigor_gate ORs them into is_degenerate, so this
+        # read path and the gate agree by construction on both kinds of
+        # flatness (whole-series, and flat only inside the OOS slice).
+        if is_zero_variance_series(daily_returns) or is_oos_zero_variance_series(daily_returns):
+            # A persisted series exists, so this is not an ungraded placeholder;
+            # it is a graded row whose series carries no variance to grade.
+            return "degenerate", False
+
+    if record.sharpe_ratio is None:
+        return "pending", True
+    return ("pass" if bool(record.passes_rigor_gate) else "fail"), False
+
+
+def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_NOT_PREFETCHED) -> StrategyResponse:
     """Reshape a StrategyPassportRecord (fusion/architect output) into the
     StrategyResponse schema that StrategyPassport.jsx expects. Curated
     strategies still flow through LocalStrategyProvider above; this is the
@@ -1710,6 +1876,14 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     (fusion generation stores only arxiv_ids), the corpus join backfills them so
     the UI can display a human-readable title instead of a bare arxiv id.
     Falls back to the arxiv_id string when the corpus has no matching row.
+
+    ``daily_returns`` — this strategy's persisted daily-return series, when the
+    caller has already bulk-loaded it for a whole page of rows. List callers
+    pass it so the degenerate check below costs one cohort read per request
+    instead of one per row; the single-row detail path leaves it unset and this
+    function loads its own. Left unset with no ``session`` either, the
+    degenerate check is skipped and the status falls back to the stored
+    aggregate — see ``_passport_rigor_status``.
     """
     from archimedes.api.schemas import PaperRefResponse
     from archimedes.services.return_source_classifier import (
@@ -1722,6 +1896,32 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     # is also the answer for every strategy generated before the meter existed.
     # Either way the UI renders "not measured"; nothing is zeroed or invented.
     generation_cost = _generation_cost_for(record.id, session)
+
+    # #1184: resolve this row's persisted return series so the rigor status
+    # below can tell a zero-variance (degenerate) series apart from an ungraded
+    # one. Prefetched by list callers; self-loaded on the single-row path.
+    if daily_returns is _RETURNS_NOT_PREFETCHED:
+        _returns: list[float] = []
+        if session is not None:
+            try:
+                from archimedes.services.backtest_repository import get_daily_returns
+
+                _returns = get_daily_returns(session, record.id) or []
+            except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "persisted-returns read failed for %s (%s) — rigor status falls back to the stored aggregate",
+                    record.id,
+                    type(exc).__name__,
+                )
+                # See _passport_responses: without this, everything later in the
+                # request fails on Postgres and succeeds on sqlite.
+                _rollback_quietly(session)
+    else:
+        _returns = list(daily_returns or [])
+
+    _rigor_status, _is_placeholder = _passport_rigor_status(record, _returns)
 
     refs = list(record.paper_refs or [])
     first = refs[0] if refs else None
@@ -1808,21 +2008,15 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         # *live* verdict, not a fixture boolean — so it is a legitimate badge source
         # per #821 ("read a persisted live-gate verdict"). Map it to the tri-state:
         # a passport with no real backtest (sharpe_ratio is None) is "pending".
-        passes_rigor_gate=bool(record.passes_rigor_gate),
-        # #1184 KNOWN GAP: this three-state map is NOT threaded through the
-        # DEGENERATE category live_rigor_gate/_verdict_from_result added — it
-        # reads only the stored aggregate (record.sharpe_ratio /
-        # passes_rigor_gate), not the persisted daily-return series, so a
-        # generated/fusion strategy with a zero-variance series still reports
-        # "fail" here rather than "degenerate". Fixing this needs the same
-        # is_zero_variance_series/is_oos_zero_variance_series check run against
-        # this passport's own persisted returns (get_daily_returns), which this
-        # read path does not currently load. Tracked as an open follow-up on
-        # #1184, not closed by this PR.
-        rigor_gate_status=(
-            "pending" if record.sharpe_ratio is None else ("pass" if bool(record.passes_rigor_gate) else "fail")
-        ),
-        is_backtest_placeholder=record.sharpe_ratio is None,
+        # A degenerate row is never a pass, whatever the stored boolean says.
+        passes_rigor_gate=bool(record.passes_rigor_gate) and _rigor_status != "degenerate",
+        # #1184: four-state, derived from this passport's OWN persisted series
+        # (see _passport_rigor_status). The stored aggregate alone cannot
+        # separate a zero-variance series from an ungraded one — both leave
+        # sharpe_ratio NULL — so reading it by itself reported broken data as
+        # "pending", which is a claim ("not graded yet"), and a false one.
+        rigor_gate_status=_rigor_status,
+        is_backtest_placeholder=_is_placeholder,
         sharpe_ci_lower=None,
         sharpe_ci_upper=None,
         backtest_start=record.backtest_start,
@@ -1840,6 +2034,50 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
 # Curated strategies are UNCHANGED: callers keep sourcing those from
 # strategy_provider() and concatenate the GENERATED half these return on top —
 # nothing here alters the curated path.
+
+
+def _passport_responses(records, session) -> list[StrategyResponse]:
+    """Map passport rows to responses, bulk-loading their persisted returns once.
+
+    #1184 made ``_passport_to_strategy_response`` consult each row's persisted
+    daily-return series so a zero-variance one reports ``degenerate`` instead of
+    ``pending``. This routes that through ``get_all_daily_returns`` — the same DB
+    boundary ``live_rigor_gate`` and the selection-bias route already read
+    through, and the one the suite mocks — then hands each row its own slice.
+
+    **Cost, stated honestly:** ``get_all_daily_returns`` is a Python loop over
+    ``get_daily_returns``, so this is N indexed single-row reads, not one batched
+    query. It is the same query count reading per row would cost; the helper buys
+    a single mocking boundary and one failure decision, not a batching win. Each
+    read deserializes that strategy's whole ``artifact_json`` blob, so the real
+    cost scales with the generated corpus, and ``list_passports`` has no LIMIT.
+    Making the degenerate answer cheap needs it persisted at write time rather
+    than re-derived on read — tracked separately; do not paper over it here by
+    skipping rows, because which rows you skip is exactly the claim at stake.
+    """
+    if not records:
+        return []
+    try:
+        from archimedes.services.backtest_repository import get_all_daily_returns
+
+        returns_by_id = get_all_daily_returns(session, [r.id for r in records]) or {}
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "cohort persisted-returns read failed (%s) — falling back to a per-row read",
+            type(exc).__name__,
+        )
+        # A failed statement aborts the surrounding Postgres transaction, so
+        # every later read in this request would raise InFailedSqlTransaction.
+        # sqlite tolerates it, which is why no test can see this.
+        _rollback_quietly(session)
+        # NOT ``{}``: an empty map would hand every row [] — "the read found no
+        # series" — when the truth is "we do not know". That collapse is what
+        # sends a flat series back to "pending", the exact false claim #1184 is
+        # about. The sentinel makes each row decide for itself instead.
+        return [_passport_to_strategy_response(r, session) for r in records]
+    return [_passport_to_strategy_response(r, session, returns_by_id.get(r.id, [])) for r in records]
 
 
 def _generated_strategy_responses(
@@ -1861,7 +2099,7 @@ def _generated_strategy_responses(
     if not records:
         return []
     visible = _visible_passports(session, records, caller, caller_user_id)
-    return [_passport_to_strategy_response(r, session) for r in visible]
+    return _passport_responses(visible, session)
 
 
 def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
@@ -1895,7 +2133,7 @@ def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
         )
     }
     visible = [r for r in records if r.id in published_ids]
-    return [_passport_to_strategy_response(r, session) for r in visible]
+    return _passport_responses(visible, session)
 
 
 def _owned_generated_strategy_responses(
@@ -1937,7 +2175,7 @@ def _owned_generated_strategy_responses(
         }
         if is_strategy_visible(row_view, caller_wallet, caller_user_id=caller_user_id):
             owned.append(r)
-    return [_passport_to_strategy_response(r, session) for r in owned]
+    return _passport_responses(owned, session)
 
 
 @strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
@@ -2166,12 +2404,28 @@ async def generate_strategy(
     Direct-fusion path only — the ``mode=fast`` (interactive Strategy
     Architect) branch was removed in #1064; the debate society
     (``POST /api/generate/start``) is the sole interactive generation path.
+
+    This is a second live, SIWE-gated, LLM-spending generation endpoint
+    (docs/sprint/cluster-4-strategies-route.md § "the unmetered budget hole") —
+    it shares the SAME per-account/per-IP daily caps ``/api/generate/start``
+    enforces (``services/generation_quota.py``), via the identical call this
+    module's sibling route makes: same function, same Redis key format
+    (``archimedes:genquota:{scope}:{day}:{identity}``, keyed on ``user.id`` /
+    client IP — never on which endpoint was hit), so a caller cannot double
+    their daily allowance by alternating between the two routes. Runs FIRST,
+    before the fusion-enabled/corpus checks below, matching the primary
+    path's "cheapest anti-abuse check before any other work" ordering.
+    Disabled under TESTING (conftest sets it), matching ``/api/generate/start``.
     """
     from fastapi import HTTPException
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.models.portfolio import RiskProfile
+    from archimedes.services.generation_quota import enforce_generation_quota
     from archimedes.services.job_queue import JobStore
+
+    if not os.getenv("TESTING"):
+        await enforce_generation_quota(request, user.id)
 
     if not fusion_enabled():
         raise HTTPException(

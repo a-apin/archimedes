@@ -1,0 +1,24 @@
+{
+  "_comment": "Decoded PAYMENT-REQUIRED header from a REAL backend call — not hand-authored. Generated 2026-08-20 by running, from the repo root in the archimedes conda env: python -c with GENERATION_PAYMENT_RECIPIENT=0xffa7abba5f17cb8471ebf150bf808bd6fb8856c1 set, then get_gateway_middleware(...).require(\"2.00\", \"/api/generate/start\") from backend/archimedes/marketplace/payments.py (circlekit's create_gateway_middleware underneath), base64-decoding the returned headers['PAYMENT-REQUIRED']. This is the drift guard for ui/src/generateQuote.js's parser — if circlekit's wire shape ever changes, regenerate this fixture, don't hand-edit it to match the parser.",
+  "x402Version": 2,
+  "resource": {
+    "url": "/api/generate/start",
+    "description": "Archimedes copy-trading tick charge",
+    "mimeType": "application/json"
+  },
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "eip155:5042002",
+      "asset": "0x3600000000000000000000000000000000000000",
+      "amount": "2000000",
+      "payTo": "0xffa7abba5f17cb8471ebf150bf808bd6fb8856c1",
+      "maxTimeoutSeconds": 345600,
+      "extra": {
+        "name": "GatewayWalletBatched",
+        "version": "1",
+        "verifyingContract": "0x0077777d7EBA4688BDeF3E311b846F25870A19B9"
+      }
+    }
+  ]
+}

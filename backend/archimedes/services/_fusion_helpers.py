@@ -264,9 +264,31 @@ def _build_analyzers():
     class _EquityCurve(bt.Analyzer):
         def start(self):
             self._values: list[float] = []
+            # First/last bar dates of the feed actually consumed by this run.
+            # Captured here rather than passed in: the caller's notion of the
+            # requested window and the bars backtrader really iterated can
+            # differ (short feeds, warmup trimming), and the persisted row has
+            # to describe the run that happened. See fusion_evaluator's
+            # backtest_start/backtest_end stamping.
+            self._first_date = None
+            self._last_date = None
 
         def next(self):
             self._values.append(float(self.strategy.broker.getvalue()))
+            bar_date = self._current_bar_date()
+            if bar_date is not None:
+                if self._first_date is None:
+                    self._first_date = bar_date
+                self._last_date = bar_date
+
+        def _current_bar_date(self):
+            try:
+                return self.strategy.datas[0].datetime.date(0)
+            except (AttributeError, IndexError, ValueError, TypeError):
+                # A feed without a usable datetime line yields no date rather
+                # than aborting the run; the caller then persists None, which
+                # is the honest answer.
+                return None
 
         def stop(self):
             # Capture the final value once after the last bar so the curve
@@ -276,7 +298,11 @@ def _build_analyzers():
                 self._values.append(final)
 
         def get_analysis(self):
-            return {"values": list(self._values)}
+            return {
+                "values": list(self._values),
+                "first_bar_date": self._first_date,
+                "last_bar_date": self._last_date,
+            }
 
     class _TradeStats(bt.Analyzer):
         """Trade-level stats: total trades, win rate, average holding period."""

@@ -14,12 +14,17 @@ neither docstring has to disambiguate the other's meaning inline.
 
 Honesty note (mirrors docs/agent-api.md): READ — including the rigor readback
 ``GET /api/strategies/{strategy_id}``, which is a PUBLIC read like its siblings — plus
-AUTH, WALLETLINK, GENERATE, ACCOUNT, RIGOR, and PAPER (simulated deployments, no chain,
-no funds) are live today.
-DEPLOY, and the marketplace PUBLISH/SUBSCRIBE + MONITOR endpoints that depend on a
-deployed vault, are real routes but not yet wired for agent-driven end-to-end use --
-they land with the T3.2 contract redeploy (issue #588). Never advertise these as
-complete; the ``status`` field on each group says so explicitly.
+AUTH, WALLETLINK, GENERATE, ACCOUNT, RIGOR, PAPER (simulated deployments, no chain,
+no funds), DEPLOY, and the marketplace PUBLISH/SUBSCRIBE + MONITOR endpoints are all
+live today. The T3.2 contract redeploy (issue #588, closed 2026-07-14) landed 289
+contracts on Arc testnet on 2026-07-09: DEPLOY calls the real, deployed VaultFactory
+(``chain_executor.create_vault``), MONITOR reads a real vault's on-chain health, and
+marketplace PUBLISH/SUBSCRIBE provision real vaults + Circle wallets against those same
+contracts — the same "session + linked wallet" gating as every other live group here,
+with no remaining code-level gate that singles them out as not-yet-wired. This manifest
+makes no claim about marketplace payment/billing settlement (that is tracked
+separately and out of scope for this file — see the ``auth`` block below, which
+advertises no payment scheme).
 
 ``auth_required`` is a per-GROUP flag, so a route belongs to the group whose gating it
 actually shares — the three ``/api/wallets/*`` routes all sit behind
@@ -39,13 +44,19 @@ agent into a retry loop it cannot diagnose.
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter
 
 from archimedes.api.wallet_routes import WALLET_PROVIDERS
 
 agent_manifest_router = APIRouter(prefix="/api/agent", tags=["agent"])
 
-_PENDING_T32 = "landing with the T3.2 contract redeploy (issue #588) — endpoint exists but agent-driven use isn't wired end-to-end yet"
+# Same env var, same default, as wallet_routes._SUPPORTED_CHAIN_ID and
+# auth_siwe._EXPECTED_CHAIN_ID — sourced here rather than a separately
+# hardcoded literal so the manifest's advertised chain can never drift from
+# the value the rest of the backend actually enforces.
+_CHAIN_ID = int(os.getenv("ARC_CHAIN_ID", "5042002"))
 
 
 @agent_manifest_router.get("/manifest")
@@ -83,7 +94,7 @@ async def get_agent_manifest():
             # wallet software an API caller does not have.
             "wallet_link_providers": list(WALLET_PROVIDERS),
             "wallet_link_provider_default_for_agents": "headless",
-            "chain_id": 5042002,
+            "chain_id": _CHAIN_ID,
         },
         "endpoints": {
             "read": {
@@ -152,17 +163,27 @@ async def get_agent_manifest():
             # checks over a bare returns series the caller submits. Only DSR and
             # walk-forward OOS are evaluable from a bare series — PBO and the
             # look-ahead audit report `not_evaluable`, never a silent pass.
+            # #1481: `passes` is a quorum over the two RUNNABLE legs, so an agent
+            # reading the scalar alone cannot mistake it for the passport gate.
             "rigor": {
                 "status": "live",
                 "auth_required": True,
+                "verdict_note": (
+                    "`passes` requires BOTH runnable legs (DSR, OOS consistency) to have run "
+                    "and passed. PBO and look-ahead can never run on a bare returns series, so "
+                    "the verdict is capped: it is NOT equivalent to the strategy passport gate. "
+                    "The response carries legs_evaluated / legs_runnable / legs_total / "
+                    "verdict_capped so the scalar is qualifiable without re-deriving leg statuses."
+                ),
                 "routes": {
                     "verify": "POST /api/rigor/verify",
                 },
             },
-            # Paper trading is the one deployment path that is live TODAY — it is
-            # simulated, so it does not wait on the T3.2 contract redeploy the way
-            # the `deploy` group below does. An agent that wants an end-to-end
-            # journey now ends it here, not at POST /api/vaults/create.
+            # Paper trading is simulated (no chain, no funds) and was the first
+            # deployment path to go live. `deploy` below is now ALSO live
+            # (post-T3.2, #588 closed) for a real, non-custodial on-chain vault —
+            # an agent choosing between the two trades simulation-only for
+            # real capital at risk, not "works" vs "doesn't work".
             "paper": {
                 "status": "live",
                 "auth_required": True,
@@ -173,23 +194,36 @@ async def get_agent_manifest():
                     "stop": "POST /api/paper/deployments/{deployment_id}/stop",
                 },
             },
+            # Live post-T3.2 (#588 closed 2026-07-14; 289 contracts landed on Arc
+            # testnet 2026-07-09). create_vault calls the real, deployed
+            # VaultFactory and transfers Ownable ownership to the caller's linked
+            # wallet (non-custodial) — same gating (session + linked wallet) as
+            # every other authenticated group above, no remaining feature gate.
             "deploy": {
-                "status": _PENDING_T32,
+                "status": "live",
                 "auth_required": True,
                 "routes": {
                     "create_vault": "POST /api/vaults/create",
                 },
             },
+            # Live post-T3.2, same as `deploy` above: publish/subscribe are wired
+            # to the redeployed contracts (real vault creation, real Circle
+            # dev-controlled subscriber wallets, on-chain fee-cap enforcement).
+            # This status is about the ROUTES, not about billing: whether a
+            # subscription's recurring USDC charge settles for real is a
+            # separate, still-open concern (PAYMENTS_DRY_RUN) tracked outside
+            # this file — this manifest advertises no payment scheme either way.
             "marketplace": {
-                "status": _PENDING_T32,
+                "status": "live",
                 "auth_required": True,
                 "routes": {
                     "publish": "POST /api/marketplace/publish",
                     "subscribe": "POST /api/marketplace/subscribe",
                 },
             },
+            # Live post-T3.2: reads a real vault's on-chain health once one exists.
             "monitor": {
-                "status": _PENDING_T32,
+                "status": "live",
                 "auth_required": False,
                 "routes": {
                     "vault_health": "GET /api/vaults/{address}/health",

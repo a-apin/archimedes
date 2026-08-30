@@ -23,6 +23,52 @@ logger = logging.getLogger(__name__)
 traces_router = APIRouter(prefix="/api/traces", tags=["traces"])
 
 
+#: The trace as the on-chain registry ALONE can describe it. Same word as
+#: ``TraceVerifyResponse.verification_mode`` uses for this state (#1359).
+ANCHORED_ONLY = "anchored_only"
+
+
+def _anchored_only_trace(trace_id: str, detail: dict) -> TraceResponse:
+    """Project a registry entry with no off-chain body behind it (#1407).
+
+    Both display routes fall back to this when the off-chain store has no
+    record — or is unreachable, which this path deliberately does not
+    distinguish, because from here the two are the same fact: **nothing was
+    compared.**
+
+    What is genuinely known is that an anchor exists at this id; we just read
+    it out of the registry. That is why ``is_verified`` stays true, and why
+    flipping it false would be a different fabrication rather than a fix:
+    ``Portfolio.jsx`` renders the false branch as "anchor pending — registry
+    write didn't complete yet", which would be an invented denial of the one
+    thing this path is certain about.
+
+    What was never true is the implication that a hash was *compared*. Nothing
+    on this path re-derives or matches anything, so ``verification_mode`` says
+    ``anchored_only`` and ``arc_tx_hash`` stays ``None`` — the registry read
+    does not surface the anchoring transaction, and an absent reference must
+    render as absent rather than be invented.
+    """
+    from datetime import datetime
+
+    return TraceResponse(
+        id=trace_id,
+        vault_address=detail["vault"],
+        # "unknown", not "rebalance" (#1356): the on-chain anchor does not
+        # record which decision type produced it, so asserting "rebalance" for
+        # every trace on this path is an invented fact. "unknown" is the same
+        # default the off-chain path already uses when its data lacks the field.
+        decision_type="unknown",
+        trigger="on-chain",
+        timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
+        reasoning="On-chain trace (off-chain metadata not available)",
+        confidence=0.0,
+        trace_hash=detail["trace_hash"],
+        is_verified=True,
+        verification_mode=ANCHORED_ONLY,
+    )
+
+
 @traces_router.get("/", response_model=TraceListResponse)
 async def list_traces(
     vault_address: str | None = None,
@@ -81,6 +127,14 @@ async def list_traces(
         from archimedes.chain.trace_publisher import trace_publisher
 
         traces: list[TraceResponse] = []
+        # Real registry size (#1356): read once up front so it survives even
+        # if a later per-trace fetch in the loop fails partway through. The
+        # old code returned `total=len(traces)` here, which is the CURRENT
+        # PAGE size (capped at `limit`), not the registry size — pagination
+        # reported a smaller universe than actually exists. `total_count` is
+        # the value this route promises callers via `start`/`end` below; it
+        # must be the same value in the response.
+        total_count = 0
         try:
             total_count = await trace_publisher.get_total_trace_count()
             start = max(1, total_count - offset - limit + 1)
@@ -94,25 +148,11 @@ async def list_traces(
                 if vault_address and detail["vault"].lower() != vault_address.lower():
                     continue
 
-                from datetime import datetime
-
-                traces.append(
-                    TraceResponse(
-                        id=str(trace_id),
-                        vault_address=detail["vault"],
-                        decision_type="rebalance",
-                        trigger="on-chain",
-                        timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
-                        reasoning="On-chain trace (off-chain metadata not available)",
-                        confidence=0.0,
-                        trace_hash=detail["trace_hash"],
-                        is_verified=True,
-                    )
-                )
+                traces.append(_anchored_only_trace(str(trace_id), detail))
         except Exception:
             logger.debug("on-chain trace listing failed", exc_info=True)
 
-        return TraceListResponse(traces=traces, total=len(traces))
+        return TraceListResponse(traces=traces, total=total_count)
     finally:
         await state.close()
 
@@ -120,8 +160,6 @@ async def list_traces(
 @traces_router.get("/{trace_id}", response_model=TraceResponse)
 async def get_trace(trace_id: str):
     """Get a single reasoning trace by ID (on-chain or off-chain hash)."""
-    from datetime import datetime
-
     from fastapi import HTTPException
 
     from archimedes.chain.trace_publisher import trace_publisher
@@ -168,17 +206,7 @@ async def get_trace(trace_id: str):
         if detail is None:
             raise HTTPException(status_code=404, detail="Trace not found")
 
-        return TraceResponse(
-            id=trace_id,
-            vault_address=detail["vault"],
-            decision_type="rebalance",
-            trigger="on-chain",
-            timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
-            reasoning="On-chain trace (off-chain metadata not available)",
-            confidence=0.0,
-            trace_hash=detail["trace_hash"],
-            is_verified=True,
-        )
+        return _anchored_only_trace(trace_id, detail)
     finally:
         await state.close()
 
@@ -297,11 +325,19 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
         try:
             off_chain = await state.get_trace(trace_id)
         except Exception:
-            logger.warning(
-                "verify_trace: Redis unavailable — falling back to on-chain-only verification", exc_info=True
-            )
-            off_chain = None
+            # A Redis outage is a loud absence, not a verification result
+            # (CLAUDE.md § fail-soft) — mirrors get_trace_canonical's 503
+            # below. Previously this exception was swallowed and fell
+            # through to the "no off-chain data" branch, which returns
+            # is_verified=True with zero hashes compared — an outage was
+            # silently upgrading every trace to a green check (#1359).
+            logger.warning("verify_trace: Redis unavailable — cannot verify without the store", exc_info=True)
+            raise HTTPException(
+                status_code=503, detail="Trace store temporarily unavailable — retry verification."
+            ) from None
         if not off_chain:
+            # The store IS reachable and simply has no record for this id —
+            # the only case allowed to report anchored_only.
             try:
                 int_id = int(trace_id)
             except ValueError:
@@ -315,14 +351,16 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                 trace_id=int_id,
                 trace_hash=detail["trace_hash"],
                 is_verified=True,
+                verification_mode="anchored_only",
                 agent=detail["agent"],
                 vault=detail["vault"],
                 on_chain_timestamp=detail["timestamp"],
-                details="Hash is anchored on-chain (no off-chain data to recompute against)",
+                details="Hash is anchored on-chain — no off-chain trace body was stored, so no hashes were compared",
             )
 
         trace_hash = off_chain.get("trace_hash", "")
         is_verified = False
+        verification_mode = "failed"
         agent = ""
         vault = off_chain.get("vault_address", "")
         on_chain_ts = 0
@@ -345,6 +383,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                     on_chain = detail["trace_hash"].removeprefix("0x").lower()
                     if expected and expected == on_chain:
                         is_verified = True
+                        verification_mode = "hash_matched"
                         agent = detail["agent"]
                         on_chain_ts = detail["timestamp"]
                         # Keep vault as recorded off-chain; surface the on-chain
@@ -361,6 +400,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
             trace_id=int(trace_id) if trace_id.isdigit() else 0,
             trace_hash=trace_hash,
             is_verified=is_verified,
+            verification_mode=verification_mode,
             agent=agent,
             vault=vault,
             on_chain_timestamp=on_chain_ts,

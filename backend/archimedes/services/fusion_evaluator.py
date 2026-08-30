@@ -54,6 +54,16 @@ _PBO_S_PARTITIONS = 16
 # ── Result types ──────────────────────────────────────────────────────
 
 
+# Engine / construction labels stamped on every row this module produces (A8).
+# `backtest_engine` is an existing persisted column, so distinguishing the two
+# runners here is what surfaces the sleeve limitation on the passport without a
+# schema change.
+ENGINE_SINGLE_FEED = "dsl-fusion"
+ENGINE_SLEEVES = "dsl-fusion-sleeves"
+CONSTRUCTION_SINGLE_ASSET = "single_asset"
+CONSTRUCTION_SLEEVES = "n_independent_sleeves_equal_weight"
+
+
 @dataclass(frozen=True)
 class BacktestMetrics:
     """Metrics from a DSL-interpreted strategy backtest."""
@@ -74,6 +84,16 @@ class BacktestMetrics:
     # means random.gauss noise (dev/test only); "csv:<name>" / "provided" mean
     # real OHLCV. Rigor metrics from a "synthetic" run are NOT admissible.
     data_source: str = "synthetic"
+    # WHICH runner produced these numbers, and how it combined assets (A8).
+    # `run_dsl_backtest_portfolio` runs the same single-asset spec once per
+    # asset on initial_cash/N and sums the sleeves, so an "inverse-vol 5-asset"
+    # strategy is really five independent 100%-long single-asset backtests,
+    # equal-weighted — there is no cross-sectional allocation step and no
+    # rebalance between sleeves. Stamping it is what makes that a disclosed
+    # limitation instead of a silent one; the multi-feed interpreter that would
+    # remove the limitation is deliberately out of scope.
+    backtest_engine: str = ENGINE_SINGLE_FEED
+    portfolio_construction: str = CONSTRUCTION_SINGLE_ASSET
 
 
 @dataclass(frozen=True)
@@ -138,6 +158,20 @@ class FusionEvalResult:
 
 _DEFAULT_CASH = 100_000.0
 _DEFAULT_TX_BPS = 10
+# Proportional slippage, mirroring analytics-engine's DEFAULT_COST_MODEL so
+# this engine charges the same floor as the other two (#1242 review: this
+# file's two cerebro.broker call sites were the one asymmetry the cost-SSOT
+# work didn't close — commission only, no slippage leg). Mirrored rather than
+# imported because backend does not hard-depend on analytics-engine being
+# installed (same reason portfolio_backtester.DEFAULT_SLIPPAGE_BPS is
+# mirrored, not imported). Drift is prevented by test_cost_parity.py.
+DEFAULT_SLIPPAGE_BPS = 5
+# Fingerprint for the fixed cost basis every fusion/DSL backtest is charged —
+# tx_cost_bps and slippage_bps are never overridden by a caller on this path
+# today (evaluate_fusion_spec accepts neither), so this is a constant rather
+# than computed per-call. Format matches
+# analytics_engine.costs.cost_model_fingerprint (no per-symbol overrides here).
+DEFAULT_COST_MODEL_ID = f"cm1:d{_DEFAULT_TX_BPS:g}:s{DEFAULT_SLIPPAGE_BPS:g}"
 
 # The only price-data provenance that is NOT admissible for Tier-1 rigor
 # certification. Everything else (real CSV, an explicitly provided feed) is
@@ -179,6 +213,7 @@ def run_dsl_backtest(
     data_csv_path: str | Path | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
+    slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
 ) -> BacktestMetrics:
     """Run a backtest for a DSL-interpreted strategy.
 
@@ -213,6 +248,8 @@ def run_dsl_backtest(
     cerebro.adddata(data_feed)
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(commission=tx_cost_bps / 10_000)
+    if slippage_bps > 0:
+        cerebro.broker.set_slippage_perc(perc=slippage_bps / 10_000)
 
     # Per-bar equity capture + trade tracking via custom analyzers. Without
     # these, _extract_equity_curve falls back to fake linear interpolation
@@ -226,9 +263,17 @@ def run_dsl_backtest(
 
     strat = results[0] if results else None
     equity_curve: list[float]
+    bar_start: date | None = None
+    bar_end: date | None = None
     if strat is not None:
         ec = strat.analyzers.equity_curve.get_analysis()
         equity_curve = list(ec.get("values", [])) or [initial_cash]
+        # Real first/last bar of the feed this run actually consumed. Was a
+        # pair of sentinels keyed on a variable reassigned above, so the
+        # condition was dead and every DSL row persisted a null (or, on the
+        # variant path, a fabricated 2004-01-02) window.
+        bar_start = ec.get("first_bar_date")
+        bar_end = ec.get("last_bar_date")
     else:
         equity_curve = [initial_cash]
 
@@ -274,8 +319,8 @@ def run_dsl_backtest(
         ),
         equity_curve=[round(e, 2) for e in equity_curve],
         monthly_returns=[round(m, 4) for m in monthly_returns],
-        backtest_start=date(2004, 1, 2) if data_feed is None else None,
-        backtest_end=date(2026, 4, 30) if data_feed is None else None,
+        backtest_start=bar_start,
+        backtest_end=bar_end,
         data_source=data_source,
     )
 
@@ -289,6 +334,7 @@ def run_dsl_backtest_variants(
     data_csv_path: str | Path | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
+    slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
 ) -> dict[str, BacktestMetrics]:
     """Run backtests for each cartesian-product point in the parameter grid.
 
@@ -311,6 +357,7 @@ def run_dsl_backtest_variants(
             data_csv_path=data_csv_path,
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
+            slippage_bps=slippage_bps,
         )
         return {"base": metrics}
 
@@ -339,6 +386,7 @@ def run_dsl_backtest_variants(
             data_csv_path=data_csv_path,
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
+            slippage_bps=slippage_bps,
         )
         results[variant_id] = variant_metrics
 
@@ -354,6 +402,7 @@ def _run_variant_backtest(
     data_csv_path: str | Path | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
+    slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
 ) -> BacktestMetrics:
     """Run a single variant backtest given an already-interpreted strategy class."""
     import backtrader as bt
@@ -370,6 +419,8 @@ def _run_variant_backtest(
     cerebro.adddata(data_feed)
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(commission=tx_cost_bps / 10_000)
+    if slippage_bps > 0:
+        cerebro.broker.set_slippage_perc(perc=slippage_bps / 10_000)
 
     cerebro.addanalyzer(_EquityCurveAnalyzer, _name="equity_curve")
     cerebro.addanalyzer(_TradeStatsAnalyzer, _name="trade_stats")
@@ -380,9 +431,17 @@ def _run_variant_backtest(
 
     strat = results[0] if results else None
     equity_curve: list[float]
+    bar_start: date | None = None
+    bar_end: date | None = None
     if strat is not None:
         ec = strat.analyzers.equity_curve.get_analysis()
         equity_curve = list(ec.get("values", [])) or [initial_cash]
+        # Real first/last bar of the feed this run actually consumed. Was a
+        # pair of sentinels keyed on a variable reassigned above, so the
+        # condition was dead and every DSL row persisted a null (or, on the
+        # variant path, a fabricated 2004-01-02) window.
+        bar_start = ec.get("first_bar_date")
+        bar_end = ec.get("last_bar_date")
     else:
         equity_curve = [initial_cash]
 
@@ -427,8 +486,8 @@ def _run_variant_backtest(
         ),
         equity_curve=[round(e, 2) for e in equity_curve],
         monthly_returns=[round(m, 4) for m in monthly_returns],
-        backtest_start=date(2004, 1, 2) if data_csv_path is None else None,
-        backtest_end=date(2026, 4, 30) if data_csv_path is None else None,
+        backtest_start=bar_start,
+        backtest_end=bar_end,
         data_source=data_source,
     )
 
@@ -502,6 +561,8 @@ def _aggregate_portfolio_metrics(
         backtest_start=backtest_start,
         backtest_end=backtest_end,
         data_source=label,
+        backtest_engine=ENGINE_SLEEVES,
+        portfolio_construction=CONSTRUCTION_SLEEVES,
     )
 
 
@@ -514,6 +575,7 @@ def run_dsl_backtest_portfolio(
     backtest_end: date | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
+    slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
 ) -> BacktestMetrics:
     """Backtest a DSL spec per asset over real feeds and aggregate the sleeves."""
     per_asset: dict[str, BacktestMetrics] = {}
@@ -525,6 +587,7 @@ def run_dsl_backtest_portfolio(
             data_source_label=label,
             initial_cash=sleeve_cash,
             tx_cost_bps=tx_cost_bps,
+            slippage_bps=slippage_bps,
         )
     return _aggregate_portfolio_metrics(
         per_asset, label=label, backtest_start=backtest_start, backtest_end=backtest_end
@@ -540,6 +603,7 @@ def run_dsl_backtest_portfolio_variants(
     backtest_end: date | None = None,
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
+    slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
 ) -> dict[str, BacktestMetrics]:
     """Variant grid over real multi-asset feeds — one aggregated portfolio per combo."""
     if spec.parameter_variants is None or not spec.parameter_variants:
@@ -552,6 +616,7 @@ def run_dsl_backtest_portfolio_variants(
                 backtest_end=backtest_end,
                 initial_cash=initial_cash,
                 tx_cost_bps=tx_cost_bps,
+                slippage_bps=slippage_bps,
             )
         }
 
@@ -573,6 +638,7 @@ def run_dsl_backtest_portfolio_variants(
                 data_source_label=label,
                 initial_cash=sleeve_cash,
                 tx_cost_bps=tx_cost_bps,
+                slippage_bps=slippage_bps,
             )
             for sym, factory in feed_factories.items()
         }
