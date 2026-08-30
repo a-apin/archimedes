@@ -117,12 +117,21 @@ def client(tmp_path, monkeypatch):
 # constructed at module-init from .env; under the hermetic gate there is no
 # .env, so this namespace substitutes the exact fields the route layer reads.
 #
-# Why a SEPARATE fixture (not baked into `client`): the bare `client` fixture
-# leaves `chain_client.settings` as an auto-MagicMock, which some pre-existing
-# tests rely on (e.g. the advisor optimizer fails fast against the mock and
-# falls back to a budget-normalized allocation). Installing a real settings
-# object only for the routes that need it keeps every other test's behavior
-# exactly as it was on main.
+# It is opted into through the `chain_settings_client` fixture below, whose
+# surviving consumers are the Tier-B route tests that read these addresses at
+# request time: TestConfigRoutes::test_contracts /
+# test_contracts_serves_both_chain_blocks /
+# test_contracts_does_not_swap_the_two_chain_blocks,
+# TestAssetRoutes::test_list_assets, and TestSwapRoutes::test_swap_quote_*.
+#
+# Why a SEPARATE fixture (not baked into `client`): scope containment. The bare
+# `client` fixture leaves `chain_client.settings` as an auto-MagicMock, and
+# installing a real namespace only where it is needed keeps that blast radius
+# to the tests above. Note this is now a conservative choice, not a load-bearing
+# one — the test that used to depend on the auto-MagicMock (the advisor
+# optimizer failing fast against it) was deleted with the advisor route, and
+# folding this fixture's setup into `client` was measured to break nothing in
+# this file. Keep the split unless something else forces the merge.
 _SETTINGS_NAMESPACE = SimpleNamespace(
     usdc_address="0x3600000000000000000000000000000000000000",
     synthetic_factory_address="",
