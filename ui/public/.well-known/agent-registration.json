@@ -25,7 +25,7 @@
       "endpoint": "https://github.com/a-apin/archimedes/blob/main/docs/agent-quickstart.md"
     }
   ],
-  "x402Support": false,
+  "x402Support": true,
   "active": true,
   "registrations": [],
   "supportedTrust": [],
@@ -41,7 +41,7 @@
   "_note": {
     "registrations": "EMPTY ON PURPOSE. ERC-8004 requires each entry to carry the agentId minted by the registry; no register() transaction has been sent for this agent, so there is no id to carry and an entry here would be a fabricated on-chain claim. scripts/register_erc8004_identity.py --plan prints the exact entry to add once a real Registered(agentId, agentURI, owner) event exists.",
     "supportedTrust": "EMPTY ON PURPOSE. This agent claims no reputation, crypto-economic, or TEE-attestation trust model. Its verifiable claim is narrower and lives off this standard: every strategy carries a rigor verdict (DSR / PBO / walk-forward OOS / look-ahead) that GET /api/strategies/{strategy_id} returns as pass, fail, pending, or degenerate — and that fails honestly. See docs/rigor-methods.md.",
-    "x402Support": "false is the conservative claim, not an assertion that no paywall exists. POST /api/generate/start does implement an x402 / Circle Gateway paywall (402 + PAYMENT-REQUIRED header), but it is deploy-flag gated (GENERATION_PAYMENT_REQUIRED) and settlement is separately gated by PAYMENTS_DRY_RUN, which defaults on — so no x402 payment is guaranteed to settle. The runtime truth is public: GET /api/generate/quote returns payment_required.",
+    "x402Support": "TRUE, and read off the runtime rather than off the code. GET /api/generate/quote is the authority and is public: on the deployment that serves this file (https://archimedes-arc.com) it answers payment_required: true, dry_run: false, price \"$2.000000\", asset USDC, chain arcTestnet, recipient 0xffa7abba5f17cb8471ebf150bf808bd6fb8856c1 (read 2026-08-30). So POST /api/generate/start really charges: no Payment-Signature header returns 402 with the x402 requirements in the PAYMENT-REQUIRED header, the caller signs them (x402 / Circle Gateway) and retries, and the settlement is real — not simulated. Two things this flag does NOT say. (1) It is not the code default: GENERATION_PAYMENT_REQUIRED is off unless a deploy sets it and PAYMENTS_DRY_RUN defaults on, so a local checkout of this repo is free while this deployment is not — this file describes the deployment serving it, and a consumer should re-read the quote against whatever host it is actually calling. (2) It covers the GENERATION paywall only, which is the rail that quote reports; marketplace subscription settlement rides a separate switch (GENERATION_PAYMENTS_DRY_RUN was split from PAYMENTS_DRY_RUN for exactly this reason) and nothing here asserts its state.",
     "active": "Describes the SERVICE — the endpoints above are live and serving. It says nothing about a registration, which has not happened.",
     "domainOwnership": "This file is served from https://archimedes-arc.com, which is also the endpoint-domain of every service listed above, so it doubles as the EIP's optional domain-control proof for that host. agent-registration.domain.json beside it is the minimal variant to publish at any OTHER endpoint-domain this agent is served from."
   }

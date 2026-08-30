@@ -84,7 +84,7 @@
         "stream": "GET /api/generate/stream/{job_id}",
         "candidates": "GET /api/generate/jobs/{job_id}/candidates"
       },
-      "note": "quote is public — price the run before holding a session."
+      "note": "quote is public — price the run before holding a session, and it is the authority on whether the run costs money. On the deployment that serves this card it answers payment_required: true, dry_run: false, price \"$2.000000\" USDC (read 2026-08-30): start really charges. Unlinked wallet → 409 wallet_link_required; linked but no Payment-Signature → 402 carrying the x402 requirements in the PAYMENT-REQUIRED header, which you sign (x402 / Circle Gateway) and retry. The code DEFAULTS are the opposite (GENERATION_PAYMENT_REQUIRED off, PAYMENTS_DRY_RUN on), so read the quote against the host you are calling rather than assuming either state."
     },
     "account": {
       "status": "live",
@@ -128,7 +128,7 @@
         "publish": "POST /api/marketplace/publish",
         "subscribe": "POST /api/marketplace/subscribe"
       },
-      "note": "live describes the routes: publish/subscribe are wired to the redeployed contracts. It does not assert that a subscription's recurring USDC charge settles for real \u2014 that is gated separately by PAYMENTS_DRY_RUN, and this manifest advertises no payment scheme."
+      "note": "live describes the routes: publish/subscribe are wired to the redeployed contracts. It does not assert that a subscription's recurring USDC charge settles for real \u2014 that rides PAYMENTS_DRY_RUN, a DIFFERENT switch from the one the generation paywall reports (GENERATION_PAYMENTS_DRY_RUN was split off precisely so the generation rail could go live without un-drying marketplace settlement). No public endpoint publishes the marketplace switch's runtime value, so this card makes no claim about it \u2014 unlike endpoints.generate, whose price is quotable and real."
     },
     "monitor": {
       "status": "live",

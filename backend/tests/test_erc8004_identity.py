@@ -187,6 +187,100 @@ def test_supported_trust_claims_nothing_this_agent_has_not_earned():
     )
 
 
+# ── the x402 payment claim ───────────────────────────────────────────────────
+#
+# ``x402Support`` shipped as ``false`` while the deployment serving this file was charging
+# $2.00 a generation for real and settling it. The field is a bool, so the shape assertion
+# above waved either value through — nothing connected the claim to the runtime it
+# describes. That is the #1448 drift shape one level down: not two documents disagreeing
+# with each other, but every document agreeing with the *source defaults* instead of with
+# the deployment.
+#
+# The runtime reading itself cannot be pinned from inside the repo — tests are hermetic and
+# a deployed flag is not in the tree — so ``X402_PRICE`` is the deliberate seam: re-reading
+# ``GET /api/generate/quote`` and editing one literal is the act. What IS checkable, and is
+# what these guards enforce, is that no surface prices generation differently from the
+# others, and that ``true`` is backed by prose citing the endpoint it was read from.
+
+QUICKSTART = REPO_ROOT / "docs" / "agent-quickstart.md"
+
+# What https://archimedes-arc.com/api/generate/quote answered on 2026-08-30. Deliberately
+# NOT imported from ``generation_payment.DEFAULT_PRICE_USD``: the default and the
+# deployment agree on the price today and disagree on the flags, and it is the deployment
+# these documents describe. Binding to the default would re-create the exact bug.
+X402_PRICE = "$2.000000"
+
+# A circlekit price string, the "$X.XXXXXX" form ``generation_payment._price`` emits.
+_PRICE_RE = re.compile(r"\$\d+\.\d{6}")
+
+
+def _priced_surfaces() -> dict[str, str]:
+    """Every committed surface that tells a caller what a generation costs."""
+    return {
+        "agent-registration.json → _note.x402Support": _json(REGISTRATION_FILE)["_note"]["x402Support"],
+        "agent.json → endpoints.generate.note": _json(AGENT_CARD)["endpoints"]["generate"]["note"],
+        "docs/agent-quickstart.md": QUICKSTART.read_text(encoding="utf-8"),
+    }
+
+
+def test_every_surface_that_prices_generation_quotes_the_same_price():
+    """One price, stated in three places. A fix that moves one of them is the defect."""
+    for name, text in _priced_surfaces().items():
+        found = set(_PRICE_RE.findall(text))
+        assert found, f"{name} no longer states a price at all — it is what a caller budgets against"
+        assert found == {X402_PRICE}, (
+            f"{name} prices generation at {sorted(found)}, but the recorded quote is "
+            f"{X402_PRICE}. Re-read GET /api/generate/quote and move ALL of "
+            f"{sorted(_priced_surfaces())} plus X402_PRICE together, or one surface sends "
+            "a caller to sign the wrong amount."
+        )
+
+
+def test_the_price_reader_actually_rejects_a_divergent_price():
+    """Guard on the guard: a reader that matched nothing would pass vacuously.
+
+    The failing input is the realistic one — a single surface edited to a new price while
+    the others keep the old one, which is how the last drift happened.
+    """
+    assert _PRICE_RE.findall(f'"price": "{X402_PRICE}"') == [X402_PRICE]
+    assert set(_PRICE_RE.findall('"price": "$0.150000"')) != {X402_PRICE}
+    # Prose prices ("$2.00 testnet USDC") are not the machine-readable form and must not
+    # be mistaken for a divergent quote.
+    assert _PRICE_RE.findall("charges $2.00 testnet USDC per run") == []
+
+
+def test_x402_support_true_is_backed_by_prose_citing_the_runtime_it_was_read_from():
+    """``true`` is a claim about a deployment, so it must say which reading produced it.
+
+    Written as an implication so it keeps guarding if the flag is ever turned back off:
+    ``false`` has to be equally explicit that the paywall's absence is a deploy state and
+    not a property of the code.
+    """
+    doc = _json(REGISTRATION_FILE)
+    note = doc["_note"]["x402Support"]
+
+    assert "/api/generate/quote" in note, (
+        "the x402Support note must name the endpoint the claim was read from — it is the "
+        "only thing a consumer can re-check it against."
+    )
+    assert "GENERATION_PAYMENT_REQUIRED" in note, (
+        "the note must name the deploy flag, so a reader knows the value describes this "
+        "deployment and not the repo's default."
+    )
+
+    if doc["x402Support"]:
+        for required in ("payment_required: true", "dry_run: false", X402_PRICE):
+            assert required in note, (
+                f"x402Support is true but the note never states {required!r}. "
+                "A bare true is the same unbacked claim as the bare false it replaced."
+            )
+    else:
+        assert "payment_required: true" not in note, (
+            "x402Support is false while the note quotes a live paywall — one of the two is "
+            "stale. Re-read GET /api/generate/quote and fix both together."
+        )
+
+
 # ── the honesty invariants (these survive a real registration) ───────────────
 
 
