@@ -48,6 +48,13 @@ def _arm(monkeypatch, *, dry_run: bool = False, recipient: str = RECIPIENT):
     monkeypatch.setenv("GENERATION_PAYMENT_RECIPIENT", recipient)
     monkeypatch.setenv("PAYMENTS_DRY_RUN", "true" if dry_run else "false")
     monkeypatch.delenv("GENERATION_PRICE_USD", raising=False)
+    # Hermetic: GENERATION_PAYMENTS_DRY_RUN (the 2026-08-20 split) OVERRIDES
+    # the global when set, and PAYMENTS_HALT (#1240) short-circuits the live
+    # path entirely — a developer's shell or .env carrying either would move
+    # every test in this file off the branch it means to exercise. Tests that
+    # want them set do so explicitly, after _arm.
+    monkeypatch.delenv("GENERATION_PAYMENTS_DRY_RUN", raising=False)
+    monkeypatch.delenv("PAYMENTS_HALT", raising=False)
 
 
 class TestFlagAndConfig:
@@ -280,6 +287,34 @@ class TestPaymentsHalt:
         assert gp.quote()["halted"] is False
         monkeypatch.setenv("PAYMENTS_HALT", "true")
         assert gp.quote()["halted"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_header_while_halted_is_still_the_402_quote(self, monkeypatch):
+        """Pinning a deliberate ordering choice, so it cannot drift silently.
+
+        The halt check sits AFTER the no-header 402, so a caller who presents
+        nothing still gets the quote rather than a 503. That is safe — building
+        the PAYMENT-REQUIRED header is local circlekit computation, no Circle
+        round-trip and no value moved — and the quote embedded in the body
+        carries ``halted: true``, so the response is not lying about the state.
+        The alternative (503 before quoting) is arguably friendlier UX; it is a
+        reviewer's call, not an accident, and this test is where to change it."""
+        _arm(monkeypatch, dry_run=False)
+        monkeypatch.setenv("PAYMENTS_HALT", "true")
+        with pytest.raises(Exception) as excinfo:
+            await gp.enforce_generation_payment(_request_with(None), WALLET)
+        assert excinfo.value.status_code == 402
+        assert excinfo.value.detail["quote"]["halted"] is True
+
+    @pytest.mark.asyncio
+    async def test_dry_run_wins_over_halt(self, monkeypatch):
+        """Ordering the other way round: under dry-run nothing can move, so the
+        halt branch is unreachable and the dry-run accept stands. Pinned because
+        the two switches are adjacent and swapping them would turn every
+        dry-run deploy that happens to carry PAYMENTS_HALT into a 503 outage."""
+        _arm(monkeypatch, dry_run=True)
+        monkeypatch.setenv("PAYMENTS_HALT", "true")
+        assert await gp.enforce_generation_payment(_request_with(_payment_header()), WALLET) is None
 
 
 class TestGenerationDryRunSplit:

@@ -33,6 +33,48 @@ def payments_halted() -> bool:
     Only the literal truthy strings enable it; unset/anything else is
     "not halted" (fails toward the status quo — PAYMENTS_DRY_RUN remains
     the primary, default-on safety net).
+
+    SCOPE — the switch's one rule is "no Circle call may move USDC". Keep
+    this inventory current; the tests named beside each entry fail if a
+    site loses its gate. Six fund-moving call sites are gated, each in the
+    callee so a caller cannot forget:
+
+      * ``MarketService._charge_one`` — subscriber tick fee. Suppresses the
+        charge only; the subscriber is NOT deferred and the (non-custodial)
+        trade mirror still runs. The switch stops money, not service.
+      * ``generation_payment.enforce_generation_payment`` — the metered
+        paywall REFUSES with 503 rather than comping the paid product.
+      * ``SettlementSweeper.sweep_publisher`` — per-tick Gateway withdraw →
+        gatewayMint → depositToPool.
+      * ``SettlementSweeper.withdraw_publisher`` — Withdraw button,
+        ``PaymentSplitter.withdraw``.
+      * ``SettlementSweeper.withdraw_subscriber`` — unsubscribe refund.
+      * ``services.revenue_sweep.sweep_revenue`` — platform revenue
+        Gateway → DCW tokens (both the hourly loop and the CLI).
+
+    DELIBERATELY NOT GATED, because none of them can move USDC:
+
+      * The ``generation_credits`` ledger (#1441/#1498) — ``claim``,
+        ``settle``, ``consume``, ``void``, ``restore_credit_for_job``.
+        These are DB rows recording an entitlement that a Circle settle
+        already created; every one of them runs strictly after (or instead
+        of) the paywall this switch guards. Halting them would be actively
+        harmful: ``consume`` and ``restore`` are what return an unspent
+        credit to a payer whose generation died, so freezing them would
+        withhold something already paid for — the opposite of the switch's
+        purpose. A halted request never reaches them anyway; the 503 above
+        propagates out of ``_paywall_with_credit``, whose
+        ``except BaseException: void(credit_id)`` releases the claim so the
+        Idempotency-Key is not locked out for the halt window.
+      * ``payment_receipts`` writes and ``GET /api/payments/receipts`` —
+        reads and records of money that already moved.
+      * ``check_revenue`` and every balance read — an operator mid-incident
+        needs the numbers.
+      * Vault trade execution (``chain/executor.py``) and trace publication
+        — non-custodial; the user's own funds under the user's own vault,
+        gated by ``PAPER_TRADING``, a different switch with a different
+        question.
+      * ``createPool`` and wallet provisioning — registration, no transfer.
     """
     return os.getenv("PAYMENTS_HALT", "false").strip().lower() in ("1", "true", "yes")
 
