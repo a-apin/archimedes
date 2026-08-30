@@ -134,6 +134,20 @@ Errors: 404 `job {job_id} not found or expired` (unknown, or not owned).
 curl -s -b /tmp/session.jar https://archimedes-arc.com/api/generate/jobs/<job_id>/candidates
 ```
 
+### GET /api/generate/credits
+The caller's own generation-credit ledger, newest-first (v8 Lane 1.3a) — makes
+visible what `_paywall_with_credit` already does silently: an `available`
+credit from an earlier paid-but-undelivered run pays for the NEXT generation,
+with no new charge (#1441). | **Auth**: account-session
+
+Request: none.
+Response: `[{id: int, status: "pending"|"available"|"consumed"|"void", created_at: str|null, job_id: str|null, amount_usdc: float|null}]`. Narrower than the full ledger row — `payer_wallet`/`network`/`settlement_ref` are payment-plumbing internals the UI has no use for. `amount_usdc` is `null` until the underlying claim settles (mirrors `amount_base_units`'s own nullability), never a fabricated `0.0`.
+Errors: none beyond the global 401.
+
+```bash
+curl -s -b /tmp/session.jar https://archimedes-arc.com/api/generate/credits
+```
+
 ### GET /api/payments/receipts
 The caller's own settled generation-payment receipts, newest-first (Dan's
 directive, 2026-08-21: "we must provide people with their receipts"). Written

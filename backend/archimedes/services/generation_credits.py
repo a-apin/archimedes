@@ -34,6 +34,14 @@ from archimedes.models.generation_credit import (
     void_credit,
 )
 
+# Separate statement, not folded into the block above: ruff's isort leaves
+# combine-as-imports off (ruff.toml), so an aliased name inside a multi-name
+# from-import is an I001 violation. Aliased because this module exports its
+# own `list_credits` wrapper over the model-layer one.
+from archimedes.models.generation_credit import (
+    list_credits as _list_credit_rows,
+)
+
 logger = logging.getLogger(__name__)
 
 #: USDC base units per dollar. Mirrors ``generate_routes._RECEIPT_USDC_DECIMALS``
@@ -155,6 +163,22 @@ def consume(credit_id: int, *, job_id: str) -> None:
             job_id,
             exc_info=True,
         )
+
+
+def list_credits(user_id: str) -> list[dict]:
+    """Newest-first ledger rows for *user_id* — the calling user's own
+    credits, surfaced by ``GET /api/generate/credits`` (v8 Lane 1.3a).
+
+    Quiet on failure like ``take_credit``: a broken read here must not break
+    the page that displays it, it just renders no credits — the ledger
+    itself (and what a real submit does with it) is unaffected either way.
+    """
+    try:
+        with _session() as session:
+            return _list_credit_rows(session, user_id)
+    except Exception:
+        logger.exception("generation credit list failed for user %s — returning empty", user_id)
+        return []
 
 
 def restore_for_job(job_id: str) -> bool:

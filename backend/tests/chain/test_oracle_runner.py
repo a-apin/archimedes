@@ -64,12 +64,34 @@ class TestOracleRunnerLoop:
         updater.push_prices_on_chain.assert_awaited_once()
 
     async def test_prices_fetched_but_no_push_tx(self):
-        # push returns None (owner key not configured) — must not crash.
+        # push returns None (no tx reached a terminal-success state this
+        # cycle) — must not crash.
         updater = MagicMock()
         updater.fetch_prices = AsyncMock(return_value=[_price()])
         updater.push_prices_on_chain = AsyncMock(return_value=None)
         await _run_one_cycle(updater)
         updater.push_prices_on_chain.assert_awaited_once()
+
+    async def test_no_push_tx_logs_debug_not_the_stale_owner_key_claim(self, caplog):
+        # #1525 adjudication: the old INFO line asserted "owner key not
+        # configured" — a holdover from a pre-Circle raw-key design that is
+        # almost never the actual cause (this runner has pushed exclusively
+        # via Circle Wallets since #905) and duplicated detail already logged
+        # with the real reason, at the correct severity, inside
+        # push_prices_on_chain. It is downgraded to DEBUG with accurate
+        # wording rather than asserting a specific (usually wrong) cause.
+        updater = MagicMock()
+        updater.fetch_prices = AsyncMock(return_value=[_price()])
+        updater.push_prices_on_chain = AsyncMock(return_value=None)
+        with caplog.at_level("DEBUG", logger="archimedes.chain.oracle_runner"):
+            await _run_one_cycle(updater)
+        messages = [r.getMessage() for r in caplog.records]
+        assert not any("owner key not configured" in m for m in messages)
+        assert any(
+            r.getMessage() == "Prices fetched — no tx reached a terminal-success state this cycle"
+            and r.levelname == "DEBUG"
+            for r in caplog.records
+        )
 
     async def test_no_prices_this_cycle_skips_push(self):
         updater = MagicMock()

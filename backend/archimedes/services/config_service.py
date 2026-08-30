@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import logging
 
-from archimedes.api.schemas import ContractAddressesResponse
-from archimedes.chain.client import chain_client
+from archimedes.api.schemas import ChainEndpointResponse, ContractAddressesResponse
+from archimedes.chain.client import ChainEndpoint, chain_client
 
 logger = logging.getLogger(__name__)
+
+
+def _endpoint(resolved: ChainEndpoint) -> ChainEndpointResponse:
+    """Wire shape for one resolved chain endpoint."""
+    return ChainEndpointResponse(
+        chain_id=resolved.chain_id,
+        rpc_url=resolved.rpc_url,
+        explicit=resolved.explicit,
+    )
 
 
 class ConfigService:
@@ -60,4 +69,11 @@ class ConfigService:
             vaults=vaults,
             chain_id=settings.chain_id,
             rpc_url=settings.arc_rpc_url,
+            # Both blocks are built from the resolved endpoints, never from the
+            # raw ARC_PAYMENTS_* / ARC_EXECUTION_* fields — the fallback to the
+            # single-chain settings lives in one place on ChainSettings, and
+            # re-deriving it here is how the two drift apart (#1240).
+            payments_chain=_endpoint(settings.payments_chain),
+            execution_chain=_endpoint(settings.execution_chain),
+            split_chain=settings.is_split_chain,
         )
