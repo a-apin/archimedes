@@ -28,6 +28,7 @@ from decimal import Decimal
 from archimedes.models.generation_credit import (
     claim_credit,
     consume_credit,
+    list_credits as _list_credit_rows,
     mark_credit_settled,
     restore_credit_for_job,
     take_available_credit,
@@ -155,6 +156,22 @@ def consume(credit_id: int, *, job_id: str) -> None:
             job_id,
             exc_info=True,
         )
+
+
+def list_credits(user_id: str) -> list[dict]:
+    """Newest-first ledger rows for *user_id* — the calling user's own
+    credits, surfaced by ``GET /api/generate/credits`` (v8 Lane 1.3a).
+
+    Quiet on failure like ``take_credit``: a broken read here must not break
+    the page that displays it, it just renders no credits — the ledger
+    itself (and what a real submit does with it) is unaffected either way.
+    """
+    try:
+        with _session() as session:
+            return _list_credit_rows(session, user_id)
+    except Exception:
+        logger.exception("generation credit list failed for user %s — returning empty", user_id)
+        return []
 
 
 def restore_for_job(job_id: str) -> bool:

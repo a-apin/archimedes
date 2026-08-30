@@ -170,6 +170,26 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// the response carried one (only true payments settled — live mode).
 	const [receipt, setReceipt] = useState(null);
 
+	// ── The caller's own generation-credit ledger (v8 Lane 1.3a) ──
+	// Surfaces what `_paywall_with_credit` already does silently server-side:
+	// an unspent ("available") credit from an earlier paid-but-undelivered
+	// run pays for the NEXT generation, no new charge (#1441). Fetched
+	// independently of GENERATION_QUOTE_ENABLED — a credit is a real balance
+	// regardless of whether the upfront quote card renders.
+	const [credits, setCredits] = useState([]);
+	const [creditNoticeDismissed, setCreditNoticeDismissed] = useState(false);
+
+	const fetchCredits = useCallback(() => {
+		apiGet("/api/generate/credits")
+			.then((data) => setCredits(Array.isArray(data) ? data : []))
+			.catch(() => {
+				// Quiet on failure (e.g. not signed in yet) — this is a
+				// nice-to-have notice, not a gate; nothing here may block or
+				// error the page.
+				setCredits([]);
+			});
+	}, []);
+
 	const fetchQuote = useCallback(() => {
 		if (!GENERATION_QUOTE_ENABLED) return;
 		setQuoteStatus("loading");
@@ -189,6 +209,10 @@ export default function Generate({ onNavigate, onStageChange }) {
 	useEffect(() => {
 		fetchQuote();
 	}, [fetchQuote]);
+
+	useEffect(() => {
+		fetchCredits();
+	}, [fetchCredits]);
 
 	// Wallet connect/disconnect is a global event (config.js), not React
 	// state — re-derive our copy on change so the payer-mismatch note and
@@ -225,6 +249,11 @@ export default function Generate({ onNavigate, onStageChange }) {
 			cancelled = true;
 		};
 	}, [paymentActive, quote?.payment_required]);
+
+	// The oldest still-spendable credit, if any — mirrors the ledger's own
+	// oldest-first draining (models/generation_credit.take_available_credit),
+	// though only its PRESENCE (not which one) matters for the notice.
+	const unspentCredit = useMemo(() => credits.find((c) => c.status === "available") ?? null, [credits]);
 
 	const quoteView = useMemo(() => deriveQuoteView(quote), [quote]);
 	// The price/asset/chain/dry_run to show in the payment step: the upfront
@@ -357,6 +386,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 			// Re-quote for the next generation — flat pricing has nothing to
 			// consume, but the flag/dry_run/recipient could change underneath.
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+			// A just-spent credit (or a fresh one this run settled but didn't
+			// spend) changes the ledger — refresh regardless of the quote flag.
+			fetchCredits();
 			// Stay on the page — the job table will show the new row.
 		} catch (e) {
 			const dryRun = e?.detail?.quote?.dry_run ?? quote?.dry_run;
@@ -404,6 +436,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 			resetPaymentStepState();
 			setNoSettlementNotice(!settledReceipt);
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+			fetchCredits();
 			return null;
 		} catch (e) {
 			const fresh = derivePaymentRequirements(extractPaymentRequiredHeader(e.headers));
@@ -448,6 +481,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 		resetPaymentStepState();
 		setNoSettlementNotice(!settledReceipt);
 		if (GENERATION_QUOTE_ENABLED) fetchQuote();
+		fetchCredits();
 	};
 
 	// ── One tap when funded: the signing ceremony runs FIRST, inside the
@@ -505,6 +539,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 				resetPaymentStepState();
 				setNoSettlementNotice(!settledReceipt);
 				if (GENERATION_QUOTE_ENABLED) fetchQuote();
+				fetchCredits();
 				return;
 			}
 
@@ -960,6 +995,36 @@ export default function Generate({ onNavigate, onStageChange }) {
 									)}
 								</div>
 							)}
+						</div>
+					)}
+
+					{/* ── Paid generation credit notice (v8 Lane 1.3a) ──
+					    _paywall_with_credit already spends an unspent credit
+					    silently, BEFORE the paywall even runs — this just makes
+					    that real behavior visible instead of leaving the payer
+					    to discover it only from the receipt list. */}
+					{unspentCredit && !creditNoticeDismissed && (
+						<div className="info-box mb-3 flex items-center justify-between gap-2">
+							<span>
+								You have a paid generation credit — this run will use
+								it, no new charge.
+							</span>
+							<button
+								type="button"
+								onClick={() => setCreditNoticeDismissed(true)}
+								className="caption"
+								aria-label="Dismiss credit notice"
+								style={{
+									background: "none",
+									border: "none",
+									cursor: "pointer",
+									color: "var(--text-3)",
+									padding: 0,
+									flexShrink: 0,
+								}}
+							>
+								Dismiss
+							</button>
 						</div>
 					)}
 
