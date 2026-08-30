@@ -147,6 +147,11 @@ def _generation_timeout_seconds() -> float:
     Parsed as defensively as `_max_concurrent_generations` above (and
     `revenue_sweep._min_usdc`): a missing, non-numeric, or non-positive value
     must never crash startup — it falls back to the default instead.
+
+    `GENERATION_TIMEOUT_SECONDS=inf` is the one intended escape hatch: `float`
+    accepts it, it passes the `> 0` floor, and `asyncio.wait_for` with an
+    infinite timeout never fires — restoring the old unbounded behaviour on
+    purpose (e.g. a long-running local batch) rather than by accident.
     """
     try:
         value = float(os.getenv("GENERATION_TIMEOUT_SECONDS", str(_DEFAULT_GENERATION_TIMEOUT_SECONDS)))
@@ -613,23 +618,53 @@ async def _run_with_cleanup(
                     ),
                     timeout=timeout_seconds,
                 )
-            except TimeoutError:
+            # `asyncio.TimeoutError` IS the builtin `TimeoutError` on 3.11+ (a
+            # pure alias), so UP041 is right that this is redundant — but the
+            # alias is the intent: this catches the timeout `asyncio.wait_for`
+            # raises, NOT some `TimeoutError` bubbling up out of the pipeline's
+            # own socket/HTTP layer. Spelling it `asyncio.` keeps the next
+            # reader from having to rediscover which one is meant.
+            except asyncio.TimeoutError:  # noqa: UP041
                 # wait_for cancels the still-running run_generation coroutine
-                # on timeout; its own `except asyncio.CancelledError` branch
-                # already ran and wrote status "cancelled"/"cancelled by
-                # client" — dishonest here, since nobody clicked Cancel.
-                # update_status (not update_terminal_status, which treats
-                # "cancelled" as sticky on purpose for the real-cancel race)
-                # overwrites it with the true cause. Any non-"done" terminal
-                # status still reaches `_release_credit_if_undelivered` below,
-                # so the payer's credit restores either way.
+                # on timeout and waits for it to unwind, so its own
+                # `except asyncio.CancelledError` branch has ALREADY run by the
+                # time we get here. That branch left two dishonest traces —
+                # nobody clicked Cancel:
+                #   1. status "cancelled"/"cancelled by client", and
+                #   2. an `error`/`CANCELLED` "job cancelled" event.
+                # (1) is overwritten below by update_status — not
+                # update_terminal_status, which treats "cancelled" as sticky on
+                # purpose for the real-cancel race. Any non-"done" terminal
+                # status still reaches `_release_credit_if_undelivered` in the
+                # outer finally, so the payer's credit restores either way.
+                # (2) cannot be overwritten: the event log is append-only, so
+                # the honest TIMEOUT frame is APPENDED after it. Who actually
+                # reads it: `_TERMINAL_EVENTS` makes `stream_events` return on
+                # the FIRST `error` frame, so a client connected for the whole
+                # run still closes on "job cancelled" — but a client resuming
+                # with `Last-Event-ID` past that frame gets TIMEOUT, and the
+                # log itself is the durable record of why the job really died.
                 message = f"generation exceeded the {timeout_seconds:g}-second limit"
                 logger.warning(
                     "job %s exceeded GENERATION_TIMEOUT_SECONDS=%s — marking error",
                     sanitize_log_value(job_id),
                     timeout_seconds,
                 )
+                # Status first: it is the authoritative record, and it stays
+                # honest even if the event push below fails.
                 await store.update_status(job_id, "error", error=message)
+                await store.push_event(
+                    job_id,
+                    {
+                        "event": "error",
+                        "data": {
+                            "job_id": job_id,
+                            "message": message,
+                            "recoverable": False,
+                            "code": "TIMEOUT",
+                        },
+                    },
+                )
         finally:
             gate.release()
     except asyncio.CancelledError:

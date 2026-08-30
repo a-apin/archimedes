@@ -11,7 +11,11 @@
     "cancelled by client" wording) within the configured timeout, AND that
     write is PROVEN to flow through the existing
     ``_release_credit_if_undelivered`` path — ``generation_credits.restore_for_job``
-    is actually invoked, not just assumed reachable.
+    is actually invoked, not just assumed reachable;
+  * the honest ``error``/``TIMEOUT`` event is PROVEN to reach the job's event
+    log after the pipeline's ``error``/``CANCELLED`` frame, and the full
+    status history is pinned so the last-write-wins ordering the honest status
+    depends on cannot silently reverse.
 
 Hermetic — no Redis/DB/network. Mirrors the mocked-store harness in
 test_generation_concurrency.py (``_run_with_cleanup`` driven directly, the
@@ -43,6 +47,7 @@ class _FakeStore:
         self.status: str | None = None
         self.error: str = ""
         self.history: list[tuple[str, str]] = []
+        self.events: list[dict] = []
 
     async def get(self, job_id: str) -> dict:
         return {"status": self.status, "error": self.error}
@@ -56,13 +61,40 @@ class _FakeStore:
         return True
 
     async def push_event(self, job_id: str, payload: dict) -> int:
-        return 1
+        self.events.append(payload)
+        return len(self.events)
 
 
 async def _hang_forever(*, job_id: str, **_kwargs) -> None:
     """Stands in for a `run_generation` that never returns (stuck LLM call,
-    stuck backtest thread) — the exact failure mode this guard bounds."""
-    await asyncio.Event().wait()
+    stuck backtest thread) — the exact failure mode this guard bounds.
+
+    Carries the REAL pipeline's cancel handler (generation_pipeline.py's
+    ``except asyncio.CancelledError``: emit ``error``/``CANCELLED`` "job
+    cancelled", then write status ``cancelled``/"cancelled by client", then
+    re-raise). That is not decoration — ``wait_for`` cancels this coroutine and
+    waits for it to unwind, so those two dishonest writes land BEFORE the
+    timeout branch's. A stand-in without them would let the guard pass even if
+    the fix wrote the honest status FIRST and got silently overwritten.
+    """
+    store = generate_routes.get_job_store()
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        await store.push_event(
+            job_id,
+            {
+                "event": "error",
+                "data": {
+                    "job_id": job_id,
+                    "message": "job cancelled",
+                    "recoverable": False,
+                    "code": "CANCELLED",
+                },
+            },
+        )
+        await store.update_status(job_id, "cancelled", error="cancelled by client")
+        raise
 
 
 def test_generation_timeout_env_parsing_is_defensive(monkeypatch) -> None:
@@ -76,6 +108,11 @@ def test_generation_timeout_env_parsing_is_defensive(monkeypatch) -> None:
     assert generate_routes._generation_timeout_seconds() == 600.0
     monkeypatch.setenv("GENERATION_TIMEOUT_SECONDS", "45")
     assert generate_routes._generation_timeout_seconds() == 45.0
+    # The documented escape hatch: `inf` is NOT swallowed by the defensive
+    # fallback — it survives to `wait_for`, where an infinite timeout never
+    # fires. Pinned so the fallback can never quietly start capping it at 600s.
+    monkeypatch.setenv("GENERATION_TIMEOUT_SECONDS", "inf")
+    assert generate_routes._generation_timeout_seconds() == float("inf")
 
 
 async def test_hung_run_generation_ends_job_error_and_releases_credit(monkeypatch) -> None:
@@ -104,6 +141,33 @@ async def test_hung_run_generation_ends_job_error_and_releases_credit(monkeypatc
     assert store.status == "error"
     assert "exceeded" in store.error
     assert "0.05-second limit" in store.error
+
+    # Pin the ORDER, not just the endpoint: the pipeline's cancel handler runs
+    # first (wait_for cancels it and waits), the timeout branch writes second,
+    # and last-write-wins is the only reason `status` is honest. Assert the
+    # whole history so a future change that reverses the order — or drops the
+    # overwrite — fails here instead of silently reporting every timed-out job
+    # as "cancelled by client".
+    assert store.history == [
+        ("cancelled", "cancelled by client"),
+        ("error", "generation exceeded the 0.05-second limit"),
+    ]
+
+    # The event log is append-only, so the honest frame is APPENDED after the
+    # pipeline's dishonest one rather than replacing it. Both must be present,
+    # in that order, and the new one must carry code TIMEOUT (not CANCELLED) —
+    # that code is what lets a reader tell "the user cancelled this" apart from
+    # "this blew the time bound".
+    assert [e["data"]["code"] for e in store.events] == ["CANCELLED", "TIMEOUT"]
+    assert store.events[-1] == {
+        "event": "error",
+        "data": {
+            "job_id": "job-hung",
+            "message": "generation exceeded the 0.05-second limit",
+            "recoverable": False,
+            "code": "TIMEOUT",
+        },
+    }
 
     # The EXISTING _release_credit_if_undelivered path actually ran: it reads
     # the just-written status (not "done") and calls
