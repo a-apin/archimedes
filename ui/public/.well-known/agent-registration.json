@@ -1,0 +1,48 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "Archimedes",
+  "description": "Agentic trading, grounded in research — settled on Arc. Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy, executed in a non-custodial USDC vault on the Arc testnet (chain ID 5042002).",
+  "image": "https://archimedes-arc.com/logo.svg",
+  "services": [
+    {
+      "name": "web",
+      "endpoint": "https://archimedes-arc.com"
+    },
+    {
+      "name": "api",
+      "endpoint": "https://archimedes-arc.com/api"
+    },
+    {
+      "name": "manifest",
+      "endpoint": "https://archimedes-arc.com/api/agent/manifest"
+    },
+    {
+      "name": "agentCard",
+      "endpoint": "https://archimedes-arc.com/.well-known/agent.json"
+    },
+    {
+      "name": "quickstart",
+      "endpoint": "https://github.com/a-apin/archimedes/blob/main/docs/agent-quickstart.md"
+    }
+  ],
+  "x402Support": false,
+  "active": true,
+  "registrations": [],
+  "supportedTrust": [],
+  "erc8004": {
+    "chain": "eip155:5042002",
+    "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    "agentId": null,
+    "tokenURI": null,
+    "status": "registration_pending",
+    "registrationUri": "https://archimedes-arc.com/.well-known/agent-registration.json",
+    "note": "Not registered on-chain: no register() transaction has been sent, so agentId and tokenURI are null and NO ERC-8004 identity, reputation, or validation claim is made. Publishing a spec-typed registration file at registrationUri is not the same as being registered. Plan the call with scripts/register_erc8004_identity.py --plan."
+  },
+  "_note": {
+    "registrations": "EMPTY ON PURPOSE. ERC-8004 requires each entry to carry the agentId minted by the registry; no register() transaction has been sent for this agent, so there is no id to carry and an entry here would be a fabricated on-chain claim. scripts/register_erc8004_identity.py --plan prints the exact entry to add once a real Registered(agentId, agentURI, owner) event exists.",
+    "supportedTrust": "EMPTY ON PURPOSE. This agent claims no reputation, crypto-economic, or TEE-attestation trust model. Its verifiable claim is narrower and lives off this standard: every strategy carries a rigor verdict (DSR / PBO / walk-forward OOS / look-ahead) that GET /api/strategies/{strategy_id} returns as pass, fail, pending, or degenerate — and that fails honestly. See docs/rigor-methods.md.",
+    "x402Support": "false is the conservative claim, not an assertion that no paywall exists. POST /api/generate/start does implement an x402 / Circle Gateway paywall (402 + PAYMENT-REQUIRED header), but it is deploy-flag gated (GENERATION_PAYMENT_REQUIRED) and settlement is separately gated by PAYMENTS_DRY_RUN, which defaults on — so no x402 payment is guaranteed to settle. The runtime truth is public: GET /api/generate/quote returns payment_required.",
+    "active": "Describes the SERVICE — the endpoints above are live and serving. It says nothing about a registration, which has not happened.",
+    "domainOwnership": "This file is served from https://archimedes-arc.com, which is also the endpoint-domain of every service listed above, so it doubles as the EIP's optional domain-control proof for that host. agent-registration.domain.json beside it is the minimal variant to publish at any OTHER endpoint-domain this agent is served from."
+  }
+}

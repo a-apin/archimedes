@@ -16,7 +16,9 @@ async def test_agent_manifest_returns_200_with_expected_top_level_keys():
 
     assert resp.status_code == 200
     data = resp.json()
-    assert set(data.keys()) == {"name", "blurb", "docs", "auth", "endpoints", "faucet"}
+    # "erc8004" joined this set in #1527 — the on-chain identity leg. Its own shape,
+    # and the honesty invariants around it, live in test_erc8004_identity.py.
+    assert set(data.keys()) == {"name", "blurb", "docs", "auth", "endpoints", "faucet", "erc8004"}
     assert data["name"] == "Archimedes"
 
 
