@@ -15,14 +15,21 @@ separate piece of work).
 from __future__ import annotations
 
 import random
+from datetime import date
 from pathlib import Path
 
 from archimedes.services.fusion_evaluator import (
+    CONSTRUCTION_SINGLE_ASSET,
+    CONSTRUCTION_SLEEVES,
+    ENGINE_SINGLE_FEED,
+    ENGINE_SLEEVES,
     BacktestMetrics,
+    _run_variant_backtest,
     apply_rigor_gate,
     evaluate_fusion_spec,
     is_admissible_source,
     run_dsl_backtest,
+    run_dsl_backtest_portfolio,
 )
 from archimedes.services.strategy_dsl import FABER_2007_SPEC, validate_strategy_spec
 
@@ -594,3 +601,104 @@ class TestFusionGateUsesRealTrialCount:
         variants = {f"v{i}": _metrics_from_curve(base) for i in range(30)}
         verdict = apply_rigor_gate(base_metrics, num_trials=10, variants_metrics=variants)
         assert verdict.num_trials == 30
+
+
+# ── A8 / A4: the persisted DSL row must describe the run that happened ──
+
+
+class TestBacktestWindowIsReal:
+    """`backtest_start`/`backtest_end` came from two dead sentinel conditions.
+
+    In ``run_dsl_backtest`` the sentinel keyed on ``data_feed is None``, but
+    ``data_feed`` is unconditionally assigned a few lines above, so it was never
+    None and EVERY DSL row persisted a null window — un-auditable. In
+    ``_run_variant_backtest`` the sentinel keyed on ``data_csv_path is None``,
+    which IS reachable, so a run over a real feed factory persisted a fabricated
+    2004-01-02 -> 2026-04-30 window instead.
+
+    The dates now come from the bars backtrader actually iterated, so they can be
+    checked against the feed. The fixture spans 2004-01-02..2026-02-06 — note the
+    old sentinel's end date (2026-04-30) was not even the file's last bar.
+    """
+
+    _TRUE_FIRST_BAR = date(2004, 1, 2)
+    _TRUE_LAST_BAR = date(2026, 2, 6)
+    _FABRICATED_END = date(2026, 4, 30)
+
+    def _factory(self):
+        from archimedes.services._fusion_helpers import _csv_data_feed
+
+        return lambda: _csv_data_feed(_SPY_FIXTURE)
+
+    def test_single_feed_run_reports_the_real_window(self):
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        metrics = run_dsl_backtest(spec, data_csv_path=_SPY_FIXTURE)
+
+        # Previously None on this path, for every DSL row ever written.
+        assert metrics.backtest_start == self._TRUE_FIRST_BAR
+        assert metrics.backtest_end == self._TRUE_LAST_BAR
+
+    def test_variant_run_over_a_real_feed_does_not_fabricate_a_window(self):
+        """The worse half of the bug: real data, invented dates."""
+        from archimedes.services.dsl_to_backtrader import interpret_spec
+
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        metrics = _run_variant_backtest(
+            interpret_spec(spec),
+            data_feed_factory=self._factory(),
+            data_source_label="csv:spy_ohlcv_2004_2026.csv",
+        )
+
+        assert metrics.backtest_end != self._FABRICATED_END
+        assert metrics.backtest_start == self._TRUE_FIRST_BAR
+        assert metrics.backtest_end == self._TRUE_LAST_BAR
+
+
+class TestSleeveConstructionIsLabelled:
+    """A8. ``run_dsl_backtest_portfolio`` runs the same single-asset spec once per
+    asset on ``initial_cash/N`` and sums the sleeves — there is no
+    cross-sectional allocation and no rebalance between them. The multi-feed
+    interpreter that would fix that is out of scope; labelling the row is what
+    turns a silent lie into a disclosed limitation."""
+
+    def _factory(self):
+        from archimedes.services._fusion_helpers import _csv_data_feed
+
+        return lambda: _csv_data_feed(_SPY_FIXTURE)
+
+    def test_single_feed_rows_are_labelled_single_asset(self):
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        metrics = run_dsl_backtest(spec, data_csv_path=_SPY_FIXTURE)
+        assert metrics.backtest_engine == ENGINE_SINGLE_FEED == "dsl-fusion"
+        assert metrics.portfolio_construction == CONSTRUCTION_SINGLE_ASSET == "single_asset"
+
+    def test_sleeve_rows_are_labelled_as_independent_sleeves(self):
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        metrics = run_dsl_backtest_portfolio(
+            spec,
+            {"SPY": self._factory(), "SPY2": self._factory()},
+            label="csv:spy_ohlcv_2004_2026.csv",
+        )
+        # The label must distinguish this from a genuine single-feed run, so a
+        # reader of the passport can tell the two apart.
+        assert metrics.backtest_engine == ENGINE_SLEEVES == "dsl-fusion-sleeves"
+        assert metrics.backtest_engine != ENGINE_SINGLE_FEED
+        assert metrics.portfolio_construction == CONSTRUCTION_SLEEVES == "n_independent_sleeves_equal_weight"
+
+    def test_the_label_reaches_the_canonical_rigor_verdict_dict(self):
+        """The label is useless if it dies at the debate/pipeline boundary — that
+        boundary is exactly where `backtest_engine` used to be hardcoded."""
+        from archimedes.agents.debate_engine import _rigor_verdict_dict
+
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        metrics = run_dsl_backtest_portfolio(
+            spec,
+            {"SPY": self._factory(), "SPY2": self._factory()},
+            label="csv:spy_ohlcv_2004_2026.csv",
+        )
+        ev = evaluate_fusion_spec(FABER_2007_SPEC)
+        ev = ev.__class__(spec=ev.spec, backtest=metrics, rigor=ev.rigor)
+
+        verdict = _rigor_verdict_dict(ev)
+        assert verdict["backtest_engine"] == "dsl-fusion-sleeves"
+        assert verdict["portfolio_construction"] == "n_independent_sleeves_equal_weight"

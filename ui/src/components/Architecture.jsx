@@ -897,8 +897,9 @@ function MarketplaceSection() {
 // Every retrieval claim on this panel is driven off /health, never asserted
 // statically — see #778. Two things this panel must NOT imply. (1) That a
 // vector index sits behind the corpus: the papers schema carries text only,
-// and /health's corpus_embedded reports something narrower than its name
-// suggests — whether the MiniLM model loaded in *this* worker process.
+// and /health says so directly now (#1488) — corpus_embedded_at_rest is false,
+// while paper_rerank_model_live carries the narrower process-local fact of
+// whether the MiniLM model loaded in *this* worker.
 // (2) That a knowledge graph exists: corpus_kg_built is false and the
 // graph/KG endpoints 503. backend/tests/test_corpus_claim_integrity.py
 // scans this file for both claim-shapes.

@@ -163,9 +163,18 @@ async def get_agent_manifest():
             # checks over a bare returns series the caller submits. Only DSR and
             # walk-forward OOS are evaluable from a bare series — PBO and the
             # look-ahead audit report `not_evaluable`, never a silent pass.
+            # #1481: `passes` is a quorum over the two RUNNABLE legs, so an agent
+            # reading the scalar alone cannot mistake it for the passport gate.
             "rigor": {
                 "status": "live",
                 "auth_required": True,
+                "verdict_note": (
+                    "`passes` requires BOTH runnable legs (DSR, OOS consistency) to have run "
+                    "and passed. PBO and look-ahead can never run on a bare returns series, so "
+                    "the verdict is capped: it is NOT equivalent to the strategy passport gate. "
+                    "The response carries legs_evaluated / legs_runnable / legs_total / "
+                    "verdict_capped so the scalar is qualifiable without re-deriving leg statuses."
+                ),
                 "routes": {
                     "verify": "POST /api/rigor/verify",
                 },

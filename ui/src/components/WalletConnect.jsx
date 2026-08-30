@@ -326,11 +326,11 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
               Deposits live in your non-custodial vault contract; the agent has rebalance
               authority only, not withdraw-to-platform. Source open at{' '}
               <a
-                href="https://github.com/a-apin/archimedes-arcadia"
+                href="https://github.com/a-apin/archimedes"
                 target="_blank"
                 rel="noreferrer"
               >
-                github.com/a-apin/archimedes-arcadia
+                github.com/a-apin/archimedes
               </a>
               . Testnet only — fake USDC, no value at risk.
             </div>

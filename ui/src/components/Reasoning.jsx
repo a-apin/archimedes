@@ -202,7 +202,21 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     <span className={`tag ${t.decision_type === 'rebalance' ? 'tag-positive' : t.decision_type === 'construction' ? 'tag-accent' : t.decision_type === 'skip' ? 'tag-warning' : 'tag-muted'}`}>
                       {t.decision_type}
                     </span>
-                    {t.is_verified && <span className="flex items-center gap-1 text-xs text-[var(--positive)]"><span className="i-lucide-check w-3 h-3" /> verified</span>}
+                    {/* "verified" is reserved for a real hash comparison. The
+                        on-chain-only path (verification_mode === 'anchored_only')
+                        confirmed an anchor exists and compared nothing, so it
+                        must not borrow the same word or the same green check
+                        (#1407). Same vocabulary as /verify's response. */}
+                    {t.verification_mode === 'anchored_only' ? (
+                      <span
+                        className="flex items-center gap-1 text-xs text-[var(--text-3)]"
+                        title="A hash is anchored on-chain for this trace. No off-chain body was available, so no hashes were compared — this is not a verification."
+                      >
+                        <span className="i-lucide-anchor w-3 h-3" /> anchored only
+                      </span>
+                    ) : t.is_verified ? (
+                      <span className="flex items-center gap-1 text-xs text-[var(--positive)]"><span className="i-lucide-check w-3 h-3" /> verified</span>
+                    ) : null}
                     {t.arc_tx_hash && <span className="flex items-center gap-1 text-xs"><span className="i-lucide-anchor w-3 h-3" /> on-chain</span>}
                   </div>
                   <div className="caption">{timeAgo(t.timestamp)}</div>
