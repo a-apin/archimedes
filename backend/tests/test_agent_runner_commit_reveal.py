@@ -419,6 +419,9 @@ class TestCommitPhaseUsesTheModernPath:
     """
 
     def test_commit_invokes_commit_never_publish(self, runner_env):
+        # CHARACTERIZATION, not a regression guard (CLAUDE.md § "Before you approve a
+        # merge" rule 3): this passes against the pre-#714 tree too — the old fallback
+        # only ran when supports_commit_reveal() was False, which this test sets True.
         runner, mock_tp = runner_env
         mock_tp.supports_commit_reveal = MagicMock(return_value=True)
         mock_tp.commit = AsyncMock(return_value=(42, "0xCOMMIT", 100, False))
@@ -459,6 +462,10 @@ class TestCommitPhaseUsesTheModernPath:
 
     def test_commit_failure_never_escapes_to_the_tick_loop(self, runner_env, caplog):
         """Error-handling semantics preserved: a publisher raise is logged, not raised."""
+        # CHARACTERIZATION, not a regression guard (CLAUDE.md § "Before you approve a
+        # merge" rule 3): this passes against the pre-#714 tree too — the raise happens
+        # inside commit(), so the except wrapper short-circuits before either tree could
+        # reach the fallback. It documents the preserved contract, it does not pin it.
         runner, mock_tp = runner_env
         mock_tp.supports_commit_reveal = MagicMock(return_value=True)
         mock_tp.commit = AsyncMock(side_effect=RuntimeError("rpc down"))
