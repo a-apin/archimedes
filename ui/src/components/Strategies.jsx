@@ -9,6 +9,12 @@ import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 
 import { apiGet, apiPost, apiDelete } from '../api'
 import { compactCostCell } from '../generationCost.js'
+import {
+  isUnknownRigorGateStatus,
+  warnUnknownRigorGateStatus,
+  UNKNOWN_RIGOR_LABEL,
+  UNKNOWN_RIGOR_TITLE,
+} from '../rigorGateStatus.js'
 import { signClass } from '../signClass.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
@@ -23,6 +29,19 @@ function DeployabilityChip({ deploy, level }) {
   // never evaluated against. Neutral tag-muted, no "not deployable" wording.
   if (deploy.pending) {
     return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="Not yet evaluated — no backtest data for the rigor gate to score">pending</span>
+  }
+  // #1358 round-3: a zero-variance persisted series is the THIRD unevaluable
+  // case, and it was the loudest wrong one. A degenerate series leaves
+  // dsr_p_value and oos_sharpe at None, which trips blocked_by_floor — so this
+  // row arrived with blocked_by_floor === true and rendered "Fails an always-on
+  // correctness floor", asserting a measurement that never happened. Checked
+  // before blocked_by_floor for exactly the reason pending is: you cannot fail
+  // a floor nothing measured you against. Same neutral treatment as pending,
+  // with its own honest sentence (the wording chat_service.py:395 already gives
+  // this state when it hands it to the LLM) rather than borrowing pending's —
+  // "not yet evaluated" would be a second false claim, since the data IS here.
+  if (deploy.degenerate) {
+    return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation">unevaluable</span>
   }
   if (deploy.blocked_by_floor) {
     return <span className="tag tag-negative" style={{ fontSize: '0.66rem' }} title="Fails an always-on correctness floor — cannot deploy at any level">blocked</span>
@@ -162,6 +181,21 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   // Generated tabs alike. Checked BEFORE the true/false badge below so a
   // pending row can never fall through to the "does not pass" X.
   const isPending = s.rigor_gate_status === 'pending' || s.passes_rigor_gate == null
+  // #1358 round-3: "degenerate" is the fourth state, and it belongs in the same
+  // NEUTRAL bucket as pending — never the red "does not pass" X, because
+  // nothing was measurable to fail. It does NOT get pending's sentence: a
+  // degenerate row HAS persisted returns (they are just flat), so "no backtest
+  // data" would be a fresh lie. Kept as its own flag rather than folded into
+  // isPending so the two states cannot share a tooltip.
+  const isDegenerate = s.rigor_gate_status === 'degenerate'
+  // Exhaustiveness default. Four states are known; a fifth would otherwise fall
+  // through to the passes_rigor_gate booleans and render a confident verdict
+  // this build cannot justify. Em-dash + a dev-time warning instead, shared
+  // with StrategyPassport so both surfaces answer identically (#1358).
+  const unknownRigor = isUnknownRigorGateStatus(s.rigor_gate_status)
+  useEffect(() => {
+    if (unknownRigor) warnUnknownRigorGateStatus(s.rigor_gate_status, 'Strategies')
+  }, [unknownRigor, s.rigor_gate_status])
   const detailId = `lib-detail-${s.id}`
   // Absence is the point: a strategy nothing measured gets an em-dash and a
   // tooltip that says so, never a zero (#1326).
@@ -230,7 +264,11 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
                 reliably exposed — the rigor-gate verdict, the fact that
                 decides whether a strategy may be deployed, was sighted-only
                 (1.1.1). */}
-            {isPending ? (
+            {unknownRigor ? (
+              <span role="img" aria-label="Rigor gate status unrecognised" className="mono text-[var(--text-4)]" title={UNKNOWN_RIGOR_TITLE}>{UNKNOWN_RIGOR_LABEL}</span>
+            ) : isDegenerate ? (
+              <span role="img" aria-label="Rigor gate could not evaluate — zero-variance return series" className="i-lucide-alert-circle w-3.5 h-3.5 text-[var(--text-4)]" title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation" />
+            ) : isPending ? (
               <span role="img" aria-label="Rigor gate pending" className="i-lucide-clock w-3.5 h-3.5 text-[var(--text-4)]" title="Not yet evaluated — no backtest data for the rigor gate to score" />
             ) : s.passes_rigor_gate === true ? (
               <span role="img" aria-label="Passes rigor gate" className="i-lucide-check w-3.5 h-3.5 text-[var(--positive)]" title="Passes rigor gate" />
@@ -675,7 +713,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   const [publishedError, setPublishedError] = useState('')
   // Per-user rigor strictness (shared with the Passport slider via localStorage).
   const [level, setLevel] = useRigorStrictness()
-  // {strategy_id: {min_passing_level, blocked_by_floor, pending}} from the live
+  // {strategy_id: {min_passing_level, blocked_by_floor, pending, degenerate}} from the live
   // gate — strictness-independent, so we fetch once and re-annotate rows
   // client-side as the slider moves. Curated strategies resolve here; generated
   // ones fall back to their badge boolean (no chip).
@@ -770,6 +808,12 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             // could not tell the two apart and rendered "not deployable" for
             // both.
             pending: r.pending,
+            // #1358 round-3: the gate's honest signal that this row's persisted
+            // series is zero-variance. Distinct from BOTH neighbours above:
+            // there is data (so not pending), and no floor ever measured it (so
+            // the blocked_by_floor === true this row also arrives with is not a
+            // claim the chip may repeat).
+            degenerate: r.degenerate,
           }
         }
         setDeployMap(map)

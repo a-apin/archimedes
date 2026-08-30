@@ -16,6 +16,12 @@ import {
 	tokensLabel,
 	usageNote,
 } from "../generationCost.js";
+import {
+	isUnknownRigorGateStatus,
+	warnUnknownRigorGateStatus,
+	UNKNOWN_RIGOR_LABEL,
+	UNKNOWN_RIGOR_TITLE,
+} from "../rigorGateStatus.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -179,6 +185,19 @@ export default function StrategyPassport({
 		};
 	}, [strategyId]);
 
+	// Exhaustiveness alarm for rigor_gate_status, shared with Strategies.jsx so
+	// both surfaces answer a fifth state identically (#1358). Declared up here,
+	// above the `loading` / `error` early returns below, because a hook after a
+	// conditional return is a hook that sometimes does not run.
+	const unknownRigor = isUnknownRigorGateStatus(strategy?.rigor_gate_status);
+	useEffect(() => {
+		if (unknownRigor)
+			warnUnknownRigorGateStatus(
+				strategy?.rigor_gate_status,
+				"StrategyPassport",
+			);
+	}, [unknownRigor, strategy?.rigor_gate_status]);
+
 	if (loading) return <div className="caption">Loading strategy passport…</div>;
 
 	if (error || !strategy) {
@@ -208,6 +227,12 @@ export default function StrategyPassport({
 	// branch below so "never evaluated" can't be mistaken for "evaluated and
 	// lost".
 	const rigorPending = s.rigor_gate_status === "pending";
+	// #1358 round-3: the fourth state. Same NEUTRAL treatment as pending — never
+	// the "not Verified" / "not passed" wording, because nothing was measurable
+	// to fail — but its own sentence, since a degenerate row HAS persisted
+	// returns and pending's "not yet evaluated" would be a fresh false claim.
+	// Copy follows chat_service.py:395, which already tells the LLM exactly this.
+	const rigorDegenerate = s.rigor_gate_status === "degenerate";
 	// ── Deploy gating at the user's chosen strictness ──
 	const badgePass = s.passes_rigor_gate === true;
 	// Lowest level (1..5) at which this strategy is deployable — from the live
@@ -221,7 +246,21 @@ export default function StrategyPassport({
 			: s.passes_rigor_gate === false
 				? null
 				: undefined;
-	const blockedByFloor = gate ? gate.blocked_by_floor === true : false;
+	// #1358 round-3: a zero-variance series leaves dsr_p_value and oos_sharpe at
+	// None, and RigorGateResult.blocked_by_floor treats a None on either as a
+	// floor failure — so the gate returns blocked_by_floor=true for a strategy
+	// no floor ever measured. Every consumer of blockedByFloor below says "fails
+	// an always-on correctness floor", which is an assertion about a measurement
+	// that did not happen. Suppress that claim here (once, so all five sites
+	// agree) and let the degenerate sentence beside it carry the honest reason.
+	//
+	// This loosens no permission: `deployable` additionally requires
+	// `minLevel != null`, and min_passing_level is null for a degenerate row, so
+	// the deploy button stays disabled either way. Only the EXPLANATION changes.
+	const gateDegenerate = gate ? gate.degenerate === true : false;
+	const blockedByFloor = gate
+		? gate.blocked_by_floor === true && !gateDegenerate
+		: false;
 	const deployable = minLevel != null && minLevel <= level && !blockedByFloor;
 	const needsHigherLevel =
 		minLevel != null && minLevel > level && !blockedByFloor;
@@ -271,7 +310,18 @@ export default function StrategyPassport({
 					<span className={`tag ${statusTag(s.status, s.passes_rigor_gate)}`}>
 						{statusLabel(s.status, s.passes_rigor_gate)}
 					</span>
-					{rigorPending ? (
+					{unknownRigor ? (
+						<span className="tag tag-muted" title={UNKNOWN_RIGOR_TITLE}>
+							rigor gate {UNKNOWN_RIGOR_LABEL}
+						</span>
+					) : rigorDegenerate ? (
+						<span
+							className="tag tag-muted"
+							title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation"
+						>
+							rigor gate unevaluable
+						</span>
+					) : rigorPending ? (
 						<span className="tag tag-muted">rigor gate pending</span>
 					) : s.passes_rigor_gate === true ? (
 						<span className="tag tag-positive inline-flex items-center gap-1">
@@ -329,6 +379,16 @@ export default function StrategyPassport({
 										deployed at any strictness level.
 									</>
 								)}
+								{gateDegenerate && (
+									<>
+										{" "}
+										This strategy's persisted return series is zero-variance
+										(broken data or a zero-trade backtest), so the rigor gate had
+										nothing to measure — it was not graded and lost, it was never
+										gradeable. It cannot be deployed until a real backtest
+										replaces that series.
+									</>
+								)}
 								{needsHigherLevel && (
 									<>
 										{" "}
@@ -363,7 +423,9 @@ export default function StrategyPassport({
 								title={
 									!walletAddr
 										? "Connect wallet to deploy"
-										: blockedByFloor
+										: gateDegenerate
+											? "Zero-variance persisted return series — nothing for the rigor gate to measure; not a graded failure"
+											: blockedByFloor
 											? "Fails an always-on rigor floor — cannot deploy at any level"
 											: needsHigherLevel
 												? `Raise strictness to level ${minLevel} to deploy`
@@ -628,8 +690,25 @@ export default function StrategyPassport({
 							<div className="flex items-center gap-2 flex-wrap">
 								<span
 									className={`tag inline-flex items-center gap-1 ${passingRigor ? "tag-positive" : "tag-muted"}`}
+									title={
+										unknownRigor
+											? UNKNOWN_RIGOR_TITLE
+											: rigorDegenerate
+												? "DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation"
+												: undefined
+									}
 								>
-									{passingRigor ? (
+									{/* Unevaluable states are tested FIRST, ahead of passingRigor:
+									    a verdict nothing could compute must never be able to reach
+									    a "Verified" or a "not Verified" claim through a stale
+									    boolean. (Both are already false for these rows today —
+									    this ordering is what keeps that true if the boolean ever
+									    drifts.) */}
+									{unknownRigor ? (
+										UNKNOWN_RIGOR_LABEL
+									) : rigorDegenerate ? (
+										"unevaluable — zero-variance return series"
+									) : passingRigor ? (
 										<>
 											<span className="i-lucide-check w-3.5 h-3.5" /> Verified
 											(Conservative)
