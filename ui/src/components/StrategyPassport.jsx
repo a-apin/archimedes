@@ -3,6 +3,7 @@ import CreateVaultModal from "./CreateVaultModal";
 import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
 import RigorStrictnessControl, { levelLabel } from "./RigorStrictnessControl";
 import { apiGet, apiPostWithMeta } from "../api";
+import StrategyReasoning from "./StrategyReasoning";
 import { useRigorStrictness, BADGE_LEVEL } from "../hooks/useRigorStrictness";
 import {
 	NOT_MEASURED,
@@ -786,6 +787,15 @@ export default function StrategyPassport({
 							</div>
 						</div>
 					)}
+
+					{/* Reasoning — the generation debate that produced this strategy
+					    and the anchored agent decisions that consulted it, kept as
+					    two separately-headed sections. Renders unconditionally: its
+					    empty states are load-bearing product copy ("No anchored
+					    decisions yet for this strategy"), not a placeholder to hide.
+					    A panel that disappears when there is nothing to show teaches
+					    the reader that provenance is optional. */}
+					<StrategyReasoning strategyId={strategyId} onNavigate={onNavigate} />
 				</div>
 			</div>
 

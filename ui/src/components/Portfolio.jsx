@@ -6,6 +6,7 @@ import {
 	NEW_CONTRACTS,
 	getUsdcBalance,
 } from "../config";
+import { anchorState } from "../trace-binding";
 import PaymentReceipts from "./PaymentReceipts";
 import RegimePanel from "./RegimePanel";
 import StressScenarioPanel from "./StressScenarioPanel";
@@ -736,33 +737,33 @@ export default function Portfolio({
 																{t.trace_hash.slice(0, 10)}…
 															</span>
 														) : null}
-														{t.is_verified ? (
-															<span className="flex items-center gap-1 text-[var(--positive)]">
-																<span className="i-lucide-check-circle w-3.5 h-3.5" />{" "}
-																anchored on Arc
-															</span>
-														) : t.decision_type === "skip" ? (
-															// A skip anchors nothing BY DESIGN (#714): with no trade
-															// there is no tradeId for commit() to bind, so the agent
-															// never attempts a registry write for this trace. "anchor
-															// pending" would promise a write that is never coming;
-															// the honest state is a permanent, explained absence.
-															<span
-																className="flex items-center gap-1 text-[var(--text-3)]"
-																title="No trade was made, so there is nothing for an on-chain commitment to bind. The trace is hashed and persisted off-chain; no anchor is attempted or pending."
-															>
-																<span className="i-lucide-skip-forward w-3.5 h-3.5" />{" "}
-																not anchored (no trade to bind)
-															</span>
-														) : (
-															<span
-																className="flex items-center gap-1 text-[var(--text-3)]"
-																title="Trace hashed + persisted off-chain; on-chain anchor pending (registry write didn't complete yet — usually transient)."
-															>
-																<span className="i-lucide-clock w-3.5 h-3.5" />{" "}
-																anchor pending
-															</span>
-														)}
+														{/* Four honest states, one shared derivation
+														    (src/trace-binding.js). This SUBSUMES the inline
+														    three-state ternary #714 landed on main: that
+														    ternary was already right about SKIP ("not
+														    anchored (no trade to bind)" — a skip has no
+														    trade for commit() to bind, so no registry write
+														    is ever attempted), and `anchorState` keeps its
+														    exact labels, icons and tooltips, pinned
+														    character-for-character in
+														    ui/test/anchor-state.test.js. What it adds is the
+														    fourth state main still lacked: the registry-only
+														    `anchored_only` projection, which main rendered as
+														    a plain green check — i.e. as a hash comparison
+														    that never happened (#1407). */}
+														{(() => {
+															const a = anchorState(t);
+															return (
+																<span
+																	className={`flex items-center gap-1 ${a.tone === "verified" ? "text-[var(--positive)]" : "text-[var(--text-3)]"}`}
+																	title={a.title}
+																	data-anchor-state={a.state}
+																>
+																	<span className={`${a.icon} w-3.5 h-3.5`} />{" "}
+																	{a.label}
+																</span>
+															);
+														})()}
 													</div>
 												</div>
 											);

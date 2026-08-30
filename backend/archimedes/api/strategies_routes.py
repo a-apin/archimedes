@@ -16,7 +16,7 @@ from datetime import UTC
 import numpy as np
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from archimedes.api._route_helpers import strategy_provider
+from archimedes.api._route_helpers import assert_strategy_visible, strategy_provider
 from archimedes.api.account_auth import CurrentUser, get_current_user, require_current_user
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
@@ -1537,20 +1537,10 @@ async def get_strategy_debate(strategy_id: str, request: Request):
     from archimedes.db import get_session
 
     # ── 1. Existence + ownership gate (mirrors get_strategy / get_strategy_returns) ──
-    strat = strategy_provider().get_strategy(strategy_id)
-    is_curated = strat is not None
-
-    if not is_curated:
-        from archimedes.api.auth_siwe import get_verified_wallet
-        from archimedes.models.strategy_store import StrategyRecord
-        from archimedes.services.strategy_visibility import is_strategy_visible
-
-        with get_session() as session:
-            row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-            caller = get_verified_wallet(request)
-            user = get_current_user(request)
-            if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
-                raise HTTPException(status_code=404, detail="Strategy not found")
+    # Shared with the strategy-scoped trace listing on /api/traces: both are
+    # per-strategy read surfaces and must answer the same question the same
+    # way, so the rule lives in one function rather than being copied here.
+    assert_strategy_visible(strategy_id, request)
 
     # ── 2. Load the persisted transcript ──────────────────────────────────
     from archimedes.models.debate_transcript import debate_transcript_for_strategy

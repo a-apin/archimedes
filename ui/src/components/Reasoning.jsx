@@ -5,7 +5,7 @@ import {
   TRACE_REGISTRY_ABI, NEW_CONTRACTS,
 } from '../config'
 import { regimeMeta } from '../regime'
-import { blockOrderCopy, verificationTone } from '../trace-binding'
+import { anchorState, blockOrderCopy, verificationTone } from '../trace-binding'
 
 
 
@@ -139,8 +139,11 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
         on-chain receipt and confirm the stored hash matches — traces anchored
         without an off-chain body to compare against report{' '}
         <strong>anchored, not re-hashed</strong> instead of a false match; click{' '}
-        <strong>→ Strategy in Library</strong> to jump to the source strategy and
-        its full passport.
+        <strong>→ Strategy passport</strong> to jump to the source strategy,
+        where its generation debate and its other trading decisions live. Skips
+        read <strong>not anchored (no trade to bind)</strong>: with no trade
+        there is nothing for an on-chain commitment to bind, so no anchor is
+        attempted — that is a permanent, explained absence, not a pending write.
       </p>
 
       {/* Filter chips — hide types with zero traces (Issue #338 item 3) */}
@@ -167,7 +170,7 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
 
       {/* Trace list */}
       {loading ? (
-        <div className="caption">Loading traces…</div>
+        <div className="caption" role="status">Loading traces…</div>
       ) : traces.length === 0 ? (
         <div className="card" style={{ padding: 18 }}>
           <p className="body" style={{ marginBottom: 6 }}>No reasoning traces yet.</p>
@@ -202,22 +205,28 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     <span className={`tag ${t.decision_type === 'rebalance' ? 'tag-positive' : t.decision_type === 'construction' ? 'tag-accent' : t.decision_type === 'skip' ? 'tag-warning' : 'tag-muted'}`}>
                       {t.decision_type}
                     </span>
-                    {/* "verified" is reserved for a real hash comparison. The
-                        on-chain-only path (verification_mode === 'anchored_only')
-                        confirmed an anchor exists and compared nothing, so it
-                        must not borrow the same word or the same green check
-                        (#1407). Same vocabulary as /verify's response. */}
-                    {t.verification_mode === 'anchored_only' ? (
-                      <span
-                        className="flex items-center gap-1 text-xs text-[var(--text-3)]"
-                        title="A hash is anchored on-chain for this trace. No off-chain body was available, so no hashes were compared — this is not a verification."
-                      >
-                        <span className="i-lucide-anchor w-3 h-3" /> anchored only
-                      </span>
-                    ) : t.is_verified ? (
-                      <span className="flex items-center gap-1 text-xs text-[var(--positive)]"><span className="i-lucide-check w-3 h-3" /> verified</span>
-                    ) : null}
-                    {t.arc_tx_hash && <span className="flex items-center gap-1 text-xs"><span className="i-lucide-anchor w-3 h-3" /> on-chain</span>}
+                    {/* One shared derivation with the Portfolio feed and the
+                        passport panel (src/trace-binding.js). "verified" is
+                        reserved for a real hash comparison — the on-chain-only
+                        path (verification_mode === 'anchored_only') confirmed an
+                        anchor exists and compared nothing, so it must not borrow
+                        the same word or the same green check (#1407). This row
+                        previously rendered NOTHING at all for an unanchored
+                        trace, so a skip — which by design never anchors, having
+                        no trade for commit() to bind (#714) — silently looked
+                        identical to a trace whose anchor was still in flight. */}
+                    {(() => {
+                      const a = anchorState(t)
+                      return (
+                        <span
+                          className={`flex items-center gap-1 text-xs ${a.tone === 'verified' ? 'text-[var(--positive)]' : 'text-[var(--text-3)]'}`}
+                          title={a.title}
+                          data-anchor-state={a.state}
+                        >
+                          <span className={`${a.icon} w-3 h-3`} /> {a.label}
+                        </span>
+                      )
+                    })()}
                   </div>
                   <div className="caption">{timeAgo(t.timestamp)}</div>
                 </div>
@@ -318,12 +327,11 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                     )}
                   </div>
                 )}
-                {!isSkip && !t.arc_tx_hash && (
-                  <div className="caption text-[var(--text-4)] flex items-center gap-1 mb-2">
-                    <span className="i-lucide-clock w-3 h-3" />
-                    Not yet anchored on-chain
-                  </div>
-                )}
+                {/* The unanchored case used to be stated twice on this card and
+                    only for non-skip rows. The badge above now carries it for
+                    every row, with the state named honestly — including the
+                    skip case this block excluded, which is exactly the row a
+                    reader is most likely to misread as a failure. */}
 
                 {/* Verify button + strategy back-link — only for non-skip
                     traces. Skip rows already collapsed their detail above. */}
@@ -363,13 +371,21 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                       <><span className="i-lucide-search w-3.5 h-3.5" /> Verify hash on-chain</>
                     )}
                   </button>
-                  {t.strategy_id && onNavigate && (
+                  {/* `t.strategy_id` does not exist on TraceResponse and never
+                      has — the API emits `strategies_referenced`, the list of
+                      strategies the decision actually consulted. This button
+                      was therefore dead on every row, which is why the copy at
+                      the top of the page promising a follow-back to "the source
+                      strategy and its full passport" was unreachable. Deep-links
+                      to the passport (which now carries the reverse link: that
+                      strategy's own trading decisions). */}
+                  {t.strategies_referenced?.[0] && onNavigate && (
                     <button
                       className="btn btn-outline btn-sm"
-                      onClick={() => onNavigate('library', { highlight: t.strategy_id })}
-                      title="Open this trace's strategy in the Library"
+                      onClick={() => onNavigate('strategy', { strategyId: t.strategies_referenced[0] })}
+                      title="Open this trace's strategy passport"
                     >
-                      → Strategy in Library
+                      → Strategy passport
                     </button>
                   )}
                   {vResult && (

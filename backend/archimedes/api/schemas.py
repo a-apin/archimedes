@@ -409,6 +409,38 @@ class TradeExecutedResponse(BaseModel):
     value_usdc: float = 0.0
 
 
+class TraceDetailResponse(TraceResponse):
+    """A single trace with the rest of the body the hash was computed over.
+
+    Everything in :class:`TraceResponse` is what a *list row* needs. This adds
+    the fields a reader needs to actually audit one decision, and they are not
+    decoration: ``market_context``, ``portfolio_before``, ``portfolio_after``
+    and ``consulted_paper_hashes`` are four of the thirteen ``_HASH_FIELDS``
+    (``models/trace.py``) that go into the anchored keccak256. Without them the
+    only way to see what was committed was ``GET /api/traces/{id}/canonical``,
+    a raw-JSON developer surface — so the anchored claim was, in practice,
+    unreadable by the person whose money the decision moved.
+
+    Defaults are empty rather than ``None``: a trace persisted before a field
+    existed, or one projected from the on-chain registry alone (which carries
+    no body at all), genuinely has nothing here. An empty dict renders as an
+    honest absence; the caller must not read it as "the agent considered
+    nothing". ``verification_mode`` already carries whether a body existed.
+
+    ``settlement_tx_hashes`` and ``ipfs_cid`` are deliberately OUTSIDE the
+    hashed set — they are only knowable after the trade, and the committed
+    bytes are immutable (#903). They are surfaced here as provenance, never as
+    part of the hash preimage.
+    """
+
+    market_context: dict = {}
+    portfolio_before: dict = {}
+    portfolio_after: dict = {}
+    consulted_paper_hashes: list[str] = []
+    settlement_tx_hashes: list[str] = []
+    ipfs_cid: str | None = None
+
+
 class TraceListResponse(BaseModel):
     traces: list[TraceResponse]
     total: int

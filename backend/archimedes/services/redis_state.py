@@ -416,15 +416,27 @@ class AgentStateStore:
         self,
         vault_address: str | None = None,
         decision_type: str | None = None,
+        strategy_id: str | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[dict], int]:
-        """List traces from index, optionally filtered. Returns (traces, total)."""
+        """List traces from index, newest first, optionally filtered.
+
+        Returns ``(window, total)`` where ``total`` counts everything matching
+        the filters, not just the returned page.
+
+        ``strategy_id`` matches against ``strategies_referenced`` — the list the
+        agent records for the strategies a decision actually consulted. It is
+        applied **here**, alongside the other filters and *before* windowing,
+        for the same reason they are: filtering a page after it has been cut
+        would make ``total`` count unfiltered rows and hand the caller a
+        short-or-empty page with a total that promises more, which is a broken
+        paginator rather than a display quirk.
+        """
         r = await self._get_redis()
 
         # Get all trace hashes sorted by timestamp (newest first)
         all_hashes = await r.zrevrange(KEY_TRACE_INDEX, 0, -1)
-        len(all_hashes)
 
         # Load and filter
         traces: list[dict] = []
@@ -440,6 +452,8 @@ class AgentStateStore:
             if vault_address and data.get("vault_address", "").lower() != vault_address.lower():
                 continue
             if decision_type and data.get("decision_type") != decision_type:
+                continue
+            if strategy_id and strategy_id not in (data.get("strategies_referenced") or []):
                 continue
 
             traces.append(data)

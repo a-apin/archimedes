@@ -7,9 +7,11 @@ from datetime import UTC
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from archimedes.api._route_helpers import assert_strategy_visible
 from archimedes.api.auth_guard import require_internal_agent_key
 from archimedes.api.limiter import limiter
 from archimedes.api.schemas import (
+    TraceDetailResponse,
     TraceListResponse,
     TracePublishRequest,
     TracePublishResponse,
@@ -69,15 +71,74 @@ def _anchored_only_trace(trace_id: str, detail: dict) -> TraceResponse:
     )
 
 
+def _trace_from_off_chain(t: dict) -> TraceResponse:
+    """Project one persisted trace dict onto the list-row response.
+
+    Single projection for both display routes. They used to carry two
+    hand-maintained copies of this twenty-field constructor, which is exactly
+    how a field lands on the detail route and silently never appears in the
+    list (or vice versa) — the same drift the shared visibility gate exists to
+    prevent, one layer down. ``get_trace`` widens the result to
+    ``TraceDetailResponse``; it does not re-derive it.
+    """
+    return TraceResponse(
+        id=t.get("id", ""),
+        vault_address=t.get("vault_address", ""),
+        decision_type=t.get("decision_type", "unknown"),
+        trigger=t.get("trigger", "unknown"),
+        timestamp=t.get("timestamp", ""),
+        reasoning=t.get("reasoning", ""),
+        confidence=t.get("confidence", 0.0),
+        trace_hash=t.get("trace_hash", ""),
+        arc_tx_hash=t.get("arc_tx_hash"),
+        is_verified=t.get("is_verified", False),
+        regime_at_decision=(t.get("market_context") or {}).get("regime"),
+        trades_executed=t.get("trades_executed", []),
+        strategies_referenced=t.get("strategies_referenced", []),
+        commit_tx_hash=t.get("commit_tx_hash"),
+        commit_block_number=t.get("commit_block_number"),
+        reveal_tx_hash=t.get("reveal_tx_hash"),
+        reveal_block_number=t.get("reveal_block_number"),
+        trade_tx_hash=t.get("trade_tx_hash"),
+        trade_block_number=t.get("trade_block_number"),
+        temporal_binding_valid=t.get("temporal_binding_valid"),
+        temporal_binding_source=t.get("temporal_binding_source", "none"),
+    )
+
+
 @traces_router.get("/", response_model=TraceListResponse)
 async def list_traces(
+    request: Request,
     vault_address: str | None = None,
     decision_type: str | None = Query(None, pattern="^(construction|rebalance|rotation|regime_change|skip)$"),
+    strategy_id: str | None = Query(
+        None,
+        description=(
+            "Only traces whose strategies_referenced contains this id. Subject to the same "
+            "visibility gate as GET /api/strategies/{id} — a strategy you cannot read is 404 here too."
+        ),
+    ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List reasoning traces -- merges on-chain IDs with off-chain metadata."""
+    """List reasoning traces, newest first -- on-chain IDs merged with off-chain metadata.
+
+    Unfiltered, this is public product material: every row is an agent decision
+    on a platform vault whose hash is already anchored in a public registry on
+    a public chain, so gating the read would hide nothing that isn't already
+    readable from Arc.
+
+    ``strategy_id`` is the exception, and it is not about the traces. Reporting
+    "0 traces" vs "3 traces" for an id is an existence oracle for the *strategy*,
+    and generated strategies are private-until-published (#850). So the scoped
+    listing runs ``assert_strategy_visible`` first and 404s exactly as
+    ``GET /api/strategies/{id}`` and ``/debate`` do — same gate, one
+    implementation, never a 403 (which would confirm the id).
+    """
     from archimedes.services.redis_state import AgentStateStore
+
+    if strategy_id:
+        assert_strategy_visible(strategy_id, request)
 
     state = AgentStateStore()
     try:
@@ -85,6 +146,7 @@ async def list_traces(
             off_chain_traces, total = await state.list_traces(
                 vault_address=vault_address,
                 decision_type=decision_type,
+                strategy_id=strategy_id,
                 limit=limit,
                 offset=offset,
             )
@@ -93,36 +155,17 @@ async def list_traces(
             off_chain_traces, total = [], 0
 
         if off_chain_traces:
-            traces = []
-            for t in off_chain_traces:
-                if t.get("trigger") == "empty_vault":
-                    continue
-                traces.append(
-                    TraceResponse(
-                        id=t.get("id", ""),
-                        vault_address=t.get("vault_address", ""),
-                        decision_type=t.get("decision_type", "unknown"),
-                        trigger=t.get("trigger", "unknown"),
-                        timestamp=t.get("timestamp", ""),
-                        reasoning=t.get("reasoning", ""),
-                        confidence=t.get("confidence", 0.0),
-                        trace_hash=t.get("trace_hash", ""),
-                        arc_tx_hash=t.get("arc_tx_hash"),
-                        is_verified=t.get("is_verified", False),
-                        regime_at_decision=t.get("market_context", {}).get("regime"),
-                        trades_executed=t.get("trades_executed", []),
-                        strategies_referenced=t.get("strategies_referenced", []),
-                        commit_tx_hash=t.get("commit_tx_hash"),
-                        commit_block_number=t.get("commit_block_number"),
-                        reveal_tx_hash=t.get("reveal_tx_hash"),
-                        reveal_block_number=t.get("reveal_block_number"),
-                        trade_tx_hash=t.get("trade_tx_hash"),
-                        trade_block_number=t.get("trade_block_number"),
-                        temporal_binding_valid=t.get("temporal_binding_valid"),
-                        temporal_binding_source=t.get("temporal_binding_source", "none"),
-                    )
-                )
+            traces = [_trace_from_off_chain(t) for t in off_chain_traces if t.get("trigger") != "empty_vault"]
             return TraceListResponse(traces=traces, total=total)
+
+        if strategy_id:
+            # The on-chain fallback below CANNOT answer a strategy-scoped
+            # question: the registry entry is (agent, vault, hash, timestamp)
+            # and records no strategy reference at all. Falling through would
+            # return the whole unfiltered registry under a filter the caller
+            # asked for — every row a false positive. An empty result is the
+            # honest answer to "no off-chain body, so no strategy link".
+            return TraceListResponse(traces=[], total=0)
 
         from archimedes.chain.trace_publisher import trace_publisher
 
@@ -157,9 +200,20 @@ async def list_traces(
         await state.close()
 
 
-@traces_router.get("/{trace_id}", response_model=TraceResponse)
+@traces_router.get("/{trace_id}", response_model=TraceDetailResponse)
 async def get_trace(trace_id: str):
-    """Get a single reasoning trace by ID (on-chain or off-chain hash)."""
+    """Get one reasoning trace in full, by UUID, trace hash, or on-chain id.
+
+    Returns the reasoning text plus the rest of the hashed body — the market
+    context the agent read, the portfolio before and after, and the paper
+    hashes it consulted. That is the readable form of what the anchor commits
+    to; ``/canonical`` remains the byte-exact form for re-hashing.
+
+    The on-chain-only fallback widens to the same model but leaves every added
+    field at its empty default, because the registry stores no body. That is a
+    real absence, not a formatting choice: ``verification_mode`` is
+    ``anchored_only`` on exactly that path and says so.
+    """
     from fastapi import HTTPException
 
     from archimedes.chain.trace_publisher import trace_publisher
@@ -173,28 +227,15 @@ async def get_trace(trace_id: str):
             logger.warning("get_trace: Redis unavailable — falling back to on-chain-only lookup", exc_info=True)
             off_chain = None
         if off_chain:
-            return TraceResponse(
-                id=off_chain.get("id", trace_id),
-                vault_address=off_chain.get("vault_address", ""),
-                decision_type=off_chain.get("decision_type", "unknown"),
-                trigger=off_chain.get("trigger", "unknown"),
-                timestamp=off_chain.get("timestamp", ""),
-                reasoning=off_chain.get("reasoning", ""),
-                confidence=off_chain.get("confidence", 0.0),
-                trace_hash=off_chain.get("trace_hash", ""),
-                arc_tx_hash=off_chain.get("arc_tx_hash"),
-                is_verified=off_chain.get("is_verified", False),
-                regime_at_decision=off_chain.get("market_context", {}).get("regime"),
-                trades_executed=off_chain.get("trades_executed", []),
-                strategies_referenced=off_chain.get("strategies_referenced", []),
-                commit_tx_hash=off_chain.get("commit_tx_hash"),
-                commit_block_number=off_chain.get("commit_block_number"),
-                reveal_tx_hash=off_chain.get("reveal_tx_hash"),
-                reveal_block_number=off_chain.get("reveal_block_number"),
-                trade_tx_hash=off_chain.get("trade_tx_hash"),
-                trade_block_number=off_chain.get("trade_block_number"),
-                temporal_binding_valid=off_chain.get("temporal_binding_valid"),
-                temporal_binding_source=off_chain.get("temporal_binding_source", "none"),
+            row = _trace_from_off_chain({**off_chain, "id": off_chain.get("id", trace_id)})
+            return TraceDetailResponse(
+                **row.model_dump(),
+                market_context=off_chain.get("market_context") or {},
+                portfolio_before=off_chain.get("portfolio_before") or {},
+                portfolio_after=off_chain.get("portfolio_after") or {},
+                consulted_paper_hashes=off_chain.get("consulted_paper_hashes") or [],
+                settlement_tx_hashes=off_chain.get("settlement_tx_hashes") or [],
+                ipfs_cid=off_chain.get("ipfs_cid"),
             )
 
         try:
@@ -206,7 +247,7 @@ async def get_trace(trace_id: str):
         if detail is None:
             raise HTTPException(status_code=404, detail="Trace not found")
 
-        return _anchored_only_trace(trace_id, detail)
+        return TraceDetailResponse(**_anchored_only_trace(trace_id, detail).model_dump())
     finally:
         await state.close()
 
