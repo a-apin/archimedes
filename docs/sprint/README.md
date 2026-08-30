@@ -63,12 +63,18 @@ PRs as still open. **Both were accurate when written** — the card was authored
    is now a quorum over *runnable* legs — `passes = legs_evaluated == len(_RUNNABLE_LEGS) and
    all(...)` — so a leg that could not run makes the verdict `false` rather than invisible.
    Kept here rather than deleted because cluster-8's row still points at it.
-3. **Do not trust this directory's anchors.** Follow session rule 1 without exception. Two are
-   not stale but fictional: cluster-0 records `ui/src/siwe.js:15` as a *verified* day-0 finding
-   and **that file has never existed** — `grep -rn VITE_ARC_CHAIN_ID .` matches only the card.
-   The chain id is hardcoded with no override seam in `ui/src/circle-wallet.js:36`,
-   `linked-wallets.js:13`, `api.js:16`, `AuthenticatedApp.jsx:71`, which is worse than the card
-   says. Four acceptance commands name files that do not exist (see Corrections).
+3. **Do not trust this directory's anchors.** Follow session rule 1 without exception, and
+   note that this rule's own first draft got a correction backwards. It said `ui/src/siwe.js`
+   **"has never existed"**, on the evidence that `grep -rn VITE_ARC_CHAIN_ID .` matched only
+   the card. That grep searches the working tree, where a deleted file and a fictional one look
+   identical. The file was real: `7415b245` (2026-06-13) gave it
+   `VITE_ARC_CHAIN_ID ?? '5042002'`, and `95c9faf7` (2026-07-28) deleted all 89 lines, taking
+   the seam with it. So cluster-0's anchor was accurate when written and the seam was **lost,
+   not never built** — a regression, which is a different thing to plan around than an
+   imaginary file. Verify a "never existed" claim with `git log --all --oneline -- <path>`
+   before recording it. The hardcoded ids it left behind (`config.js:10`, `circle-wallet.js:36`,
+   `linked-wallets.js:13`, `api.js:16`, `AuthenticatedApp.jsx:71`) are removed by #1240's UI
+   half. Four acceptance commands still name files that do not exist (see Corrections).
 4. **Two big items shipped by a different design than their card specifies.** #1194's quota
    rebuild closed cluster-5's headline bug without building the meter; #1266's
    `VITE_ROADMAP_SURFACES` flag closed cluster-7's nav work while *reversing* two of its
@@ -106,7 +112,8 @@ a row.
    window. Never `Read` a file whole to get oriented. **This rule overrides every line number in
    this directory.** The Aug-16 note claiming the anchors were "re-verified 6/6 fresh — trust
    them" was retired 2026-08-21: every rule-2 count had drifted and two anchors named a file
-   that has never existed.
+   no longer in the tree. (Those two named `ui/src/siwe.js`, which was deleted rather than
+   fictional — see item 3 below. The anchors were stale, which is what this rule is for.)
 2. **Never read whole** — counts at `f3d4103` (2026-08-21): `strategies_routes.py` (2621) ·
    `Architecture.jsx` (1329) · `rigor_evaluator.py` (1246) · `_rigor_helpers.py` (1176, under
    `services/`, not `api/`) · `main.py` (928) · `fusion_evaluator.py` (884).
@@ -142,7 +149,7 @@ Substantive errors only. Line drift is pervasive and rule 1 handles it.
 
 | Card | Claim | Correction |
 |---|---|---|
-| cluster-0 | `ui/src/siwe.js:15` hardcodes `5042002` / is `VITE_ARC_CHAIN_ID ?? '5042002'`, recorded as an executed result | **The file has never existed** and no override seam exists anywhere. Check 2's conclusion stands; its evidence does not |
+| cluster-0 | `ui/src/siwe.js:15` hardcodes `5042002` / is `VITE_ARC_CHAIN_ID ?? '5042002'`, recorded as an executed result | The card was right; **this table's first answer was wrong**. The file existed with that exact seam (`7415b245`) until `95c9faf7` deleted it on 2026-07-28. The working-tree grep behind "never existed" cannot see a deleted file. Seam lost, not absent — restored in `ui/src/chain-config.js` (#1240) |
 | cluster-0 | "Zero code. Bash and `gh` only." | Contradicted by the card's own two-bug-fix section, which shipped +14/−1 in PR #1239 |
 | cluster-1 | `cd analytics-engine && uv run pytest tests/test_cost_parity.py` | Never created; the analytics half went into `tests/test_costs.py:287-378`. The command cannot pass |
 | cluster-2 | `pytest backend/tests/test_fusion_evaluator.py` | Path is `backend/tests/services/test_fusion_evaluator.py` |
