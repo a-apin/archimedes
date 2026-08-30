@@ -1,37 +1,54 @@
 """Account-deletion cascade-vs-anonymize policy (issue #1367, D3).
 
 Verifies the per-table decision recorded in migration ``85ca5310b7a1`` is
-what actually happens at the database level when the owning
-``auth_users`` row is deleted — not merely that the FK exists (that is
-covered elsewhere, e.g. ``test_canonical_user_ownership.py``'s
-``test_application_owned_tables_reference_canonical_user``), but that
-deleting the account really does detach-or-remove every one of the six
-owner columns:
+what actually happens when the owning ``auth_users`` row is deleted:
 
   * CASCADE  — ``user_profiles`` (the encrypted-email row), ``paper_deployments``
   * SET NULL — ``strategy_store``, ``strategy_passports``, ``strategy_proposals``,
     ``vault_metadata``
 
-SQLite does not enforce FK actions (including ``ON DELETE CASCADE`` /
-``SET NULL``) unless ``PRAGMA foreign_keys=ON`` is issued per-connection —
-see ``test_identity_schema.py``'s module docstring, which is why every
-other FK test in this suite checks presence via introspection rather than
-enforcement. This file's entire point is to prove the ON DELETE *actions*
-actually fire, so it turns the pragma on for its own throwaway in-memory
-engine. Anti-goal (issue #1367): stay in-memory sqlite, no Postgres/Redis —
-this satisfies that by enabling enforcement on sqlite itself rather than
-widening to an integration test.
+**Against the migrated schema, not the ORM's.** The first version of this
+file built its throwaway database with ``Base.metadata.create_all()``, which
+made it a guard over ``models/user_profile.py``'s ``ondelete=`` kwarg rather
+than over the migration. On Postgres — the only place this policy actually
+runs — the migration alone shapes the schema, so that guard stayed green
+even with the migration's CASCADEs gutted, and it could not see the
+``BEFORE DELETE`` trigger at all (``create_all()`` does not carry triggers;
+see the migration's own "Path note"). Every test here therefore runs a real
+``alembic upgrade head`` into a throwaway SQLite file and exercises the
+schema that produces.
+
+``alembic upgrade head`` is run ONCE per module into a pristine template
+file (a subprocess, whitelist-only env, mirroring
+``test_alembic_migrations.py``'s ``_clean_subprocess_env`` — an inherited
+``DATABASE_URL=postgresql://...@postgres:...`` from a developer's ``.env``
+would send it at a docker-compose-only hostname); each test then copies that
+file so it gets a fresh database without paying for the migration replay
+again.
+
+SQLite does not enforce FK ``ON DELETE`` actions unless ``PRAGMA
+foreign_keys=ON`` is issued per-connection — see ``test_identity_schema.py``'s
+module docstring, which is why every other FK test in this suite checks
+presence via introspection rather than enforcement. This file's whole point
+is to prove the actions FIRE, so it turns the pragma on for its own engine.
+Anti-goal (issue #1367): stay on sqlite, no Postgres/Redis — this satisfies
+that by enabling real enforcement on sqlite rather than widening to an
+integration test.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
-from archimedes.models.account import AuthUser
-from archimedes.models.chat import Base, VaultMetadata
+from archimedes.models.account import AuthUser, LinkedWallet
+from archimedes.models.chat import VaultMetadata
 from archimedes.models.identity import WalletIdentity
-from archimedes.models.paper_store import PaperDeployment
+from archimedes.models.paper_store import PaperDailyReturn, PaperDeployment
 from archimedes.models.strategy_passport_record import StrategyPassportRecord
 from archimedes.models.strategy_proposal import StrategyProposal
 from archimedes.models.strategy_store import StrategyRecord, upsert_strategy
@@ -40,6 +57,8 @@ from archimedes.services.email_crypto import encrypt_email
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session
 
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+
 # The six columns the issue's evidence names — SET NULL first (content
 # survives, ownership detaches), CASCADE last (the whole row goes).
 _SET_NULL_TABLES = ("strategy_store", "strategy_passports", "strategy_proposals", "vault_metadata")
@@ -47,15 +66,48 @@ _CASCADE_TABLES = ("user_profiles", "paper_deployments")
 _ALL_OWNED_TABLES = _SET_NULL_TABLES + _CASCADE_TABLES
 
 _USER_ID = "user-cascade-del"
-_WALLET = "0x" + "b" * 40
+_WALLET = "0x" + "b" * 40  # the account's FIRST linked wallet — profile is claimed
+_SECOND_WALLET = "0x" + "d" * 40  # linked LATER; its profile predates the link, stays unclaimed
+_STRANGER_WALLET = "0x" + "e" * 40  # never linked to this account — must survive untouched
 _VAULT_ADDR = "0x" + "c" * 40
 _STRATEGY_ID = "strategy-cascade-1"
 _PLAINTEXT_EMAIL = "private-profile-email@example.com"
+_SECOND_EMAIL = "second-wallet-email@example.com"
+_STRANGER_EMAIL = "someone-elses-email@example.com"
 
 
-def _fk_enforced_engine():
-    """In-memory sqlite with ON DELETE actions actually enforced (see module docstring)."""
-    engine = create_engine("sqlite://")  # single shared connection, per SQLAlchemy's sqlite:// default
+def _clean_subprocess_env(database_url: str) -> dict[str, str]:
+    """Whitelist-only env for the alembic subprocess — see module docstring."""
+    return {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "DATABASE_URL": database_url,
+    }
+
+
+@pytest.fixture(scope="module")
+def migrated_template(tmp_path_factory) -> Path:
+    """One real ``alembic upgrade head`` per module, into a pristine file."""
+    db_path = tmp_path_factory.mktemp("migrated") / "head.db"
+    result = subprocess.run(
+        ["alembic", "upgrade", "head"],
+        cwd=str(_BACKEND_DIR),
+        env=_clean_subprocess_env(f"sqlite:///{db_path}"),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, f"alembic upgrade head failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    assert db_path.exists()
+    return db_path
+
+
+@pytest.fixture()
+def engine(migrated_template, tmp_path):
+    """A fresh copy of the migrated schema, with ON DELETE actions enforced."""
+    db_path = tmp_path / "deletion.db"
+    shutil.copyfile(migrated_template, db_path)
+    engine = create_engine(f"sqlite:///{db_path}")
 
     @event.listens_for(engine, "connect")
     def _enable_fk(dbapi_connection, _connection_record):
@@ -63,29 +115,70 @@ def _fk_enforced_engine():
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    Base.metadata.create_all(engine)
-    return engine
+    # NO Base.metadata.create_all() — the schema under test is the migrated
+    # one. create_all() here would paper over exactly the divergence this
+    # file exists to catch (and would still miss the trigger entirely).
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
-@pytest.fixture()
-def engine():
-    return _fk_enforced_engine()
-
-
-def _seed_one_row_in_each_owned_table(session: Session) -> None:
-    """Create one AuthUser plus one row it owns in each of the six tables."""
+def _add_account(session: Session, user_id: str = _USER_ID) -> None:
     now = datetime.now(UTC)
     session.add(
         AuthUser(
-            id=_USER_ID,
+            id=user_id,
             name="Deletable User",
-            email=f"{_USER_ID}@example.com",
+            email=f"{user_id}@example.com",
             email_verified=True,
             created_at=now,
             updated_at=now,
         )
     )
-    session.add(WalletIdentity(wallet_address=_WALLET, actor_class="human"))
+
+
+def _link_wallet(session: Session, user_id: str, address: str, *, primary: bool = False) -> None:
+    """Register the wallet on the identity anchor and link it to the account.
+
+    The link is what the migration's trigger keys off: it is the account's
+    own proof of signature control over that address (``wallet_routes``'
+    challenge flow), and therefore the only defensible basis for treating an
+    unclaimed row on that address as the deleting account's PII.
+    """
+    if session.get(WalletIdentity, address) is None:
+        session.add(WalletIdentity(wallet_address=address, actor_class="human"))
+        session.flush()
+    session.add(
+        LinkedWallet(
+            user_id=user_id,
+            normalized_identity=f"5042002:{address}",
+            address=address,
+            display_address=address,
+            chain_id=5042002,
+            provider="test",
+            is_primary=primary,
+        )
+    )
+
+
+def _delete_the_account(session: Session, user_id: str = _USER_ID) -> None:
+    """Mirror the real trigger: a bare ``DELETE FROM auth_users``.
+
+    The migration's own rationale is that the database's FK actions must do
+    this work regardless of which of the two services (Node Better Auth, or
+    the Python backend) issues the delete, so the test issues the same bare
+    statement rather than going through any application-level cleanup helper
+    that only one of them would run.
+    """
+    session.execute(text("DELETE FROM auth_users WHERE id = :id"), {"id": user_id})
+    session.commit()
+
+
+def _seed_one_row_in_each_owned_table(session: Session) -> None:
+    """One AuthUser plus one row it owns in each of the six tables."""
+    _add_account(session)
+    _link_wallet(session, _USER_ID, _WALLET, primary=True)
     session.flush()  # wallet_identities row must exist before FK-dependent inserts below
 
     upsert_strategy(
@@ -117,26 +210,51 @@ def _seed_one_row_in_each_owned_table(session: Session) -> None:
     session.add(VaultMetadata(vault_address=_VAULT_ADDR, creator_address=_WALLET, owner_user_id=_USER_ID))
     session.add(
         PaperDeployment(
+            id="deployment-claimed-1",
             strategy_id=_STRATEGY_ID,
+            owner_wallet=_WALLET,
             owner_user_id=_USER_ID,
             spec_json="{}",
             deployed_at=date.today(),
         )
     )
+    session.flush()
+    session.add(PaperDailyReturn(deployment_id="deployment-claimed-1", date=date.today(), daily_return=0.01))
     session.commit()
 
 
-def _delete_the_account(session: Session) -> None:
-    """Mirror the real trigger: a bare ``DELETE FROM auth_users`` — the migration's
-    own rationale is that Postgres' FK actions must do this work regardless of
-    which of the two services (Node Better Auth, or the Python backend) issues
-    the delete, so the test issues the same bare statement rather than going
-    through any application-level cleanup helper."""
-    session.execute(text("DELETE FROM auth_users WHERE id = :id"), {"id": _USER_ID})
-    session.commit()
+def test_migrated_schema_is_what_is_under_test(engine):
+    """The premise the rest of this file rests on: these tests run against the
+    Alembic-built schema, so a gutted migration cannot hide behind a correct
+    ORM model. Asserted directly rather than assumed — ``create_all()`` and
+    ``upgrade head`` are two different schema-management paths (see
+    ``migrations/env.py``), and only one of them is the one that ships.
+    """
+    with engine.connect() as conn:
+        stamped = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        assert stamped == "85ca5310b7a1", f"expected this migration to be head, got {stamped!r}"
+
+        actions = {
+            row[3]: row[6]  # from-column -> ON DELETE action
+            for row in conn.exec_driver_sql("PRAGMA foreign_key_list(user_profiles)")
+        }
+        assert actions.get("owner_user_id") == "CASCADE", (
+            f"migrated user_profiles.owner_user_id is not ON DELETE CASCADE: {actions}"
+        )
+
+        paper_actions = {row[3]: row[6] for row in conn.exec_driver_sql("PRAGMA foreign_key_list(paper_deployments)")}
+        assert paper_actions.get("owner_user_id") == "CASCADE", (
+            f"migrated paper_deployments.owner_user_id is not ON DELETE CASCADE: {paper_actions}"
+        )
+
+        triggers = {row[0] for row in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
+        assert "trg_auth_users_purge_unclaimed_owned_rows" in triggers, (
+            f"the migration's second-reach trigger is missing from the migrated schema: {sorted(triggers)}"
+        )
 
 
 def test_account_deletion_cascades_or_nulls_every_owned_table(engine):
+    """Both policy branches, on the schema the migration builds."""
     with Session(engine) as session:
         _seed_one_row_in_each_owned_table(session)
         assert session.get(AuthUser, _USER_ID) is not None, "seed did not create the account"
@@ -157,7 +275,7 @@ def test_account_deletion_cascades_or_nulls_every_owned_table(engine):
             ).scalar_one()
             assert remaining == 0, f"{table} still has a row with owner_user_id = {_USER_ID!r}"
 
-        # SET NULL tables: the content survives — detached, not destroyed.
+        # SET NULL branch: the content survives — detached, not destroyed.
         assert (
             session.get(StrategyRecord, session.execute(text("SELECT id FROM strategy_store")).scalar_one()) is not None
         )
@@ -169,7 +287,7 @@ def test_account_deletion_cascades_or_nulls_every_owned_table(engine):
         assert vault_row is not None, "vault_metadata row was deleted; expected SET NULL, not CASCADE"
         assert vault_row[0] is None
 
-        # (b) CASCADE tables: the row itself is gone — including the
+        # CASCADE branch: the row itself is gone — including the
         # Fernet-encrypted email, not merely detached from the account.
         assert session.get(UserProfile, _WALLET) is None, (
             "user_profiles row survived account deletion; the encrypted email is still in the DB"
@@ -181,3 +299,124 @@ def test_account_deletion_cascades_or_nulls_every_owned_table(engine):
             text("SELECT COUNT(*) FROM paper_deployments WHERE strategy_id = :sid"), {"sid": _STRATEGY_ID}
         ).scalar_one()
         assert remaining_deployments == 0, "paper_deployments row survived account deletion"
+
+        # The ledger under the deployment goes with it (paper_daily_returns
+        # already cascades off paper_deployments.id) — the migration's
+        # "removes the whole ledger cleanly in one direction" claim, checked
+        # rather than asserted in prose.
+        remaining_ledger = session.execute(text("SELECT COUNT(*) FROM paper_daily_returns")).scalar_one()
+        assert remaining_ledger == 0, "paper_daily_returns rows survived their deployment's deletion"
+
+
+def test_account_deletion_reaches_unclaimed_rows_on_a_second_linked_wallet(engine):
+    """The gap a single ``ON DELETE CASCADE`` cannot close.
+
+    ``user_profiles.owner_user_id`` is UNIQUE and the claim path stamps at
+    most one profile per account, so an account that links a SECOND wallet
+    whose profile row predates the link keeps that row at
+    ``owner_user_id IS NULL`` — outside the FK's reach. Without the
+    migration's trigger, deleting the account leaves that row, and its
+    Fernet-encrypted email, in the database forever. Same shape for a
+    pre-link ``paper_deployments`` row, which the claim path never touches
+    at all.
+    """
+    with Session(engine) as session:
+        _add_account(session)
+        _link_wallet(session, _USER_ID, _WALLET, primary=True)
+        _link_wallet(session, _USER_ID, _SECOND_WALLET)
+        session.flush()
+
+        # The canonical, claimed profile — reached by the FK.
+        session.add(
+            UserProfile(
+                wallet_address=_WALLET,
+                owner_user_id=_USER_ID,
+                email=encrypt_email(_PLAINTEXT_EMAIL),
+            )
+        )
+        # The second wallet's legacy profile: created before the link, never
+        # claimed (the account already has a canonical profile — see
+        # ``upsert_profile``'s 409). Only the trigger can reach this one.
+        session.add(
+            UserProfile(
+                wallet_address=_SECOND_WALLET,
+                owner_user_id=None,
+                email=encrypt_email(_SECOND_EMAIL),
+            )
+        )
+        # A pre-link paper deployment on the second wallet: claim_legacy_wallet_data
+        # does not list PaperDeployment at all, so this is never claimed either.
+        session.add(
+            PaperDeployment(
+                id="deployment-unclaimed-1",
+                strategy_id=_STRATEGY_ID,
+                owner_wallet=_SECOND_WALLET,
+                owner_user_id=None,
+                spec_json="{}",
+                deployed_at=date.today(),
+            )
+        )
+        session.commit()
+
+        _delete_the_account(session)
+
+    with Session(engine) as session:
+        assert session.get(UserProfile, _SECOND_WALLET) is None, (
+            "the second linked wallet's unclaimed profile survived account deletion; "
+            "its Fernet-encrypted email is still in the DB"
+        )
+        assert session.get(UserProfile, _WALLET) is None, "the canonical profile survived account deletion"
+        assert session.execute(text("SELECT COUNT(*) FROM user_profiles")).scalar_one() == 0
+
+        assert session.get(PaperDeployment, "deployment-unclaimed-1") is None, (
+            "the second linked wallet's unclaimed paper deployment survived account deletion"
+        )
+
+
+def test_deletion_does_not_reach_an_unclaimed_row_on_a_wallet_the_account_never_linked(engine):
+    """The trigger is scoped to the account's OWN proven wallets.
+
+    The reason the trigger keys off ``linked_wallets`` and not simply
+    "``owner_user_id IS NULL``" is that unclaimed rows are the normal state
+    for every wallet-only visitor who never signed up. A purge that ignored
+    the link would destroy strangers' data on one unrelated account deletion
+    — a far worse bug than the one being fixed. This is the input that must
+    NOT be swept up, asserted so the scoping cannot silently regress.
+    """
+    with Session(engine) as session:
+        _add_account(session)
+        _link_wallet(session, _USER_ID, _WALLET, primary=True)
+        # A wallet-only visitor: known to the identity anchor, has a profile
+        # and a paper deployment, never linked to any Better Auth account.
+        session.add(WalletIdentity(wallet_address=_STRANGER_WALLET, actor_class="human"))
+        session.flush()
+
+        session.add(
+            UserProfile(
+                wallet_address=_STRANGER_WALLET,
+                owner_user_id=None,
+                email=encrypt_email(_STRANGER_EMAIL),
+            )
+        )
+        session.add(
+            PaperDeployment(
+                id="deployment-stranger-1",
+                strategy_id=_STRATEGY_ID,
+                owner_wallet=_STRANGER_WALLET,
+                owner_user_id=None,
+                spec_json="{}",
+                deployed_at=date.today(),
+            )
+        )
+        session.commit()
+
+        _delete_the_account(session)
+
+    with Session(engine) as session:
+        assert session.get(UserProfile, _STRANGER_WALLET) is not None, (
+            "an unrelated wallet's profile was destroyed by another account's deletion — "
+            "the purge is not scoped to the deleting account's linked wallets"
+        )
+        assert session.get(PaperDeployment, "deployment-stranger-1") is not None, (
+            "an unrelated wallet's paper deployment was destroyed by another account's deletion"
+        )
