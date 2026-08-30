@@ -469,6 +469,17 @@ async def _limit_request_body(request: Request, call_next):
     return await call_next(request)
 
 
+# ── Timing middleware: per-request duration + slow-request log (issue #1436) ──
+# The ALB reports p50 46ms against p99 16.8s, but its metrics are per-target,
+# not per-route, so which endpoint owns the tail was not answerable from logs.
+# Tags every response with X-Response-Time-Ms and logs the ones over
+# SLOW_REQUEST_MS. SSE streams are exempt — they legitimately run 300s+, which
+# is the same contamination that forced the latency alarm off p95 on 2026-08-21.
+from archimedes.api.timing_middleware import timing_middleware
+
+app.middleware("http")(timing_middleware)
+
+
 # ── Telemetry middleware: human-vs-agent traction counter (issue #428) ──
 # Registered AFTER _limit_request_body and BEFORE include_router. It classifies
 # each request (Better Auth account → human; internal-key / bot-UA → agent), increments
