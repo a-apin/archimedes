@@ -1810,7 +1810,62 @@ def _generation_cost_for(strategy_id: str, session) -> dict | None:
         return None
 
 
-def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
+# Sentinel distinguishing "no returns were prefetched for this call" from "the
+# prefetch ran and this strategy genuinely has no persisted series". The two
+# must not collapse: the first means we do not know, the second is a fact.
+_RETURNS_NOT_PREFETCHED = object()
+
+
+def _rollback_quietly(session) -> None:
+    """Roll back after a swallowed read so the transaction is usable again.
+
+    Postgres aborts the whole transaction on a failed statement; every later
+    statement then raises InFailedSqlTransaction. sqlite does not, so a suite
+    that runs on sqlite cannot observe the difference — which is why this is
+    written down rather than left to the reader.
+    """
+    try:
+        session.rollback()
+    except Exception:  # pragma: no cover — nothing useful to do if rollback fails
+        pass
+
+
+def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, bool]:
+    """Tri-state + degenerate status for a generated/fusion passport row.
+
+    Returns ``(status, is_placeholder)``.
+
+    #1184: the stored aggregate alone cannot tell a zero-variance persisted
+    series apart from an ungraded one. Both leave ``record.sharpe_ratio`` NULL,
+    so reading the aggregate by itself reported a flat, broken, or zero-trade
+    backtest as ``"pending"`` — "we have not graded this yet", which is a claim,
+    and a false one. The curated path already answers this correctly via
+    ``_verdict_from_result``; this is the same predicate applied to the persisted
+    series the passport path had never loaded.
+
+    ``daily_returns`` empty means no persisted series was found, which is the
+    genuine "not graded yet" case — the aggregate three-way is then correct.
+    """
+    if daily_returns:
+        from archimedes.services.rigor_evaluator import (
+            is_oos_zero_variance_series,
+            is_zero_variance_series,
+        )
+
+        # OR'd exactly as run_rigor_gate ORs them into is_degenerate, so this
+        # read path and the gate agree by construction on both kinds of
+        # flatness (whole-series, and flat only inside the OOS slice).
+        if is_zero_variance_series(daily_returns) or is_oos_zero_variance_series(daily_returns):
+            # A persisted series exists, so this is not an ungraded placeholder;
+            # it is a graded row whose series carries no variance to grade.
+            return "degenerate", False
+
+    if record.sharpe_ratio is None:
+        return "pending", True
+    return ("pass" if bool(record.passes_rigor_gate) else "fail"), False
+
+
+def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_NOT_PREFETCHED) -> StrategyResponse:
     """Reshape a StrategyPassportRecord (fusion/architect output) into the
     StrategyResponse schema that StrategyPassport.jsx expects. Curated
     strategies still flow through LocalStrategyProvider above; this is the
@@ -1821,6 +1876,14 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     (fusion generation stores only arxiv_ids), the corpus join backfills them so
     the UI can display a human-readable title instead of a bare arxiv id.
     Falls back to the arxiv_id string when the corpus has no matching row.
+
+    ``daily_returns`` — this strategy's persisted daily-return series, when the
+    caller has already bulk-loaded it for a whole page of rows. List callers
+    pass it so the degenerate check below costs one cohort read per request
+    instead of one per row; the single-row detail path leaves it unset and this
+    function loads its own. Left unset with no ``session`` either, the
+    degenerate check is skipped and the status falls back to the stored
+    aggregate — see ``_passport_rigor_status``.
     """
     from archimedes.api.schemas import PaperRefResponse
     from archimedes.services.return_source_classifier import (
@@ -1833,6 +1896,32 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     # is also the answer for every strategy generated before the meter existed.
     # Either way the UI renders "not measured"; nothing is zeroed or invented.
     generation_cost = _generation_cost_for(record.id, session)
+
+    # #1184: resolve this row's persisted return series so the rigor status
+    # below can tell a zero-variance (degenerate) series apart from an ungraded
+    # one. Prefetched by list callers; self-loaded on the single-row path.
+    if daily_returns is _RETURNS_NOT_PREFETCHED:
+        _returns: list[float] = []
+        if session is not None:
+            try:
+                from archimedes.services.backtest_repository import get_daily_returns
+
+                _returns = get_daily_returns(session, record.id) or []
+            except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "persisted-returns read failed for %s (%s) — rigor status falls back to the stored aggregate",
+                    record.id,
+                    type(exc).__name__,
+                )
+                # See _passport_responses: without this, everything later in the
+                # request fails on Postgres and succeeds on sqlite.
+                _rollback_quietly(session)
+    else:
+        _returns = list(daily_returns or [])
+
+    _rigor_status, _is_placeholder = _passport_rigor_status(record, _returns)
 
     refs = list(record.paper_refs or [])
     first = refs[0] if refs else None
@@ -1919,21 +2008,15 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         # *live* verdict, not a fixture boolean — so it is a legitimate badge source
         # per #821 ("read a persisted live-gate verdict"). Map it to the tri-state:
         # a passport with no real backtest (sharpe_ratio is None) is "pending".
-        passes_rigor_gate=bool(record.passes_rigor_gate),
-        # #1184 KNOWN GAP: this three-state map is NOT threaded through the
-        # DEGENERATE category live_rigor_gate/_verdict_from_result added — it
-        # reads only the stored aggregate (record.sharpe_ratio /
-        # passes_rigor_gate), not the persisted daily-return series, so a
-        # generated/fusion strategy with a zero-variance series still reports
-        # "fail" here rather than "degenerate". Fixing this needs the same
-        # is_zero_variance_series/is_oos_zero_variance_series check run against
-        # this passport's own persisted returns (get_daily_returns), which this
-        # read path does not currently load. Tracked as an open follow-up on
-        # #1184, not closed by this PR.
-        rigor_gate_status=(
-            "pending" if record.sharpe_ratio is None else ("pass" if bool(record.passes_rigor_gate) else "fail")
-        ),
-        is_backtest_placeholder=record.sharpe_ratio is None,
+        # A degenerate row is never a pass, whatever the stored boolean says.
+        passes_rigor_gate=bool(record.passes_rigor_gate) and _rigor_status != "degenerate",
+        # #1184: four-state, derived from this passport's OWN persisted series
+        # (see _passport_rigor_status). The stored aggregate alone cannot
+        # separate a zero-variance series from an ungraded one — both leave
+        # sharpe_ratio NULL — so reading it by itself reported broken data as
+        # "pending", which is a claim ("not graded yet"), and a false one.
+        rigor_gate_status=_rigor_status,
+        is_backtest_placeholder=_is_placeholder,
         sharpe_ci_lower=None,
         sharpe_ci_upper=None,
         backtest_start=record.backtest_start,
@@ -1951,6 +2034,50 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
 # Curated strategies are UNCHANGED: callers keep sourcing those from
 # strategy_provider() and concatenate the GENERATED half these return on top —
 # nothing here alters the curated path.
+
+
+def _passport_responses(records, session) -> list[StrategyResponse]:
+    """Map passport rows to responses, bulk-loading their persisted returns once.
+
+    #1184 made ``_passport_to_strategy_response`` consult each row's persisted
+    daily-return series so a zero-variance one reports ``degenerate`` instead of
+    ``pending``. This routes that through ``get_all_daily_returns`` — the same DB
+    boundary ``live_rigor_gate`` and the selection-bias route already read
+    through, and the one the suite mocks — then hands each row its own slice.
+
+    **Cost, stated honestly:** ``get_all_daily_returns`` is a Python loop over
+    ``get_daily_returns``, so this is N indexed single-row reads, not one batched
+    query. It is the same query count reading per row would cost; the helper buys
+    a single mocking boundary and one failure decision, not a batching win. Each
+    read deserializes that strategy's whole ``artifact_json`` blob, so the real
+    cost scales with the generated corpus, and ``list_passports`` has no LIMIT.
+    Making the degenerate answer cheap needs it persisted at write time rather
+    than re-derived on read — tracked separately; do not paper over it here by
+    skipping rows, because which rows you skip is exactly the claim at stake.
+    """
+    if not records:
+        return []
+    try:
+        from archimedes.services.backtest_repository import get_all_daily_returns
+
+        returns_by_id = get_all_daily_returns(session, [r.id for r in records]) or {}
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "cohort persisted-returns read failed (%s) — falling back to a per-row read",
+            type(exc).__name__,
+        )
+        # A failed statement aborts the surrounding Postgres transaction, so
+        # every later read in this request would raise InFailedSqlTransaction.
+        # sqlite tolerates it, which is why no test can see this.
+        _rollback_quietly(session)
+        # NOT ``{}``: an empty map would hand every row [] — "the read found no
+        # series" — when the truth is "we do not know". That collapse is what
+        # sends a flat series back to "pending", the exact false claim #1184 is
+        # about. The sentinel makes each row decide for itself instead.
+        return [_passport_to_strategy_response(r, session) for r in records]
+    return [_passport_to_strategy_response(r, session, returns_by_id.get(r.id, [])) for r in records]
 
 
 def _generated_strategy_responses(
@@ -1972,7 +2099,7 @@ def _generated_strategy_responses(
     if not records:
         return []
     visible = _visible_passports(session, records, caller, caller_user_id)
-    return [_passport_to_strategy_response(r, session) for r in visible]
+    return _passport_responses(visible, session)
 
 
 def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
@@ -2006,7 +2133,7 @@ def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
         )
     }
     visible = [r for r in records if r.id in published_ids]
-    return [_passport_to_strategy_response(r, session) for r in visible]
+    return _passport_responses(visible, session)
 
 
 def _owned_generated_strategy_responses(
@@ -2048,7 +2175,7 @@ def _owned_generated_strategy_responses(
         }
         if is_strategy_visible(row_view, caller_wallet, caller_user_id=caller_user_id):
             owned.append(r)
-    return [_passport_to_strategy_response(r, session) for r in owned]
+    return _passport_responses(owned, session)
 
 
 @strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
