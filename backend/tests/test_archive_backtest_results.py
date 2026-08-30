@@ -7,10 +7,18 @@ Covers:
     script's module docstring on rule 3 being a strict subset of rule 1
     otherwise, and its documented limitation re: superseded snapshot rows).
   - archive-before-prune enforcement: --prune without a verified manifest for
-    today MUST refuse (ManifestNotFound) — a guard demonstration.
+    the run date MUST refuse (ManifestNotFound) — a guard demonstration.
+  - manifest verification, bytes AND content: a batch whose bytes were altered
+    refuses (sha256), and — the case sha256 cannot see — a byte-intact batch
+    whose contained row ids disagree with the manifest's row_ids also refuses,
+    because row_ids is what prune deletes off.
   - batch accounting: --archive splits doomed rows into the requested batch
     size and the manifest's row counts sum correctly; --prune deletes exactly
     the archived, currently-non-kept rows and leaves every keep-row intact.
+  - CLI wiring: --batch-size and --run-date are threaded to BOTH run_archive
+    and run_prune, --batch-size refuses non-positive values, and a run pinned
+    to one --run-date prunes against its own manifest (the UTC-midnight
+    straddle) while a different date refuses.
 
 Uses a real tmp-file SQLite DB via ``tests.db_isolation.redirect_to_tmp_sqlite``
 (the idiom `test_api_routes.py::_use_tmp_db` uses) since the module under test
@@ -283,6 +291,87 @@ class TestPruneRefusesWithoutManifest:
             # delete anything.
             assert session.query(BacktestResultRecord).count() == 3
 
+    def test_prune_refuses_when_batch_content_disagrees_with_manifest_row_ids(self, _use_tmp_db, monkeypatch):
+        """The case a sha256-only check cannot see: the batch object is EXACTLY
+        the bytes that were uploaded (sha matches), but the manifest's row_ids
+        name a row that is not inside it.
+
+        This is the real-world shape — an archive run, then a manifest hand-
+        edited or regenerated against a different row set after a partial
+        re-run. row_ids is what --prune deletes off, so a manifest claiming an
+        id the archive does not contain is a licence to delete an unarchived
+        row. Bytes-only verification passes it; content verification must not.
+        """
+        monkeypatch.setenv("ARCHIVE_BUCKET", "test-bucket")
+        with get_session() as session:
+            archived = [
+                _mk_backtest(session, strategy_id="a", content_hash=f"h{i}", created_at=_t(i)) for i in range(3)
+            ]
+            session.commit()
+            archived_ids = [r.id for r in archived]
+
+            client = FakeS3Client()
+            run_date = date(2026, 6, 1)
+            script.run_archive(session, keep_recent_n=0, s3_client=client, run_date=run_date)
+
+            # A row that landed AFTER the archive ran: doomed under the current
+            # keep policy, but genuinely NOT in S3.
+            never_archived = _mk_backtest(session, strategy_id="a", content_hash="late", created_at=_t(9))
+            session.commit()
+            never_archived_id = never_archived.id
+
+            # Edit the manifest to claim the never-archived row is in the batch,
+            # in place of one that really is. Batch bytes are untouched, so the
+            # recorded sha256 still matches; row_count still equals len(row_ids).
+            manifest_key = ("test-bucket", script._manifest_key(run_date.isoformat()))
+            manifest = json.loads(client.objects[manifest_key])
+            batch = manifest["batches"][0]
+            assert sorted(batch["row_ids"]) == sorted(archived_ids)
+            batch["row_ids"] = [*archived_ids[:2], never_archived_id]
+            assert len(batch["row_ids"]) == batch["row_count"]
+            client.objects[manifest_key] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+
+            # The bytes-only check the manifest still passes, spelled out — so
+            # this test cannot silently stop exercising the content check.
+            stored = client.objects[("test-bucket", batch["key"])]
+            assert script._sha256_hex(stored) == batch["sha256"]
+
+            with pytest.raises(script.ManifestVerificationFailed) as excinfo:
+                script.run_prune(session, keep_recent_n=0, s3_client=client, run_date=run_date)
+            assert "row_ids" in str(excinfo.value)
+
+            # Nothing deleted — including the row the tampered manifest tried to
+            # licence, which was never archived anywhere.
+            assert session.query(BacktestResultRecord).count() == 4
+            assert session.query(BacktestResultRecord).filter_by(id=never_archived_id).one_or_none() is not None
+
+    def test_prune_refuses_when_a_batch_object_is_not_readable_as_archived_rows(self, _use_tmp_db, monkeypatch):
+        """A batch replaced with something that is not gzipped JSONL, with the
+        manifest's sha256 refreshed to match. Bytes verify; content cannot be
+        read at all, so it proves nothing was archived and prune must refuse
+        rather than raise a raw decode error out of the guard."""
+        monkeypatch.setenv("ARCHIVE_BUCKET", "test-bucket")
+        with get_session() as session:
+            for i in range(2):
+                _mk_backtest(session, strategy_id="a", content_hash=f"h{i}", created_at=_t(i))
+            session.commit()
+
+            client = FakeS3Client()
+            run_date = date(2026, 6, 2)
+            script.run_archive(session, keep_recent_n=0, s3_client=client, run_date=run_date)
+
+            manifest_key = ("test-bucket", script._manifest_key(run_date.isoformat()))
+            manifest = json.loads(client.objects[manifest_key])
+            batch = manifest["batches"][0]
+            replacement = b"this is not a gzip stream"
+            client.objects[("test-bucket", batch["key"])] = replacement
+            batch["sha256"] = script._sha256_hex(replacement)
+            client.objects[manifest_key] = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8")
+
+            with pytest.raises(script.ManifestVerificationFailed):
+                script.run_prune(session, keep_recent_n=0, s3_client=client, run_date=run_date)
+            assert session.query(BacktestResultRecord).count() == 2
+
 
 # ─────────────────────────── batch accounting ────────────────────────────
 
@@ -375,3 +464,87 @@ class TestBatchAccounting:
             assert result["deleted_count"] == 0
             assert result["skipped_now_kept_count"] == 1
             assert session.query(BacktestResultRecord).filter_by(id=row.id).one_or_none() is not None
+
+
+# ─────────────────────────── CLI wiring ────────────────────────────────
+
+
+class TestCliFlags:
+    def test_batch_size_defaults_to_the_measured_archive_constant(self):
+        args = script.build_parser().parse_args([])
+        assert args.batch_size == script.ARCHIVE_BATCH_SIZE
+        assert script.ARCHIVE_BATCH_SIZE == 100  # the measured 345MB-peak setting
+        assert args.run_date is None
+
+    def test_batch_size_rejects_non_positive_values(self):
+        parser = script.build_parser()
+        for bad in ("0", "-1"):
+            with pytest.raises(SystemExit):
+                parser.parse_args(["--batch-size", bad])
+
+    def test_run_date_parses_as_an_iso_date_and_rejects_garbage(self):
+        assert script.build_parser().parse_args(["--run-date", "2026-05-05"]).run_date == date(2026, 5, 5)
+        with pytest.raises(SystemExit):
+            script.build_parser().parse_args(["--run-date", "05/05/2026"])
+
+    def test_batch_size_and_run_date_reach_both_call_sites(self, _use_tmp_db, monkeypatch):
+        """Both flags must be threaded to run_archive AND run_prune — a flag
+        parsed but not passed is worse than no flag, because the operator
+        believes it took effect."""
+        monkeypatch.setenv("ARCHIVE_BUCKET", "test-bucket")
+        captured: dict[str, dict] = {}
+
+        def _fake_archive(session, **kwargs):
+            captured["archive"] = kwargs
+            return {"bucket": "test-bucket", "date": "x", "manifest_key": "k", "total_rows": 0, "batch_count": 0}
+
+        def _fake_prune(session, **kwargs):
+            captured["prune"] = kwargs
+            return {
+                "bucket": "test-bucket",
+                "date": "x",
+                "manifest_total_rows": 0,
+                "archived_ids_count": 0,
+                "skipped_now_kept_count": 0,
+                "deleted_count": 0,
+            }
+
+        monkeypatch.setattr(script, "run_archive", _fake_archive)
+        monkeypatch.setattr(script, "run_prune", _fake_prune)
+
+        common = ["--batch-size", "7", "--run-date", "2026-05-05", "--keep-recent-n", "3"]
+        assert script.main(["--archive", *common]) == 0
+        assert script.main(["--prune", *common]) == 0
+
+        expected = {"keep_recent_n": 3, "batch_size": 7, "run_date": date(2026, 5, 5)}
+        assert captured["archive"] == expected
+        assert captured["prune"] == expected
+
+    def test_run_date_lets_a_midnight_straddling_run_prune_against_its_own_manifest(self, _use_tmp_db, monkeypatch):
+        """End-to-end through main(): archive under an explicit --run-date, then
+        prune under the SAME date succeeds while the next day's date refuses.
+        This is the UTC-midnight straddle the flag exists for."""
+        monkeypatch.setenv("ARCHIVE_BUCKET", "test-bucket")
+        client = FakeS3Client()
+        monkeypatch.setattr(script, "_s3_client", lambda: client)
+
+        with get_session() as session:
+            for i in range(5):
+                _mk_backtest(session, strategy_id="a", content_hash=f"h{i}", created_at=_t(i))
+            session.commit()
+
+        # --batch-size is honoured by archive: 5 rows / 2 = batches of [2, 2, 1].
+        assert script.main(["--archive", "--keep-recent-n", "0", "--batch-size", "2", "--run-date", "2026-05-05"]) == 0
+        manifest = json.loads(client.objects[("test-bucket", script._manifest_key("2026-05-05"))])
+        assert [b["row_count"] for b in manifest["batches"]] == [2, 2, 1]
+
+        # The day AFTER — what an unpinned prune would resolve to if the run
+        # crossed midnight — has no manifest, so prune refuses (exit code 3).
+        assert script.main(["--prune", "--keep-recent-n", "0", "--run-date", "2026-05-06"]) == 3
+        with get_session() as session:
+            assert session.query(BacktestResultRecord).count() == 5
+
+        # Pinned to the archive's own date, the same prune succeeds.
+        assert script.main(["--prune", "--keep-recent-n", "0", "--run-date", "2026-05-05"]) == 0
+        with get_session() as session:
+            assert session.query(BacktestResultRecord).count() == 0

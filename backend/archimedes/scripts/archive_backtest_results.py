@@ -61,6 +61,13 @@ importable)::
     ARCHIVE_BUCKET=archimedes-backtest-archive-prod \\
         PYTHONPATH=backend python -m archimedes.scripts.archive_backtest_results --prune
 
+``--archive`` and ``--prune`` are a PAIR, and the pairing is by S3 prefix
+date. Pass the same explicit ``--run-date YYYY-MM-DD`` to both halves of one
+operator run: the default is "today in UTC", so an archive that starts at
+23:58Z and a prune that starts at 00:03Z resolve different prefixes and the
+prune refuses (correctly — it cannot find *its* manifest) after a full archive
+has already been paid for.
+
 See ``docs/runbooks/backtest-results-retention.md`` for the full operator
 procedure, including the VACUUM step this script deliberately does not run.
 """
@@ -87,7 +94,22 @@ from archimedes.models.strategy_passport_record import StrategyPassportRecord
 logger = logging.getLogger(__name__)
 
 DEFAULT_KEEP_RECENT_N = 5
-ARCHIVE_BATCH_SIZE = 500
+# Archive batches are held ENTIRELY in memory: the batch's rows are loaded with
+# their ~412KB/row artifact_json + equity_curve_json payloads, serialized to
+# one JSONL string, and gzipped — several copies of the batch coexist at the
+# peak, so RSS grows several times faster than the raw row bytes.
+#
+# Measured 2026-08-30, one batch of production-sized rows (349KB artifact_json
+# + 63KB equity_curve_json each), peak process RSS during run_archive:
+#     batch_size=100 -> 283MB peak (+128MB over baseline), 41MB of raw rows
+#     batch_size=500 -> 942MB peak (+595MB over baseline), 206MB of raw rows
+# 100 is the default because a ~1GB spike is a real OOM risk at the 512MB-1GB
+# task sizes this runs under; operators with known headroom raise it with
+# --batch-size. Re-measure rather than trusting these figures if the schema's
+# per-row payload changes.
+ARCHIVE_BATCH_SIZE = 100
+# Prune batches carry no row payloads (ids in, DELETE out), so this is about
+# statement size, not memory, and can stay larger.
 PRUNE_BATCH_SIZE = 500
 S3_PREFIX = "backtest-results-archive"
 
@@ -399,16 +421,50 @@ class ManifestNotFound(RuntimeError):
 
 
 class ManifestVerificationFailed(RuntimeError):
-    """A manifest exists but a batch's re-downloaded content doesn't match its
-    recorded sha256, or the manifest's own row-count bookkeeping is inconsistent."""
+    """A manifest exists but it cannot be trusted: a batch's re-downloaded bytes
+    don't match its recorded sha256, a batch's actual row ids don't match the
+    row_ids the manifest claims for it, or the manifest's own row-count
+    bookkeeping is inconsistent."""
+
+
+def _batch_row_ids(bucket: str, key: str, batch_bytes: bytes) -> list[int]:
+    """Decompress one archived batch and return the row ids it actually contains.
+
+    Every failure mode here (not gzip, not UTF-8, not JSONL, a line with no
+    ``id``) means the object is not a batch this tool wrote, so it cannot be
+    used as proof that anything was archived — all of them raise
+    ManifestVerificationFailed rather than propagating a raw decode error.
+    """
+    try:
+        text = gzip.decompress(batch_bytes).decode("utf-8")
+    except (OSError, EOFError, UnicodeDecodeError) as exc:
+        raise ManifestVerificationFailed(
+            f"s3://{bucket}/{key} is not readable as gzipped UTF-8 JSONL ({exc}) — refusing to prune"
+        ) from exc
+
+    ids: list[int] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            ids.append(int(row["id"]))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ManifestVerificationFailed(
+                f"s3://{bucket}/{key} line {lineno} is not an archived row with an integer id "
+                f"({exc}) — refusing to prune"
+            ) from exc
+    return ids
 
 
 def _load_and_verify_manifest(client, bucket: str, prefix_date: str) -> dict[str, Any]:
-    """Read back today's manifest and verify it byte-for-byte before trusting
-    it as proof that every row it names is safely archived.
+    """Read back the run-date's manifest and verify it — internal row-count
+    bookkeeping, then each batch byte-for-byte (sha256), then each batch's
+    actual CONTENT (the row ids inside the gzip) — before trusting it as proof
+    that every row it names is safely archived.
 
-    This is the guard: --prune without a verified manifest for today must
-    refuse, unconditionally, with no override flag — a guard that can be
+    This is the guard: --prune without a verified manifest for the run date
+    must refuse, unconditionally, with no override flag — a guard that can be
     bypassed by a flag is not a guard.
     """
     from botocore.exceptions import ClientError
@@ -419,7 +475,9 @@ def _load_and_verify_manifest(client, bucket: str, prefix_date: str) -> dict[str
         manifest = json.loads(obj["Body"].read())
     except ClientError as exc:
         raise ManifestNotFound(
-            f"no archive manifest at s3://{bucket}/{manifest_key} — refusing to prune. Run --archive for today first."
+            f"no archive manifest at s3://{bucket}/{manifest_key} — refusing to prune. Run "
+            f"--archive --run-date {prefix_date} first (or, if the archive ran under a "
+            "different UTC date because the run straddled midnight, pass that date here)."
         ) from exc
 
     declared_total = manifest.get("total_rows")
@@ -445,10 +503,32 @@ def _load_and_verify_manifest(client, bucket: str, prefix_date: str) -> dict[str
                 f"s3://{bucket}/{b['key']} sha256 mismatch: manifest says {b['sha256']}, "
                 f"actual object is {actual_sha256} — refusing to prune against unverified archive data"
             )
-        if len(b.get("row_ids", [])) != b["row_count"]:
+
+        declared_ids = b.get("row_ids", [])
+        if len(declared_ids) != b["row_count"]:
             raise ManifestVerificationFailed(
                 f"batch {b['batch_index']} declares row_count={b['row_count']} but lists "
-                f"{len(b.get('row_ids', []))} row_ids — refusing to prune"
+                f"{len(declared_ids)} row_ids — refusing to prune"
+            )
+
+        # CONTENT verification, not bytes-only. A matching sha256 proves the
+        # object in S3 is byte-identical to whatever the manifest was written
+        # against — it does NOT prove that object contains the rows the
+        # manifest claims. A batch re-uploaded by a second archive run (with
+        # its sha refreshed in the manifest, or a manifest hand-edited after a
+        # partial re-run) can pass the byte check while naming row_ids that
+        # were never in it — and prune deletes off those row_ids. So decompress
+        # and compare the ids actually present against the ids the manifest
+        # licenses us to delete.
+        contained_ids = _batch_row_ids(bucket, b["key"], batch_bytes)
+        if sorted(contained_ids) != sorted(declared_ids):
+            missing = sorted(set(declared_ids) - set(contained_ids))
+            extra = sorted(set(contained_ids) - set(declared_ids))
+            raise ManifestVerificationFailed(
+                f"s3://{bucket}/{b['key']} content does not match the manifest's row_ids: "
+                f"{len(missing)} id(s) the manifest claims are archived are NOT in the object "
+                f"(first 20: {missing[:20]}), {len(extra)} id(s) in the object are unlisted "
+                f"(first 20: {extra[:20]}) — refusing to prune rows this archive does not actually contain"
             )
 
     return manifest
@@ -546,12 +626,24 @@ docs/runbooks/backtest-results-retention.md for the full procedure.
 # ─────────────────────────── CLI ────────────────────────────────
 
 
+def _positive_int(value: str) -> int:
+    """argparse type for --batch-size: a batch size of 0 or less is not a
+    smaller batch, it is a broken one (``_chunk`` cannot step by 0, and a
+    negative step silently yields nothing at all — which on --prune would
+    report a clean run that deleted nothing while claiming success)."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {parsed}")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Archive-then-prune tooling for backtest_results (v8 Lane 3.1). "
-            "Read-only by default — --archive and --plan --json are the only modes that "
-            "read/write anything, and both require explicit flags."
+            "Read-only by default — --archive and --prune are the only modes that mutate "
+            "anything (S3 writes and DB deletes respectively), and both require explicit "
+            "flags plus ARCHIVE_BUCKET. --plan (with or without --json) only reports."
         )
     )
     mode = parser.add_mutually_exclusive_group()
@@ -560,13 +652,38 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--prune",
         action="store_true",
-        help="Delete archived rows from the DB. Requires a verified manifest for today in S3.",
+        help="Delete archived rows from the DB. Requires a verified manifest for the run date in S3.",
     )
     parser.add_argument(
         "--keep-recent-n",
         type=int,
         default=DEFAULT_KEEP_RECENT_N,
         help=f"Rows to keep per strategy_id regardless of any other rule (default {DEFAULT_KEEP_RECENT_N}).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        default=ARCHIVE_BATCH_SIZE,
+        help=(
+            f"Rows per batch (default {ARCHIVE_BATCH_SIZE}). On --archive this is the memory "
+            "knob: a whole batch's rows (~412KB each) are held in memory, serialized, and "
+            f"gzipped at once — measured peak RSS {ARCHIVE_BATCH_SIZE} rows: 283MB, 500 rows: "
+            "942MB. On --prune it is the ids-per-DELETE statement size. Raise it only with "
+            "known memory headroom."
+        ),
+    )
+    parser.add_argument(
+        "--run-date",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=(
+            "UTC date whose S3 prefix to write (--archive) or read (--prune). Defaults to "
+            "today in UTC. Pass it explicitly when a run straddles UTC midnight: without it, "
+            "an --archive that started on day N and a --prune that starts minutes later on "
+            "day N+1 look for different prefixes, and the prune refuses because 'its' "
+            "manifest does not exist. Pin both halves of one run to the same date."
+        ),
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of text.")
     return parser
@@ -587,7 +704,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if mode == "archive":
             try:
-                result = run_archive(session, keep_recent_n=args.keep_recent_n)
+                result = run_archive(
+                    session,
+                    keep_recent_n=args.keep_recent_n,
+                    batch_size=args.batch_size,
+                    run_date=args.run_date,
+                )
             except ArchiveBucketNotConfigured as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
@@ -600,7 +722,12 @@ def main(argv: list[str] | None = None) -> int:
 
         # prune
         try:
-            result = run_prune(session, keep_recent_n=args.keep_recent_n)
+            result = run_prune(
+                session,
+                keep_recent_n=args.keep_recent_n,
+                batch_size=args.batch_size,
+                run_date=args.run_date,
+            )
         except ArchiveBucketNotConfigured as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
