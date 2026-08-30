@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { apiGet } from '../api'
+import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
+import { insights as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 // Insights — the public conversion + traction dashboard (#787, #830, #854).
 //
@@ -31,12 +33,18 @@ import { apiGet } from '../api'
 //     equality, until that reset happens. Geography is `ZZ` until Dan's
 //     CloudFront terraform apply lands (#795).
 
-const FUNNEL_LABELS = {
+// The backend funnel keeps tracking `vault_deployed` regardless of this
+// flag (it's a real server-side stage, see /api/metrics/funnel); the label
+// — and the row itself — is gated so a public dashboard doesn't hold out a
+// permanently 0/0% roadmap stage as a tracked product goal (#1354).
+const CORE_FUNNEL_LABELS = {
   landed: 'Landed',
   generation_started: 'Tried Generate',
   wallet_connected: 'Connected Wallet',
-  vault_deployed: 'Deployed Vault',
 }
+const FUNNEL_LABELS = ROADMAP_SURFACES_ENABLED
+  ? { ...CORE_FUNNEL_LABELS, vault_deployed: ROADMAP_COPY.vaultDeployedLabel }
+  : CORE_FUNNEL_LABELS
 
 const DEVICE_LABELS = { mobile: 'Mobile', tablet: 'Tablet', desktop: 'Desktop', tv: 'TV', unknown: 'Unknown' }
 
@@ -183,7 +191,9 @@ export default function Insights() {
           </Empty>
         ) : (
           <div style={{ display: 'grid', gap: 14 }}>
-            {funnel.stages.map((s, i) => {
+            {funnel.stages
+              .filter((s) => ROADMAP_SURFACES_ENABLED || s.stage !== 'vault_deployed')
+              .map((s, i) => {
               const bt = s.by_agent_type || {}
               const tagged = (bt.human ?? 0) + (bt.external ?? 0) + (bt.internal ?? 0)
               // HLL estimates on both sides of the subtraction, so floor at 0

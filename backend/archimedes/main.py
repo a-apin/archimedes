@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -49,6 +49,7 @@ from archimedes.api.generate_routes import generate_public_router, generate_rout
 from archimedes.api.leaderboard_routes import leaderboard_router
 from archimedes.api.limiter import limiter
 from archimedes.api.paper_routes import paper_router
+from archimedes.api.payment_routes import payment_router
 
 # FAIL-SOFT import: marketplace_routes → service → payments imports circlekit
 # (the circle-titanoboa-sdk VCS dependency). If that dependency fails to IMPORT
@@ -359,6 +360,21 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
 
+    # Platform revenue sweep (services/revenue_sweep.py): opt-in Gateway →
+    # DCW-token withdrawal loop. Money-switch convention: only the literal
+    # REVENUE_SWEEP_ENABLED=true arms it; unset/anything-else stays off and
+    # says so. Same RUF006 app.state reference rule as the loops above.
+    try:
+        from archimedes.services.revenue_sweep import revenue_sweep_loop, sweep_enabled
+
+        if sweep_enabled():
+            _app.state.revenue_sweep_task = asyncio.create_task(revenue_sweep_loop())
+            _logger.info("startup: revenue sweep scheduler armed")
+        else:
+            _logger.info("startup: revenue sweep scheduler disabled (REVENUE_SWEEP_ENABLED != 'true')")
+    except Exception as exc:
+        _logger.warning("startup: revenue sweep failed to arm (non-fatal): %s", exc)
+
     yield  # ── app is now running ────────────────────────────────────────
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────────
@@ -453,6 +469,17 @@ async def _limit_request_body(request: Request, call_next):
     return await call_next(request)
 
 
+# ── Timing middleware: per-request duration + slow-request log (issue #1436) ──
+# The ALB reports p50 46ms against p99 16.8s, but its metrics are per-target,
+# not per-route, so which endpoint owns the tail was not answerable from logs.
+# Tags every response with X-Response-Time-Ms and logs the ones over
+# SLOW_REQUEST_MS. SSE streams are exempt — they legitimately run 300s+, which
+# is the same contamination that forced the latency alarm off p95 on 2026-08-21.
+from archimedes.api.timing_middleware import timing_middleware
+
+app.middleware("http")(timing_middleware)
+
+
 # ── Telemetry middleware: human-vs-agent traction counter (issue #428) ──
 # Registered AFTER _limit_request_body and BEFORE include_router. It classifies
 # each request (Better Auth account → human; internal-key / bot-UA → agent), increments
@@ -512,6 +539,7 @@ app.include_router(portfolio_router, dependencies=[Depends(require_current_user)
 app.include_router(selection_bias_router)
 app.include_router(rigor_verify_router)
 app.include_router(account_usage_router)
+app.include_router(payment_router)
 app.include_router(papers_router)
 app.include_router(user_router, dependencies=[Depends(require_current_user)])
 app.include_router(wallet_router)
@@ -528,14 +556,46 @@ app.include_router(metrics_private_router)
 app.include_router(leaderboard_router)
 
 
+# ── Liveness responses must never be cached (issue #1520) ──────────────
+# /health matched no CloudFront ordered_cache_behavior, so it fell through to
+# the default one (infra/cloudfront.tf) whose `html` policy has default_ttl=60.
+# With no Cache-Control from here, CloudFront cached it: measured `x-cache: Hit`
+# with `age: 17` on the live site, and — worse — cached 504s coming back in
+# 0.07s, far too fast to have reached the origin. A cached health check is not a
+# health check: it keeps reporting "ok" for up to a minute after the origin
+# starts failing, which is the plausible-substitute failure this codebase treats
+# as the primary defect class. The CloudFront behaviour is the other half of the
+# fix and needs a terraform apply; this half travels with the app, so it holds
+# wherever the app is deployed and whoever sits in front of it.
+_NO_STORE = "no-store, no-cache, must-revalidate, max-age=0"
+
+
+def _no_store(response: Response) -> None:
+    """Mark a liveness response uncacheable by any intermediary."""
+    response.headers["Cache-Control"] = _NO_STORE
+    response.headers["Pragma"] = "no-cache"
+
+
+def _no_store_headers() -> dict[str, str]:
+    """Same headers, for handlers that build their own Response object.
+
+    A handler that returns a JSONResponse directly never touches the injected
+    ``response``, so it needs these passed in explicitly — the AMM probe returns
+    503s that way, and an uncacheable 200 with a cacheable 503 is the worse half
+    to get wrong.
+    """
+    return {"Cache-Control": _NO_STORE, "Pragma": "no-cache"}
+
+
 @app.get("/health")
 @app.get("/api/health")
 @limiter.exempt
-async def health():
+async def health(response: Response):
     """Health check — used by Docker healthcheck and CI/CD.
 
     Reports corpus state so silent degradation is visible.
     """
+    _no_store(response)
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.chain.client import chain_client
@@ -613,6 +673,46 @@ async def health():
     except Exception:
         risk_data_reason = "import failed"
 
+    # Oracle-freshness health (issue #1371 — isFresh()/lastUpdated() had zero
+    # backend callers; every deployed PriceOracle has been stale since the
+    # T3.2 redeploy with nothing reporting it). oracle_fresh is true only if
+    # EVERY probed oracle is fresh; oracle_probed_count/oracle_universe_count
+    # are always both present so a 2-of-281-fresh push set can never be read
+    # as "oracles are healthy" system-wide. A chain-read failure reports
+    # oracle_fresh=false with an explicit marker (never fail-soft "assume
+    # fresh") — see services/oracle_health.py's module docstring.
+    oracle_fresh = False
+    oracle_oldest_age_s: int | None = None
+    oracle_probed_count = 0
+    oracle_universe_count = 0
+    # oracle_reason needs no initializer: the try body and the except handler
+    # both assign it unconditionally before any use.
+    try:
+        from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
+
+        _oracle_diag = await _oracle_health_probe()
+        oracle_fresh = _oracle_diag.oracle_fresh
+        oracle_oldest_age_s = _oracle_diag.oracle_oldest_age_s
+        oracle_probed_count = _oracle_diag.oracle_probed_count
+        oracle_universe_count = _oracle_diag.oracle_universe_count
+        oracle_reason = _oracle_diag.reason
+    except Exception as exc:
+        oracle_reason = f"oracle_health probe_error: {exc}"
+
+    if not oracle_fresh:
+        # Loud, greppable marker — infra/cloudwatch.tf's metric filter keys off
+        # this exact literal (mirrors HEALTH_CHAIN_DISCONNECTED at :545-553).
+        # /health's HTTP status stays 200 for the same ALB/ECS reason documented
+        # there; this is what makes the degraded state page a human instead of
+        # sitting silently in a JSON body nobody is reading.
+        logger.warning(
+            "HEALTH_ORACLE_STALE: oracle_fresh=false oldest_age_s=%s probed=%d/%d (%s)",
+            oracle_oldest_age_s,
+            oracle_probed_count,
+            oracle_universe_count,
+            oracle_reason,
+        )
+
     # Strategy-library presence (issue #1039). count_strategy_files() is a cheap
     # directory file count (NO provider construction → no filesystem refresh, DB
     # backtest load, or unified-table sync side effect — /health is hit by the ALB
@@ -661,16 +761,43 @@ async def health():
     # the real state machine-readable so no surface can present manifest metadata
     # as "embedded / knowledge-graphed". Each is driven from actual state, never a
     # constant:
-    #   corpus_embedded         — live sentence-transformer embeddings active
-    #                             (paper_rag == "live"; "degraded" => TF-IDF, NOT embedded).
-    #                             NOTE: "ready" (weights on disk, model not yet
-    #                             loaded because nothing has retrieved yet) is
-    #                             deliberately NOT embedded — presence on disk is
-    #                             not proof, and this field must not overstate.
-    #                             It flips to true on the first real retrieval.
+    #   paper_rerank_model_live — a sentence-transformer object is loaded IN THIS
+    #                             PROCESS (paper_rag == "live"). "ready" (weights on
+    #                             disk, nothing has retrieved yet) is deliberately not
+    #                             live: presence on disk is not proof. Flips to true on
+    #                             the first real retrieval, and back to false on restart.
+    #   corpus_embedded_at_rest — whether STORED vectors exist, derived from the schema.
+    #                             This was previously published as `corpus_embedded` with
+    #                             the value of the field above it (#1488): the name
+    #                             asserted a property of the corpus while the value
+    #                             measured a property of the process, so one retrieval
+    #                             made /api/health say the 10k corpus was embedded. It
+    #                             was never embedded; retrieval is a keyword filter plus
+    #                             a query-time rerank of at most `rerank_candidate_cap`
+    #                             candidates, and everything past that cap is appended at
+    #                             score 0.0. Both fields ship because the pair is what
+    #                             makes the absence legible — a lone false reads as an
+    #                             outage, and a lone true reads as the claim we must not
+    #                             make. Same reason `corpus_kg_built: false` sits beside
+    #                             `corpus_kg_entities: 0`.
     #   corpus_kg_built         — at least one KG entity exists (REBEL/SciSpacy output)
     #   corpus_artifact_present — a real KB-pipeline artifact (S3/local manifest) exists
-    corpus_embedded = paper_rag_status == "live"
+    paper_rerank_model_live = paper_rag_status == "live"
+    # Reporting "not embedded" on a failed read is the only safe direction here:
+    # the sole way this field can do harm is by claiming vectors that are absent.
+    corpus_embedded_at_rest = False
+    corpus_embedded_at_rest_reason = "probe failed"
+    rerank_cap = 0
+    try:
+        from archimedes.services.paper_rag import corpus_embedding_at_rest, rerank_candidate_cap
+
+        _at_rest = corpus_embedding_at_rest()
+        corpus_embedded_at_rest = _at_rest.embedded_at_rest
+        corpus_embedded_at_rest_reason = _at_rest.reason
+        rerank_cap = rerank_candidate_cap()
+    except Exception as exc:
+        logger.warning("corpus_embedding_at_rest read failed (%s) — reporting not-embedded", type(exc).__name__)
+        corpus_embedded_at_rest_reason = f"probe failed ({type(exc).__name__})"
     kg_entity_count = 0
     kg_relation_count = 0
     try:
@@ -720,7 +847,10 @@ async def health():
         # manifest-seeded *metadata records*; these say what has actually been
         # built on top of them. New keys only — existing keys are unchanged so
         # current UI/monitoring consumers don't break.
-        "corpus_embedded": corpus_embedded,
+        "paper_rerank_model_live": paper_rerank_model_live,
+        "corpus_embedded_at_rest": corpus_embedded_at_rest,
+        "corpus_embedded_at_rest_reason": corpus_embedded_at_rest_reason,
+        "rerank_candidate_cap": rerank_cap,
         "corpus_kg_built": corpus_kg_built,
         "corpus_kg_entities": kg_entity_count,
         "corpus_kg_relations": kg_relation_count,
@@ -739,6 +869,16 @@ async def health():
         "regime_detector_reason": regime_detector_reason,
         "risk_data": risk_data_status,
         "risk_data_reason": risk_data_reason,
+        # Oracle-freshness health (issue #1371). oracle_fresh is true only when
+        # EVERY probed oracle is fresh — oracle_probed_count/oracle_universe_count
+        # are always both present so a fully-fresh push set is never read as
+        # "the oracle subsystem is healthy" when the push set is a small
+        # fraction of the deployed universe. See services/oracle_health.py.
+        "oracle_fresh": oracle_fresh,
+        "oracle_oldest_age_s": oracle_oldest_age_s,
+        "oracle_probed_count": oracle_probed_count,
+        "oracle_universe_count": oracle_universe_count,
+        "oracle_reason": oracle_reason,
         # Strategy-library presence (issue #1039) — 0 means the image is missing
         # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
         "strategy_count": strategy_count,
@@ -747,8 +887,9 @@ async def health():
 
 @app.get("/health/paper-rag")
 @limiter.exempt
-async def health_paper_rag():
+async def health_paper_rag(response: Response):
     """Dedicated paper-rag health endpoint."""
+    _no_store(response)
     from archimedes.services.paper_rag import paper_rag_health
 
     # probe=True: this endpoint exists to PROVE the model loads, so it is the
@@ -764,7 +905,7 @@ async def health_paper_rag():
 @app.get("/health/amm")
 @app.get("/api/health/amm")
 @limiter.exempt
-async def health_amm():
+async def health_amm(response: Response):
     """AMM pool liquidity health — per-pool status for operator/judge probes.
 
     Returns 200 with pool list when pools exist, or 503 with an explicit
@@ -774,12 +915,14 @@ async def health_amm():
 
     from archimedes.chain.client import chain_client
 
+    _no_store(response)
     try:
         connected = await chain_client.is_connected()
         if not connected:
             return JSONResponse(
                 status_code=503,
                 content={"status": "chain_disconnected", "reason": "Cannot reach Arc RPC"},
+                headers=_no_store_headers(),
             )
 
         from archimedes.chain.contracts import get_contract_loader
@@ -798,6 +941,7 @@ async def health_amm():
                     "reason": "No AMM pools exist yet. Run bootstrap_vaults to create pools.",
                     "pools": [],
                 },
+                headers=_no_store_headers(),
             )
 
         # For each pool, read basic state
@@ -843,6 +987,7 @@ async def health_amm():
                 "status": "amm_health_check_failed",
                 "reason": "AMM health check failed — see server logs.",
             },
+            headers=_no_store_headers(),
         )
 
 

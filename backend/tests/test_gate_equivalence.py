@@ -169,3 +169,143 @@ class TestPipelineUsesTheLiveGate:
         returns = _portfolio_daily_returns(artifact)
         assert returns == []
         assert verdict_from_returns("gen-broken", returns, num_trials=1).passes is False
+
+
+class TestPipelineCallSiteReadsTheLiveVerdict:
+    """Drives the ACTUAL changed call site, not the gate function on its own.
+
+    #1242 review: every test above this class calls ``verdict_from_returns``
+    directly — including the two comparing it against itself with a different
+    id string, which is true by the docstring's own admission ("this is true
+    by construction"). None of them touch
+    ``generation_pipeline.py``'s ``passes = live.passes`` line, which is the
+    line the fix actually changed (from ``bool(result.passes_rigor_gate)``).
+    A regression here — someone reverting that line back to the deleted
+    property, or a typo that reads the wrong verdict field — would pass every
+    other test in this file and only be caught here.
+
+    This runs ``_backtest_and_persist`` (the real async pipeline function)
+    against a fake ``backtest_portfolio`` that reproduces the exact pre-fix
+    trigger: ``pbo_score=None`` (the library-level metric ``backtest_portfolio``
+    always defers). The live gate's own ``verdict_from_returns`` is stubbed to
+    return a controlled, known verdict — the real function is exhaustively
+    covered elsewhere (``TestOneGateGradesBothPaths`` above,
+    ``test_live_gate_returns.py``, ``test_selection_bias_generated_gate.py``);
+    this call site never supplies ``pbo_scores`` to it, so criterion 4 fails
+    closed regardless of series quality on this path today — a real,
+    pre-existing limitation, not something this fix changes, and not something
+    an organic returns series could use to distinguish "graded" from
+    "hardcoded" here. Stubbing the gate isolates the one thing this test is
+    actually for: does the call site propagate the live gate's OWN verdict, or
+    something else. It is called twice, with the stub answering True and then
+    False, so a hardcoded persisted value in either direction is caught.
+    """
+
+    @staticmethod
+    def _strong_returns(seed: int = 11, n: int = 600) -> list[float]:
+        rng = np.random.default_rng(seed)
+        return [float(x) for x in rng.normal(0.0012, 0.008, n)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("live_gate_passes", [True, False])
+    async def test_live_gate_verdict_reaches_the_persisted_passport(
+        self, tmp_path, monkeypatch, live_gate_passes: bool
+    ) -> None:
+        import archimedes.db as _db
+        import archimedes.services.live_rigor_gate as lrg
+        import archimedes.services.portfolio_backtester as pb
+        from archimedes.agents.generation_pipeline import (
+            _backtest_and_persist,
+            _CandidateResult,
+            _Emitter,
+        )
+        from archimedes.models.strategy_passport_record import StrategyPassportRecord
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        strategy_id = f"gate-call-site-{live_gate_passes}"
+
+        test_engine = create_engine(
+            f"sqlite:///{tmp_path / 'gate_call_site.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        monkeypatch.setattr(_db, "engine", test_engine)
+        monkeypatch.setattr(_db, "SessionLocal", sessionmaker(bind=test_engine, autocommit=False, autoflush=False))
+        from archimedes.models import kg, strategy_passport_record, strategy_store  # noqa: F401
+
+        _db.Base.metadata.create_all(bind=test_engine)
+
+        monkeypatch.delenv("GENERATION_PIPELINE_FIXTURE", raising=False)
+        monkeypatch.delenv("GENERATION_PIPELINE_SKIP_BACKTEST", raising=False)
+
+        strong_returns = self._strong_returns()
+        equity = [1.0]
+        for r in strong_returns:
+            equity.append(equity[-1] * (1.0 + r))
+
+        fake_result = _result(
+            strategy_id=strategy_id,
+            equity_curve=equity,
+            pbo_score=None,  # the exact pre-fix trigger: backtest_portfolio always leaves this None
+            look_ahead_audit_passed=True,
+            backtest_engine="portfolio-simulator-v1",
+        )
+        fake_artifact = {
+            "run_id": f"gen-test-{strategy_id}",
+            "results": [{"metrics": {"daily_returns": strong_returns}}],
+        }
+
+        monkeypatch.setattr(pb, "backtest_portfolio", lambda **kwargs: (fake_result, fake_artifact))
+
+        gate_calls: list[dict] = []
+
+        class _StubVerdict:
+            def __init__(self, passes: bool) -> None:
+                self.passes = passes
+
+        def _fake_verdict_from_returns(sid, daily_returns, **kwargs):
+            gate_calls.append({"strategy_id": sid, "daily_returns": list(daily_returns), **kwargs})
+            return _StubVerdict(passes=live_gate_passes)
+
+        monkeypatch.setattr(lrg, "verdict_from_returns", _fake_verdict_from_returns)
+
+        class _FakeStore:
+            async def push_event(self, job_id: str, body: dict) -> int:
+                return 0
+
+        emit = _Emitter(f"job-{strategy_id}", _FakeStore())
+        c = _CandidateResult(
+            candidate_id="cand-1",
+            strategy_name="Gate Call Site",
+            thesis="t",
+            asset_universe=["SPY"],
+            source_papers=[],
+            weights={"SPY": 1.0},
+            reasoning="r",
+            rigor_verdict={},
+            passes_rigor=False,
+        )
+
+        await _backtest_and_persist(c, strategy_id, emit, num_trials=1)
+
+        with _db.get_session() as session:
+            record = session.query(StrategyPassportRecord).filter_by(id=strategy_id).first()
+
+        assert record is not None, "no passport persisted — _backtest_and_persist did not run to completion"
+
+        # The call site must actually call the live gate with the real series
+        # extracted from the artifact — not skip it, not feed it something else.
+        assert len(gate_calls) == 1, "generation_pipeline must call verdict_from_returns exactly once"
+        assert gate_calls[0]["daily_returns"] == pytest.approx(strong_returns)
+        assert gate_calls[0]["look_ahead_audit_passed"] is True
+
+        # And the persisted verdict must be EXACTLY what the live gate returned —
+        # not a hardcoded value, and not the deleted property's pbo_score-is-None
+        # short-circuit (which was unconditionally False regardless of this
+        # stub's answer). Parametrized both ways so neither a stuck-True nor a
+        # stuck-False persisted value can slip past.
+        assert record.passes_rigor_gate is live_gate_passes, (
+            f"persisted passes_rigor_gate={record.passes_rigor_gate!r} but the live "
+            f"gate returned passes={live_gate_passes!r} — the call site is not "
+            "propagating live.passes verbatim."
+        )

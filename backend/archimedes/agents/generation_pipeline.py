@@ -88,7 +88,13 @@ def _pick_pipeline(
     """
     if mode_override and mode_override != "debate":
         logger.info("generation: ignoring legacy mode override %r (debate-only cutover)", mode_override)
-    return "debate", "debate society is the generation pipeline (T1.1 Phase-3 cutover)"
+    # This reason string is USER-FACING: it rides the SSE stream verbatim
+    # (run_generation's `pipeline_selected` emit) and GenerationStream.jsx
+    # renders it into every viewer's event log. Internal shorthand ("T1.1
+    # Phase-3 cutover") leaked to production screens this way (#1525-era
+    # review, 2026-08-30) — keep it plain product copy, and keep the
+    # no-internal-jargon regression test in test_generation_pipeline.py green.
+    return "debate", "the debate society — proposer and critic agents argue each candidate before the rigor gate"
 
 
 # ── Brief validation (real LLM step on the live path) ─────────────────────
@@ -1273,7 +1279,13 @@ async def run_generation(
             pass  # Non-blocking per spec
 
         # Stash the full candidate list on the job for /candidates retrieval.
-        await store.update_status(
+        # update_terminal_status (not update_status): a Cancel request can flip
+        # Redis's status to "cancelled" while this coroutine is still mid-flight
+        # (asyncio.Task.cancel() cannot interrupt a to_thread LLM call already
+        # running — the awaiter only unblocks once that thread finishes on its
+        # own), so this write must not clobber a cancellation that already
+        # landed (#1355).
+        await store.update_terminal_status(
             job_id,
             "done",
             result={
@@ -1588,6 +1600,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             SOURCE_PIPELINE_DSL_FUSION,
             insert_backtest_if_missing,
         )
+        from archimedes.services.fusion_evaluator import DEFAULT_COST_MODEL_ID, ENGINE_SINGLE_FEED
         from archimedes.services.live_rigor_gate import verdict_from_returns
 
         returns = list(c.return_series)
@@ -1616,8 +1629,11 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             profit_factor=0.0,
             total_trades=int(rv.get("total_trades") or 0),
             avg_holding_period_days=0.0,
-            correlation_to_spy=0.0,
-            correlation_to_btc=0.0,
+            # None, not a fabricated 0.0 — SPY/BTC correlation is not computed on
+            # this path; 0.0 would assert "uncorrelated", a claim nothing measured
+            # (#1242 review).
+            correlation_to_spy=None,
+            correlation_to_btc=None,
             equity_curve=equity,
             deflated_sharpe_ratio=_of("dsr"),
             dsr_p_value=_of("dsr_p_value"),
@@ -1625,7 +1641,20 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             pbo_score=_of("pbo"),
             out_of_sample_sharpe=_of("oos_sharpe"),
             look_ahead_audit_passed=bool(rv.get("lookahead_audit_passed", False)),
-            backtest_engine="dsl-fusion",
+            # A8: the runner's own label, not a hardcoded "dsl-fusion". The
+            # sleeve runner reports "dsl-fusion-sleeves" so a row graded as N
+            # independent equal-weighted single-asset backtests is
+            # distinguishable from a genuine single-feed run. Falls back to the
+            # single-feed label for verdict blobs written before A8.
+            backtest_engine=(rv.get("backtest_engine") or ENGINE_SINGLE_FEED),
+            # Fixed cost basis every fusion/DSL backtest is charged — tx_cost_bps
+            # and slippage_bps are never overridden by a caller on this path today
+            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). Matches the mapper's
+            # "self_attested" label: this is the closed-DSL path, no inspectable
+            # source for an AST audit (#1242 review: cost_model_id used to stop at
+            # the artifact dict on this path and never reach the persisted row).
+            cost_model_id=DEFAULT_COST_MODEL_ID,
+            look_ahead_audit_source="self_attested",
         )
         artifact = {
             "results": [{"metrics": {"daily_returns": returns}}],

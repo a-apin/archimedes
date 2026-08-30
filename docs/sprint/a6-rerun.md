@@ -66,18 +66,20 @@ last 40 lines when it finishes.
 
 ## Set the expectation before you publish
 
-`docs/specs/second-wave-universe-experiment.md` already tested whether a bigger universe rescues
-failing strategies. **The answer is no** — no verdict flips, several get worse, 7 of 9 had
-negative Sharpe after costs. `docs/specs/quant-roadmap.md` concludes strategy count is a vanity
-metric.
+[`second-wave-universe-experiment.md`](../quant/second-wave-universe-experiment.md) already tested
+whether a bigger universe rescues failing strategies. **The answer is no** — no verdict flips,
+several get worse, 7 of 9 had negative Sharpe after costs.
+[`quant-roadmap.md`](../plans/quant-roadmap.md) concludes strategy count is a vanity metric.
 
-**Fixing the backtests will make more strategies fail, not fewer.** Today 3 of 34 pass, and the
-three are a T-bill proxy, buy-and-hold, and risk parity. Correct routing plus real slippage on
-Engine C will very likely push that down. **That is the gate working, and it is the product: we
-sell the verdict, not the alpha.**
+**Fixing the backtests will make more strategies fail, not fewer.** The handful of rows that read
+as passing today are a T-bill proxy, buy-and-hold, and risk parity — and the count itself is
+**unestablished** per [`CLAUDE.md`](../../CLAUDE.md) § the hard constraint, so publish it as
+"unestablished", never as a number. Correct routing plus real slippage on Engine C will very
+likely push it down further. **That is the gate working, and it is the product: we sell the
+verdict, not the alpha.**
 
 Have the copy ready **before** the run, not after. Reframe the headline from scoreboard to
-**rejection rate** — "34 candidates, 3 clear the bar" *is* the thesis; a board that passes
+**rejection rate** — "most candidates do not clear the bar" *is* the thesis; a board that passes
 everything is marketing.
 
 ## No threshold moves. A `FeedArityError` is a loud honest failure, not a regression.

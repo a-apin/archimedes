@@ -10,6 +10,7 @@
 // a small colocated RiskAnalysis.css for the metric-card grid + tooltips.
 
 import { useEffect, useMemo, useState } from 'react'
+import { apiGet } from '../api'
 import {
   computeHistoricalVaR,
   computeCVaR,
@@ -21,8 +22,6 @@ import {
 } from '../utils/riskMath'
 import SampleDataBadge from './SampleDataBadge'
 import './RiskAnalysis.css'
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
 function fmtPct(v, d = 2) {
   return v != null && Number.isFinite(v) ? `${(v * 100).toFixed(d)}%` : '—'
@@ -55,8 +54,15 @@ function VaRPanel({ returns, cvarData, sample }) {
     [returns],
   )
 
-  // When backend data is available, prefer it
-  const useBackend = cvarData != null && Array.isArray(cvarData.levels) && cvarData.levels.length > 0
+  // When backend data is available, prefer it — but the "no strategy has a
+  // persisted equity curve yet" branch (backend/archimedes/api/risk_routes.py
+  // get_portfolio_cvar) is a real 200 with lookback_days=0 and every level
+  // zeroed, not an error. Treating that as live data would render "-0.00%"
+  // as a measurement and suppress the sample badge below — the exact
+  // plausible-substitute failure #1369 named. Require an actual lookback
+  // window before trusting it as real.
+  const useBackend =
+    cvarData != null && Array.isArray(cvarData.levels) && cvarData.levels.length > 0 && cvarData.lookback_days > 0
 
   const lvl95 = useBackend ? cvarData.levels.find((l) => l.confidence === 0.95) : null
   const lvl99 = useBackend ? cvarData.levels.find((l) => l.confidence === 0.99) : null
@@ -495,13 +501,15 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
     async function fetchRiskData() {
       setLoading(true)
       try {
-        const [cvarRes, greeksRes] = await Promise.all([
-          fetch(`${API_BASE}/api/risk/cvar`, { credentials: 'include' }),
-          fetch(`${API_BASE}/api/risk/greeks`, { credentials: 'include' }),
-        ])
+        // apiGet throws on any non-2xx (404 when FEATURE_QUANT is off, 401,
+        // 5xx, ...) — unlike a raw fetch(), whose `.ok` check the old version
+        // of this effect skipped, silently treating every one of those as
+        // success and leaving `backendError` false. The catch below is what
+        // now actually reaches the not-live-data notice.
+        const [cvar, greeks] = await Promise.all([apiGet('/api/risk/cvar'), apiGet('/api/risk/greeks')])
         if (!cancelled) {
-          if (cvarRes.ok) setCvarData(await cvarRes.json())
-          if (greeksRes.ok) setGreeksData(await greeksRes.json())
+          setCvarData(cvar)
+          setGreeksData(greeks)
         }
       } catch (_) {
         if (!cancelled) setBackendError(true)
@@ -523,8 +531,8 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
         </h2>
         <p className="body">
           Tail-risk, drawdown, and correlation diagnostics. These are the
-          loss-side counterparts to the return-side metrics on the Advisor — rigor means making the
-          downside as legible as the upside.
+          loss-side counterparts to the return-side metrics in Optimizer &amp; Sizing below — rigor means
+          making the downside as legible as the upside.
         </p>
       </div>
 
@@ -539,7 +547,21 @@ export default function RiskAnalysis({ returns: returnsProp, assets: assetsProp,
           className="info-box"
           style={{ marginBottom: 16, fontSize: '0.85rem' }}
         >
-          Risk metrics computed from mock data — connect backend for live data.
+          {returnsProp == null ? (
+            <>
+              Live risk metrics aren't available for this deployment right now — the VaR, drawdown, and
+              rolling-Sharpe figures below are a synthetic sample, marked on each section's badge. (The
+              correlation matrix is decided separately from this strategy's returns — its own badge says
+              whether it is a sample.)
+            </>
+          ) : (
+            <>
+              Live risk metrics aren't available for this deployment right now — the VaR, drawdown, and rolling-Sharpe
+              figures below are computed in-browser from this strategy's persisted returns, not a sample; the
+              server-side fat-tail/EVT VaR and portfolio Greeks could not be fetched. (The correlation matrix is
+              decided separately from this strategy's returns — its own badge says whether it is a sample.)
+            </>
+          )}
         </div>
       )}
 

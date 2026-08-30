@@ -12,6 +12,12 @@ async function authRequest(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data?.message || data?.error || 'Authentication failed')
     error.status = response.status
+    // Better Auth's own APIError body carries a stable machine `code`
+    // alongside the human `message` (e.g. { message: 'Session is not
+    // fresh', code: 'SESSION_NOT_FRESH' }) — expose it so callers can branch
+    // on the code instead of string-matching the prose, which is fragile
+    // and would silently stop matching if the library ever reworded it.
+    error.code = data?.code
     throw error
   }
   return data
@@ -57,4 +63,39 @@ export const resetPassword = (newPassword, token) => authRequest('/api/auth/rese
 export const resendVerificationEmail = (email, callbackURL) => authRequest('/api/auth/send-verification-email', {
   method: 'POST',
   body: JSON.stringify({ email, callbackURL }),
+})
+
+// ── #1420 follow-up: explicit account linking (Account Settings → Connected
+// accounts) ────────────────────────────────────────────────────────────
+//
+// listAccounts/linkSocial/unlinkAccount call Better Auth's own /list-accounts,
+// /link-social and /unlink-account endpoints directly — no custom backend
+// route. The state/CSRF handshake for the OAuth round trip (the `state`
+// param + its double-submit cookie) is entirely library-managed on both the
+// initiate call here and the /callback/:id redirect target; nothing here
+// hand-rolls any part of it.
+
+export const listAccounts = () => authRequest('/api/auth/list-accounts')
+
+// Redirect-based, same shape as signInSocial: POST for the authorize URL,
+// then a full navigation (not an SPA transition) so the provider's consent
+// screen is a real top-level page. callbackURL/errorCallbackURL land the
+// browser back on Account Settings either way — the callback endpoint is
+// what actually decides success/failure (email match, provider trust); this
+// function only starts the round trip.
+export async function linkSocial(provider, callbackURL, errorCallbackURL) {
+  const result = await authRequest('/api/auth/link-social', {
+    method: 'POST',
+    body: JSON.stringify({ provider, callbackURL, errorCallbackURL, disableRedirect: true }),
+  })
+  if (!result?.url) throw new Error('OAuth provider did not return a redirect')
+  window.location.assign(result.url)
+}
+
+// Better Auth's own /unlink-account refuses to remove an account's last
+// remaining credential (FAILED_TO_UNLINK_LAST_ACCOUNT, 400) — server-
+// enforced regardless of the UI guard in AccountSettings.jsx.
+export const unlinkAccount = (providerId, accountId) => authRequest('/api/auth/unlink-account', {
+  method: 'POST',
+  body: JSON.stringify({ providerId, accountId }),
 })

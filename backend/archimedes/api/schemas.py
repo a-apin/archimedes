@@ -223,6 +223,34 @@ class StrategyResponse(BaseModel):
     # fixture True/False. ``passes_rigor_gate`` stays the fail-closed boolean (True
     # only when status == "pass").
     rigor_gate_status: str = "pending"
+    # ── Metric provenance (A3 / #1187) ──────────────────────────────────────
+    # Which source produced the RIGOR numbers above (deflated_sharpe_ratio,
+    # dsr_p_value, pbo_score, out_of_sample_sharpe):
+    #   "live_gate"   — the live run_rigor_gate call on persisted real returns
+    #   "unavailable" — the gate could not run; every rigor field is None
+    #
+    # There is deliberately no "persisted_backtest" value. #1187/#1340 removed
+    # the `s.<field> ?? bt.<field>` fallback that served fixture constants
+    # beside live numbers, so a persisted rigor column can no longer reach a
+    # response at all. The value's ABSENCE from this enum is the assertion that
+    # the fallback is gone — if it ever reappears, something has to add it back
+    # here and that shows up in a diff.
+    metrics_source: str = "unavailable"
+    # Which source produced the DISPLAY metrics (sharpe_ratio, cagr, win_rate,
+    # max_drawdown, calmar_ratio, sortino_ratio, correlation_to_spy,
+    # total_trades). These are descriptive backtest stats rather than a
+    # gate pass/fail claim, so unlike the rigor fields they still fall through a
+    # chain — and the last link is a STUB. Naming the link is what stops a
+    # placeholder reading as a measurement:
+    #   "strategy_record"    — the passport's own stored metrics (s.real_*)
+    #   "persisted_backtest" — the BacktestResultRecord row
+    #   "stub_placeholder"   — a hardcoded placeholder, measured nothing
+    #   "unavailable"        — no source at all; fields are None
+    # Deliberately NOT called "measured": s.real_* is stored on the strategy
+    # record and for the curated library traces to the #1187 fixture snapshot,
+    # so calling it measured would make exactly the claim this field exists to
+    # avoid.
+    display_metrics_source: str = "unavailable"
     paper_claimed_sharpe: float | None = None
     paper_claim_blended_sharpe: float | None = None
     is_backtest_placeholder: bool = False
@@ -299,6 +327,13 @@ class StrategyResponse(BaseModel):
 class StrategyListResponse(BaseModel):
     strategies: list[StrategyResponse]
     total: int
+    # Honest degradation signal (#1356): True when the strategy provider
+    # raised or the library came back empty for a reason other than a
+    # legitimate filter (e.g. the corpus is missing from the build).
+    # `degraded_reason` names which, so the UI can show a loud, specific
+    # unavailable state instead of rendering the false claim "no strategies".
+    degraded: bool = False
+    degraded_reason: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -321,6 +356,20 @@ class TraceResponse(BaseModel):
     trace_hash: str
     arc_tx_hash: str | None = None
     is_verified: bool = False  # Has on-chain hash been confirmed?
+
+    # How that confirmation was reached — same vocabulary as
+    # TraceVerifyResponse.verification_mode (#1359), so the display routes and
+    # the verify route cannot invent two different words for the same state.
+    #
+    # None is the honest default: this response makes NO verification claim.
+    # The off-chain path replays whatever `is_verified` was stored with the
+    # trace and compares nothing itself, so it has no mode to report — call
+    # /api/traces/{id}/verify for one.
+    #
+    # "anchored_only" is what the on-chain-only path reports (#1407): an anchor
+    # exists in the registry and ZERO hashes were compared against it. It must
+    # not render with the same affordance as a hash match.
+    verification_mode: Literal["hash_matched", "anchored_only", "failed"] | None = None
 
     # Context
     regime_at_decision: str | None = None
@@ -403,6 +452,24 @@ class TraceVerifyResponse(BaseModel):
     trace_id: int  # On-chain trace ID
     trace_hash: str
     is_verified: bool
+    # Tri-state verification outcome (#1359). No default — every code path
+    # that returns a TraceVerifyResponse must say which of these actually
+    # happened, so a future branch can't silently omit it and fall back to
+    # a value that reads as a pass:
+    #   hash_matched  — off-chain trace_hash re-fetched from the on-chain
+    #                   receipt and compared byte-for-byte; they matched.
+    #   anchored_only — no off-chain record to compare against (the store
+    #                   was reachable and simply had no entry), so only the
+    #                   on-chain anchor itself was confirmed. Zero hashes
+    #                   were compared — this is NOT a hash match and must
+    #                   not render with the same affordance as one.
+    #   failed        — off-chain record exists but was never anchored, the
+    #                   on-chain receipt is missing, or the hashes disagree.
+    # A Redis outage is deliberately NOT one of these states: it raises a
+    # 503 (see verify_trace) rather than falling through to anchored_only,
+    # because "the store is unreachable" and "the store is empty" are
+    # different facts and only the second one is a real anchored_only.
+    verification_mode: Literal["hash_matched", "anchored_only", "failed"]
     agent: str = ""
     vault: str = ""
     on_chain_timestamp: int = 0
@@ -547,6 +614,17 @@ class ChatPostResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 
+class ChainEndpointResponse(BaseModel):
+    """One chain a client may need to talk to."""
+
+    chain_id: int
+    rpc_url: str
+    # False means this chain was inherited from the single-chain configuration
+    # rather than chosen for this role. A client that must not guess — anything
+    # about to move real money — can tell a decision from a default.
+    explicit: bool
+
+
 class ContractAddressesResponse(BaseModel):
     """All deployed contract addresses. Frontend needs these for direct on-chain calls."""
 
@@ -561,15 +639,32 @@ class ContractAddressesResponse(BaseModel):
     # Individual synthetic token addresses
     synthetics: dict[str, str]  # symbol → address, e.g. {"sTSLA": "0x..."}
 
-    # AMM pool addresses
-    pools: dict[str, str]  # pair → address, e.g. {"USDC/sTSLA": "0x..."}
+    # AMM pool addresses. None means the on-chain read failed (RPC error) —
+    # distinct from {}, which means the chain was read and genuinely reports
+    # zero pools. Collapsing these into one falsy value is exactly the #1356
+    # defect: a failed read must never render as a measured zero.
+    pools: dict[str, str] | None  # pair → address, e.g. {"USDC/sTSLA": "0x..."}
 
-    # Vault addresses
-    vaults: dict[str, str]  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
+    # Vault addresses. Same None-vs-{} distinction as `pools`.
+    vaults: dict[str, str] | None  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
 
-    # Chain info
+    # Chain info.
+    #
+    # These two keep their original meaning: the chain the contract addresses
+    # above are deployed on, i.e. the EXECUTION chain. Existing clients read
+    # them and stay correct. New clients should prefer the explicit blocks
+    # below, which say which chain they mean instead of leaving it implied.
     chain_id: int
     rpc_url: str
+
+    # Two-chain split (#1240). Payments and execution are the same chain today
+    # and diverge at the Arc mainnet cutover. Serving both unconditionally —
+    # rather than only once they differ — means a client never has to infer a
+    # missing block, and `split` says outright whether a wallet flow needs
+    # chain switching.
+    payments_chain: ChainEndpointResponse
+    execution_chain: ChainEndpointResponse
+    split_chain: bool
 
 
 # ═══════════════════════════════════════════════════════════════

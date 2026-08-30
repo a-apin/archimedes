@@ -22,7 +22,7 @@ still quotes (402 without a payment header — so the approval UX is exercised
 end to end) but accepts a presented payment WITHOUT verify/settle, loudly.
 No real value can move while the custody migration (#975) is pending.
 
-Pricing is flat (``GENERATION_PRICE_USD``, default $0.15 testnet USDC) behind
+Pricing is flat (``GENERATION_PRICE_USD``, default $2.00 testnet USDC — one $20 faucet drip = 10 generations) behind
 ``quote()`` — the single seam #1217's measured per-generation budget replaces
 later without touching the paywall flow.
 """
@@ -37,7 +37,7 @@ from fastapi import HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PRICE_USD = "0.15"
+DEFAULT_PRICE_USD = "2.00"
 
 # The logical resource identifier bound into the 402 requirements. One flat
 # resource for now — per-job binding is unnecessary while the price is flat
@@ -52,12 +52,35 @@ def payment_required() -> bool:
 
 
 def _payments_dry_run() -> bool:
-    """EXACT mirror of main.py's parse — the two must never disagree."""
-    return os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
+    """Generation-scoped dry-run switch, split from the global (2026-08-20).
+
+    GENERATION_PAYMENTS_DRY_RUN, when set, governs ONLY this paywall; unset,
+    it inherits PAYMENTS_DRY_RUN (main.py's parse, EXACT mirror — the two
+    must never disagree on the fallback). Why the split: the recorded scope
+    decision (infra/ecs.tf money-switch block) allows real settlement on the
+    caller-signed metered-API path while the marketplace DCW flow stays
+    blocked on #975 — but one global switch gated both. The split lets the
+    generation rail go live without un-drying marketplace sweeps/withdraws.
+    """
+    raw = os.getenv("GENERATION_PAYMENTS_DRY_RUN")
+    if raw is None:
+        raw = os.getenv("PAYMENTS_DRY_RUN", "true")
+    return raw.lower() in ("1", "true", "yes")
 
 
 def _recipient() -> str:
     return os.getenv("GENERATION_PAYMENT_RECIPIENT", "").strip()
+
+
+def settles_real_value() -> bool:
+    """True only when a presented payment will actually be verified and settled.
+
+    The generation credit ledger (#1441) hangs off this. Under flag-off or
+    dry-run no value moves, so there is nothing to owe anybody and no claim
+    worth writing — the ledger stays completely inert, which is what keeps this
+    change a no-op in production until the payment stack is flipped on.
+    """
+    return payment_required() and not _payments_dry_run()
 
 
 def _price() -> str:
@@ -81,14 +104,14 @@ def quote() -> dict:
     per-generation budget replaces the internals of this function (and bumps
     the model name) without changing the paywall flow around it.
     """
-    from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+    from archimedes.marketplace.config import gateway_chain
 
     return {
         "payment_required": payment_required(),
         "pricing_model": "flat_v1",
         "price": _price(),
         "asset": "USDC",
-        "chain": os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip(),
+        "chain": gateway_chain(),
         "recipient": _recipient() or None,
         "dry_run": _payments_dry_run(),
         "how": (

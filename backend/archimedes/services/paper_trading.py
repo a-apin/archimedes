@@ -6,16 +6,23 @@ bar since deploy. Re-running the full replay daily is cheap (one strategy,
 daily bars), needs no serialized broker state, and is deterministic given the
 data. The LEDGER is still append-only — the replay only ever contributes
 dates the ledger has not seen. When a replay DISAGREES with rows already
-written (an upstream data restatement — yfinance revises history), the ledger
-is NOT rewritten: the drift is counted, logged loudly, and stamped on the
-deployment. A track record that silently rewrites itself is the exact failure
-this product exists to oppose.
+written, the ledger is NOT rewritten: the drift is counted, logged loudly,
+and stamped on the deployment. A track record that silently rewrites itself
+is the exact failure this product exists to oppose.
 
 Replay = the same calls the grading path uses (``fetch_real_panel`` →
 ``feed_factory`` → per-sleeve ``run_dsl_backtest`` with fusion's
 dollar-sleeve aggregation), so paper semantics track graded semantics by
 construction — including F1's momentum convention and whatever lands next,
-with the interpreter-parity harness holding the other side.
+with the interpreter-parity harness holding the other side. That "by
+construction" coupling cuts both ways: this module has NO independent
+opinion on cost model, commission, or slippage — a real historical
+restatement (yfinance revising a bar) and a change to the GRADED path's own
+cost model between two replays (e.g. wiring a previously-inert slippage
+parameter, #1242/#1379) produce the identical drift signature. Don't assume
+the cause is upstream data — see ``advance_deployment``'s log message, which
+names both candidates rather than asserting the one that happens to be more
+common.
 """
 
 from __future__ import annotations
@@ -157,9 +164,15 @@ def advance_deployment(session, dep: PaperDeployment, *, replay=None) -> dict:
     if drift:
         dep.drift_detected_at = datetime.now(UTC)
         logger.warning(
-            "paper: deployment %s — fresh replay disagrees with %d already-written ledger row(s) "
-            "(upstream data restatement). The ledger is append-only and was NOT rewritten; the "
-            "deployment is stamped drift_detected_at so the discrepancy is surfaced, not hidden.",
+            "paper: deployment %s — fresh replay disagrees with %d already-written ledger row(s). "
+            "Two known causes produce this identical signature: (1) upstream data restatement "
+            "(yfinance revised a historical bar) or (2) a change to the GRADED path's own replay "
+            "behavior between runs (cost model, commission, slippage, or interpreter semantics) — "
+            "replay_spec calls the same run_dsl_backtest the grader uses, by design, so a grading-side "
+            "change moves every open deployment's history along with it. This log cannot distinguish "
+            "the two; do not assume upstream data without checking whether the graded path changed. "
+            "The ledger is append-only and was NOT rewritten; the deployment is stamped "
+            "drift_detected_at so the discrepancy is surfaced, not hidden.",
             dep.id,
             drift,
         )

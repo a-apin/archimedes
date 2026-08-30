@@ -33,6 +33,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.events: list[dict] = []
         self.status: list[tuple[str, dict | None, str]] = []
+        self.current_status: str | None = None
 
     async def push_event(self, job_id, payload):
         self.events.append(payload)
@@ -40,6 +41,15 @@ class _FakeStore:
 
     async def update_status(self, job_id, status, *, result=None, error=""):
         self.status.append((status, result, error))
+        self.current_status = status
+
+    async def update_terminal_status(self, job_id, status, *, result=None, error=""):
+        """Mirrors ``JobStore.update_terminal_status`` (#1355): a no-op once
+        ``cancelled`` has already been recorded."""
+        if self.current_status == "cancelled":
+            return False
+        await self.update_status(job_id, status, result=result, error=error)
+        return True
 
 
 @pytest.mark.asyncio
@@ -311,7 +321,25 @@ def test_pick_pipeline_always_debate_after_cutover(monkeypatch):
     for override in (None, "fusion", "architect", "agent", "debate"):
         name, reason = gp._pick_pipeline(mode_override=override)
         assert name == "debate", f"override {override!r} routed off the society (got {name!r})"
-        assert "debate" in reason.lower() or "Phase-3" in reason
+        assert "debate" in reason.lower()
+
+
+def test_pick_pipeline_reason_is_user_copy_not_internal_jargon():
+    """The reason string is USER-FACING: run_generation emits it verbatim on the
+    SSE stream (`pipeline_selected`) and GenerationStream.jsx renders it into
+    every viewer's event log. Internal planning shorthand ("T1.1 Phase-3
+    cutover") shipped to production screens through exactly this pipe
+    (found in owner review, 2026-08-30). Guard: no issue-tracker numbering,
+    no cutover/phase/sprint/roadmap vocabulary, ever."""
+    import re
+
+    from archimedes.agents import generation_pipeline as gp
+
+    jargon = re.compile(r"T\d\.\d|cutover|Phase-|phase-\d|sprint|roadmap|TODO", re.IGNORECASE)
+    for override in (None, "fusion", "architect", "agent", "debate"):
+        _, reason = gp._pick_pipeline(mode_override=override)
+        hit = jargon.search(reason)
+        assert hit is None, f"internal jargon {hit.group(0)!r} in user-facing reason: {reason!r}"
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,9 @@ rebalance period, not Python strategy code.
 
 This module fills that hole with a vanilla pandas/numpy simulator:
 
-  1. ``fetch_ohlcv`` (yfinance) for every ticker in ``weights``
+  1. ``market_data_provider.get_provider().get_daily_ohlcv`` (default
+     yfinance; vendor-swappable + ``asset_daily_bars``-cached, #1218/#1282)
+     for every ticker in ``weights``
   2. Wide-form close panel with strict inner-join on the business-day index
   3. Periodic rebalance with linear transaction costs (``tx_cost_bps``)
   4. Daily portfolio return series → Sharpe / Sortino / CAGR / max DD / Calmar
@@ -63,21 +65,6 @@ RF_DAILY = 0.05 / ANNUALIZATION  # 5% annual risk-free rate, daily equivalent
 MIN_BARS_FOR_BACKTEST = 60  # ~3 months; refuse to backtest shorter windows
 
 
-def _ensure_analytics_import() -> None:
-    """Place ``analytics-engine/src`` on sys.path so its ``data`` module imports.
-
-    Delegates to ``fusion_market_data._ensure_analytics_import``, which walks up
-    from its own file to find the package. The previous fixed ``parents[3]``
-    resolved to ``/`` inside the container (host and image layouts differ), so
-    every real-data backtest in prod raised ``No module named
-    'archimedes_analytics_engine'`` and strategies never left "pending"
-    (dogfood find, 2026-07-01). One function owns the path contract now.
-    """
-    from archimedes.services.fusion_market_data import _ensure_analytics_import as _walk_and_insert
-
-    _walk_and_insert()
-
-
 def _fetch_price_panel(symbols: list[str], start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch close prices and volumes for ``symbols`` and inner-join on the date index.
 
@@ -85,15 +72,23 @@ def _fetch_price_panel(symbols: list[str], start: str, end: str) -> tuple[pd.Dat
     public yet, forward-filling prices leaks the "survival" fact to the
     simulator. We strictly inner-join: the panel only contains days where
     EVERY requested symbol traded.
-    """
-    _ensure_analytics_import()
-    from archimedes_analytics_engine.data import fetch_ohlcv
 
+    Fetches via the market-data provider seam
+    (``archimedes.services.market_data_provider.get_provider().get_daily_ohlcv``,
+    #1218/#1282) rather than analytics-engine's ``fetch_ohlcv`` directly, so
+    this — the GENERATION path's portfolio-weights backtester — honors
+    ``MARKET_DATA_PROVIDER`` and reads/writes the ``asset_daily_bars`` cache
+    the same way the request-path call sites do, instead of re-hitting the
+    vendor on every backtest re-run.
+    """
+    from archimedes.services.market_data_provider import get_provider
+
+    provider = get_provider()
     closes: dict[str, pd.Series] = {}
     volumes: dict[str, pd.Series] = {}
     for sym in symbols:
         try:
-            df = fetch_ohlcv(sym, start, end)
+            df = provider.get_daily_ohlcv(sym, start, end)
             if not df.empty and "Close" in df.columns and "Volume" in df.columns:
                 closes[sym] = df["Close"]
                 volumes[sym] = df["Volume"]
@@ -334,15 +329,23 @@ def _annualized_metrics(daily_returns: list[float], equity_curve: list[float]) -
     }
 
 
-def _correlation_to_benchmark(daily_returns: list[float], benchmark_returns: list[float]) -> float:
-    """Pearson correlation between two return series, robust to unequal length."""
+def _correlation_to_benchmark(daily_returns: list[float], benchmark_returns: list[float]) -> float | None:
+    """Pearson correlation between two return series, robust to unequal length.
+
+    Returns None — not a fabricated 0.0 — on either degenerate branch (too few
+    overlapping observations, or a zero-variance series that makes Pearson's r
+    undefined). 0.0 would assert "uncorrelated", a claim nothing measured
+    (#1242 review; the caller-side version of this fix already stops
+    coercing a missing/failed correlation to 0.0 — this closes the same gap
+    inside the helper it calls).
+    """
     n = min(len(daily_returns), len(benchmark_returns))
     if n < 2:
-        return 0.0
+        return None
     a = np.asarray(daily_returns[:n], dtype=float)
     b = np.asarray(benchmark_returns[:n], dtype=float)
     if a.std() == 0 or b.std() == 0:
-        return 0.0
+        return None
     return float(np.corrcoef(a, b)[0, 1])
 
 
@@ -439,7 +442,9 @@ def backtest_portfolio(
     look_ahead_passed = True
 
     # ── SPY correlation (diversification signal) ──
-    correlation_to_spy = 0.0
+    # None means "not measured" — coercing a missing/failed correlation to 0.0
+    # asserts "uncorrelated to SPY", a claim nothing measured (#1242 review).
+    correlation_to_spy: float | None = None
     try:
         spy_panel, _ = _fetch_price_panel(["SPY"], start_iso, end_iso)
         spy_full = spy_panel["SPY"].pct_change().fillna(0.0)
@@ -470,7 +475,7 @@ def backtest_portfolio(
         total_trades=rebalance_events,
         avg_holding_period_days=float(rebalance_days),
         correlation_to_spy=correlation_to_spy,
-        correlation_to_btc=0.0,  # not computed for portfolio sim
+        correlation_to_btc=None,  # not computed for portfolio sim — None, not a fabricated 0.0
         equity_curve=equity_curve,
         monthly_returns=[],
         backtest_start=date.fromisoformat(start_iso),
@@ -488,6 +493,12 @@ def backtest_portfolio(
         backtest_engine="portfolio-simulator-v1",
         backtest_code_hash=_module_hash(),
         transaction_cost_bps=tx_cost_bps,
+        # Cost basis this row was actually charged, so a reader comparing it
+        # against engine A/C rows can tell whether they're comparable (#1242
+        # review: this used to stop at the artifact dict, never reach the
+        # persisted BacktestResult / DB column it was added for).
+        cost_model_id=f"cm1:d{tx_cost_bps:g}:s{DEFAULT_SLIPPAGE_BPS:g}+almgren",
+        look_ahead_audit_source="static_rebalance_no_signal_shift",
     )
 
     artifact = {

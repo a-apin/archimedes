@@ -85,7 +85,7 @@ Content-Type: application/json
   "brief": {
     "intent": "diversified low-volatility strategy for idle USDC",
     "risk_appetite": "moderate",          // fixed_income | conservative | moderate | aggressive | hyper_risky
-    "max_papers": 5                        // 1..20
+    "max_papers": 5                        // 2..6
   },
   "n_candidates": 1,                       // 1..5 considered internally (K=1 winner is emitted)
   "model": null                            // optional; allowlisted free model id, else env default. Premium → HTTP 402 without entitlement.
@@ -114,7 +114,7 @@ GET /api/generate/jobs/{job_id}
 ```json
 {
   "job_id": "…",
-  "state": "queued",            // queued | running | done | error | cancelled
+  "state": "queued",            // queued | running | stalled | done | error | cancelled
   "brief_intent": "…",
   "created_at": "…",             // ISO-8601 UTC
   "updated_at": "…",
@@ -123,7 +123,9 @@ GET /api/generate/jobs/{job_id}
 }
 ```
 Identical record to the matching entry in `GET /api/generate/jobs`, so a client can switch
-between the listing and the single-job read without the two disagreeing. `state == "done"`
+between the listing and the single-job read without the two disagreeing. `"stalled"`
+(#1355) is a READ-TIME derived state — a `"running"` job whose `heartbeat_at` has gone
+stale for over 5 minutes — never written to Redis. `state == "done"`
 with a non-null `best_strategy_id` is the signal to move on to the candidates read below;
 `error` and `cancelled` are terminal. The stored failure string is not exposed — it holds
 raw unscrubbed exception text; the `error` state and the SSE `error` event (which carries
@@ -356,12 +358,15 @@ request sent — unless the winning candidate's LIVE GATE read above is
 `deployable: true`. **Never weaken or skip that check to force a deploy.**
 
 `--deploy` defaults to a **DRY RUN**: the harness prints the exact payload
-and sends nothing. Pass `--deploy` to actually call the endpoint. Default OFF
-because, as of this writing, the contract suite was just redeployed (T3.2,
-2026-07-09) and issue [#588](https://github.com/a-apin/archimedes/issues/588)
-(whether the repo's cached ABI matches the live deployed bytecode) is still
-open — no vault, agent or human, had been created against the new deployment
-at the time this shipped.
+and sends nothing. Pass `--deploy` to actually call the endpoint. The default
+stays OFF, but the original reason no longer holds: the T3.2 redeploy landed
+2026-07-09 and issue
+[#588](https://github.com/a-apin/archimedes/issues/588) (whether the repo's
+cached ABI matches the live deployed bytecode) closed 2026-07-14. The
+`deploy` group has been `live` in the served manifest since
+[#1447](https://github.com/a-apin/archimedes/pull/1447). It stays OFF now for
+the ordinary reason: this call spends gas and creates a real on-chain vault,
+so it should be an explicit act, not a default.
 
 ### MONITOR — read vault health back
 

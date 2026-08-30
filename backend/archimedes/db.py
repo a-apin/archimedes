@@ -28,6 +28,7 @@ from archimedes.models.chat import Base
 from archimedes.models.corpus_store import CorpusMetaRecord, PaperRecord
 from archimedes.models.daily_returns_store import StrategyDailyReturn
 from archimedes.models.generation_cost import GenerationCostRecord
+from archimedes.models.generation_credit import GenerationCreditRecord
 from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity
 from archimedes.models.marketplace import (
     MarketplaceAgent,
@@ -35,6 +36,7 @@ from archimedes.models.marketplace import (
     SubscriberLiability,
     SubscriberTickLog,
 )
+from archimedes.models.payment_receipt import PaymentReceiptRecord
 from archimedes.models.request_snapshot import RequestCountSnapshot
 from archimedes.models.strategy_generators import StrategyGenerator
 from archimedes.models.strategy_proposal import StrategyProposal
@@ -58,10 +60,12 @@ __all__ = [
     "ControlledWallet",
     "CorpusMetaRecord",
     "GenerationCostRecord",
+    "GenerationCreditRecord",
     "IdentityEvent",
     "LinkedWallet",
     "MarketplaceAgent",
     "PaperRecord",
+    "PaymentReceiptRecord",
     "RequestCountSnapshot",
     "SettlementIntent",
     "StrategyBacktestFixture",

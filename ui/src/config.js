@@ -1,4 +1,5 @@
 import { createPublicClient, createWalletClient, custom, http } from 'viem'
+import { arcExecutionChain, EXECUTION_CHAIN_HEX } from './chain-config'
 import {
   connectCirclePasskey,
   clearCircleSession,
@@ -6,12 +7,9 @@ import {
   rehydrateSmartAccount,
 } from './circle-wallet'
 
-const arcTestnet = {
-  id: 5042002,
-  name: 'Arc Testnet',
-  nativeCurrency: { name: 'USD Coin', symbol: 'USDC', decimals: 18 },
-  rpcUrls: { default: { http: ['https://rpc.testnet.arc.network'] } },
-}
+// Chain identity lives in chain-config.js so the EOA path, the passkey path
+// and the switch-chain hex cannot drift apart (#1240).
+const arcTestnet = arcExecutionChain
 
 export const publicClient = createPublicClient({
   chain: arcTestnet,
@@ -41,17 +39,27 @@ let _lastSeenChainId = null
 // (Rabby/Brave/…) whose object is NOT window.ethereum (#921). Every handler
 // no-ops unless the event's provider is the one connectWallet selected
 // (_provider), so an announced-but-inactive wallet can't hijack the session.
+// Announce the module-level wallet state to the app. Components that copy
+// the connected address into their own state (Generate's payment panel:
+// getAddress() at mount + this event) can NOT see page-level setters like
+// AuthenticatedApp's onConnect — this event is their only resync. EVERY
+// transition of _address must fire it, or any panel mounted before the
+// transition keeps the stale address forever ("top bar says connected,
+// pay panel says connect wallet" split-brain).
+function announceWalletChanged() {
+  window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: _address } }))
+}
+
 function _onAccountsChanged(provider, accounts) {
   if (provider !== _provider) return
   if (!accounts?.length) {
-    disconnectWallet()
-    window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: null } }))
+    disconnectWallet() // announces the null address itself
     return
   }
   _address = accounts[0]
   if (_providerId) saveWalletMeta(_providerId, _address)
   _walletClient = createWalletClient({ account: _address, chain: arcTestnet, transport: custom(provider) })
-  window.dispatchEvent(new CustomEvent('wallet-changed', { detail: { address: _address } }))
+  announceWalletChanged()
 }
 
 function _onChainChanged(provider, newChainId) {
@@ -241,6 +249,12 @@ let _smartAccountClient = null // Circle modular-transport viem client (for bund
 
 export function getConnectedProvider() { return _providerId }
 export function getAddress() { return _address }
+// The raw EIP-1193 provider object for the connected EOA wallet (null for
+// the Circle passkey path, which has no such provider — see CIRCLE_PROVIDER_ID
+// paths above). Exported so callers outside this module (../x402.js's payment
+// flow) can pass it to ensureArcChain before a tx/signature, same as
+// connectWallet/reconnectWallet do internally.
+export function getRawProvider() { return _provider }
 // Returns the Circle smart account when connected via passkey, else null.
 // Phase 2.5 uses this to wrap deposit calls in sendUserOperation.
 export function getSmartAccount() { return _smartAccount }
@@ -320,6 +334,7 @@ export async function reconnectWallet() {
       _smartAccount = restored.smartAccount
       _smartAccountClient = restored.client
       saveWalletMeta(CIRCLE_PROVIDER_ID, _address)
+      announceWalletChanged()
       return { address: _address, provider: _providerId }
     } catch {
       // If rehydration fails (corrupted credential, SDK error, etc.)
@@ -352,6 +367,7 @@ export async function reconnectWallet() {
     })
 
     saveWalletMeta(_providerId, _address)
+    announceWalletChanged()
     return { address: _address, provider: _providerId }
   } catch {
     clearWalletMeta()
@@ -359,7 +375,8 @@ export async function reconnectWallet() {
   }
 }
 
-const ARC_CHAIN_HEX = '0x4cef52'  // 5042002
+// Derived from the chain id, never written twice — see chain-config.js.
+const ARC_CHAIN_HEX = EXECUTION_CHAIN_HEX
 
 // MetaMask returns -32002 when a wallet_requestPermissions / eth_requestAccounts
 // is already pending — usually because the user dismissed the popup without
@@ -369,7 +386,13 @@ function isAlreadyPendingError(err) {
   return err?.code === -32002
 }
 
-async function ensureArcChain(ethereum) {
+// Exported so ../x402.js's payment-signing flow can switch the connected
+// wallet to Arc before a deposit tx or an EIP-712 signature, reusing the
+// exact same chain-switch behavior connectWallet/reconnectWallet already use
+// (including the -32002 "request already pending" and 4902 "unknown chain,
+// add it" handling below) instead of a second implementation drifting from
+// this one.
+export async function ensureArcChain(ethereum) {
   // Skip the switch popup if we're already on Arc.
   try {
     const current = await ethereum.request({ method: 'eth_chainId' })
@@ -390,7 +413,11 @@ async function ensureArcChain(ethereum) {
           chainName: 'Arc Testnet',
           nativeCurrency: { name: 'USD Coin', symbol: 'USDC', decimals: 18 },
           rpcUrls: ['https://rpc.testnet.arc.network'],
-          blockExplorerUrls: [],
+          // MetaMask-family validation REJECTS an empty array here (EIP-3085:
+          // null or a non-empty HTTPS list) — `[]` made wallet_addEthereumChain
+          // throw for every wallet without Arc pre-added, killing the deposit
+          // and signing flows before any prompt appeared (#1298 field bug).
+          blockExplorerUrls: ['https://testnet.arcscan.app'],
         }],
       })
     } else if (isAlreadyPendingError(switchError)) {
@@ -434,6 +461,7 @@ export async function connectCircleWallet({ mode = 'login', walletName } = {}) {
   // discoverable so no name comes back; any previously stored name for this
   // address is left intact for getStoredWalletName().
   saveWalletMeta(CIRCLE_PROVIDER_ID, _address, result.walletName)
+  announceWalletChanged()
   return { address: _address, provider: CIRCLE_PROVIDER_ID }
 }
 
@@ -478,6 +506,7 @@ export async function connectWallet(providerId, opts) {
   })
 
   saveWalletMeta(providerId, _address)
+  announceWalletChanged()
   return { address: _address, provider: providerId }
 }
 
@@ -492,6 +521,7 @@ export function disconnectWallet() {
   _smartAccount = null
   _smartAccountClient = null
   clearWalletMeta()
+  announceWalletChanged()
 }
 
 export async function getWalletClient() {
