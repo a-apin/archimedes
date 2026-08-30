@@ -114,9 +114,10 @@ which is fine for a daily-bar engine and is a trap for anything else.
 
 `interpret_spec` derives `max_period` from indicator names (`sma_200` → 200). On daily bars that
 is roughly ten months of history, which is what the strategy author meant. On 15-minute bars it is
-about **2.5 trading days**. A "200-day moving average" strategy quietly becomes a "2.5-day moving
-average" strategy, which is a different strategy with a different risk profile and a verdict that
-was never computed for it.
+**~7.7 equity sessions (26 bars/session), or ~2 days on a 24/7 crypto feed.** A "200-day moving
+average" strategy quietly becomes a week-and-a-half moving average — and on crypto, a two-day one
+— which is a different strategy with a different risk profile and a verdict that was never
+computed for it.
 
 **Landmine 3 — we have already lived this failure, and it is recorded in the tree.**
 
@@ -159,7 +160,33 @@ Everything below routes through the existing vendor seam,
 the two methods a marks loop needs — `get_intraday_quote(ticker)` and
 `get_intraday_quotes_batch(tickers)` — and both are documented as deliberately **uncached**, "a
 stale daily close must never masquerade as a live push/guardrail reading". That is the right
-property for marks too. **No new fetch path should be written.**
+property for marks too. **No new fetch path is needed — but the batch method has to be widened
+first, and that is item 0 of the plan, not a footnote.**
+
+**The prerequisite: `get_intraday_quotes_batch` must return the bar timestamp, not just the
+price.** Today it returns `dict[str, float]`. §2.4's honesty rules are unbuildable on that: a mark
+must store *when the price was observed upstream* (rule 1), and the stale-bar guard (rule 4) has
+nothing to compare against without it. The signature widens to
+`dict[str, tuple[float, datetime]]` — exactly the shape `get_intraday_quote` already returns for a
+single ticker. Blast radius, verified 2026-08-30:
+
+| Site | What changes |
+|---|---|
+| `market_data_provider.py:127` — the `MarketDataProvider` ABC | The abstract signature and its docstring. Everything below follows from this one line. |
+| `:235` — `YFinanceProvider.get_intraday_quotes_batch` | **The timestamp is already in hand and thrown away.** The method holds the whole `yf.download` frame and reads only `Close`; the per-symbol bar time is `close[yf_ticker].dropna().index[-1]`, and the single-ticker sibling at `:219` already does precisely this with `data.index[-1]` (tz-normalized to UTC). Copy that four-line pattern per symbol. |
+| `:614` — `CachingMarketDataProvider` | A one-line pass-through delegate; annotation only. It must stay a pass-through — intraday is uncached by design. |
+| #1455's `TiingoProvider` | Its intraday stub already raises `NotImplementedError` (§2.3), so it changes signature and keeps raising. No new work, but the PR must not land after this change without picking it up. |
+| `chain/oracle_updater.py:678` — the only production caller | Unpacks `price` today; unpacks `(price, bar_ts)` after. |
+| `backend/tests/services/test_market_data_provider.py` | Three doubles implement the ABC and widen with it (`_FakeVendor:90`, `_FakeOhlcvVendor:134`, `_FakeVendorPassthroughSpy:282`), plus two assertions that pin the return shape (`:256`, `:498`). |
+
+The `oracle_updater` row carries a bonus worth naming, because it is a live honesty gap rather
+than plumbing: `_fetch_yfinance` stamps `AssetPrice(timestamp=timestamp)` with the *poll* time
+(`oracle_updater.py:681`, `now` from `fetch_prices`), and `_validate_for_push` computes `age_s`
+from that same field (`:478-481`). On the yfinance path the staleness gate is therefore comparing
+now against now, and **cannot reject a stale bar** — while `fetch_prices`'s own docstring claims
+"every price keeps its true `source` + upstream timestamp so the on-chain push staleness/deviation
+gates stay meaningful" (true of the Pyth cascade, which carries a real observation time; not true
+of the yfinance batch). Widening the batch return fixes that gate as a side effect. Size **S–M**.
 
 ### 2.1 The three options
 
@@ -236,7 +263,9 @@ yfinance's 1-minute bars for equities are not real-time — they come off a cons
 lag that Yahoo does not contract to bound. The oracle already treats this as a first-class
 property: `DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS = 900` refuses to push anything older than 15
 minutes on-chain, and the #775 cross-check checks the secondary's *bar timestamp* before comparing
-magnitudes precisely because "a stale reading was never validly comparable".
+magnitudes precisely because "a stale reading was never validly comparable". (The *discipline* is
+first-class; §2 shows the yfinance leg does not yet hand that gate a real observation time, which
+is half of why item 0 exists.)
 
 The marks path inherits that discipline:
 
@@ -455,11 +484,10 @@ false safety claim is a defect even when the mechanism is identical.
 
 ### 4.3 What does *not* change
 
-- `paper_trading.advance_deployment` / `advance_all` / `replay_spec` — untouched.
-- `paper_daily_returns` and its append-only law — untouched.
+- `advance_deployment` writes the position cache (§4.1); `replay_spec`, the ledger append-only
+  law, and drift detection are untouched.
 - `deployment_summary`'s existing `series` field — untouched, so today's UI keeps working
   unchanged while the marks UI is built beside it.
-- The drift-detection path and `drift_detected_at` — untouched.
 - The DSL, both interpreters, and `test_interpreter_parity.py` — **untouched, and that is the point.**
 
 ---
@@ -478,6 +506,19 @@ computed from whole days. Two additive changes:
   lighter stroke or a dashed segment — so a user can see at a glance where the *recorded track
   record* ends and where the *unsettled intraday view* begins. This matters because only the daily
   ledger carries to mainnet.
+- **A no-marks-yet state.** A deployment created between ticks, or one on `SPY` before the session
+  opens, legitimately has zero marks. That renders as an em-dash with a reason — never a `+0.00%`,
+  which is the exact bug `formatTotalReturn` was extracted to fix (an unmeasured day-0 ledger must
+  not get a measured look, `paperCopy.js:71-84`). The `days === 0` discriminator has the same shape
+  here: gate on *whether a mark exists*, never on its value, so a genuinely marked flat 0.00% still
+  prints.
+- **A marks-fetch-failure state.** The marks endpoint can fail while the deployment card itself
+  loaded fine — a partial failure the current card has no shape for. Route it through the existing
+  `paperErrorMessage(err)` (`paperCopy.js:96-102`) rather than inventing a second mapping, so a raw
+  `Backend returned 503` still cannot reach the user. The card keeps showing the settled daily
+  return and says the live value is unavailable; **it must not silently show the last mark it
+  fetched as if it were current** — a stale number with a fresh-looking label is the same defect as
+  a duplicated stale row (§2.4 rule 4), just in the UI.
 
 Two things to get right, both of which have precedent in this component:
 
@@ -533,10 +574,11 @@ evenings-and-weekends capacity.
 
 | # | Item | Size | Notes |
 |---|---|---|---|
+| 0 | Widen `get_intraday_quotes_batch` to `dict[str, tuple[float, datetime]]` (§2) | **S–M** | **Blocks items 3 and 4** — the observation timestamp and the stale-bar guard both need it. ABC + `YFinanceProvider` + caching delegate + `oracle_updater.py:678` + the test doubles; also closes the yfinance staleness-gate gap. |
 | 1 | `paper_marks` model + Alembic migration + retention constants | **S** | Migration ships with its data-shape decision; no backfill (marks start now). |
 | 2 | Position-set cache at daily advance (§4.1) | **S** | The only new logic in the engine path. |
 | 3 | `marks_runner.py` — batched fetch, mark, insert, lease | **M** | Reuses `get_intraday_quotes_batch` and `RunnerLeaseGuard`; writes nothing on stale data. |
-| 4 | Rollup + prune job, with the three guards from §3.2 | **S** | Each guard demonstrated to reject before merge. |
+| 4 | Rollup + prune job, with the three guards from §3.2 | **S** | Each guard demonstrated to reject before merge — plus the stale-bar guard from §2.4 rule 4: a bar older than `PAPER_MARKS_MAX_STALENESS_MINUTES` writes **no row**, shown by feeding one and asserting the row count did not move. |
 | 5 | `GET /api/paper/deployments/{id}/marks` | **S** | Same `_owned_deployment` ownership gate as the existing routes. |
 | 6 | Ledger card: live value + as-of + delayed badge | **S** | Copy in `paperCopy.js`, unit-tested. |
 | 7 | `runner-user-data.sh`: third `docker run` unit | **S** | No new image, no new secret. Needs Dan's ack (shared infra). |
@@ -545,7 +587,7 @@ evenings-and-weekends capacity.
 active deployment on `SPY` accumulates 26 marks across a US session and zero overnight; a
 deployment on `BTC-USD` accumulates 96 across 24 hours; the prune job reduces an 8-day-old
 deployment's raw rows to hourly and logs the deleted count; and `paper_daily_returns` row counts
-are **byte-identical** before and after the marks feature runs.
+are **unchanged** before and after the marks feature runs.
 
 ### Next — v1.5
 
@@ -615,6 +657,8 @@ Every claim above traces to a file in this repo or a linked issue, verified 2026
 | `REBALANCE_FREQUENCIES` is a closed 3-member enum | `services/strategy_dsl.py:22` |
 | Oracle polls every 60s and batches its vendor call | `chain/oracle_runner.py:39`; `market_data_provider.YFinanceProvider.get_intraday_quotes_batch` |
 | Intraday quotes are deliberately uncached at the seam | `services/market_data_provider.py` module docstring |
+| The batch quote method returns price only; the single-quote sibling returns `(price, timestamp)` | `services/market_data_provider.py:127`, `:219`, `:235`, `:614` |
+| The yfinance path stamps poll time, and the push staleness gate reads that same field | `chain/oracle_updater.py:681` (`timestamp=timestamp`), `:478-481` (`_validate_for_push`) |
 | Oracle refuses upstream data older than 15 min; cross-check gates on bar age | `chain/oracle_updater.py` `DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS`, `_cross_check_secondary` |
 | Tiingo's intraday methods raise `NotImplementedError` | PR #1455, "Scope" section |
 | yfinance is unlicensed for commercial redistribution | Issue #1218 |
