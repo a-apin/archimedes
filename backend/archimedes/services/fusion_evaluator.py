@@ -4,7 +4,10 @@ Orchestrates the full pipeline for fusion-generated strategies:
 1. Validate the strategy_spec from the fusion proposal
 2. Interpret it into a backtrader.Strategy subclass
 3. Run a backtest
-4. Apply the rigor gate (DSR, PBO, OOS Sharpe, look-ahead audit)
+4. Apply the rigor gate (DSR, PBO, OOS Sharpe, look-ahead audit — the last of
+   which is a REAL structural audit of the spec against the verified interpreter
+   surface plus a broker cheat-on-close/open check, not the LLM's self-declared
+   ``look_ahead_safe`` boolean; see ``dsl_lookahead_audit``)
 5. Persist the result in the strategy library
 """
 
@@ -27,6 +30,11 @@ from archimedes.services._fusion_helpers import (
     _synthetic_data,
     _TradeStatsAnalyzer,
     equity_curve_to_daily_returns,
+)
+from archimedes.services.dsl_lookahead_audit import (
+    PASSED_DECLARED_ONLY,
+    audit_dsl_strategy,
+    broker_cheat_check_passed,
 )
 from archimedes.services.dsl_to_backtrader import interpret_spec, interpret_variant
 from archimedes.services.rigor_evaluator import (
@@ -94,6 +102,14 @@ class BacktestMetrics:
     # remove the limitation is deliberately out of scope.
     backtest_engine: str = ENGINE_SINGLE_FEED
     portfolio_construction: str = CONSTRUCTION_SINGLE_ASSET
+    # Broker execution-timing check for the cerebro that produced these numbers:
+    # cheat-on-close / cheat-on-open must be OFF or the broker fills orders on
+    # the same bar that generated the signal. Set by every runner in this module
+    # from the real cerebro (dsl_lookahead_audit.broker_cheat_check_passed).
+    # ``None`` means NO check was performed — the honest state for metrics built
+    # by hand — and it deliberately blocks a ``passed_structural`` look-ahead
+    # verdict rather than being assumed clean.
+    broker_cheat_check_passed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -105,14 +121,12 @@ class RigorVerdict:
     dsr_p_value: float | None
     pbo_score: float | None
     oos_sharpe: float | None
-    # True for every spec that reaches this evaluator: validate_strategy_spec
-    # rejects look_ahead_safe=False before a backtest ever runs, so this is
-    # always True in practice. It is NOT the result of an independent
-    # AST-based audit (cf. rigor_evaluator.look_ahead_audit, which runs only
-    # against cited curated source) — it is the LLM's own self-declared
-    # look_ahead_safe flag, enforced as a closed-DSL admission gate. Kept as
-    # a bool because it participates in the `passing` computation; see
-    # `look_ahead_label` for the honest user-facing string (audit 06-14, Q6).
+    # DERIVED, never declared: True iff `look_ahead_audit == "passed_structural"`
+    # — i.e. the spec was proven to sit inside the audited DSL surface AND the
+    # broker execution-timing check ran and passed. It used to be a hardcoded
+    # ``True`` mirroring the LLM's own `look_ahead_safe` flag; that is now
+    # recorded as `look_ahead_declared` and has no vote. This bool exists only
+    # because it participates in the `passing` computation below.
     look_ahead_clean: bool
     num_trials: int
     # In-sample (training-slice) Sharpe, surfaced so the OOS/IS cliff that the
@@ -123,16 +137,25 @@ class RigorVerdict:
     # the statistics AND those statistics were computed on real market data.
     data_source: str = "synthetic"
     admissible: bool = False
-    # Honest user-facing label for the look-ahead check (audit 06-14, Q6).
-    # Distinct from `look_ahead_clean` (the gating bool, always True here):
-    # this string makes clear that "clean" means "the closed DSL's
-    # self-attested look_ahead_safe flag was True", NOT "an independent
-    # AST audit of the generated code ran and found no look-ahead bias" —
-    # the latter is what `rigor_evaluator.look_ahead_audit` does for cited
-    # curated source, and it is NOT run against fusion/DSL output. Mirrors
-    # the "MISSING"-style honest labels in
-    # `selection_bias_routes.RigorGateDetail.look_ahead`.
-    look_ahead_label: str = "N/A (closed-DSL, self-attested, not source-audited)"
+    # ── Look-ahead audit (the honest surfaced field) ──────────────────
+    # Three-state, from dsl_lookahead_audit: "passed_structural" |
+    # "passed_declared_only" | "failed". This — not the LLM's boolean — is what
+    # gets persisted, gated on, and shown. "passed_declared_only" is a NON-pass
+    # for the LEAK criterion: it means the structural audit could not be
+    # completed and the only support for the claim is the generator's own
+    # say-so.
+    look_ahead_audit: str = PASSED_DECLARED_ONLY
+    # The LLM's self-declared `look_ahead_safe` flag, kept as a record of what
+    # the generator CLAIMED. Demoted: it has no vote in `look_ahead_clean`,
+    # `passing`, or the gate. ``None`` when no spec was available.
+    look_ahead_declared: bool | None = None
+    # Why the audit landed where it did — the specific out-of-surface construct,
+    # the interpreter violation, or the missing check. Empty on a clean pass.
+    look_ahead_reasons: tuple[str, ...] = ()
+    # Honest user-facing sentence derived from `look_ahead_audit`.
+    look_ahead_label: str = (
+        "NOT AUDITED (LLM self-declared look_ahead_safe only — does not pass the gate): structural audit not completed"
+    )
 
 
 @dataclass(frozen=True)
@@ -257,6 +280,12 @@ def run_dsl_backtest(
     cerebro.addanalyzer(_EquityCurveAnalyzer, _name="equity_curve")
     cerebro.addanalyzer(_TradeStatsAnalyzer, _name="trade_stats")
 
+    # Broker-level look-ahead leg, charged on the REAL cerebro this run used.
+    # Read before run() so a cheating broker is recorded even if the run itself
+    # goes on to succeed (dsl_lookahead_audit.audit_dsl_strategy turns a False
+    # here into an outright FAILED verdict).
+    broker_clean = broker_cheat_check_passed(cerebro)
+
     results = cerebro.run()
     final_value = cerebro.broker.getvalue()
     initial = initial_cash
@@ -322,6 +351,7 @@ def run_dsl_backtest(
         backtest_start=bar_start,
         backtest_end=bar_end,
         data_source=data_source,
+        broker_cheat_check_passed=broker_clean,
     )
 
 
@@ -425,6 +455,12 @@ def _run_variant_backtest(
     cerebro.addanalyzer(_EquityCurveAnalyzer, _name="equity_curve")
     cerebro.addanalyzer(_TradeStatsAnalyzer, _name="trade_stats")
 
+    # Broker-level look-ahead leg, charged on the REAL cerebro this run used.
+    # Read before run() so a cheating broker is recorded even if the run itself
+    # goes on to succeed (dsl_lookahead_audit.audit_dsl_strategy turns a False
+    # here into an outright FAILED verdict).
+    broker_clean = broker_cheat_check_passed(cerebro)
+
     results = cerebro.run()
     final_value = cerebro.broker.getvalue()
     initial = initial_cash
@@ -489,6 +525,7 @@ def _run_variant_backtest(
         backtest_start=bar_start,
         backtest_end=bar_end,
         data_source=data_source,
+        broker_cheat_check_passed=broker_clean,
     )
 
 
@@ -500,6 +537,20 @@ def _run_variant_backtest(
 # per sleeve) with equal cash per sleeve, then judging the SUMMED sleeve equity
 # as the portfolio. No cross-sleeve rebalancing is simulated — the aggregate is
 # a buy-the-sleeves portfolio, which matches the DSL's per-asset semantics.
+
+
+def _combine_broker_checks(checks: list[bool | None]) -> bool | None:
+    """Fold per-sleeve broker execution-timing checks into one verdict.
+
+    ``False`` (any sleeve cheated) dominates; then ``None`` (any sleeve was never
+    checked, so the aggregate is unverified); ``True`` only when every sleeve was
+    checked and clean. An empty list is ``None`` — nothing was checked.
+    """
+    if any(c is False for c in checks):
+        return False
+    if not checks or any(c is None for c in checks):
+        return None
+    return True
 
 
 def _aggregate_portfolio_metrics(
@@ -563,6 +614,10 @@ def _aggregate_portfolio_metrics(
         data_source=label,
         backtest_engine=ENGINE_SLEEVES,
         portfolio_construction=CONSTRUCTION_SLEEVES,
+        # AND across sleeves, fail-closed on an unchecked sleeve: the aggregate
+        # is only broker-clean if EVERY sleeve that fed it was, and a sleeve
+        # whose check never ran (None) makes the aggregate unverified too.
+        broker_cheat_check_passed=_combine_broker_checks([m.broker_cheat_check_passed for m in per_asset.values()]),
     )
 
 
@@ -669,8 +724,17 @@ def apply_rigor_gate(
     num_trials: int | None = None,
     variants_metrics: dict[str, BacktestMetrics] | None = None,
     data_source: str | None = None,
+    spec: StrategySpec | None = None,
 ) -> RigorVerdict:
     """Apply rigor gate to fusion backtest metrics.
+
+    ``spec`` is the validated :class:`StrategySpec` these metrics came from. It
+    is what makes the look-ahead leg REAL: ``dsl_lookahead_audit`` proves the
+    spec sits inside a DSL surface whose interpreter provably reads only bar
+    ``t`` and earlier. Omitting it is honest but expensive — with no spec there
+    is nothing to verify, the verdict degrades to ``passed_declared_only``, and
+    the LEAK criterion does NOT pass. Callers on the live path
+    (``evaluate_fusion_spec``) always pass it.
 
     PBO is set to ``None`` (not 0.0) when there are fewer than 2 variant
     backtests. The Bailey/Borwein/López de Prado/Zhu CSCV PBO algorithm
@@ -744,15 +808,28 @@ def apply_rigor_gate(
             first_key = next(iter(pbo_map))
             pbo_score = pbo_map[first_key]
 
-    # Look-ahead admission: validate_strategy_spec rejects any DSL spec with a
-    # self-declared look_ahead_safe=False before this evaluator ever runs, so
-    # `look_ahead_clean` is always True for specs reaching this point. This is
-    # the LLM's OWN self-attestation enforced as a closed-DSL gate — NOT the
-    # independent AST audit (rigor_evaluator.look_ahead_audit) that runs
-    # against cited curated source. `look_ahead_label` carries the honest
-    # framing of that distinction for the passport/UI (audit 06-14, Q6).
-    look_ahead_clean = True
-    look_ahead_label = "N/A (closed-DSL, self-attested, not source-audited)"
+    # Look-ahead: a REAL audit, not the generator's self-declaration.
+    #
+    # This used to be `look_ahead_clean = True`, hardcoded, because
+    # validate_strategy_spec rejects `look_ahead_safe=False` — i.e. the gate's
+    # look-ahead leg was the LLM grading its own homework. It now comes from
+    # dsl_lookahead_audit, which (1) proves by AST that the DSL interpreter
+    # reads only bar t and earlier, (2) proves this spec uses nothing outside
+    # that audited surface, and (3) folds in the broker cheat-on-close/open
+    # check charged on the cerebro that produced these metrics.
+    #
+    # `passed_declared_only` — the structural audit could not be completed — is
+    # deliberately NOT a pass: `.passed` is True only for `passed_structural`.
+    la_audit = audit_dsl_strategy(spec, broker_cheat_check=metrics.broker_cheat_check_passed)
+    look_ahead_clean = la_audit.passed
+    look_ahead_label = la_audit.label
+    if not look_ahead_clean:
+        logger.info(
+            "look-ahead audit for %s: %s — %s",
+            spec.name if spec is not None else "<no spec>",
+            la_audit.status,
+            "; ".join(la_audit.reasons) or "no reason recorded",
+        )
 
     # DSR gate: Tier-1 fusion certification is a BADGE decision, so it uses the
     # strictest (Archimedes Verified) profile's DSR bar — one source of truth with
@@ -812,6 +889,9 @@ def apply_rigor_gate(
         oos_sharpe=oos_sharpe,
         in_sample_sharpe=in_sample_sharpe,
         look_ahead_clean=look_ahead_clean,
+        look_ahead_audit=la_audit.status,
+        look_ahead_declared=la_audit.declared_intent,
+        look_ahead_reasons=la_audit.reasons,
         look_ahead_label=look_ahead_label,
         num_trials=effective_trials,
         data_source=source,
@@ -909,14 +989,18 @@ def evaluate_fusion_spec(
         metrics,
         num_trials=num_trials,
         variants_metrics=variants_metrics,
+        # The validated spec IS the audit subject — without it the look-ahead
+        # leg degrades to the generator's self-declaration and cannot pass.
+        spec=spec,
     )
 
     logger.info(
-        "fusion eval: %s — sharpe=%.3f rigor.passing=%s pbo=%s",
+        "fusion eval: %s — sharpe=%.3f rigor.passing=%s pbo=%s look_ahead_audit=%s",
         spec.name,
         metrics.sharpe_ratio,
         rigor.passing,
         rigor.pbo_score,
+        rigor.look_ahead_audit,
     )
 
     return FusionEvalResult(spec=spec, backtest=metrics, rigor=rigor)

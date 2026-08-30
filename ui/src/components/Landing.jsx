@@ -38,7 +38,8 @@ const RIGOR_CRITERIA = [
 		code: "LEAK",
 		name: "Look-ahead audit",
 		question: "Did future information leak into any decision?",
-		method: "Rejects strategy code that reads data before it existed.",
+		method:
+			"Generated strategies are checked structurally, against a compiler proven to read only the current bar and earlier — not on the generator's own say-so.",
 	},
 ];
 

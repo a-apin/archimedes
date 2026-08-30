@@ -470,7 +470,16 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         "pbo": r.pbo_score,
         "oos_sharpe": r.oos_sharpe,
         "in_sample_sharpe": r.in_sample_sharpe,
+        # DERIVED from the structural audit below, not the LLM's declaration.
         "lookahead_audit_passed": bool(r.look_ahead_clean),
+        # The honest surfaced field: "passed_structural" | "passed_declared_only"
+        # | "failed". `passed_declared_only` is NOT a pass — see
+        # services/dsl_lookahead_audit.py.
+        "look_ahead_audit": r.look_ahead_audit,
+        # What the generator CLAIMED (spec.look_ahead_safe), kept as a record
+        # with no vote in the gate.
+        "look_ahead_declared": r.look_ahead_declared,
+        "look_ahead_reasons": list(r.look_ahead_reasons),
         "look_ahead_label": r.look_ahead_label,
         "num_trials": int(r.num_trials),  # own pool_size, decouple #2
         "passing": bool(r.passing),

@@ -1725,6 +1725,31 @@ async def _persist_candidate(
     return strategy_id, trace_hash
 
 
+def _look_ahead_audit_source(rigor_verdict: dict) -> str:
+    """Provenance label for a DSL row's ``look_ahead_audit_passed`` boolean.
+
+    ``BacktestResult.look_ahead_audit_source`` exists precisely so a reader can
+    tell a genuine audit pass from a constant. This path used to hardcode
+    ``"self_attested"`` — correct at the time, because the boolean really was the
+    LLM's own ``look_ahead_safe`` declaration. It is now derived from the
+    three-state ``look_ahead_audit`` verdict that ``dsl_lookahead_audit`` computes:
+
+      * ``"dsl_structural_audit"`` — the spec was proven to sit inside a DSL
+        surface whose interpreter provably reads only bar ``t`` and earlier, and
+        the broker cheat-on-close/open check passed.
+      * ``"self_attested"``        — anything less. The verdict blob is missing
+        the field (a row written before this landed), the structural audit could
+        not be completed, or it FAILED. In every one of those cases the boolean
+        beside this label is False, so a reader is never shown a self-attested
+        True again.
+    """
+    from archimedes.services.dsl_lookahead_audit import PASSED_STRUCTURAL
+
+    if rigor_verdict.get("look_ahead_audit") == PASSED_STRUCTURAL:
+        return "dsl_structural_audit"
+    return "self_attested"
+
+
 def _portfolio_daily_returns(artifact: dict) -> list[float]:
     """Pull the daily return series out of a ``backtest_portfolio`` artifact.
 
@@ -1883,12 +1908,18 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             backtest_engine=(rv.get("backtest_engine") or ENGINE_SINGLE_FEED),
             # Fixed cost basis every fusion/DSL backtest is charged — tx_cost_bps
             # and slippage_bps are never overridden by a caller on this path today
-            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). Matches the mapper's
-            # "self_attested" label: this is the closed-DSL path, no inspectable
-            # source for an AST audit (#1242 review: cost_model_id used to stop at
-            # the artifact dict on this path and never reach the persisted row).
+            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). (#1242 review:
+            # cost_model_id used to stop at the artifact dict on this path and
+            # never reach the persisted row.)
             cost_model_id=DEFAULT_COST_MODEL_ID,
-            look_ahead_audit_source="self_attested",
+            # Provenance of look_ahead_audit_passed above, derived from the
+            # three-state audit rather than hardcoded. This used to be a flat
+            # "self_attested" because the boolean genuinely WAS the LLM's own
+            # look_ahead_safe flag. It no longer is: a DSL spec proven to sit
+            # inside the verified interpreter surface earns
+            # "dsl_structural_audit"; anything short of that keeps the honest
+            # "self_attested" label AND (unlike before) a False boolean.
+            look_ahead_audit_source=_look_ahead_audit_source(rv),
         )
         artifact = {
             "results": [{"metrics": {"daily_returns": returns}}],
@@ -1899,14 +1930,15 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         content_hash = hashlib.sha256(artifact_json.encode("utf-8")).hexdigest()
         # The live gate is the single source of truth: re-grade the REAL returns so the
         # persisted passes_rigor_gate matches what verdicts_for_strategies computes.
-        # look_ahead_audit_passed threads the closed-DSL self-attestation computed
-        # above (result.look_ahead_audit_passed, from rv["lookahead_audit_passed"])
+        # look_ahead_audit_passed threads the REAL structural audit computed above
+        # (result.look_ahead_audit_passed, from rv["lookahead_audit_passed"], which
+        # dsl_lookahead_audit derives — NOT the LLM's look_ahead_safe boolean)
         # through to the gate. Without this, strategy_code=None (this path has no
         # inspectable source for the AST audit) left the gate's look_ahead_passed
         # unconditionally False — an always-on floor failure that blocked deploy at
         # EVERY strictness level regardless of DSR/PBO/OOS, no matter how strong the
-        # strategy. See live_rigor_gate.verdict_from_returns's docstring for why this
-        # matches the accepted DSL self-attestation policy (fusion_evaluator.py).
+        # strategy. A spec that cannot clear the structural audit now arrives here
+        # as False and correctly fails that floor.
         live = verdict_from_returns(
             strategy_id,
             returns,

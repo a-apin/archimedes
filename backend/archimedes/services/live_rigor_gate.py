@@ -182,14 +182,17 @@ def verdict_from_returns(
     audit to run against, so ``strategy_code=None`` there would otherwise force
     ``look_ahead_passed=False`` unconditionally — failing the always-on
     look-ahead floor (``blocked_by_floor=True``) at every strictness level
-    regardless of DSR/PBO/OOS. Passing the pipeline's own closed-DSL
-    self-attestation through here (already enforced pre-evaluation by
-    ``validate_strategy_spec`` rejecting any spec with ``look_ahead_safe=False``)
-    matches the accepted policy in ``fusion_evaluator.py``'s
-    ``look_ahead_clean = True`` / "self-attested, not source-audited" framing —
-    it is NOT the independent AST audit, and is surfaced as such in
-    ``gate_details``, but it is the same admitted trust boundary already used
-    elsewhere in this codebase for exactly this class of strategy.
+    regardless of DSR/PBO/OOS.
+
+    What that path passes here is now a REAL audit result, not a declaration.
+    ``services.dsl_lookahead_audit`` proves (by AST over the interpreter, plus a
+    structural walk of the validated spec, plus the broker cheat-on-close/open
+    check) that the strategy reads only bar ``t`` and earlier; only its
+    ``passed_structural`` state arrives here as ``True``. Its
+    ``passed_declared_only`` state — the LLM's ``look_ahead_safe`` boolean with
+    nothing behind it — arrives as ``False`` and fails this floor, which is the
+    point: a self-declaration is not evidence. Never pass a raw
+    ``spec.look_ahead_safe`` into this parameter.
     """
     if not daily_returns or len(daily_returns) < _MIN_RETURNS_FOR_GATE:
         return RigorGateVerdict.pending()

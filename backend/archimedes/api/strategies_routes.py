@@ -1948,13 +1948,19 @@ async def _run_fusion_job(job_id: str) -> None:
                 "dsr_p_value": r.dsr_p_value,
                 "pbo_score": r.pbo_score,
                 "oos_sharpe": r.oos_sharpe,
+                # DERIVED from the structural audit, not the LLM's declaration.
                 "look_ahead_clean": bool(r.look_ahead_clean),
-                # Honest label distinct from the bare bool above: the DSL's
-                # self-attested look_ahead_safe is enforced as an admission
-                # gate, but it is NOT the independent AST audit that
-                # rigor_evaluator.look_ahead_audit runs against cited curated
-                # source. Surfaced so the passport doesn't read this as that
-                # audit having passed (audit 06-14, Q6).
+                # The honest surfaced field: "passed_structural" (the spec was
+                # proven to sit inside a DSL surface whose interpreter reads only
+                # bar t and earlier, and the broker cheat-on-close/open check
+                # passed) | "passed_declared_only" (NOT a pass — nothing but the
+                # generator's own say-so) | "failed". See
+                # services/dsl_lookahead_audit.py.
+                "look_ahead_audit": r.look_ahead_audit,
+                # What the generator CLAIMED (spec.look_ahead_safe). Recorded,
+                # never gated on.
+                "look_ahead_declared": r.look_ahead_declared,
+                "look_ahead_reasons": list(r.look_ahead_reasons),
                 "look_ahead_label": r.look_ahead_label,
                 "num_trials": int(r.num_trials),
                 # Methodology marker (#1075): this verdict was computed under the
@@ -2099,7 +2105,10 @@ async def _run_fusion_job(job_id: str) -> None:
                     "dsr_p_value": eval_result.rigor.dsr_p_value,
                     "oos_sharpe": eval_result.rigor.oos_sharpe,
                     "look_ahead_clean": eval_result.rigor.look_ahead_clean,
-                    # Honest label — see rigor_verdict_dict above (audit 06-14, Q6).
+                    # Three-state audit + honest label — see rigor_verdict_dict above.
+                    "look_ahead_audit": eval_result.rigor.look_ahead_audit,
+                    "look_ahead_declared": eval_result.rigor.look_ahead_declared,
+                    "look_ahead_reasons": list(eval_result.rigor.look_ahead_reasons),
                     "look_ahead_label": eval_result.rigor.look_ahead_label,
                 }
             if eval_result.error:

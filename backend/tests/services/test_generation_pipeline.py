@@ -829,6 +829,11 @@ def _fake_eval_result(*, num_trials: int | None = None) -> SimpleNamespace:
         oos_sharpe=1.2,
         in_sample_sharpe=1.3,
         look_ahead_clean=True,
+        # See test_debate_engine._fake_ev: mirrors a verdict that cleared the
+        # real structural look-ahead audit.
+        look_ahead_audit="passed_structural",
+        look_ahead_declared=True,
+        look_ahead_reasons=(),
         look_ahead_label="clean",
         num_trials=num_trials,
         passing=True,
