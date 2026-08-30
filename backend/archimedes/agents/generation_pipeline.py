@@ -172,14 +172,56 @@ def _invalid_brief_message(reason: object) -> str:
 # fine — the LLM validator still catches it, post-payment, exactly as
 # before. A false POSITIVE (flagging a genuine brief) is not — it would
 # block a paying user before they're even offered the chance to pay. So this
-# only rejects the unambiguous cases: empty, too short, or built entirely
-# from tokens that match neither everyday English nor investing vocabulary
-# and aren't plausible tickers. Semantic judgment calls (off-topic-but-
-# grammatical text like "add flour and bake at 350F", jailbreak attempts)
-# are deliberately left to the expensive LLM step — that outcome legitimately
-# consumes work, so it stays a credit spend, not a pre-payment refusal.
+# only rejects the unambiguous cases: empty, too short, letter-free, or
+# containing a token that is *physically* keyboard-mash-shaped (see
+# ``_looks_like_mash``). Note what that deliberately does NOT include:
+# unfamiliar vocabulary. "SPY covered calls", "muni ladder" and
+# "estrategia de baja volatilidad" all match nothing in the word lists
+# below and must all pass — an unknown word is the normal case, not a
+# junk signal. Semantic judgment calls (off-topic-but-grammatical text like
+# "add flour and bake at 350F", jailbreak attempts) are likewise left to the
+# expensive LLM step — that outcome legitimately consumes work, so it stays a
+# credit spend, not a pre-payment refusal.
 _MIN_INTENT_CHARS = 3
-_MIN_GIBBERISH_TOKENS = 2  # ≥2 unrecognized tokens before calling it junk
+_MIN_GIBBERISH_TOKENS = 2  # ≥2 tokens before any mash token counts as junk
+
+_VOWELS = frozenset("aeiouy")
+
+# Straight runs across a keyboard row, forwards and backwards, are a
+# fingerprint of mashing rather than typing ("asdf", "lkjh", "qwer", "poiu").
+# No English word contains one; checked as 4-char windows.
+_KEYBOARD_ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")
+_KEYBOARD_RUNS = frozenset(
+    row[i : i + 4] for base in _KEYBOARD_ROWS for row in (base, base[::-1]) for i in range(len(row) - 3)
+)
+
+
+def _looks_like_mash(token: str) -> bool:
+    """Is this lowercased token *shaped* like keyboard mash?
+
+    Structural only — this asks whether the letters could plausibly have been
+    typed as a word, never whether the word is one we happen to know. A brief
+    is full of words no list here contains ("muni", "ladder", "covered"), so
+    unfamiliarity carries no signal at all.
+
+    Non-ASCII tokens always return False. A Cyrillic, Greek or CJK brief has
+    no vowel/consonant structure this test can read, and mis-reading one as
+    mash would refuse a legitimate non-English user before they can even pay;
+    those defer to the LLM validator, exactly like off-topic English does.
+    """
+    if not token.isascii():
+        return False
+    if not any(ch in _VOWELS for ch in token):
+        return True  # "zxcvbnm", "qwrtp" — no vowel, not pronounceable
+    run = 0
+    for ch in token:
+        run = 0 if ch in _VOWELS else run + 1
+        if run >= 5:
+            return True  # "lkjhgfdsa" — 5+ consonants with no break
+    if any(a == b == c for a, b, c in zip(token, token[1:], token[2:], strict=False)):
+        return True  # "aaargh", "jjjj"
+    return any(token[i : i + 4] in _KEYBOARD_RUNS for i in range(len(token) - 3))
+
 
 # Ordinary English function/content words. Their presence means the text is
 # at least grammatical, even if off-topic — off-topic is the LLM's job, not
@@ -217,8 +259,12 @@ def cheap_brief_reject(brief: GenerateBrief) -> dict[str, str] | None:
     content, jailbreak attempts, semantic coherence). Returns a
     ``{"reason", "hint"}`` dict, shaped exactly like the LLM validator's
     invalid-brief output, when the brief is unambiguously invalid: empty,
-    too short, or built entirely from tokens that match neither everyday
-    English nor investing vocabulary and are not plausible tickers.
+    too short, containing no letters at all, or containing a token that is
+    keyboard-mash-shaped (``_looks_like_mash``).
+
+    Vocabulary the word lists below do not know is NOT a rejection reason —
+    most real briefs contain some — so "SPY covered calls", "muni ladder"
+    and non-English text all pass through to the real validator.
 
     See the module note above this function for why it is deliberately
     conservative.
@@ -235,7 +281,10 @@ def cheap_brief_reject(brief: GenerateBrief) -> dict[str, str] | None:
             "hint": "Mention an asset class, a goal, or a risk appetite.",
         }
 
-    tokens = re.findall(r"[A-Za-z]{2,}", intent)
+    # Unicode-aware: letters in ANY script, no digits/underscores. A Cyrillic
+    # or CJK brief must tokenize as words, not vanish into the letter-free
+    # branch below and be refused for "containing no words".
+    tokens = re.findall(r"[^\W\d_]{2,}", intent)
     if not tokens:
         # No word-like content at all — pure digits/punctuation/symbols.
         return {
@@ -250,12 +299,13 @@ def cheap_brief_reject(brief: GenerateBrief) -> dict[str, str] | None:
     if all(t.isupper() and len(t) <= 5 for t in tokens):
         return None  # plausible ticker list, e.g. "BTC ETH SOL"
 
-    if len(tokens) >= _MIN_GIBBERISH_TOKENS:
+    # Junk needs positive evidence of mashing, never just unfamiliar words.
+    if len(tokens) >= _MIN_GIBBERISH_TOKENS and any(_looks_like_mash(t) for t in lowered):
         return {
             "reason": "it does not look like an investment goal",
             "hint": "Mention an asset class, a goal, or a risk appetite.",
         }
-    return None  # single unrecognized token — could be real; defer to the LLM
+    return None  # nothing mash-shaped to point at; defer to the LLM
 
 
 async def _validate_brief(brief: GenerateBrief) -> dict[str, Any]:

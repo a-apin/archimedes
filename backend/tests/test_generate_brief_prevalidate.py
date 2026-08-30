@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from archimedes.agents.generation_pipeline import GenerateBrief, _validate_brief, cheap_brief_reject
@@ -81,6 +82,20 @@ def test_keyboard_mash_is_rejected():
     assert result["hint"]
 
 
+@pytest.mark.parametrize(
+    ("intent", "why"),
+    [
+        ("zxcvbnm qwrtplk", "no vowel at all"),
+        ("lkjhgfdsa mnbvcxz", "5+ consonants with no break"),
+        ("aaaargh bbbb", "same character 3+ times"),
+        ("asdf jkli qwer", "straight runs along a keyboard row"),
+    ],
+)
+def test_each_mash_signal_is_rejected(intent, why):
+    """One case per mash signal, so a regression names which rule broke."""
+    assert cheap_brief_reject(GenerateBrief(intent=intent)) is not None, why
+
+
 def test_pure_symbols_is_rejected():
     result = cheap_brief_reject(GenerateBrief(intent="!!! ### $$$ 1234"))
     assert result is not None
@@ -115,6 +130,48 @@ def test_off_topic_but_grammatical_text_defers_to_llm():
     # Judging topicality is the LLM's job, not this heuristic's: the cheap
     # check must not weaken/duplicate-drift what the real validator decides.
     assert cheap_brief_reject(GenerateBrief(intent="add flour and bake at 350F")) is None
+
+
+# ── False positives: the failure mode that actually costs us a customer ─────
+#
+# Every brief below is a REAL strategy ask built entirely out of words the
+# module's two hand-written vocab lists do not contain. An earlier revision
+# rejected exactly these, because it treated "no recognized vocabulary" as
+# proof of gibberish. It is not: unfamiliar vocabulary is the normal case,
+# and a false positive here refuses a paying user before the paywall — the
+# one outcome this check is not allowed to produce. Rejection now requires
+# positive evidence of mashing (no vowel / consonant pile-up / repeated char
+# / keyboard-row run), which none of these have.
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "SPY covered calls",
+        "muni ladder",
+        "sector rotation",
+        "covered call overlay on dividend aristocrats",
+    ],
+)
+def test_real_briefs_made_of_unlisted_words_defer_to_llm(intent):
+    assert cheap_brief_reject(GenerateBrief(intent=intent)) is None
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "estrategia de baja volatilidad para bonos",  # Spanish — ASCII, unlisted
+        "стратегия низкой волатильности",  # Cyrillic
+        "低波动率债券替代方案",  # CJK — one token, no spaces
+    ],
+)
+def test_non_english_briefs_defer_to_llm(intent):
+    """A non-English brief has no structure this heuristic can read, so it
+    must always fall through to the LLM. Two ways it could wrongly reject:
+    ASCII-but-unlisted words (Spanish), and non-ASCII scripts — which must
+    also survive TOKENIZATION, or a Cyrillic/CJK brief looks letter-free and
+    gets refused for 'not containing any words'."""
+    assert cheap_brief_reject(GenerateBrief(intent=intent)) is None
 
 
 # ── _validate_brief — the shared prelude fires without ever touching the LLM ─
@@ -182,5 +239,28 @@ def test_valid_brief_still_reaches_the_paywall(monkeypatch) -> None:
         resp = _client().post("/api/generate/start", json=body, cookies=auth_cookies())
 
     assert resp.status_code == 402
+    assert resp.json()["detail"]["reason"] == "payment_required"
+    store.enqueue.assert_not_called()
+
+
+def test_brief_of_only_unlisted_words_still_reaches_the_paywall(monkeypatch) -> None:
+    """The false-positive guard at the ROUTE, where the money is.
+
+    "SPY covered calls" contains no word in either vocab list, so an earlier
+    revision of the cheap check refused it with 422 — a real customer turned
+    away before ever being shown a price. It must reach the paywall (402)
+    like any other brief. Distinct from the test above, whose intent hits
+    the recognized-vocabulary fast path and so never exercises this."""
+    monkeypatch.setenv("GENERATION_PAYMENT_REQUIRED", "true")
+    monkeypatch.setenv("GENERATION_PAYMENT_RECIPIENT", RECIPIENT)
+    monkeypatch.setenv("PAYMENTS_DRY_RUN", "false")
+
+    store = _mock_store()
+    p1, p2 = _harness(store)
+    body = {"brief": {"intent": "SPY covered calls", "risk_appetite": "moderate"}}
+    with p1, p2:
+        resp = _client().post("/api/generate/start", json=body, cookies=auth_cookies())
+
+    assert resp.status_code == 402, f"a legitimate brief was refused pre-payment: {resp.json()}"
     assert resp.json()["detail"]["reason"] == "payment_required"
     store.enqueue.assert_not_called()
