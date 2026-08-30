@@ -40,6 +40,7 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -160,14 +161,175 @@ def _invalid_brief_message(reason: object) -> str:
     )
 
 
+# ── Cheap, deterministic brief prelude (no LLM) — Lane 1.3c ────────────────
+#
+# "Never charge for a brief we can cheaply reject." Before this, a gibberish
+# brief only surfaced BRIEF_INVALID after the LLM validator ran INSIDE
+# run_generation — i.e. after the caller already paid (see
+# generate_routes.start_generation: payment happens before the job, and
+# `_validate_brief` above only runs once the job is running). This function
+# is the ONE deterministic check both the pre-payment route gate
+# (`generate_routes.start_generation`, via a direct call to this function)
+# and the real validator (`_validate_brief` below, as its own prelude) share
+# — extracted once so the two call sites can never drift apart on what
+# counts as "obviously invalid".
+#
+# It must be conservative: a false NEGATIVE here (missing real gibberish) is
+# fine — the LLM validator still catches it, post-payment, exactly as
+# before. A false POSITIVE (flagging a genuine brief) is not — it would
+# block a paying user before they're even offered the chance to pay. So this
+# only rejects the unambiguous cases: empty, too short, letter-free, or
+# containing a token that is *physically* keyboard-mash-shaped (see
+# ``_looks_like_mash``). Note what that deliberately does NOT include:
+# unfamiliar vocabulary. "SPY covered calls", "muni ladder" and
+# "estrategia de baja volatilidad" all match nothing in the word lists
+# below and must all pass — an unknown word is the normal case, not a
+# junk signal. Semantic judgment calls (off-topic-but-grammatical text like
+# "add flour and bake at 350F", jailbreak attempts) are likewise left to the
+# expensive LLM step — that outcome legitimately consumes work, so it stays a
+# credit spend, not a pre-payment refusal.
+_MIN_INTENT_CHARS = 3
+_MIN_GIBBERISH_TOKENS = 2  # ≥2 tokens before any mash token counts as junk
+
+_VOWELS = frozenset("aeiouy")
+
+# Straight runs across a keyboard row, forwards and backwards, are a
+# fingerprint of mashing rather than typing ("asdf", "lkjh", "qwer", "poiu").
+# No English word contains one; checked as 4-char windows.
+_KEYBOARD_ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")
+_KEYBOARD_RUNS = frozenset(
+    row[i : i + 4] for base in _KEYBOARD_ROWS for row in (base, base[::-1]) for i in range(len(row) - 3)
+)
+
+
+def _looks_like_mash(token: str) -> bool:
+    """Is this lowercased token *shaped* like keyboard mash?
+
+    Structural only — this asks whether the letters could plausibly have been
+    typed as a word, never whether the word is one we happen to know. A brief
+    is full of words no list here contains ("muni", "ladder", "covered"), so
+    unfamiliarity carries no signal at all.
+
+    Non-ASCII tokens always return False. A Cyrillic, Greek or CJK brief has
+    no vowel/consonant structure this test can read, and mis-reading one as
+    mash would refuse a legitimate non-English user before they can even pay;
+    those defer to the LLM validator, exactly like off-topic English does.
+    """
+    if not token.isascii():
+        return False
+    if not any(ch in _VOWELS for ch in token):
+        return True  # "zxcvbnm", "qwrtp" — no vowel, not pronounceable
+    run = 0
+    for ch in token:
+        run = 0 if ch in _VOWELS else run + 1
+        if run >= 5:
+            return True  # "lkjhgfdsa" — 5+ consonants with no break
+    if any(a == b == c for a, b, c in zip(token, token[1:], token[2:], strict=False)):
+        return True  # "aaargh", "jjjj"
+    return any(token[i : i + 4] in _KEYBOARD_RUNS for i in range(len(token) - 3))
+
+
+# Ordinary English function/content words. Their presence means the text is
+# at least grammatical, even if off-topic — off-topic is the LLM's job, not
+# this heuristic's.
+_COMMON_WORDS = frozenset(
+    "a an the and or but for nor so if of to in on at by with from into is are "
+    "was were be been being this that these those i you he she it we they my "
+    "your his her its our their not no yes want need make build create "
+    "generate please can could would should like about money fund funds".split()
+)
+
+# Investing / finance-signal vocabulary. Presence means the text is on-topic
+# even when it fails the common-word check above (e.g. "crypto momentum").
+_FINANCE_WORDS = frozenset(
+    "stock stocks bond bonds equity equities crypto bitcoin ethereum token "
+    "tokens coin coins etf etfs treasury treasuries yield yields dividend "
+    "dividends momentum value growth trend trending hedge hedged leverage "
+    "leveraged volatility volatile vol risk risky conservative aggressive "
+    "moderate income rebalance rebalancing diversify diversified "
+    "diversification asset assets allocation market markets trading trade "
+    "trades rate rates inflation macro commodity commodities gold silver "
+    "oil futures options derivative derivatives arbitrage carry basis "
+    "spread stablecoin usdc usdt defi staking lending long short bull bear "
+    "index indices quant quantitative alpha beta sharpe drawdown portfolio "
+    "invest investment strategy strategies".split()
+)
+
+
+def cheap_brief_reject(brief: GenerateBrief) -> dict[str, str] | None:
+    """Deterministic, no-LLM prelude to brief validation.
+
+    Returns ``None`` when the brief passes this cheap check — which does
+    NOT mean it is a *good* brief, only that it is not obviously junk; the
+    real (LLM) validator remains the authority on everything else (off-topic
+    content, jailbreak attempts, semantic coherence). Returns a
+    ``{"reason", "hint"}`` dict, shaped exactly like the LLM validator's
+    invalid-brief output, when the brief is unambiguously invalid: empty,
+    too short, containing no letters at all, or containing a token that is
+    keyboard-mash-shaped (``_looks_like_mash``).
+
+    Vocabulary the word lists below do not know is NOT a rejection reason —
+    most real briefs contain some — so "SPY covered calls", "muni ladder"
+    and non-English text all pass through to the real validator.
+
+    See the module note above this function for why it is deliberately
+    conservative.
+    """
+    intent = (brief.intent or "").strip()
+    if not intent:
+        return {
+            "reason": "it did not describe an investment goal",
+            "hint": "Mention an asset class, a goal, or a risk appetite.",
+        }
+    if len(intent) < _MIN_INTENT_CHARS:
+        return {
+            "reason": "too short to describe an investment goal",
+            "hint": "Mention an asset class, a goal, or a risk appetite.",
+        }
+
+    # Unicode-aware: letters in ANY script, no digits/underscores. A Cyrillic
+    # or CJK brief must tokenize as words, not vanish into the letter-free
+    # branch below and be refused for "containing no words".
+    tokens = re.findall(r"[^\W\d_]{2,}", intent)
+    if not tokens:
+        # No word-like content at all — pure digits/punctuation/symbols.
+        return {
+            "reason": "it does not contain any words",
+            "hint": "Mention an asset class, a goal, or a risk appetite.",
+        }
+
+    lowered = [t.lower() for t in tokens]
+    if any(t in _COMMON_WORDS or t in _FINANCE_WORDS for t in lowered):
+        return None  # recognizable language — defer to the real validator
+
+    if all(t.isupper() and len(t) <= 5 for t in tokens):
+        return None  # plausible ticker list, e.g. "BTC ETH SOL"
+
+    # Junk needs positive evidence of mashing, never just unfamiliar words.
+    if len(tokens) >= _MIN_GIBBERISH_TOKENS and any(_looks_like_mash(t) for t in lowered):
+        return {
+            "reason": "it does not look like an investment goal",
+            "hint": "Mention an asset class, a goal, or a risk appetite.",
+        }
+    return None  # nothing mash-shaped to point at; defer to the LLM
+
+
 async def _validate_brief(brief: GenerateBrief) -> dict[str, Any]:
     """Call the LLM to validate the brief.
+
+    Runs ``cheap_brief_reject`` FIRST — see that function's docstring — so an
+    unambiguously-junk brief never reaches the LLM call at all, here or on
+    any other caller of this function.
 
     Returns the parsed validation JSON. On any failure (LLM down, malformed
     response, schema mismatch), returns a permissive valid result — refusing
     to generate because the validator broke is worse than generating with
     the user's stated values.
     """
+    cheap_reject = cheap_brief_reject(brief)
+    if cheap_reject is not None:
+        return {"is_valid": False, **cheap_reject}
+
     permissive = {
         "is_valid": True,
         "intent_summary": brief.intent[:140],
@@ -261,6 +423,14 @@ class _CandidateResult:
     # vector. None on the fixture/buy-and-hold-weights path (there is no DSL
     # spec to carry — it re-derives its universe from ``weights`` instead).
     strategy_spec: dict[str, Any] | None = None
+    # The society's own bull/bear debate transcript (debate path only —
+    # ``_run_debate_leaderboard`` stamps the SAME transcript object onto every
+    # leaderboard entry it returns, winner and alternates alike, since the
+    # debate runs once over the whole pool before C-null picks a winner).
+    # ``None`` on every non-debate path (fusion, fixture, single-agent) — there
+    # is no debate on those paths, so there is nothing to attach. Read by
+    # ``_persist_debate_transcripts`` below; never touches ``_HASH_FIELDS``.
+    debate_transcript: list[dict[str, Any]] | None = None
 
 
 def _is_deployable(c: _CandidateResult) -> bool:
@@ -795,6 +965,59 @@ async def _persist_generation_cost(
         logger.warning("cost record: durable persist failed for job %s (non-blocking)", job_id, exc_info=True)
 
 
+async def _persist_debate_transcripts(
+    *,
+    job_id: str,
+    candidates: list[_CandidateResult],
+    strategy_ids: dict[str, str],
+) -> None:
+    """Persist each candidate's debate transcript, keyed to (generation, candidate).
+
+    Every leaderboard entry a debate run produces carries the SAME transcript
+    (``_run_debate_leaderboard`` stamps it onto every entry it returns, since
+    the debate runs once over the whole pool before C-null picks a winner) —
+    so a single pass over ``candidates`` here persists it for the K=1 winner
+    (with its real ``strategy_id`` from ``strategy_ids``) AND every
+    final-round loser (``strategy_id=None`` — losers are never threaded into
+    ``strategy_store``; see ``_persist_candidate``'s K=1 docstring), entirely
+    from data already collected by the time this is called. Non-debate
+    candidates (fusion, fixture, single-agent) carry ``debate_transcript=None``
+    and are skipped — there is nothing to persist for them.
+
+    Best-effort, like the sibling :func:`_persist_generation_cost`: this runs
+    after the winner's strategy row already landed, so a failure here must
+    never fail (or retroactively un-succeed) a generation that already
+    succeeded.
+    """
+    to_write = [c for c in candidates if c.debate_transcript]
+    if not to_write:
+        return
+
+    def _write() -> int:
+        from archimedes.db import get_session
+        from archimedes.models.debate_transcript import record_debate_transcript
+
+        written = 0
+        with get_session() as session:
+            for c in to_write:
+                record_debate_transcript(
+                    session,
+                    strategy_id=strategy_ids.get(c.candidate_id),
+                    generation_id=job_id,
+                    candidate_id=c.candidate_id,
+                    transcript=c.debate_transcript,
+                )
+                written += 1
+            session.commit()
+        return written
+
+    try:
+        count = await asyncio.to_thread(_write)
+        logger.info("debate transcript: persisted %d row(s) for job %s", count, job_id)
+    except (Exception, asyncio.CancelledError):
+        logger.warning("debate transcript: persist failed for job %s (non-blocking)", job_id, exc_info=True)
+
+
 async def run_generation(
     *,
     job_id: str,
@@ -1277,6 +1500,12 @@ async def run_generation(
                 meter.record_write("strategy_proposals")
         except Exception:
             pass  # Non-blocking per spec
+
+        # Debate transcript capture: persist each candidate's bull/bear debate
+        # transcript (winner + final-round losers) — see
+        # _persist_debate_transcripts's docstring for why one pass over
+        # `candidates` covers both. No-op on every non-debate path.
+        await _persist_debate_transcripts(job_id=job_id, candidates=candidates, strategy_ids=strategy_ids)
 
         # Stash the full candidate list on the job for /candidates retrieval.
         # update_terminal_status (not update_status): a Cancel request can flip

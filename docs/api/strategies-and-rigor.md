@@ -141,6 +141,24 @@ Errors: 404 `Strategy not found` (nonexistent, or private and caller is not the 
 curl -s https://archimedes-arc.com/api/strategies/<strategy_id>/returns
 ```
 
+### GET /api/strategies/{strategy_id}/debate
+Return the persisted bull/bear debate transcript the society produced while
+generating this strategy (4 turns: bull-r1, bear-r1, then a visible round-2
+rebuttal of each other's round-1 claims). Debate-path strategies only — a
+curated strategy, or a generated one from before this table existed, genuinely
+has none; never fabricates a transcript. | **Auth**: anonymous
+(mirrors `GET /api/strategies/{strategy_id}` exactly — curated strategies are
+always public, a generated strategy's transcript is 404 unless the caller owns
+the row)
+
+Request: path `strategy_id`.
+Response: `{strategy_id: str|null, generation_id: str, candidate_id: str, created_at: str, transcript: [{role: "bull"|"bear", round: int, verdict: str, claims: [str]}]}` — `strategy_id` is `null` for a Considered-Alternative row (K=1: only the society's winner is ever persisted to `strategy_store`).
+Errors: 404 `Strategy not found` (nonexistent, or private and caller is not the owner — existence stays hidden, same as the plain detail route); 404 `no debate transcript` (strategy exists and is visible, but nothing was persisted for it); 500 `Failed to load debate transcript` (DB read failure).
+
+```bash
+curl -s https://archimedes-arc.com/api/strategies/<strategy_id>/debate
+```
+
 ### GET /api/strategies/{strategy_id}
 Get a single strategy by ID — tries the curated `LocalStrategyProvider` first,
 falls through to the `strategy_passports` table for fusion/architect-generated
