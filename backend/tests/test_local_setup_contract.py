@@ -25,6 +25,26 @@ def _template_env() -> dict[str, str]:
     return values
 
 
+def _brace_block(text: str, search_from: int) -> str:
+    """Return the first brace-balanced `{...}` block at/after `search_from`.
+
+    Used to pin a *block* rather than a substring: `assertIn("healthCheck", ...)`
+    over a whole Terraform file matches the word in a comment just as happily as
+    a real declaration, so a guard built on it can pass while the block it
+    claims to check has been deleted.
+    """
+    open_idx = text.index("{", search_from)
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx : i + 1]
+    raise AssertionError(f"unbalanced braces starting at offset {open_idx}")
+
+
 def _compose_config(*, local: bool) -> dict:
     template = (ROOT / ".env.example").read_text()
     # Full-line substitution, not a prefix replace: .env.example now ships a
@@ -151,11 +171,68 @@ class TestLocalSetupContract(unittest.TestCase):
         self.assertIn("return 200", nginx_health_block)
         self.assertNotIn("proxy_pass", nginx_health_block)
 
-        # 2. ecs.tf's nginx healthCheck command hits that exact path — a
-        # trailing space (not a bare substring match) so a typo'd path
-        # extension (e.g. "/nginx-health" -> "/nginx-healthz") is caught
-        # rather than silently satisfying an unanchored "contains" check.
-        self.assertIn("http://127.0.0.1:8080/nginx-health ", ecs_tf)
+        # 2. Slice out the nginx CONTAINER definition specifically, rather
+        # than searching ecs.tf as a whole. The file also defines `backend`
+        # and `auth` containers that already have their own healthChecks, so
+        # a file-wide match would stay green with the nginx block deleted
+        # outright — which is the exact regression this guard exists to
+        # catch. `^\s*name\s*=\s*"` only matches a container/resource `name`
+        # attribute at the start of its line; the inline `{ name = "NGINX_
+        # ENVSUBST_FILTER", ... }` environment entries have `{ ` in front and
+        # so cannot bound the slice early.
+        container_name_starts = [m.start() for m in re.finditer(r'^\s*name\s*=\s*"', ecs_tf, re.MULTILINE)]
+        nginx_decl = re.search(r'^\s*name\s*=\s*"nginx"\s*$', ecs_tf, re.MULTILINE)
+        self.assertIsNotNone(nginx_decl, 'infra/ecs.tf defines no container named "nginx"')
+        assert nginx_decl is not None  # narrow for the type checker
+        nginx_start = nginx_decl.start()
+        nginx_end = next((s for s in container_name_starts if s > nginx_start), len(ecs_tf))
+        nginx_container = ecs_tf[nginx_start:nginx_end]
+
+        # 3. That container declares an actual `healthCheck = { ... }` BLOCK.
+        # Anchored to the start of a line so the many prose mentions of
+        # "healthCheck" in the surrounding comment cannot satisfy it, and the
+        # block is then brace-matched so every assertion below is scoped to
+        # the declaration itself rather than to anything else in the file.
+        hc_decl = re.search(r"^\s*healthCheck\s*=\s*\{", nginx_container, re.MULTILINE)
+        self.assertIsNotNone(
+            hc_decl,
+            'the "nginx" container in infra/ecs.tf declares no healthCheck block — it is the ALB '
+            "target, so without one it does not participate in the task's deployment healthStatus (#1309)",
+        )
+        assert hc_decl is not None  # narrow for the type checker
+        health_check = _brace_block(nginx_container, hc_decl.start())
+
+        # 4. The command inside THAT block hits the nginx-local path, with a
+        # boundary so a typo'd extension ("/nginx-health" -> "/nginx-healthz")
+        # is caught rather than silently satisfying an unanchored "contains".
+        probe = re.search(r'http://127\.0\.0\.1:(\d+)/nginx-health(?=[\s"])', health_check)
+        self.assertIsNotNone(
+            probe,
+            "the nginx healthCheck command does not probe http://127.0.0.1:<port>/nginx-health; "
+            f"block was: {health_check}",
+        )
+        assert probe is not None  # narrow for the type checker
+        probe_port = probe.group(1)
+
+        # 5. Tie that port back to the port nginx actually listens on. The
+        # healthCheck is container-local, so if nginx.conf's `listen` moves
+        # off this port the check polls a closed socket, every nginx container
+        # goes UNHEALTHY, and with `deployment_circuit_breaker { rollback =
+        # true }` every deploy rolls back — a self-inflicted outage on the
+        # service #1309 is about. Also pinned against the container's own
+        # portMappings, which is what the ALB target group forwards to.
+        self.assertRegex(
+            nginx,
+            rf"(?m)^\s*listen\s+{re.escape(probe_port)};",
+            f"infra/ecs.tf's nginx healthCheck probes port {probe_port}, but nginx/nginx.conf has no "
+            f"`listen {probe_port};` — the check would poll a closed socket",
+        )
+        self.assertRegex(
+            nginx_container,
+            rf"containerPort\s*=\s*{re.escape(probe_port)}\b",
+            f"infra/ecs.tf's nginx healthCheck probes port {probe_port}, which is not the container's "
+            "published containerPort",
+        )
 
     def test_nginx_webmanifest_mime_override_is_additive_not_nested_in_server(self) -> None:
         """#1380: stock nginx `mime.types` has no `.webmanifest` entry, so a
