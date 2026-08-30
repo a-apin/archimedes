@@ -351,11 +351,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     if marketplace_router is not None:
         try:
             from archimedes.chain.client import chain_client
-            from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+            from archimedes.marketplace.config import gateway_chain
 
-            gateway_chain = os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip()
-            await _assert_gateway_chain_matches_rpc(chain_client, gateway_chain, payments_dry_run)
-            _logger.info("startup: GATEWAY_CHAIN=%s verified against RPC", gateway_chain)
+            # Read through config.gateway_chain(), never a hand-rolled
+            # os.getenv("GATEWAY_CHAIN", <the module default>): #1495 landed
+            # that single accessor (and a structural test that forbids any
+            # other reference to the default constant) precisely because a
+            # hand-rolled getenv is how the revenue sweep silently stayed on
+            # testnet. This boot check must resolve the chain the exact same
+            # way the money paths do, or it verifies the wrong name.
+            configured_chain = gateway_chain()
+            await _assert_gateway_chain_matches_rpc(chain_client, configured_chain, payments_dry_run)
+            _logger.info("startup: GATEWAY_CHAIN=%s verified against RPC", configured_chain)
         except GatewayChainMismatch:
             # Re-raise ONLY the dedicated mismatch type, by identity — not
             # "any RuntimeError". A plain RuntimeError from get_chain_id()
