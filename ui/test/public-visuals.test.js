@@ -331,12 +331,19 @@ test("metadata and sitemap describe canonical anonymous public routes", () => {
 		sitemap,
 		/<loc>https:\/\/archimedes-arc\.com\/architecture<\/loc>/,
 	);
-	for (const route of ["explore", "leaderboard", "corpus", "insights"]) {
+	for (const route of ["explore", "leaderboard", "corpus"]) {
 		assert.match(
 			sitemap,
 			new RegExp(`<loc>https://archimedes-arc\\.com/${route}</loc>`),
 		);
 	}
+	// `insights` was in the list above until the admin-gate PR (owner
+	// directive 2026-08-20, supersedes #1028 D8) made /app/insights
+	// ADMIN-ONLY. It is not an anonymous public route any more, so it must
+	// not be advertised — see ui/test/sitemap.test.js for the whole-file
+	// guard and its rationale. Asserting its ABSENCE here, rather than just
+	// deleting it from the loop, keeps this test honest about the change.
+	assert.doesNotMatch(sitemap, /insights/i);
 	assert.doesNotMatch(
 		sitemap,
 		/<loc>https:\/\/archimedes-arc\.com\/(marketplace|portfolio|publish|subscriptions)<\/loc>/,

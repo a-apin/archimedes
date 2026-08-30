@@ -220,8 +220,11 @@ const insights = readFileSync(
 );
 
 test("App.jsx: the insights page gate calls the shared fetchAdminProbe(), routing its result through resolveInsightsAdminState()", () => {
-	assert.match(app, /from '\.\/adminProbe\.js'/);
-	assert.match(app, /from '\.\/insightsGate\.js'/);
+	// Quote-style agnostic throughout this block: the calm-precision rebrand
+	// reformats App.jsx to double quotes + semicolons. The guarded property is
+	// WHICH module the gate goes through, not how the import is quoted.
+	assert.match(app, /from ["']\.\/adminProbe\.js["']/);
+	assert.match(app, /from ["']\.\/insightsGate\.js["']/);
 	assert.match(
 		app,
 		/fetchAdminProbe\(\)\.then\(\(result\) => \{\n\s+if \(!cancelled\) setInsightsAdmin\(resolveInsightsAdminState\(result\)\)/,
@@ -234,7 +237,7 @@ test("App.jsx: the insights page gate calls the shared fetchAdminProbe(), routin
 });
 
 test("App.jsx: a denied insights probe renders the SAME NotFound component as a true 404 — not a second, divergent 'access denied' block", () => {
-	assert.match(app, /import NotFound from '\.\/components\/NotFound'/);
+	assert.match(app, /import NotFound from ["']\.\/components\/NotFound["']/);
 	// Both branches return the identical <NotFound user={user} /> call —
 	// counting occurrences (rather than matching each branch separately)
 	// is what actually proves they're the same component, not two markup
@@ -250,7 +253,7 @@ test("App.jsx: a denied insights probe renders the SAME NotFound component as a 
 test("App.jsx: an anonymous visitor hitting /app/insights is never redirected to /sign-in (that would advertise the page exists)", () => {
 	assert.match(
 		app,
-		/route\.anonymousOk \|\| route\.page === 'insights' \|\| authLoading \|\| user\) return/,
+		/route\.anonymousOk \|\| route\.page === ["']insights["'] \|\| authLoading \|\| user\)\s*\n?\s*return/,
 	);
 });
 
@@ -281,7 +284,7 @@ test("Layout.jsx: an anonymous visitor (no user) never even attempts the admin p
 test("App.jsx: the insights admin probe re-runs on a wallet swap, not just on navigation (round 2)", () => {
 	assert.match(
 		app,
-		/window\.addEventListener\('wallet-changed', onWalletChanged\)/,
+		/window\.addEventListener\(["']wallet-changed["'], onWalletChanged\)/,
 		"App.jsx must listen for wallet-changed directly — it has no other way to learn the connected wallet changed",
 	);
 	assert.match(
