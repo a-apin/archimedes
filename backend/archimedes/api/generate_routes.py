@@ -91,6 +91,15 @@ _JOB_HEARTBEAT_INTERVAL_SECONDS = 30.0
 # § Failure modes: "Lock-without-progress for > 5 min").
 _STALLED_AFTER_SECONDS = 300
 
+# Hard ceiling on one generation run (v8 Lane 1.3b — bound generation hangs).
+# `_STALLED_AFTER_SECONDS` only makes a dead run *observable*; nothing
+# previously stopped `run_generation` itself from hanging forever (an LLM
+# call with no client-side timeout, a stuck backtest thread) while quietly
+# holding the payer's consumed credit and a `_GENERATION_GATE` slot the whole
+# time. `_run_with_cleanup` wraps the awaited call in `asyncio.wait_for` at
+# this bound.
+_DEFAULT_GENERATION_TIMEOUT_SECONDS = 600
+
 # Live registry of in-flight asyncio tasks per job. Lets cancel_job actually
 # stop the work — without this, /cancel only flips Redis status while the
 # agent keeps burning LLM tokens to completion.
@@ -130,6 +139,20 @@ def _max_queued_generations() -> int:
         return max(0, int(os.getenv("GENERATION_MAX_QUEUE", "10")))
     except ValueError:
         return 10
+
+
+def _generation_timeout_seconds() -> float:
+    """Bound for one run, from `GENERATION_TIMEOUT_SECONDS` (v8 Lane 1.3b).
+
+    Parsed as defensively as `_max_concurrent_generations` above (and
+    `revenue_sweep._min_usdc`): a missing, non-numeric, or non-positive value
+    must never crash startup — it falls back to the default instead.
+    """
+    try:
+        value = float(os.getenv("GENERATION_TIMEOUT_SECONDS", str(_DEFAULT_GENERATION_TIMEOUT_SECONDS)))
+    except ValueError:
+        return float(_DEFAULT_GENERATION_TIMEOUT_SECONDS)
+    return value if value > 0 else float(_DEFAULT_GENERATION_TIMEOUT_SECONDS)
 
 
 def _generation_gate() -> asyncio.Semaphore:
@@ -575,16 +598,38 @@ async def _run_with_cleanup(
                 _WAITING_GENERATIONS -= 1
         else:
             await gate.acquire()
+        timeout_seconds = _generation_timeout_seconds()
         try:
-            await run_generation(
-                job_id=job_id,
-                brief=brief,
-                n_candidates=n_candidates,
-                mode=mode,
-                model=model,
-                owner_user_id=owner_user_id,
-                owner_wallet=owner_wallet,
-            )
+            try:
+                await asyncio.wait_for(
+                    run_generation(
+                        job_id=job_id,
+                        brief=brief,
+                        n_candidates=n_candidates,
+                        mode=mode,
+                        model=model,
+                        owner_user_id=owner_user_id,
+                        owner_wallet=owner_wallet,
+                    ),
+                    timeout=timeout_seconds,
+                )
+            except TimeoutError:
+                # wait_for cancels the still-running run_generation coroutine
+                # on timeout; its own `except asyncio.CancelledError` branch
+                # already ran and wrote status "cancelled"/"cancelled by
+                # client" — dishonest here, since nobody clicked Cancel.
+                # update_status (not update_terminal_status, which treats
+                # "cancelled" as sticky on purpose for the real-cancel race)
+                # overwrites it with the true cause. Any non-"done" terminal
+                # status still reaches `_release_credit_if_undelivered` below,
+                # so the payer's credit restores either way.
+                message = f"generation exceeded the {timeout_seconds:g}-second limit"
+                logger.warning(
+                    "job %s exceeded GENERATION_TIMEOUT_SECONDS=%s — marking error",
+                    sanitize_log_value(job_id),
+                    timeout_seconds,
+                )
+                await store.update_status(job_id, "error", error=message)
         finally:
             gate.release()
     except asyncio.CancelledError:
