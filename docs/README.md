@@ -131,7 +131,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-07-28 | ADR index and status vocabulary. All eighteen records are listed there. |
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-08-30 | ADR index and status vocabulary. All twenty records are listed there. |
 | [`adr/unlicense-public-domain.md`](adr/unlicense-public-domain.md) | accepted | Dan Browne | initial commit | The Unlicense as a public-domain dedication, and its ownership/contributor consequences. |
 | [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
 | [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
@@ -151,6 +151,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/debate-society-sole-generation-pipeline.md`](adr/debate-society-sole-generation-pipeline.md) | accepted | Dan Browne | 2026-07-09 | The debate society is the only generation path; no fallback. |
 | [`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md) | accepted, **pending quant sign-off** | Dan Browne | 2026-07-09 | DSR trial count depends only on the strategy's own search; curated strategies grade at num_trials = 1. |
 | [`adr/aurora-postgres-alembic-datastore.md`](adr/aurora-postgres-alembic-datastore.md) | accepted | Dan Browne | 2026-07-28 | Aurora Serverless v2 (18.3) + Alembic; Redis 7.1 ephemeral-only. |
+| [`adr/strategy-dsl-hardening-over-lean4.md`](adr/strategy-dsl-hardening-over-lean4.md) | accepted | Dan Browne | 2026-08-30 | No Lean 4 on the emission path; harden the existing closed-enum DSL instead. Sandbox reserved for inexpressible shapes; languages re-evaluated only on a trigger. |
 
 ## Plans and roadmaps (intent, not state)
 
@@ -163,6 +164,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`plans/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | plan | Dan Browne | — | Spine+ v2 phase plan. |
 | [`plans/second-wave-multi-asset-strategies.md`](plans/second-wave-multi-asset-strategies.md) | plan | Önder Akkaya | 2026-06-11 | Second-wave multi-asset strategies. |
 | [`plans/paper-replication-spec.md`](plans/paper-replication-spec.md) | plan | Önder Akkaya | — | Replication and original-extension workflow. |
+| [`plans/future-strategy-language-reeval-issue.md`](plans/future-strategy-language-reeval-issue.md) | draft issue | Dan Browne | 2026-08-30 | Unfiled Future Plans issue body: the trigger conditions under which the emission-language decision re-opens. Dormant by design — do not close for inactivity. |
 
 ## Sprint session cards (current)
 
