@@ -25,31 +25,31 @@ dependencies:
   # Python deps installed via pip — pinned loosely; tighten in pyproject.toml as the project firms up.
   - pip:
       # --- Web backend ---
-      - fastapi>=0.115
-      - "starlette>=1.3.1"            # Pinned directly to close PYSEC-2026-161 (Host-header validation bypass); FastAPI's range can resolve to vulnerable 1.0.0 without this floor. Floor raised to 1.3.1 to close CVE-2026-54282 / CVE-2026-54283 (CVE bump 2026-06-25); FastAPI's requires-dist is starlette>=0.46.0 with no upper bound, so this resolves cleanly.
-      - "uvicorn[standard]>=0.49.0"
-      - sqlalchemy>=2.0
-      - alembic>=1.13                 # Schema migration tool (issue #1028) — replaces the hand-rolled idempotent ADD-COLUMN patches in db.py. MIT license, maintained by the SQLAlchemy project. Aligned with backend/requirements.txt.
+      - fastapi>=0.141.1
+      - "starlette>=1.6.0"            # Pinned directly to close PYSEC-2026-161 (Host-header validation bypass); FastAPI's range can resolve to vulnerable 1.0.0 without this floor. Floor raised to 1.3.1 to close CVE-2026-54282 / CVE-2026-54283 (CVE bump 2026-06-25), then to 1.4.1 and 1.6.0 to match backend/requirements.txt (the 1.6.0 move is a Dependabot floor raise, not a CVE bump - see the block comment there); FastAPI's requires-dist is starlette>=0.46.0 with no upper bound, so this resolves cleanly.
+      - "uvicorn[standard]>=0.52.4"
+      - sqlalchemy>=2.0.52
+      - alembic>=1.19.1               # Schema migration tool (issue #1028) — replaces the hand-rolled idempotent ADD-COLUMN patches in db.py. MIT license, maintained by the SQLAlchemy project. Aligned with backend/requirements.txt.
       - psycopg2-binary>=2.9.12       # PostgreSQL driver (binary wheel; no system pq needed). Floor aligned with backend/requirements.txt via dependabot PR #247.
-      - redis>=8.0.0                  # Redis client for live regime/state cache (aligned with backend/requirements.txt)
+      - redis>=8.1.0                  # Redis client for live regime/state cache (aligned with backend/requirements.txt)
       - pydantic>=2.13.4
       - pydantic-settings>=2.14.2     # Floor aligned with backend/requirements.txt (dependabot batch 2026-07-13).
-      - python-dotenv>=1.2.2
+      - python-dotenv>=1.2.3
       - "slowapi>=0.1.10"             # FastAPI rate-limiter — required by api/limiter.py + user_routes.py. CI installs from backend/requirements.txt; this keeps local dev parity.
 
       # --- Data + numerics ---
-      - numpy>=2.4.6,<3.0             # numpy 2 verified against backtrader 1.9.78.123 on 2026-06-12: full analytics-engine suite (170 tests) + backend backtrader tests + e2e Faber SMA200 run all green. Aligned with backend/requirements.txt (dependabot #489).
-      - pandas>=2.2
-      - scipy>=1.13
+      - numpy>=2.5.2,<3.0             # numpy 2 verified against backtrader 1.9.78.123 on 2026-06-12: full analytics-engine suite (170 tests) + backend backtrader tests + e2e Faber SMA200 run all green. Aligned with backend/requirements.txt (dependabot #489).
+      - pandas>=3.0.5
+      - scipy>=1.18.0
       - scikit-learn>=1.9.0          # GaussianMixture + StandardScaler for the GmmRegimeDetector (issue #661); BSD-3-Clause. Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
       - matplotlib>=3.8
       - seaborn>=0.13
 
       # --- Market data ---
-      - yfinance>=1.4.1              # Historical + live equity/ETF/crypto data; for backtesting
+      - yfinance>=1.7.0              # Historical + live equity/ETF/crypto data; for backtesting
       - requests>=2.32,<2.34          # arxiv pins requests<2.34; keep aligned with backend/requirements.txt (Dependabot #702 broke the deploy 2026-06-25)
       - aiohttp>=3.14.3                # Bumped from 3.13.5 to close CVE-2026-34993 / CVE-2026-47265 (HTTP parser DoS/smuggling). Floor aligned with backend/requirements.txt via dependabot PR #1165.
-      - httpx>=0.27                   # Directly imported by services/corpus_service.py (arXiv intake) and services/llm_backend.py (OpenAI-compatible + Ollama). Pinned so we don't rely on transitive resolution.
+      - httpx>=0.28.1                 # Directly imported by services/corpus_service.py (arXiv intake) and services/llm_backend.py (OpenAI-compatible + Ollama). Pinned so we don't rely on transitive resolution.
       - urllib3>=2.7.0                # Transitive (requests / boto3 / arxiv). Pinned directly to close PYSEC-2026-141 / PYSEC-2026-142 so a fresh resolve can't regress (CVE bump 2026-06-25). Aligned with backend/requirements.txt.
 
       # --- Backtesting (per backtrader-vs-vectorbt decision memo) ---
@@ -68,7 +68,7 @@ dependencies:
       - "circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355"
 
       # --- LLM ---
-      - anthropic>=0.120.0            # Claude / GLM-compatible client for strategy extraction + reasoning trace generation + chat. Floor aligned with backend/requirements.txt via dependabot PR #1166; this closes a large pre-existing drift (was still pinned at 0.104.1, 13 releases behind requirements.txt's 0.117.0).
+      - anthropic>=0.120.2            # Claude / GLM-compatible client for strategy extraction + reasoning trace generation + chat. Floor aligned with backend/requirements.txt via dependabot PR #1166; this closes a large pre-existing drift (was still pinned at 0.104.1, 13 releases behind requirements.txt's 0.117.0).
 
       # --- On-chain / Web3 ---
       # Floors kept in lockstep with backend/requirements.txt (audit 2026-06-14):
@@ -79,15 +79,15 @@ dependencies:
       - eth-account>=0.13.7           # Local key management for testnet wallets
       - eth-abi>=5.2.0,<6             # ABI codec (direct import in marketplace/encoding.py). Cap <6: eth-account's pre-release specifier (`eth-abi>=4.0.0-b.2`) otherwise lets pip resolve the 6.0.0b1 beta — no betas on the funds path. Aligned with backend/requirements.txt.
       - eth-utils>=6.0.0
-      - cryptography>=42.0            # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
+      - cryptography>=50.0.0          # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
 
       # --- AWS / S3 ---
-      - boto3>=1.43.56                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
-      - botocore>=1.43.56              # Direct imports for AWS exceptions/config. boto3 constrains compatible versions; aligned with backend/requirements.txt.
+      - boto3>=1.43.71                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
+      - botocore>=1.43.81              # Direct imports for AWS exceptions/config. boto3 constrains compatible versions; aligned with backend/requirements.txt.
 
       # --- Paper ingestion (Q-fin corpus) ---
-      - arxiv>=4.0.0                  # arxiv API client. Floor aligned with backend/requirements.txt (was still pinned at 2.1, a pre-existing drift with no open Dependabot PR to attach the fix to).
-      - pypdf>=6.14.2                 # PDF text extraction. Floor 6.13.3 closed 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
+      - arxiv>=4.0.1                  # arxiv API client. Floor aligned with backend/requirements.txt (was still pinned at 2.1, a pre-existing drift with no open Dependabot PR to attach the fix to).
+      - pypdf>=6.16.0                 # PDF text extraction. Floor 6.13.3 closed 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
 
       # --- Semantic retrieval (paper_rag MiniLM embeddings, issue #874) ---
       - torch>=2.13.0,<3.0             # PyTorch CPU (local dev: pip picks the native/MPS wheel; Docker uses the CPU-only wheel via --extra-index-url in requirements.txt). Floor aligned with backend/requirements.txt via dependabot PR #1163.

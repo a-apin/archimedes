@@ -54,6 +54,16 @@ _PBO_S_PARTITIONS = 16
 # ── Result types ──────────────────────────────────────────────────────
 
 
+# Engine / construction labels stamped on every row this module produces (A8).
+# `backtest_engine` is an existing persisted column, so distinguishing the two
+# runners here is what surfaces the sleeve limitation on the passport without a
+# schema change.
+ENGINE_SINGLE_FEED = "dsl-fusion"
+ENGINE_SLEEVES = "dsl-fusion-sleeves"
+CONSTRUCTION_SINGLE_ASSET = "single_asset"
+CONSTRUCTION_SLEEVES = "n_independent_sleeves_equal_weight"
+
+
 @dataclass(frozen=True)
 class BacktestMetrics:
     """Metrics from a DSL-interpreted strategy backtest."""
@@ -74,6 +84,16 @@ class BacktestMetrics:
     # means random.gauss noise (dev/test only); "csv:<name>" / "provided" mean
     # real OHLCV. Rigor metrics from a "synthetic" run are NOT admissible.
     data_source: str = "synthetic"
+    # WHICH runner produced these numbers, and how it combined assets (A8).
+    # `run_dsl_backtest_portfolio` runs the same single-asset spec once per
+    # asset on initial_cash/N and sums the sleeves, so an "inverse-vol 5-asset"
+    # strategy is really five independent 100%-long single-asset backtests,
+    # equal-weighted — there is no cross-sectional allocation step and no
+    # rebalance between sleeves. Stamping it is what makes that a disclosed
+    # limitation instead of a silent one; the multi-feed interpreter that would
+    # remove the limitation is deliberately out of scope.
+    backtest_engine: str = ENGINE_SINGLE_FEED
+    portfolio_construction: str = CONSTRUCTION_SINGLE_ASSET
 
 
 @dataclass(frozen=True)
@@ -243,9 +263,17 @@ def run_dsl_backtest(
 
     strat = results[0] if results else None
     equity_curve: list[float]
+    bar_start: date | None = None
+    bar_end: date | None = None
     if strat is not None:
         ec = strat.analyzers.equity_curve.get_analysis()
         equity_curve = list(ec.get("values", [])) or [initial_cash]
+        # Real first/last bar of the feed this run actually consumed. Was a
+        # pair of sentinels keyed on a variable reassigned above, so the
+        # condition was dead and every DSL row persisted a null (or, on the
+        # variant path, a fabricated 2004-01-02) window.
+        bar_start = ec.get("first_bar_date")
+        bar_end = ec.get("last_bar_date")
     else:
         equity_curve = [initial_cash]
 
@@ -291,8 +319,8 @@ def run_dsl_backtest(
         ),
         equity_curve=[round(e, 2) for e in equity_curve],
         monthly_returns=[round(m, 4) for m in monthly_returns],
-        backtest_start=date(2004, 1, 2) if data_feed is None else None,
-        backtest_end=date(2026, 4, 30) if data_feed is None else None,
+        backtest_start=bar_start,
+        backtest_end=bar_end,
         data_source=data_source,
     )
 
@@ -403,9 +431,17 @@ def _run_variant_backtest(
 
     strat = results[0] if results else None
     equity_curve: list[float]
+    bar_start: date | None = None
+    bar_end: date | None = None
     if strat is not None:
         ec = strat.analyzers.equity_curve.get_analysis()
         equity_curve = list(ec.get("values", [])) or [initial_cash]
+        # Real first/last bar of the feed this run actually consumed. Was a
+        # pair of sentinels keyed on a variable reassigned above, so the
+        # condition was dead and every DSL row persisted a null (or, on the
+        # variant path, a fabricated 2004-01-02) window.
+        bar_start = ec.get("first_bar_date")
+        bar_end = ec.get("last_bar_date")
     else:
         equity_curve = [initial_cash]
 
@@ -450,8 +486,8 @@ def _run_variant_backtest(
         ),
         equity_curve=[round(e, 2) for e in equity_curve],
         monthly_returns=[round(m, 4) for m in monthly_returns],
-        backtest_start=date(2004, 1, 2) if data_csv_path is None else None,
-        backtest_end=date(2026, 4, 30) if data_csv_path is None else None,
+        backtest_start=bar_start,
+        backtest_end=bar_end,
         data_source=data_source,
     )
 
@@ -525,6 +561,8 @@ def _aggregate_portfolio_metrics(
         backtest_start=backtest_start,
         backtest_end=backtest_end,
         data_source=label,
+        backtest_engine=ENGINE_SLEEVES,
+        portfolio_construction=CONSTRUCTION_SLEEVES,
     )
 
 

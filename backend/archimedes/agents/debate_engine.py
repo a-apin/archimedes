@@ -483,6 +483,13 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         "calmar_ratio": bt.calmar_ratio,
         "win_rate": bt.win_rate,
         "total_trades": bt.total_trades,
+        # A8: which runner produced this row and how it combined assets. The
+        # sleeve runner grades N independent single-asset backtests and
+        # equal-weights them, so a multi-asset spec is NOT a cross-sectionally
+        # allocated portfolio. Carried here rather than re-derived downstream —
+        # the runner is the only place that knows.
+        "backtest_engine": getattr(bt, "backtest_engine", None),
+        "portfolio_construction": getattr(bt, "portfolio_construction", None),
     }
 
 
