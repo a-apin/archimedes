@@ -12,11 +12,26 @@
 // mounts, App.jsx has already resolved `admin === true`) via
 // ./adminProbeCache.js — see that file for why.
 //
-// Scope of "does not advertise the page exists" (round 2 correction): that
-// property holds for the two specific vectors it was built to close — the
-// denial screen (identical NotFound, never an "admin access required"
-// message) and the anonymous-visitor redirect (never bounced to
-// /sign-in?next=/app/insights). It does NOT hide this endpoint's existence
+// Scope of "does not advertise the page exists" (round 2 correction;
+// extended 2026-08-30 for the nginx vector). That property holds for three
+// specific vectors:
+//   1. The denial screen — identical NotFound, never an "admin access
+//      required" message.
+//   2. The in-app anonymous redirect — a client-side navigation onto
+//      /app/insights renders NotFound rather than bouncing to
+//      /sign-in?next=/app/insights.
+//   3. The pre-auth edge response. `nginx/nginx.conf`'s `location =
+//      /app/insights` sits behind the same `auth_request /_auth_session`
+//      boundary as the catch-all `^~ /app`, so an anonymous GET for this
+//      path returns the identical 302 nginx returns for an anonymous GET of
+//      any UNKNOWN /app path. An earlier revision served the shell here
+//      ungated, which made `/app/insights -> 200` vs `/app/library -> 302` a
+//      readable existence oracle before any client JS ran; that carve-out is
+//      gone. This note claimed the property before the config delivered it —
+//      keep the two in lockstep (guarded by
+//      backend/tests/test_local_setup_contract.py::
+//      test_nginx_gates_insights_exactly_like_every_other_app_path).
+// It does NOT hide this endpoint's existence
 // from someone reading network traffic or the shipped bundle: Layout.jsx
 // calls this probe for every signed-in user on every page (so a non-admin's
 // devtools Network tab shows a 403 on `/api/metrics/private/whoami` on
