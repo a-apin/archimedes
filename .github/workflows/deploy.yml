@@ -40,7 +40,13 @@
 #                    definition revision pointing at the just-pushed <commit-sha>
 #                    image and force-redeploys the Fargate service behind the
 #                    existing ALB. NO docker build ever runs on a serving host.
-#                    Once the service reaches steady state, invalidates the
+#                    Then polls the service's own `rolloutState` to an explicit
+#                    verdict (issue #1532 — a slow rollout and a broken revision
+#                    used to produce the same red, and a green used to mean only
+#                    "ECS is content"), probes the live /api/health through
+#                    CloudFront to assert the app actually ANSWERS, and — keyed
+#                    to that rollout verdict rather than to job success —
+#                    invalidates the
 #                    CloudFront cache for the unhashed SPA entry points (/ and
 #                    /index.html) — without this, CloudFront keeps serving the
 #                    OLD cached index.html, which references hashed asset
@@ -150,6 +156,19 @@ env:
   NGINX_ECR_REPO: archimedes-nginx
   AUTH_ECR_REPO: archimedes-auth
   EC2_INSTANCE_ID: i-01803d3abc271d39b
+  # How long deploy-ecs will wait for the ECS rollout to reach COMPLETED before
+  # it calls the deploy red (issue #1532). This replaces the implicit 600s of
+  # `aws ecs wait services-stable` (40 attempts x 15s), which rollout duration
+  # had grown into: Önder's table on #1532 shows two runs nine seconds apart —
+  # caf8eb0a at 10m10s (red) and 58e337dc at 10m19s (green) — getting opposite
+  # verdicts from that stopwatch while both rollouts completed. Sized off the
+  # measured 4-10 min range with real headroom, and DELIBERATELY EXPLICIT so
+  # that raising it is a decision someone makes with the number in front of
+  # them. Exceeding it is still red — this is a budget, not a mute button; the
+  # error names the state so "slow" and "broken" stay distinguishable.
+  # Raising it past ~24 min also requires raising deploy-ecs's timeout-minutes
+  # (the poll step asserts that headroom and fails fast if it is gone).
+  DEPLOY_ROLLOUT_BUDGET_SECONDS: 1200
 
 jobs:
   build-and-push:
@@ -583,7 +602,15 @@ jobs:
     # activates itself with zero further pipeline changes.
     if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # OUTER stopwatch, and it must stay strictly larger than
+    # DEPLOY_ROLLOUT_BUDGET_SECONDS (top-level env) plus the post-rollout probe
+    # and the CloudFront invalidation wait — otherwise the job timeout silently
+    # becomes the real budget and #1532 returns with a bigger number. 30 min
+    # covers the 20-min default budget + ~1 min probe + the invalidation wait
+    # with margin. The poll step asserts this headroom explicitly (see
+    # DEPLOY_JOB_TIMEOUT_MINUTES there) rather than trusting the two numbers to
+    # be edited together.
+    timeout-minutes: 30
 
     steps:
       - name: Configure AWS credentials (OIDC)
@@ -610,6 +637,7 @@ jobs:
           fi
 
       - name: Register a new task-definition revision + force-redeploy the service
+        id: redeploy
         if: steps.check.outputs.present == 'true'
         env:
           ECS_CLUSTER: archimedes-cluster
@@ -659,20 +687,262 @@ jobs:
           fi
           echo "Registered $NEW_TASK_DEF_ARN"
 
+          # Handed to the rollout poll below (which needs to know WHICH revision
+          # this job deployed, so a circuit-breaker rollback to the previous one
+          # is detectable as a rollback rather than read as a clean rollout).
+          echo "task_def_arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
           # --force-new-deployment: the service's own lifecycle.ignore_changes
           # = [task_definition, desired_count] (infra/ecs.tf) means Terraform
           # never reverts this out-of-band update on a later apply.
           aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
             --task-definition "$NEW_TASK_DEF_ARN" --force-new-deployment >/dev/null
+          echo "Redeploy requested — the rollout verdict is the next step's job."
 
-          echo "Waiting for the ECS service to reach steady state (deployment_circuit_breaker will auto-rollback a bad revision)..."
-          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
-          echo "✅ ECS deploy complete — $ECS_SERVICE is stable on $NEW_TASK_DEF_ARN"
+      - name: Poll the ECS rollout to an explicit verdict
+        id: rollout
+        if: steps.check.outputs.present == 'true'
+        # Issue #1532. REPLACES `aws ecs wait services-stable`, which measured
+        # the wrong thing: its default budget is 40 attempts x 15s = 600s, with
+        # no override at the call site, and rollout duration had grown to
+        # straddle it. Two runs nine seconds apart got opposite verdicts
+        # (caf8eb0a 10m10s red, 58e337dc 10m19s green) while BOTH rollouts
+        # completed and the circuit breaker fired on neither. A check that
+        # cannot tell "slow" from "broken" is a check being trusted for
+        # something it does not measure.
+        #
+        # What this reads instead — the service's own verdict, every 15s:
+        #   rolloutState == COMPLETED  -> green, however long it took
+        #   rolloutState == FAILED     -> red, naming rolloutStateReason
+        #   circuit-breaker rollback   -> red, naming it as a rollback
+        #   budget exhausted           -> red, naming the state it was stuck in
+        # so a slow-but-good rollout and a bad revision no longer produce the
+        # same red, and neither produces a green.
+        #
+        # Rollback is detected two ways because ECS writes it in two places: the
+        # failing deployment's rolloutStateReason says "rolling back...", and a
+        # NEW PRIMARY deployment appears carrying the PREVIOUS task definition.
+        # The task-definition comparison is the load-bearing one — it holds even
+        # if AWS rewords the reason string. Both are checked across ALL
+        # deployments, not just the first, because the failing deployment is not
+        # necessarily the PRIMARY one by the time the rollback lands.
+        #
+        # NOT `continue-on-error` and NOT a raised-then-ignored budget: exceeding
+        # the budget is still a hard red (#1532 anti-goal 1 — fail-soft here
+        # would convert a real failure into silence).
+        env:
+          ECS_CLUSTER: archimedes-cluster
+          ECS_SERVICE: archimedes-backend
+          NEW_TASK_DEF_ARN: ${{ steps.redeploy.outputs.task_def_arn }}
+          # The job's `timeout-minutes:` above, restated so the script can prove
+          # the budget actually fits inside it. Keep the two in sync — if they
+          # drift, this step fails loudly at second 0 instead of the job dying
+          # mid-rollout at the outer timeout with no verdict at all.
+          DEPLOY_JOB_TIMEOUT_MINUTES: 30
+        run: |
+          set -euo pipefail
+
+          BUDGET="${DEPLOY_ROLLOUT_BUDGET_SECONDS:-1200}"
+          POLL_INTERVAL=15
+
+          if ! printf '%s' "$BUDGET" | grep -qE '^[0-9]+$' || [ "$BUDGET" -le 0 ]; then
+            echo "::error::DEPLOY_ROLLOUT_BUDGET_SECONDS='$BUDGET' is not a positive integer number of seconds (set it in the workflow env block of .github/workflows/deploy.yml)."
+            exit 1
+          fi
+
+          # A budget larger than the job's own timeout is fiction: the outer
+          # timeout would kill the job first, with no verdict — exactly #1532's
+          # bug wearing a bigger number. Reserve 7 min for the post-rollout
+          # probe + the CloudFront invalidation wait that follow this step.
+          JOB_TIMEOUT_SECONDS=$(( DEPLOY_JOB_TIMEOUT_MINUTES * 60 ))
+          if [ "$BUDGET" -gt $(( JOB_TIMEOUT_SECONDS - 420 )) ]; then
+            echo "::error::DEPLOY_ROLLOUT_BUDGET_SECONDS=${BUDGET}s leaves under 7 minutes of the deploy-ecs job's ${DEPLOY_JOB_TIMEOUT_MINUTES}-minute timeout for the answer probe and the CloudFront invalidation. Raise timeout-minutes on the deploy-ecs job (and DEPLOY_JOB_TIMEOUT_MINUTES here) alongside the budget."
+            exit 1
+          fi
+
+          if [ -z "$NEW_TASK_DEF_ARN" ] || [ "$NEW_TASK_DEF_ARN" = "None" ]; then
+            echo "::error::no task-definition ARN was handed over from the redeploy step — cannot tell a completed rollout from a circuit-breaker rollback without it."
+            exit 1
+          fi
+
+          echo "Polling $ECS_SERVICE every ${POLL_INTERVAL}s for up to ${BUDGET}s; target revision $NEW_TASK_DEF_ARN"
+          START=$(date +%s)
+
+          while :; do
+            NOW=$(date +%s)
+            ELAPSED=$(( NOW - START ))
+
+            DEPLOYMENTS="$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'services[0].deployments' --output json)"
+
+            # The PRIMARY deployment is the one this job is waiting on. ECS puts
+            # it first in the array, but select on status rather than trusting
+            # that: the ACTIVE (draining) deployment alongside it reports its own
+            # rolloutState of COMPLETED, so reading position 0 blindly can read a
+            # COMPLETED off the OLD deployment. Falls back to position 0 if no
+            # PRIMARY is present.
+            PRIMARY="$(printf '%s' "$DEPLOYMENTS" | jq -c '(map(select(.status == "PRIMARY")) + .)[0] // {}')"
+            STATE="$(printf '%s' "$PRIMARY" | jq -r '.rolloutState // "UNKNOWN"')"
+            REASON="$(printf '%s' "$PRIMARY" | jq -r '.rolloutStateReason // ""')"
+            PRIMARY_TD="$(printf '%s' "$PRIMARY" | jq -r '.taskDefinition // ""')"
+            FAILED_TASKS="$(printf '%s' "$PRIMARY" | jq -r '.failedTasks // 0')"
+            RUNNING="$(printf '%s' "$PRIMARY" | jq -r '.runningCount // 0')"
+            DESIRED="$(printf '%s' "$PRIMARY" | jq -r '.desiredCount // 0')"
+
+            # Elapsed on every line: the log itself becomes the record of how
+            # long rollouts actually take, so the next budget change is made off
+            # measurements instead of a guess (this is the number #1532 had to
+            # reconstruct from job durations after the fact).
+            printf '[%4ds / %ss] rolloutState=%-11s tasks=%s/%s failed=%s :: %s\n' \
+              "$ELAPSED" "$BUDGET" "$STATE" "$RUNNING" "$DESIRED" "$FAILED_TASKS" "$REASON"
+
+            # 1. Any deployment FAILED — the revision is bad, not slow.
+            FAILED_REASON="$(printf '%s' "$DEPLOYMENTS" | jq -r 'map(select(.rolloutState == "FAILED")) | .[0].rolloutStateReason // ""')"
+            if [ -n "$FAILED_REASON" ]; then
+              echo "::error::ECS rollout FAILED after ${ELAPSED}s — reason: ${FAILED_REASON} (failedTasks=${FAILED_TASKS}). This is a bad revision, not a slow one: the deployment circuit breaker (infra/ecs.tf) judged the new tasks unhealthy. Check the ecs-backend CloudWatch log stream for the container's own error."
+              exit 1
+            fi
+
+            # 2. Circuit-breaker rollback named in any deployment's reason.
+            ROLLBACK_REASON="$(printf '%s' "$DEPLOYMENTS" | jq -r '[.[] | .rolloutStateReason // ""] | map(select(test("roll(ing|ed)? ?back"; "i"))) | .[0] // ""')"
+            if [ -n "$ROLLBACK_REASON" ]; then
+              echo "::error::ECS circuit breaker rolled the deployment back after ${ELAPSED}s — reason: ${ROLLBACK_REASON}. Prod is back on the PREVIOUS revision; ${NEW_TASK_DEF_ARN} is NOT serving."
+              exit 1
+            fi
+
+            # 3. PRIMARY reverted to another revision — the rollback the reason
+            #    string above may not have spelled out, and also the case where
+            #    something else redeployed over this job's revision.
+            if [ -n "$PRIMARY_TD" ] && [ "$PRIMARY_TD" != "$NEW_TASK_DEF_ARN" ]; then
+              echo "::error::the PRIMARY ECS deployment is on ${PRIMARY_TD}, not the revision this job registered (${NEW_TASK_DEF_ARN}), after ${ELAPSED}s — a circuit-breaker rollback to the previous task definition, or another deploy superseded this one. Either way this job's image is not what prod is serving."
+              exit 1
+            fi
+
+            # 4. Done. However long it took.
+            if [ "$STATE" = "COMPLETED" ]; then
+              echo "rollout=completed" >> "$GITHUB_OUTPUT"
+              echo "ECS rollout COMPLETED in ${ELAPSED}s on ${NEW_TASK_DEF_ARN} (budget ${BUDGET}s). Slow is not broken; this is green."
+              break
+            fi
+
+            # 5. Budget exhausted. Checked AFTER the verdicts above so a rollout
+            #    that completes on the last poll still counts.
+            if [ "$ELAPSED" -ge "$BUDGET" ]; then
+              echo "::error::ECS rollout budget exceeded, state=${STATE} after ${ELAPSED}s (budget ${BUDGET}s, failedTasks=${FAILED_TASKS}, reason: ${REASON}) — raise the budget if rollouts have legitimately grown (DEPLOY_ROLLOUT_BUDGET_SECONDS in the workflow env block, and deploy-ecs's timeout-minutes with it). The circuit breaker has NOT failed this deployment; it may still complete after this job gives up, so check the service before assuming prod is on the old image."
+              exit 1
+            fi
+
+            sleep "$POLL_INTERVAL"
+          done
+
+      - name: Assert the deployed app actually answers (post-rollout probe)
+        if: steps.rollout.outputs.rollout == 'completed'
+        # Issue #1532, Önder's second comment — the half that polling
+        # rolloutState does NOT fix. After 58e337dc's job reported success,
+        # /health and /api/config/contracts returned nothing inside a 12-15s
+        # client budget; a 60s probe got 200 in 31.2s, already on the new
+        # version, then settled to ~1.2s. rolloutState was COMPLETED throughout.
+        # "ECS is content" and "the app answers inside a client's deadline" are
+        # different claims, and only the first one was ever being checked.
+        #
+        # Probes /api/* deliberately: infra/cloudfront.tf puts /api/* on the
+        # AWS-managed CachingDisabled policy, so every sample here is an origin
+        # round trip. ("/" would be useless — it is CloudFront-cached static
+        # content and kept returning 200 in ~0.3s through the whole outage
+        # window. Static fast + API timing out is what identified the origin as
+        # the culprit in the first place.)
+        #
+        # Requiring the LAST 5 CONSECUTIVE samples to pass, rather than 5 of 10,
+        # is what makes a cold-start tail fail this step: a service warming up
+        # produces slow-then-fast, and only a trailing run of good samples shows
+        # it actually got there. The 5s ceiling is a client-realistic deadline,
+        # not a generous one — it is below #1436's recorded p99 of 16.8s on
+        # purpose. If this step turns out to be the flakiest thing in the
+        # pipeline, that is a finding about the app's post-rollout latency
+        # (#1309, #1436), not a reason to loosen the number.
+        env:
+          # Through CloudFront and the ALB, exactly as a user reaches it —
+          # not the ECS task's own container health check, which is what
+          # rolloutState already reflects.
+          HEALTH_URL: https://archimedes-arc.com/api/health
+          # Same value the build-and-push job baked into the image via
+          # --build-arg GIT_SHA and tagged into ECR, and the same tag the
+          # redeploy step wrote into the task definition. If /api/health reports
+          # anything else, something other than this commit is serving.
+          EXPECTED_VERSION: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+
+          PROBES=10
+          REQUIRED_STREAK=5
+          MAX_SECONDS=5
+          streak=0
+          fail=0
+          body=""
+
+          echo "Probing $HEALTH_URL — ${PROBES} samples, need the last ${REQUIRED_STREAK} consecutive at 200 under ${MAX_SECONDS}s."
+          for i in $(seq 1 "$PROBES"); do
+            sample="$(curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 15 "$HEALTH_URL" 2>/dev/null)"
+            rc=$?
+            # curl writes the -w line even on timeout/connect failure (http_code
+            # 000); this only backfills the case where it wrote nothing at all,
+            # so an empty sample can never be mistaken for a fast 200.
+            [ -n "$sample" ] || sample="000 0"
+            code="${sample%% *}"
+            secs="${sample##* }"
+            if [ "$code" = "200" ] && awk -v t="$secs" -v m="$MAX_SECONDS" 'BEGIN { exit !(t + 0 < m + 0) }'; then
+              streak=$(( streak + 1 ))
+              verdict="ok"
+            else
+              streak=0
+              verdict="NOT-OK"
+            fi
+            # Every sample is printed, passing or not: the timings ARE the
+            # evidence, and #1532 had to be diagnosed by hand-curling because
+            # the pipeline kept none.
+            printf 'probe %2d/%d: http=%s time=%ss curl_exit=%s -> %-6s (consecutive good: %d)\n' \
+              "$i" "$PROBES" "$code" "$secs" "$rc" "$verdict" "$streak"
+            if [ "$i" -eq "$PROBES" ]; then
+              # The last probe also reads the body, so the version assertion is
+              # made against the same request that closed the streak.
+              body="$(curl -sS --max-time 15 "$HEALTH_URL" 2>/dev/null)"
+            else
+              sleep 3
+            fi
+          done
+
+          if [ "$streak" -lt "$REQUIRED_STREAK" ]; then
+            echo "::error::post-rollout answer probe: only ${streak} consecutive trailing samples answered 200 under ${MAX_SECONDS}s (needed ${REQUIRED_STREAK}). ECS reported the rollout COMPLETED, but the app is not answering inside a client-realistic deadline — this is the 58e337dc failure mode from #1532, and it is an outage whether or not the badge would have been green. Timings are printed above."
+            fail=1
+          fi
+
+          version="$(printf '%s' "$body" | jq -r '.version // empty' 2>/dev/null)"
+          if [ -z "$version" ]; then
+            echo "::error::post-rollout version check: could not read .version from ${HEALTH_URL} on the final probe (body was empty or not JSON). Cannot confirm which commit is serving."
+            fail=1
+          elif [ "$version" != "$EXPECTED_VERSION" ]; then
+            echo "::error::post-rollout version check: ${HEALTH_URL} reports version=${version} but this job deployed ${EXPECTED_VERSION}. The rollout completed and the app answers — but it is answering with different code than this run built, so this deploy did not take."
+            fail=1
+          fi
+
+          [ "$fail" = 0 ] || exit 1
+          echo "post-rollout probe OK: ${streak} consecutive samples 200 under ${MAX_SECONDS}s, serving version ${version}."
 
       - name: Invalidate CloudFront (unhashed SPA entry points only)
-        if: steps.check.outputs.present == 'true'
-        # Runs only after the ECS service above is confirmed stable — the new
-        # image (with new hashed /assets/* filenames) is already serving.
+        # Gated on the ROLLOUT VERDICT, not on job success (issue #1532). The
+        # old `if: steps.check.outputs.present == 'true'` inherited GitHub's
+        # implicit success(), so any earlier failure skipped this step — which
+        # meant a rollout that had ALREADY put new hashed /assets/* filenames
+        # into prod could leave CloudFront serving the old index.html that
+        # references the deleted ones. That coupling was accidental, and it
+        # fired for real: both #1532 waiter timeouts skipped this invalidation
+        # while the new image was serving. `!cancelled()` is what suppresses the
+        # implicit success(); the condition is now exactly "the new content is
+        # live at the origin", which is precisely when the edge must be purged.
+        # It deliberately still does NOT run when the rollout failed or rolled
+        # back — prod is on the old image then, and the old cached HTML is the
+        # correct thing to be serving.
+        if: ${{ !cancelled() && steps.rollout.outputs.rollout == 'completed' }}
         #
         # WHY THIS STEP EXISTS: CloudFront caches "/" and "/index.html" for 60s
         # (infra/cloudfront.tf's aws_cloudfront_cache_policy.html, the
