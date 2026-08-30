@@ -28,7 +28,7 @@ export default function PublicLayout({ user, children }) {
 						<BrandMark className="public-brand__mark" />
 						<span className="public-brand__copy">
 							<strong>Archimedes</strong>
-							<small>Research. Rigor. Custody.</small>
+							<small>Research. Rigor. Proof.</small>
 						</span>
 					</a>
 					<nav className="public-nav" aria-label="Public navigation">
