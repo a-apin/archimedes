@@ -34,7 +34,7 @@ scipy>=1.18.0
 scikit-learn>=1.9.0  # GaussianMixture + StandardScaler for the data-driven GmmRegimeDetector (issue #661); BSD-3-Clause
 
 # Market data
-yfinance>=1.5.2
+yfinance>=1.7.0
 # Do NOT bump to >=2.34: arxiv (incl. 4.0.0) pins requests<2.34, so a fresh
 # `pip install -r requirements.txt` resolve fails and the Docker deploy breaks
 # (regression from Dependabot #702, caught on deploy 2026-06-25). Keep <2.34
