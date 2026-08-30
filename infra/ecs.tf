@@ -43,9 +43,13 @@
 #    and `/archimedes/prod/REDIS_URL` — both now exist, seeded the same way
 #    AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY already were (via
 #    `infra/scripts/seed-ssm-secrets.sh` — operator step, see
-#    infra/runbooks/ecs-fargate-cutover.md). Every secret in the `secrets`
-#    block below is live in SSM and resolves without further action —
-#    including CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET, added by #1463.
+#    infra/runbooks/ecs-fargate-cutover.md). All seven secrets in the
+#    `secrets` block below — DATABASE_URL, REDIS_URL,
+#    AURORA_MASTER_PASSWORD, EMAIL_ENCRYPTION_KEY, and the CIRCLE_API_KEY /
+#    CIRCLE_ENTITY_SECRET / WALLET_ID trio added by #1463 — are live in SSM
+#    under /archimedes/prod/ and resolve without further action. Keep this
+#    count and list in step with the block; the guard in
+#    backend/tests/test_ecs_backend_secrets.py pins the membership.
 # 4. `oracle_runner` / `agent_runner` / `kb_runner` (docker-compose services
 #    `oracle`, `agent`, `kb-runner`) are NOT covered by this file. They are
 #    singleton background daemons, not ALB-fronted request handlers, and
@@ -193,7 +197,8 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_managed" {
 # `ec2_ssm_params` policy for the same prefix. The Resource is a PREFIX
 # WILDCARD, not an enumeration: adding a parameter under
 # /archimedes/prod/ to the task definition's `secrets` needs no change here
-# (that is why #1463's CIRCLE_* additions below carry no IAM diff).
+# (that is why #1463's three additions below — CIRCLE_API_KEY,
+# CIRCLE_ENTITY_SECRET, WALLET_ID — carry no IAM diff).
 resource "aws_iam_role_policy" "ecs_task_execution_ssm_secrets" {
   name = "archimedes-ecs-execution-ssm-read"
   role = aws_iam_role.ecs_task_execution.id
@@ -619,7 +624,9 @@ resource "aws_ecs_task_definition" "backend" {
       # DATABASE_URL / REDIS_URL were seeded the same way via
       # infra/scripts/seed-ssm-secrets.sh (operator step, documented in
       # infra/runbooks/ecs-fargate-cutover.md) and now also exist live in SSM.
-      # Every secret below resolves at task launch with no outstanding gap.
+      # Seven entries follow — DATABASE_URL, REDIS_URL, AURORA_MASTER_PASSWORD,
+      # EMAIL_ENCRYPTION_KEY, CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID
+      # — and each resolves at task launch with no outstanding gap.
       secrets = [
         { name = "DATABASE_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/DATABASE_URL" },
         { name = "REDIS_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/REDIS_URL" },
@@ -631,21 +638,33 @@ resource "aws_ecs_task_definition" "backend" {
         # than depending on a best-effort in-process SSM fetch.
         { name = "AURORA_MASTER_PASSWORD", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/AURORA_MASTER_PASSWORD" },
         { name = "EMAIL_ENCRYPTION_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/EMAIL_ENCRYPTION_KEY" },
-        # Circle developer-controlled wallet credentials (#1463). The backend
-        # reads both from the process environment — chain/circle_signer.py,
-        # chain/oracle_updater.py, services/circle_service.py and
-        # marketplace/wallet_provisioner.py each `os.getenv` them and raise
-        # "Circle credentials not configured" when absent. Without these two
+        # Circle developer-controlled wallet credentials (#1463) — a TRIO, not
+        # a pair. The backend reads all three off the process environment and
+        # each consumer gates on its own subset:
+        #   chain/circle_signer.py  is_configured = API_KEY and ENTITY_SECRET
+        #                           and WALLET_ID; execute_contract raises
+        #                           "Circle credentials not configured
+        #                           (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET /
+        #                           WALLET_ID)" if any one is blank
+        #   chain/oracle_updater.py same trio, same message
+        #   services/circle_service.py  API_KEY + WALLET_ID
+        #   marketplace/wallet_provisioner.py  API_KEY + ENTITY_SECRET
+        # So WALLET_ID is load-bearing, not decorative: shipping only the two
+        # CIRCLE_* names leaves the signer and the oracle updater failing with
+        # the exact error this change exists to remove. Without these three
         # entries the Fargate task starts fine and every Circle-signed path
         # (agent trade execution, oracle updates, wallet provisioning, the
         # revenue sweep) fails at call time instead of at boot — the fail-soft
-        # shape CLAUDE.md § fail-soft calls out. The parameters already exist
-        # in SSM at /archimedes/prod/CIRCLE_API_KEY and
-        # /archimedes/prod/CIRCLE_ENTITY_SECRET, so no seeding step is needed
-        # and the wildcard execution-role policy above
-        # (parameter/archimedes/prod/*) already authorizes both reads.
+        # shape CLAUDE.md § fail-soft calls out. All three parameters already
+        # exist in SSM (/archimedes/prod/CIRCLE_API_KEY,
+        # /archimedes/prod/CIRCLE_ENTITY_SECRET, /archimedes/prod/WALLET_ID —
+        # SecureString, seeded 2026-07-09 per
+        # infra/scripts/setup-ssm-secrets.sh), so no seeding step is needed and
+        # the wildcard execution-role policy above (parameter/archimedes/prod/*)
+        # already authorizes all three reads.
         { name = "CIRCLE_API_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_API_KEY" },
-        { name = "CIRCLE_ENTITY_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_ENTITY_SECRET" }
+        { name = "CIRCLE_ENTITY_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_ENTITY_SECRET" },
+        { name = "WALLET_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/WALLET_ID" }
       ]
 
       logConfiguration = {

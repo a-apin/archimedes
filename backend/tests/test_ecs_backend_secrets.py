@@ -1,14 +1,19 @@
 """The backend Fargate container must receive its Circle credentials (#1463).
 
 ``chain/circle_signer.py``, ``chain/oracle_updater.py``,
-``services/circle_service.py`` and ``marketplace/wallet_provisioner.py`` all
-read ``CIRCLE_API_KEY`` / ``CIRCLE_ENTITY_SECRET`` straight off the process
-environment and raise "Circle credentials not configured" when they are blank.
-Nothing reads them at *boot*, so a task definition that omits them starts
-healthy and passes ``/health`` — every Circle-signed path (agent trade
-execution, oracle updates, wallet provisioning, the revenue sweep) then fails
-at call time, in production, with no alarm. That is exactly the fail-soft shape
-CLAUDE.md § fail-soft names as the defect: an outage converted into a silence.
+``services/circle_service.py`` and ``marketplace/wallet_provisioner.py`` read
+Circle credentials straight off the process environment and raise "Circle
+credentials not configured" when they are blank. The credential set is a TRIO,
+not a pair — ``CircleSigner.is_configured`` is
+``api_key and entity_secret and wallet_id`` — so ``WALLET_ID`` is as
+load-bearing as the two ``CIRCLE_*`` names, and shipping only the two leaves
+the signer and the oracle updater raising the exact error this wiring exists to
+remove. Nothing reads any of them at *boot*, so a task definition that omits
+one starts healthy and passes ``/health`` — every Circle-signed path (agent
+trade execution, oracle updates, wallet provisioning, the revenue sweep) then
+fails at call time, in production, with no alarm. That is exactly the fail-soft
+shape CLAUDE.md § fail-soft names as the defect: an outage converted into a
+silence.
 
 These tests read ``infra/ecs.tf`` as text and assert the wiring. They are
 hermetic by construction — no AWS, no terraform binary, no network, no env
@@ -21,6 +26,7 @@ execution role can read are all syntactically valid HCL.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -28,13 +34,18 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ECS_TF = REPO_ROOT / "infra" / "ecs.tf"
+CIRCLE_SIGNER_PY = REPO_ROOT / "backend" / "archimedes" / "chain" / "circle_signer.py"
 
 # The SSM prefix the ECS *execution* role is scoped to. Every `secrets` entry
 # must live under it or the task cannot start (AccessDenied at pull time).
 SSM_PREFIX = "parameter/archimedes/prod/"
 
-# Added by #1463. Named explicitly so deleting them fails here, loudly.
-REQUIRED_CIRCLE_SECRETS = ("CIRCLE_API_KEY", "CIRCLE_ENTITY_SECRET")
+# Added by #1463 — the full credential trio, not just the two CIRCLE_*-prefixed
+# names. `CircleSigner.is_configured` (backend/archimedes/chain/circle_signer.py)
+# ANDs all three, so omitting WALLET_ID keeps the signer and the oracle updater
+# raising "Circle credentials not configured" even with both CIRCLE_* wired.
+# Named explicitly so deleting any one of them fails here, loudly.
+REQUIRED_CIRCLE_SECRETS = ("CIRCLE_API_KEY", "CIRCLE_ENTITY_SECRET", "WALLET_ID")
 
 # Pre-existing before #1463. Listed so this guard also catches a future edit
 # that adds something and drops one of these on the way past.
@@ -48,6 +59,21 @@ REQUIRED_EXISTING_SECRETS = (
 # #1463's anti-goal: arming the revenue sweep is a separate, owner-gated call.
 # Seeding the credentials must not smuggle in the flag that spends with them.
 FORBIDDEN_NAMES = ("REVENUE_SWEEP_ENABLED",)
+
+# For the comment-truthfulness checks below: a counted claim in prose is only
+# checkable if the checker can spell the count the same way a human would.
+COUNT_WORDS = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+}
 
 _CONTAINER_NAME_RE = re.compile(r'^      name\s*=\s*"([^"]+)"', re.MULTILINE)
 _ENTRY_RE = re.compile(r'\{\s*name\s*=\s*"([^"]+)"\s*,\s*(valueFrom|value)\s*=\s*"([^"]*)"')
@@ -102,6 +128,67 @@ def _entries(text: str) -> dict[str, str]:
     return {m.group(1): m.group(3) for m in _ENTRY_RE.finditer(text)}
 
 
+def _comment_region(start_anchor: str, end_anchor: str) -> str:
+    """The slice of ecs.tf between two anchors, for prose-truthfulness checks."""
+    src = _tf_source()
+    assert start_anchor in src, f"anchor moved or was reworded: {start_anchor!r}"
+    start = src.index(start_anchor)
+    tail = src[start:]
+    assert end_anchor in tail, f"anchor moved or was reworded: {end_anchor!r}"
+    return tail[: tail.index(end_anchor)]
+
+
+def _signer_required_env_names() -> set[str]:
+    """Env var names ``CircleSigner.is_configured`` actually ANDs, read from source.
+
+    Parsed with ``ast`` rather than imported: keeps the test hermetic (no
+    ``archimedes`` import, no env, no aiohttp) and keeps this list derived from
+    the code instead of hand-copied, so a fourth credential added to the gate
+    cannot silently go unwired in ecs.tf.
+    """
+    tree = ast.parse(CIRCLE_SIGNER_PY.read_text(encoding="utf-8"))
+    cls = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "CircleSigner"),
+        None,
+    )
+    assert cls is not None, f"no CircleSigner class in {CIRCLE_SIGNER_PY}"
+
+    # `self._attr = os.getenv("NAME", ...)` → {_attr: NAME}
+    attr_to_env: dict[str, str] = {}
+    for node in ast.walk(cls):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        call = node.value
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "getenv"):
+            continue
+        if not call.args or not isinstance(call.args[0], ast.Constant) or not isinstance(call.args[0].value, str):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                attr_to_env[target.attr] = call.args[0].value
+
+    gate = next(
+        (n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "is_configured"),
+        None,
+    )
+    assert gate is not None, "CircleSigner.is_configured not found — did the gate move?"
+
+    names = {
+        attr_to_env[n.attr]
+        for n in ast.walk(gate)
+        if isinstance(n, ast.Attribute)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == "self"
+        and n.attr in attr_to_env
+    }
+    assert names, "no os.getenv-backed attributes read by CircleSigner.is_configured"
+    return names
+
+
 @pytest.fixture(scope="module")
 def backend_secrets() -> dict[str, str]:
     return _entries(_block(_container_block("backend"), "secrets"))
@@ -143,6 +230,30 @@ class TestCircleCredentialsReachTheContainer:
             f"{secret} resolves from {backend_secrets[secret]!r}, which is not /{SSM_PREFIX}{secret}"
         )
 
+    def test_the_signers_whole_gate_is_wired(self, backend_secrets: dict[str, str]) -> None:
+        """Every env var `CircleSigner.is_configured` ANDs must reach the container.
+
+        Derived from circle_signer.py itself, so it stays true if the gate
+        grows a fourth credential. This is the check that catches the shipped
+        defect the parametrized cases above could not: with only the two
+        CIRCLE_* names declared, the task boots and `is_configured` is still
+        False, because WALLET_ID is the third conjunct.
+        """
+        required = _signer_required_env_names()
+        missing = sorted(required - backend_secrets.keys())
+        assert not missing, (
+            f"CircleSigner.is_configured requires {sorted(required)} but the backend "
+            f"container's `secrets` block omits {missing} — the signer stays "
+            "unconfigured and every signed call raises 'Circle credentials not "
+            "configured' at runtime."
+        )
+        unlisted = sorted(required - set(REQUIRED_CIRCLE_SECRETS))
+        assert not unlisted, (
+            f"circle_signer.py now gates on {unlisted}, which this file's "
+            "REQUIRED_CIRCLE_SECRETS does not name — add them there too so the "
+            "per-secret ARN checks cover them."
+        )
+
 
 class TestTheExistingWiringSurvives:
     @pytest.mark.parametrize("secret", REQUIRED_EXISTING_SECRETS)
@@ -174,6 +285,49 @@ class TestTheExistingWiringSurvives:
             "the execution-role SSM policy is no longer a prefix wildcard — every "
             f"secret, including {list(REQUIRED_CIRCLE_SECRETS)}, must now be "
             "enumerated in its Resource list"
+        )
+
+
+class TestTheCommentsTellTheTruth:
+    """The two comments that describe the `secrets` block must describe *this* block.
+
+    Both said "all four secrets" while the block held four; both were then
+    edited into an unfalsifiable "every secret" hand-wave while the block held
+    six — and the review caught that the block was *itself* incomplete. A
+    counted, enumerated claim is checkable, so these tests check it: prose that
+    asserts a property is the same defect surface as code that does
+    (CLAUDE.md § "A guard must be shown to reject something").
+    """
+
+    # The two comment regions, by stable anchors either side of each.
+    HEADER = ("# 3. RESOLVED (2026-07-08)", "# 4. `oracle_runner`")
+    INLINE = ("# KNOWN GAP #3 (see file header)", "secrets = [")
+
+    @pytest.mark.parametrize("region", ["HEADER", "INLINE"])
+    def test_comment_enumerates_every_secret_in_the_block(self, region: str, backend_secrets: dict[str, str]) -> None:
+        text = _comment_region(*getattr(self, region))
+        unnamed = sorted(name for name in backend_secrets if name not in text)
+        assert not unnamed, (
+            f"the {region.lower()} comment describes the `secrets` block but does not "
+            f"name {unnamed}. Enumerate every entry, or the next reader trusts a list "
+            "that has silently gone stale — which is how WALLET_ID was missed."
+        )
+
+    @pytest.mark.parametrize("region", ["HEADER", "INLINE"])
+    def test_comment_states_the_real_count(self, region: str, backend_secrets: dict[str, str]) -> None:
+        text = _comment_region(*getattr(self, region))
+        actual = len(backend_secrets)
+        assert actual in COUNT_WORDS, f"{actual} secrets — extend COUNT_WORDS"
+        expected = COUNT_WORDS[actual]
+        stated = [w for w in COUNT_WORDS.values() if re.search(rf"\b{w}\b", text, re.IGNORECASE)]
+        assert stated, (
+            f"the {region.lower()} comment no longer states how many secrets the block "
+            f"has. Say '{expected}' — a counted claim is checkable, 'every secret' is not."
+        )
+        wrong = [w for w in stated if w != expected]
+        assert not wrong, (
+            f"the {region.lower()} comment says {wrong} but the block has {actual} "
+            f"entries ({sorted(backend_secrets)}). It should say '{expected}'."
         )
 
 
