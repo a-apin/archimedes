@@ -100,6 +100,14 @@ Two follow-on facts:
 **Check 2 — no.** `contracts/foundry.toml` still has only `arc-testnet`;
 `ui/src/siwe.js:15` is `VITE_ARC_CHAIN_ID ?? '5042002'`.
 
+> **Both halves have moved since (2026-08-30).** `siwe.js` was deleted whole by `95c9faf7`
+> (2026-07-28) and its env seam went with it, leaving the chain id written as a literal in
+> five files. `README.md`'s correction table briefly recorded this file as one that "has
+> never existed"; that was a working-tree grep reading a deletion as an absence, and the
+> anchor above was accurate when written. The seam is restored in `ui/src/chain-config.js`
+> (#1240 UI half), which is now the only place the id is written. `foundry.toml` still has
+> only `arc-testnet` and remains Dan's item on #1240.
+
 **Check 4 — meter ceiling.** Funnel on 2026-08-16: landed 301, wallet_connected 35,
 generation_started 22, vault_deployed 0. Versus 2026-08-10 (282/35/22/0): **+19 landings, zero
 new wallet connections, zero new generations in six days.** `/api/marketplace/published` still

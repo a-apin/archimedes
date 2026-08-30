@@ -42,7 +42,7 @@ from archimedes.api.generate_schemas import (
 )
 from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
-from archimedes.services import generation_payment
+from archimedes.services import generation_credits, generation_payment
 from archimedes.services.generation_quota import enforce_generation_quota
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
@@ -235,6 +235,83 @@ def _persist_payment_receipt(*, user_id: str, payment, job_id: str) -> None:
         )
 
 
+async def _paywall_with_credit(request: Request, linked_wallet: str, user_id: str):
+    """Run the paywall so that money taken is always money accounted for (#1441).
+
+    Returns ``(payment, credit_id)``. ``credit_id`` names the credit this run
+    spends once it is safely enqueued; ``payment`` is the settled
+    ``PaymentInfo`` only when this request is what settled it.
+
+    The ordering below is the fix. The charge used to settle and the job to be
+    enqueued afterwards, with the entitlement gate in between — so a 402 from
+    that gate, an enqueue error, or a worker crash left the money taken and
+    nothing delivered. Now the charge buys a durable credit first, and only a
+    job that actually reaches the queue spends it.
+    """
+    # An unspent credit from an earlier paid-but-undelivered run pays for this
+    # one. Checked BEFORE the paywall, so a payer whose last generation died is
+    # never asked for money twice.
+    existing = generation_credits.take_credit(user_id)
+    if existing is not None:
+        logger.info("generation covered by unspent credit %s — no new charge", existing)
+        return None, existing
+
+    if not generation_payment.settles_real_value():
+        # Flag off or dry-run: the paywall still quotes and still exercises the
+        # 402 approval flow, but no value moves. Nothing to owe and nothing to
+        # record, so the ledger stays entirely out of the way.
+        settled = await generation_payment.enforce_generation_payment(request, linked_wallet)
+        return settled, None
+
+    idempotency_key = (request.headers.get("Idempotency-Key") or "").strip() or None
+    outcome, credit_id = generation_credits.claim(user_id, idempotency_key)
+
+    if outcome == "already_settled":
+        # This key already paid and the credit is still unspent. Spend it.
+        return None, credit_id
+    if outcome == "already_consumed":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "idempotency_key_already_used",
+                "message": (
+                    "This Idempotency-Key already paid for a generation that started. "
+                    "Use a new key to start another. No second charge was taken."
+                ),
+            },
+        )
+    if outcome == "in_flight":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "payment_in_flight",
+                "message": (
+                    "A payment with this Idempotency-Key is still settling. Wait for it to "
+                    "finish rather than retrying — a retry signs a fresh authorization and "
+                    "would charge you twice."
+                ),
+            },
+        )
+
+    try:
+        settled = await generation_payment.enforce_generation_payment(request, linked_wallet)
+    except BaseException:
+        # Includes the 402 the paywall raises when no payment was presented. The
+        # claim must not outlive the attempt: a `pending` row left behind reads
+        # as `in_flight` forever and locks that key out.
+        generation_credits.void(credit_id)
+        raise
+
+    if settled is None:
+        # settles_real_value() said otherwise, so this is a configuration race
+        # rather than an expected path. No value moved; release the claim.
+        generation_credits.void(credit_id)
+        return None, None
+
+    generation_credits.settle(credit_id, settled)
+    return settled, credit_id
+
+
 @generate_public_router.get("/quote")
 async def get_generation_quote():
     """The upfront generation cost estimate — public, so a human can see the
@@ -292,6 +369,7 @@ async def start_generation(
     # that is also the ONLY case a payment receipt is persisted (below, once
     # job_id exists).
     payment = None
+    credit_id = None
     if generation_payment.payment_required():
         if not linked_wallet:
             # The wallet-connection precondition. 409 (not 402): the blocker is
@@ -310,7 +388,7 @@ async def start_generation(
                     ),
                 },
             )
-        payment = await generation_payment.enforce_generation_payment(request, linked_wallet)
+        payment, credit_id = await _paywall_with_credit(request, linked_wallet, user.id)
         if payment is not None:
             # Surface the settlement receipt (PAYMENT-RESPONSE) to the payer.
             for name, value in (payment.response_headers or {}).items():
@@ -359,6 +437,11 @@ async def start_generation(
     # enqueue succeeds, so the receipt carries a real job_id.
     if payment is not None:
         _persist_payment_receipt(user_id=user.id, payment=payment, job_id=job_id)
+
+    # The credit is spent only now, once the job is queued — that is what makes
+    # every failure before this point cost the payer nothing (#1441).
+    if credit_id is not None:
+        generation_credits.consume(credit_id, job_id=job_id)
 
     # Fire-and-forget; the SSE stream tails events. User ownership is threaded
     # from this authenticated request, never client-supplied.
@@ -432,6 +515,41 @@ async def _heartbeat_loop(job_id: str, store) -> None:
             logger.exception("heartbeat: touch failed for job %s", sanitize_log_value(job_id))
 
 
+async def _release_credit_if_undelivered(job_id: str, store) -> None:
+    """Give the credit back unless the job actually delivered (#1441).
+
+    The charge bought a credit and the enqueue spent it. If the run then died —
+    worker crash, LLM failure, a container roll, or the payer cancelling — the
+    payer holds nothing, so the credit goes back and their next generation
+    spends it instead of asking for money again.
+
+    Terminal states other than ``done`` all restore. Cancellation is included
+    deliberately: a cancelled run produced no strategy, and charging for it
+    would make the paywall a fee on trying rather than a price for delivery.
+
+    A job whose Redis record has already expired reads as undelivered, which is
+    the safe direction to be wrong in — the alternative silently keeps money for
+    a run nobody can prove finished. ``restore_credit_for_job`` only ever moves
+    a ``consumed`` credit, so a second call cannot mint a second credit.
+
+    Fail-safe: this runs in a background task's ``finally`` with nobody to
+    report to, so it logs and returns.
+    """
+    try:
+        job = await store.get(job_id)
+        status = (job or {}).get("status")
+        if status == "done":
+            return
+        if generation_credits.restore_for_job(job_id):
+            logger.warning(
+                "job %s ended as %s — generation credit restored, the payer owes nothing",
+                sanitize_log_value(job_id),
+                sanitize_log_value(str(status)),
+            )
+    except Exception:
+        logger.exception("could not evaluate credit release for job %s", sanitize_log_value(job_id))
+
+
 async def _run_with_cleanup(
     job_id: str,
     brief: GenerateBrief,
@@ -477,6 +595,7 @@ async def _run_with_cleanup(
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
+        await _release_credit_if_undelivered(job_id, store)
 
 
 @generate_router.get("/stream/{job_id}")

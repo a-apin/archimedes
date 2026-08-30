@@ -23,6 +23,52 @@ logger = logging.getLogger(__name__)
 traces_router = APIRouter(prefix="/api/traces", tags=["traces"])
 
 
+#: The trace as the on-chain registry ALONE can describe it. Same word as
+#: ``TraceVerifyResponse.verification_mode`` uses for this state (#1359).
+ANCHORED_ONLY = "anchored_only"
+
+
+def _anchored_only_trace(trace_id: str, detail: dict) -> TraceResponse:
+    """Project a registry entry with no off-chain body behind it (#1407).
+
+    Both display routes fall back to this when the off-chain store has no
+    record — or is unreachable, which this path deliberately does not
+    distinguish, because from here the two are the same fact: **nothing was
+    compared.**
+
+    What is genuinely known is that an anchor exists at this id; we just read
+    it out of the registry. That is why ``is_verified`` stays true, and why
+    flipping it false would be a different fabrication rather than a fix:
+    ``Portfolio.jsx`` renders the false branch as "anchor pending — registry
+    write didn't complete yet", which would be an invented denial of the one
+    thing this path is certain about.
+
+    What was never true is the implication that a hash was *compared*. Nothing
+    on this path re-derives or matches anything, so ``verification_mode`` says
+    ``anchored_only`` and ``arc_tx_hash`` stays ``None`` — the registry read
+    does not surface the anchoring transaction, and an absent reference must
+    render as absent rather than be invented.
+    """
+    from datetime import datetime
+
+    return TraceResponse(
+        id=trace_id,
+        vault_address=detail["vault"],
+        # "unknown", not "rebalance" (#1356): the on-chain anchor does not
+        # record which decision type produced it, so asserting "rebalance" for
+        # every trace on this path is an invented fact. "unknown" is the same
+        # default the off-chain path already uses when its data lacks the field.
+        decision_type="unknown",
+        trigger="on-chain",
+        timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
+        reasoning="On-chain trace (off-chain metadata not available)",
+        confidence=0.0,
+        trace_hash=detail["trace_hash"],
+        is_verified=True,
+        verification_mode=ANCHORED_ONLY,
+    )
+
+
 @traces_router.get("/", response_model=TraceListResponse)
 async def list_traces(
     vault_address: str | None = None,
@@ -102,27 +148,7 @@ async def list_traces(
                 if vault_address and detail["vault"].lower() != vault_address.lower():
                     continue
 
-                from datetime import datetime
-
-                traces.append(
-                    TraceResponse(
-                        id=str(trace_id),
-                        vault_address=detail["vault"],
-                        # "unknown", not "rebalance" (#1356): the on-chain
-                        # anchor does not record which decision type
-                        # produced it, so asserting "rebalance" for every
-                        # trace on this path is an invented fact. "unknown"
-                        # is the same default the off-chain path already
-                        # uses when its own data lacks the field.
-                        decision_type="unknown",
-                        trigger="on-chain",
-                        timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
-                        reasoning="On-chain trace (off-chain metadata not available)",
-                        confidence=0.0,
-                        trace_hash=detail["trace_hash"],
-                        is_verified=True,
-                    )
-                )
+                traces.append(_anchored_only_trace(str(trace_id), detail))
         except Exception:
             logger.debug("on-chain trace listing failed", exc_info=True)
 
@@ -134,8 +160,6 @@ async def list_traces(
 @traces_router.get("/{trace_id}", response_model=TraceResponse)
 async def get_trace(trace_id: str):
     """Get a single reasoning trace by ID (on-chain or off-chain hash)."""
-    from datetime import datetime
-
     from fastapi import HTTPException
 
     from archimedes.chain.trace_publisher import trace_publisher
@@ -182,20 +206,7 @@ async def get_trace(trace_id: str):
         if detail is None:
             raise HTTPException(status_code=404, detail="Trace not found")
 
-        return TraceResponse(
-            id=trace_id,
-            vault_address=detail["vault"],
-            # "unknown", not "rebalance" — see the identical note on the list
-            # route above (#1356). The on-chain anchor doesn't record which
-            # decision type produced it.
-            decision_type="unknown",
-            trigger="on-chain",
-            timestamp=datetime.fromtimestamp(detail["timestamp"], tz=UTC).isoformat(),
-            reasoning="On-chain trace (off-chain metadata not available)",
-            confidence=0.0,
-            trace_hash=detail["trace_hash"],
-            is_verified=True,
-        )
+        return _anchored_only_trace(trace_id, detail)
     finally:
         await state.close()
 
