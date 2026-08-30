@@ -15,6 +15,31 @@ const generate = readFileSync(
 	"utf8",
 );
 
+// The notice's OWN JSX, sliced out of the 1300-line component: from its
+// opening comment marker to the next sibling block. The wording anti-goals
+// below are about THIS notice's copy — asserted against the whole file they
+// would also fail on an unrelated future "refund" elsewhere in Generate.jsx
+// (a false alarm) and would pass for the wrong reason if the notice were
+// deleted outright. Same indexOf/slice idiom as
+// ui/test/payment-receipts.test.js's settlement-reference pin.
+const NOTICE_START = "Paid generation credit notice";
+const NOTICE_END = "{/* Submit row */}";
+const noticeSlice = (() => {
+	const start = generate.indexOf(NOTICE_START);
+	assert.ok(start !== -1, `notice marker ${JSON.stringify(NOTICE_START)} not found`);
+	const end = generate.indexOf(NOTICE_END, start);
+	assert.ok(end !== -1, `sibling marker ${JSON.stringify(NOTICE_END)} not found after the notice`);
+	return generate.slice(start, end);
+})();
+
+test("the sliced notice region is the real notice (guards the slice itself)", () => {
+	// Without this, an empty or misaligned slice would make every
+	// doesNotMatch below pass vacuously — the classic "guard that guards
+	// nothing" failure. Pin that the slice actually contains the copy.
+	assert.ok(noticeSlice.includes("paid generation credit"), "slice must contain the notice copy");
+	assert.ok(noticeSlice.length > 100, `slice suspiciously short (${noticeSlice.length} chars)`);
+});
+
 // ── Fetches the owner-scoped credits endpoint via the shared apiGet helper ──
 
 test("fetches GET /api/generate/credits via the shared apiGet helper, not a bare fetch", () => {
@@ -52,7 +77,27 @@ test("derives the notice from an `available` credit, not merely a non-empty list
 });
 
 test("the notice is gated on the derived unspent credit AND the dismissed flag", () => {
-	assert.match(generate, /\{unspentCredit && !creditNoticeDismissed && \(/);
+	assert.match(
+		generate,
+		/\{unspentCredit && quote\?\.payment_required && !creditNoticeDismissed && \(/,
+	);
+});
+
+test("the notice is ALSO gated on payments actually being on", () => {
+	// "no new charge" only says something true when there is a charge to
+	// avoid. With GENERATION_PAYMENT_REQUIRED off, quote.payment_required is
+	// false and nothing is charged either way — showing the banner there would
+	// claim the payer was spared a cost that never existed. The gate must read
+	// the live quote, not a constant.
+	const gate = noticeSlice.match(/\{unspentCredit[^\n]*&& \(/);
+	assert.ok(gate, "notice gate expression not found inside the notice slice");
+	assert.match(gate[0], /quote\?\.payment_required/);
+});
+
+test("the notice is an announced live region (assistive tech hears it appear)", () => {
+	// Sibling pattern: the generate-submit-status live region below it.
+	assert.match(noticeSlice, /role="status"/);
+	assert.match(noticeSlice, /aria-live="polite"/);
 });
 
 test("the notice has a working dismiss control (dismissable, per spec)", () => {
@@ -76,7 +121,10 @@ test("the notice's copy is the exact honest wording from the spec", () => {
 test("does not overclaim: never says the credit is a refund, discount, or free trial", () => {
 	// Loose but real anti-goal: this is a paid-and-banked credit being spent,
 	// not any of these other financial concepts that would misdescribe it.
-	assert.doesNotMatch(generate, /\brefund\b/i);
-	assert.doesNotMatch(generate, /\bdiscount\b/i);
-	assert.doesNotMatch(generate, /\bfree trial\b/i);
+	// Scoped to the notice's own JSX (see noticeSlice above) — an unrelated
+	// "refund" elsewhere in this 1300-line component is not this notice
+	// overclaiming, and must not fail this test.
+	assert.doesNotMatch(noticeSlice, /\brefund\b/i);
+	assert.doesNotMatch(noticeSlice, /\bdiscount\b/i);
+	assert.doesNotMatch(noticeSlice, /\bfree trial\b/i);
 });

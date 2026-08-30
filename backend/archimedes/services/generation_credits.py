@@ -28,11 +28,18 @@ from decimal import Decimal
 from archimedes.models.generation_credit import (
     claim_credit,
     consume_credit,
-    list_credits as _list_credit_rows,
     mark_credit_settled,
     restore_credit_for_job,
     take_available_credit,
     void_credit,
+)
+
+# Separate statement, not folded into the block above: ruff's isort leaves
+# combine-as-imports off (ruff.toml), so an aliased name inside a multi-name
+# from-import is an I001 violation. Aliased because this module exports its
+# own `list_credits` wrapper over the model-layer one.
+from archimedes.models.generation_credit import (
+    list_credits as _list_credit_rows,
 )
 
 logger = logging.getLogger(__name__)

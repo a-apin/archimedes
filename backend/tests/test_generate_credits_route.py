@@ -145,14 +145,18 @@ async def test_never_leaks_another_users_credit():
     """The guard this file exists to pin: the endpoint must scope to the
     CALLING user (``user.id`` from the auth dependency), not return the
     whole ledger table."""
-    _make_credit(USER_A)
-    _make_credit(USER_B)
+    a_id = _make_credit(USER_A)
+    b_id = _make_credit(USER_B)
+    assert a_id != b_id  # the fixture itself must not hand back one id twice
 
     with _as_user(USER_A):
         rows_a = (await _get_credits()).json()
     with _as_user(USER_B):
         rows_b = (await _get_credits()).json()
 
-    assert len(rows_a) == 1
-    assert len(rows_b) == 1
-    assert rows_a[0]["id"] != rows_b[0]["id"]
+    # Bind each response to the id its OWNER was issued. `rows_a[0]["id"] !=
+    # rows_b[0]["id"]` alone would also pass if the endpoint returned the whole
+    # table sliced differently per caller, or swapped the two users' rows —
+    # both of which are the exact leak this test exists to catch.
+    assert [row["id"] for row in rows_a] == [a_id]
+    assert [row["id"] for row in rows_b] == [b_id]

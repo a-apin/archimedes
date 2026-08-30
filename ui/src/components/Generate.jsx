@@ -173,9 +173,13 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// ── The caller's own generation-credit ledger (v8 Lane 1.3a) ──
 	// Surfaces what `_paywall_with_credit` already does silently server-side:
 	// an unspent ("available") credit from an earlier paid-but-undelivered
-	// run pays for the NEXT generation, no new charge (#1441). Fetched
+	// run pays for the NEXT generation, no new charge (#1441). The FETCH runs
 	// independently of GENERATION_QUOTE_ENABLED — a credit is a real balance
-	// regardless of whether the upfront quote card renders.
+	// regardless of whether the upfront quote card renders. The NOTICE below
+	// additionally needs the quote's payment_required, so with the quote flag
+	// explicitly off (it defaults on, featureFlags.js) the balance is still
+	// read but nothing is claimed about it — the honest degraded state here is
+	// silence, not an unverified "no new charge".
 	const [credits, setCredits] = useState([]);
 	const [creditNoticeDismissed, setCreditNoticeDismissed] = useState(false);
 
@@ -250,9 +254,12 @@ export default function Generate({ onNavigate, onStageChange }) {
 		};
 	}, [paymentActive, quote?.payment_required]);
 
-	// The oldest still-spendable credit, if any — mirrors the ledger's own
-	// oldest-first draining (models/generation_credit.take_available_credit),
-	// though only its PRESENCE (not which one) matters for the notice.
+	// A still-spendable credit, if any. Note the route lists NEWEST-first
+	// (models/generation_credit.list_credits orders created_at DESC) while the
+	// ledger drains OLDEST-first (take_available_credit orders created_at
+	// ASC) — so this is NOT necessarily the credit the next submit spends.
+	// That's fine: only its PRESENCE drives the notice, never its identity,
+	// and the notice must not name or price a specific credit for that reason.
 	const unspentCredit = useMemo(() => credits.find((c) => c.status === "available") ?? null, [credits]);
 
 	const quoteView = useMemo(() => deriveQuoteView(quote), [quote]);
@@ -1002,9 +1009,20 @@ export default function Generate({ onNavigate, onStageChange }) {
 					    _paywall_with_credit already spends an unspent credit
 					    silently, BEFORE the paywall even runs — this just makes
 					    that real behavior visible instead of leaving the payer
-					    to discover it only from the receipt list. */}
-					{unspentCredit && !creditNoticeDismissed && (
-						<div className="info-box mb-3 flex items-center justify-between gap-2">
+					    to discover it only from the receipt list.
+
+					    Gated on quote.payment_required as well as the credit:
+					    "no new charge" only says something true when there is a
+					    charge to avoid. With the paywall flag off there is no
+					    charge either way, and the sentence would imply the payer
+					    is being spared one — so the notice stays out of the way
+					    entirely rather than being softened into vagueness. */}
+					{unspentCredit && quote?.payment_required && !creditNoticeDismissed && (
+						<div
+							className="info-box mb-3 flex items-center justify-between gap-2"
+							role="status"
+							aria-live="polite"
+						>
 							<span>
 								You have a paid generation credit — this run will use
 								it, no new charge.
