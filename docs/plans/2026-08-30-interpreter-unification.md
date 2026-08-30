@@ -64,19 +64,68 @@ record we show, and the trade we actually place — do not all come from the sam
 Evidence key — **M** = measured on this branch (script + output in §1.9); **C** = read
 directly from the cited code; **R** = already documented in-repo.
 
+> **Sequencing note, added post-hoc 2026-08-30.** A same-day sibling branch,
+> `dbrowneup/dsl-hardening-part1` (`c9b88e2b`, "make the DSL's enum surface honest: real
+> equal_weight/inverse_vol, realized_vol, audible rejections"), is already rewriting four
+> of the five files this doc's own Appendix file map lists for Interpreter A —
+> `dsl_to_backtrader.py`, `strategy_dsl.py`, `fusion_evaluator.py`, `paper_trading.py` —
+> ahead of and independently from the Step 0–8 ratchet in §3. It was not sequenced against
+> this plan (neither branch references the other) and has not merged to `main` as of this
+> writing, so the table below still describes `main`'s current behaviour; the three rows
+> marked **in-flight** are where that sibling branch changes the picture once it lands.
+> Specifics:
+>
+> * **D11 closes, but by hand-duplication, not by the shared core this doc argues for.**
+>   The sibling adds `RealizedVolAnnualized`, a `bt.Indicator` that reproduces the live
+>   evaluator's `prices.pct_change().tail(N).std() * sqrt(252)` bit-for-bit (sample std,
+>   ddof=1) — a second, independent implementation of the same formula, not an extraction
+>   into one. It does move the parity suite's D11/F6 pin from asymmetric to pinned-equal,
+>   so it satisfies the letter of the §3 ratchet rule ("retire a divergence, move a line in
+>   the docstring") without going through `core.indicators`. Whichever step eventually
+>   extracts indicators (§2's Option (b) cost discussion, b1/b2) inherits a **third**
+>   `realized_vol` implementation to reconcile, not a second.
+> * **It adds two real sizing types Step 3 does not scope.** `equal_weight` and
+>   `inverse_vol` previously fell through to full-invest on the A side (dead enum members);
+>   the sibling gives both real behaviour — a per-slot `1/N` weight via a new
+>   `universe_slots` parameter, with `inverse_vol` scaling that slot by
+>   `reference_vol_annual / realized_vol` through the *same* `_sizing_realized_vol` helper
+>   and the *same* `_VOL_SCALE_CAP = 2.0` that `volatility_target` uses. Step 3 below was
+>   scoped as "four decisions about `volatility_target`" — window, statistic, cap, timing —
+>   before this landed. It now inherits `equal_weight`/`inverse_vol` too, since they share
+>   the exact formula D3/D4 are about.
+> * **The cap is applied to the scale factor, not to the final weight — "clamping scale
+>   pre-slot."** `inverse_vol`'s multiplier (`reference_vol / realized_vol`, capped at
+>   2.0×) is computed and clamped *before* it is multiplied into the per-slot weight, so a
+>   small slot (say 1/10th of the universe) times a capped 2.0× can still land well under
+>   1.0 while a near-full slot at the same cap can approach or exceed it. Whether the cap
+>   should instead bound the *final* target weight is a live-side design question, not
+>   answered by the A-side code alone.
+> * **Timing inherits D4 unexamined.** `inverse_vol`, like `volatility_target`, is only
+>   reachable from `_enter_position()`'s not-in-market branch — sized once at entry, frozen
+>   until exit. The D4 call ("entry-only vs per-decision-bar", Step 3) now has to be made
+>   for `inverse_vol` too, and there is no live-side twin yet to compare against: as of this
+>   commit `strategy_signal_evaluator.py` still treats `equal_weight` and `inverse_vol` as
+>   plain full-exposure-when-in-market (`:1361-1362`, "inverse_vol cross-asset sizing is an
+>   aggregation concern"). The sibling's own commit message flags a live-side sizing-parity
+>   change as a possible follow-up without committing to one — genuinely open, not settled.
+>
+> None of this changes the recommendation in §2 or the step ordering in §3; it changes what
+> "done" means for Step 3 once that sibling branch merges, and it means D3/D4/D11 below are
+> mid-flight rather than static facts about `main`.
+
 | # | Divergence | A | B | Pinned? | Ev |
 |---|---|---|---|---|---|
 | D1 | Transaction costs | 10 bps commission + 5 bps slippage on every fill | **none at all** | no | C |
 | D2 | Execution timing | order on bar *t*, fill at *t+1* open | target weight *as of bar t*, acted on same tick | test-local fudge | C/R |
-| D3 | Vol-target formula | 20-bar **RMS** of returns, cap **2.0×** | 22-bar **sample stdev**, cap **1.0×** | "deliberately out" | C |
-| D4 | Vol-target *timing* | sized **once at entry**, frozen until exit | **recomputed every decision bar** | **no** | **M** |
+| D3 | Vol-target formula | 20-bar **RMS** of returns, cap **2.0×** | 22-bar **sample stdev**, cap **1.0×** | "deliberately out" · **in-flight, scope widened** | C |
+| D4 | Vol-target *timing* | sized **once at entry**, frozen until exit | **recomputed every decision bar** | **no** · **in-flight, scope widened** | **M** |
 | D5 | Exposure & rounding | `int(cash × 0.99 / price)` — 1% drag + floor | `weight = 1.0` exactly | no | C |
 | D6 | OHLV operands | real `open/high/low/volume` from the feed | **`open=high=low=close`, `volume=0.0`** | **no** | **M** |
 | D7 | Missing data | fail-closed (`PaperReplayError`); NaN poisons bt indicators | fail-soft: gaps compressed, empty tickers dropped silently | no | C |
 | D8 | Portfolio construction | independent dollar sleeves, equity-weighted | cross-strategy vote average, renormalised to `1 − usdc_floor` | no | C |
 | D9 | Cadence **phase anchor** | first post-warm-up bar of a **fixed** window | first post-warm-up bar of a **rolling 2y** window → phase drifts 1 bar/day | known limit | R |
 | D10 | Position membership | sees the true entry bar | entry older than the window's left edge is invisible | known limit | R |
-| D11 | `realized_vol` | **raises `DSLError`** | computes | pinned asymmetric | R |
+| D11 | `realized_vol` | **raises `DSLError`** | computes | pinned asymmetric · **in-flight, closing by duplication** | R |
 | D12 | EMA seeding | SMA seed | first-value `ewm` seed | pinned convergent | R |
 | D13 | Spec-less strategies | no counterpart | `_get_evaluator` → **always-long buy-and-hold** | no | C |
 | D14 | Variant grid | `interpret_variant` expands a parameter grid | no twin — base spec only | no | C |
@@ -401,12 +450,15 @@ the ledger, *will* change graded numbers.
 | 0 | **S** | Give the ratchet teeth | — | no |
 | 1 | **S** | Close the OHLV hole | D6 | no |
 | 2 | **M** | Extract `core.fsm` | two FSMs | no |
-| 3 | **M** | Extract `core.sizing` | D3, D4 | **yes** |
+| 3 | **M** | Extract `core.sizing` | D3, D4 † | **yes** |
 | 4 | **M** | Declare the execution model | D2, D5 | no |
 | 5 | **S** | Close the spec-less / variant gaps | D13, D14 | no |
 | 6 | **L** | Reconcile portfolio construction | D8 | **yes** |
 | 7 | **L** | Cost model on the live side (or disclose) | D1 | no (discloses) |
 | 8 | **L** | Anchor the window at inception | D9, D10, part of D7 | **yes** |
+
+† scope widened post-hoc by an in-flight sibling branch — see the sequencing note in §1
+and the in-flight note under Step 3 below.
 
 ### Step 0 (S) — make the inventory executable
 
@@ -463,6 +515,17 @@ explicitly and recorded in this doc when they are:
 3. cap: 2.0× (leverage) or 1.0× (no leverage)
 4. **timing: entry-only (A) or per-decision-bar (B)** ← the D4 call, and the one with the
    largest effect
+
+**In-flight scope note (see the sequencing note in §1).** These four decisions were scoped
+against `volatility_target` alone. `dbrowneup/dsl-hardening-part1` (not merged to `main` as
+of this writing) gives `equal_weight` and `inverse_vol` real per-slot behaviour on the A
+side, and `inverse_vol` reuses this exact sizing formula and cap. If that branch lands
+before this step is executed, `target_exposure` must cover every sizing type that shares
+the realized-vol/cap math — `volatility_target` and `inverse_vol`, not just the one this
+step was originally scoped against — and the live-side twin for `equal_weight`/`inverse_vol`
+does not exist yet (`strategy_signal_evaluator.py:1361-1362` still treats both as plain
+full-exposure-when-in-market), so "Retires D3, D4" in the table above is optimistic until
+that twin is written too.
 
 Recommendation: **22-bar sample stdev, cap 1.0×, per-decision-bar.** Rationale — sample
 stdev is the standard estimator and matches `_vol_managed_signal`'s published lineage
@@ -534,11 +597,16 @@ should be a measurement and not an assumption.
 
 ## 4. How the intraday-marks design rides the unified core
 
-`docs/plans/2026-08-30-intraday-paper-trading.md` **did not exist in this branch at the
-time of writing** (checked at `docs/plans/` immediately before commit; the directory held
-six files, none of them intraday). The following is therefore the *interface contract*
-this plan commits to on that design's behalf, derived from the code, and must be
-reconciled with the sibling doc when it lands.
+**Correction, 2026-08-30 (post-hoc).** This section originally claimed
+`docs/plans/2026-08-30-intraday-paper-trading.md` "did not exist in this branch at the
+time of writing." That was true of this branch's own tree — it forked from `58e337dc`,
+before the sibling doc landed — but false as a claim about the project: the sibling doc
+merged to `main` at `d15afbe1` (2026-08-30 15:22:41), **eleven minutes before** this
+plan's own commit (`797877be`, 15:33:43). It existed the whole time; this branch was
+simply stale against `main`, and the "checked at `docs/plans/`" verification checked the
+wrong tree. The contract below was therefore written blind rather than derived from the
+actual design. It is corrected below, and §4.1 cross-references the two documents now
+that the sibling's 673 lines are available to read.
 
 **The one thing that must not happen.** Today, decision cadence and mark cadence are the
 same object: `_replay_position_state` iterates one series and both *decides* on a bar and
@@ -578,6 +646,31 @@ Under option (b) all five fall out of the architecture: `core.fsm` is fed the de
 series, `core.execution` names the cost treatment, and the mark path is a new consumer of
 the core rather than a new *interpreter* of the DSL. Under option (a) or (c) the intraday
 path would be a third interpreter, and this document would be written again in six months.
+
+### 4.1 Cross-reference against the landed sibling doc
+
+Checked against the actual 673-line document rather than assumed. It was written without
+reference to this one — neither cites the other — and independently arrived at compatible
+content for four of the five contract points above:
+
+| This doc's rule | Sibling doc's actual v1 design | Compatible? |
+|---|---|---|
+| **1.** Two series, named separately — `core.fsm.step` consumes only the decision series | v1 marks a *cached position set* from the daily `replay_spec`; the marks loop "does **not** call `run_dsl_backtest`, does **not** call `_eval_condition`, and does **not** consult `rebalance_frequency`" (sibling §4.1) | **yes** |
+| **2.** `rebalance_period_bars` stays denominated in decision bars forever | Sibling §1.3 "Landmine 1" independently names the identical bar-vs-calendar-time hazard in `_REBALANCE_PERIOD_BARS` and defers touching it to a v2 ADR | **yes** |
+| **3.** An intraday mark is not a `PaperDailyReturn` — a separate table, never a superseding row | New `paper_marks` table (sibling §3.1), its own docstring says "**NOT the track record**"; `paper_daily_returns` stays append-only, untouched | **yes** |
+| **4.** Intraday marks must not enter drift detection | Sibling §4.3: "`replay_spec`, the ledger append-only law, and drift detection are untouched." True by construction — the marks loop has no write path into `advance_deployment` — but not stated as an explicit rule the way this doc states it | **yes, by construction** |
+| **5.** The mark path must state its cost treatment | Handled as *staleness* honesty only (`is_delayed`, sibling §2.4) — nothing in the sibling's five honesty rules says a mark is gross of the trade cost a same-day rebalance would incur | **gap — not reconciled** |
+
+Four of five needed no reconciliation because the sibling doc reached the same place on its
+own evidence, independently, from the code rather than from this document. The fifth is a
+real gap: `is_delayed` answers *when* a price was observed, not *whether the number shown
+already prices in costs it hasn't charged yet* — the same gross/net ambiguity §5.3 below
+flags between the graded curve and the live vault, now with a third quantity (the intraday
+mark) in the confusable set. Concretely: the sibling doc's ledger-card copy (`paperCopy.js`,
+its §5.1) should read something like "unsettled — gross of any trade this position would
+trigger" beside the as-of time, not just "delayed." File this as review feedback on that
+design's implementing issue when one exists (its own §7 notes none does yet); it does not
+block either doc today.
 
 ---
 
