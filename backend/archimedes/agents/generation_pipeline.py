@@ -255,6 +255,14 @@ class _CandidateResult:
     # vector. None on the fixture/buy-and-hold-weights path (there is no DSL
     # spec to carry — it re-derives its universe from ``weights`` instead).
     strategy_spec: dict[str, Any] | None = None
+    # The society's own bull/bear debate transcript (debate path only —
+    # ``_run_debate_leaderboard`` stamps the SAME transcript object onto every
+    # leaderboard entry it returns, winner and alternates alike, since the
+    # debate runs once over the whole pool before C-null picks a winner).
+    # ``None`` on every non-debate path (fusion, fixture, single-agent) — there
+    # is no debate on those paths, so there is nothing to attach. Read by
+    # ``_persist_debate_transcripts`` below; never touches ``_HASH_FIELDS``.
+    debate_transcript: list[dict[str, Any]] | None = None
 
 
 def _is_deployable(c: _CandidateResult) -> bool:
@@ -789,6 +797,59 @@ async def _persist_generation_cost(
         logger.warning("cost record: durable persist failed for job %s (non-blocking)", job_id, exc_info=True)
 
 
+async def _persist_debate_transcripts(
+    *,
+    job_id: str,
+    candidates: list[_CandidateResult],
+    strategy_ids: dict[str, str],
+) -> None:
+    """Persist each candidate's debate transcript, keyed to (generation, candidate).
+
+    Every leaderboard entry a debate run produces carries the SAME transcript
+    (``_run_debate_leaderboard`` stamps it onto every entry it returns, since
+    the debate runs once over the whole pool before C-null picks a winner) —
+    so a single pass over ``candidates`` here persists it for the K=1 winner
+    (with its real ``strategy_id`` from ``strategy_ids``) AND every
+    final-round loser (``strategy_id=None`` — losers are never threaded into
+    ``strategy_store``; see ``_persist_candidate``'s K=1 docstring), entirely
+    from data already collected by the time this is called. Non-debate
+    candidates (fusion, fixture, single-agent) carry ``debate_transcript=None``
+    and are skipped — there is nothing to persist for them.
+
+    Best-effort, like the sibling :func:`_persist_generation_cost`: this runs
+    after the winner's strategy row already landed, so a failure here must
+    never fail (or retroactively un-succeed) a generation that already
+    succeeded.
+    """
+    to_write = [c for c in candidates if c.debate_transcript]
+    if not to_write:
+        return
+
+    def _write() -> int:
+        from archimedes.db import get_session
+        from archimedes.models.debate_transcript import record_debate_transcript
+
+        written = 0
+        with get_session() as session:
+            for c in to_write:
+                record_debate_transcript(
+                    session,
+                    strategy_id=strategy_ids.get(c.candidate_id),
+                    generation_id=job_id,
+                    candidate_id=c.candidate_id,
+                    transcript=c.debate_transcript,
+                )
+                written += 1
+            session.commit()
+        return written
+
+    try:
+        count = await asyncio.to_thread(_write)
+        logger.info("debate transcript: persisted %d row(s) for job %s", count, job_id)
+    except (Exception, asyncio.CancelledError):
+        logger.warning("debate transcript: persist failed for job %s (non-blocking)", job_id, exc_info=True)
+
+
 async def run_generation(
     *,
     job_id: str,
@@ -1271,6 +1332,12 @@ async def run_generation(
                 meter.record_write("strategy_proposals")
         except Exception:
             pass  # Non-blocking per spec
+
+        # Debate transcript capture: persist each candidate's bull/bear debate
+        # transcript (winner + final-round losers) — see
+        # _persist_debate_transcripts's docstring for why one pass over
+        # `candidates` covers both. No-op on every non-debate path.
+        await _persist_debate_transcripts(job_id=job_id, candidates=candidates, strategy_ids=strategy_ids)
 
         # Stash the full candidate list on the job for /candidates retrieval.
         # update_terminal_status (not update_status): a Cancel request can flip

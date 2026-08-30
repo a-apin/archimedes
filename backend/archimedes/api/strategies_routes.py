@@ -2253,6 +2253,60 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     )
 
 
+@strategies_router.get("/{strategy_id}/debate")
+async def get_strategy_debate(strategy_id: str, request: Request):
+    """Return the persisted bull/bear debate transcript for a generated strategy.
+
+    Response shape: ``{strategy_id, generation_id, candidate_id, created_at,
+    transcript: [{role, round, verdict, claims}, ...]}``.
+
+    Auth mirrors ``GET /api/strategies/{id}/returns`` and the plain detail
+    route exactly: curated strategies are always public; a generated
+    strategy's transcript is 404 unless the caller owns the row (existence
+    stays hidden either way — never a 403).
+
+    404 with ``{"detail": "no debate transcript"}`` when the strategy exists
+    and is visible but no transcript was ever persisted for it — every
+    strategy generated before this table existed, every curated strategy
+    (the debate society never ran for those), and any run whose debate step
+    genuinely produced nothing (no LLM backend reachable). Never fabricates a
+    transcript.
+    """
+    from fastapi import HTTPException
+
+    from archimedes.db import get_session
+
+    # ── 1. Existence + ownership gate (mirrors get_strategy / get_strategy_returns) ──
+    strat = strategy_provider().get_strategy(strategy_id)
+    is_curated = strat is not None
+
+    if not is_curated:
+        from archimedes.api.auth_siwe import get_verified_wallet
+        from archimedes.models.strategy_store import StrategyRecord
+        from archimedes.services.strategy_visibility import is_strategy_visible
+
+        with get_session() as session:
+            row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+            caller = get_verified_wallet(request)
+            user = get_current_user(request)
+            if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
+                raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # ── 2. Load the persisted transcript ──────────────────────────────────
+    from archimedes.models.debate_transcript import debate_transcript_for_strategy
+
+    try:
+        with get_session() as session:
+            payload = debate_transcript_for_strategy(session, strategy_id)
+    except Exception as exc:
+        logger.warning("debate endpoint DB read failed for %s: %s", strategy_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load debate transcript") from exc
+
+    if payload is None:
+        raise HTTPException(status_code=404, detail="no debate transcript")
+    return payload
+
+
 @strategies_router.get("/{strategy_id}", response_model=StrategyResponse)
 async def get_strategy(strategy_id: str, request: Request):
     """Get a single strategy by ID. Tries LocalStrategyProvider (curated)
