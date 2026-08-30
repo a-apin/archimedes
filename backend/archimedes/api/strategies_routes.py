@@ -665,13 +665,27 @@ async def list_generated_strategies(
             from archimedes.models.generation_cost import generation_costs_for_strategies
 
             costs = generation_costs_for_strategies(session, [r.id for r in records])
-            rows = []
+            page = []
             for r in records:
                 d = r.to_dict()
                 d["can_publish"] = bool(caller) and wallet_can_publish(
                     session, strategy_id=r.id, wallet_address=caller, is_example=False
                 )
                 d["generation_cost"] = costs.get(r.id)
+                page.append(d)
+            # Citation truth: ``StrategyRecord.to_dict()`` returns source_papers
+            # exactly as stored — arxiv_id, no title — so the Library card had no
+            # real paper title to print and printed the generated strategy's own
+            # name in the cited-paper column. Resolve real titles here, against
+            # the SAME papers table the passport path reads, in ONE query for the
+            # whole page (see _corpus_paper_meta) rather than one per row.
+            corpus_meta = _corpus_paper_meta(
+                [p.get("arxiv_id") for d in page for p in (d.get("source_papers") or []) if isinstance(p, dict)],
+                session,
+            )
+            rows = []
+            for d in page:
+                d["source_papers"] = _resolve_source_papers(d.get("source_papers"), corpus_meta)
                 rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
         # Full exception detail is logged server-side only — never echoed to
@@ -1761,6 +1775,44 @@ async def get_strategy_passport(request: Request, strategy_id: str):
         return _redact_owner_wallet(record.to_dict(), caller)
 
 
+def _year_from_published(published: str | None) -> int | None:
+    """Publication year from a corpus ``published`` stamp, or None.
+
+    ``PaperRecord.published`` is a free-form arXiv date string ("2019",
+    "2019-03-11", "2019-03-11T00:00:00Z"). Only a leading 4-digit year is
+    trusted; anything else yields None, because a guessed year on a citation
+    is the same class of lie as a guessed title.
+    """
+    head = (published or "").strip()[:4]
+    if len(head) == 4 and head.isdigit():
+        return int(head)
+    return None
+
+
+def _corpus_paper_meta(arxiv_ids: list[str | None], session) -> dict[str, dict]:
+    """Batch-resolve arXiv ids → ``{"title": str, "year": int | None}`` from the corpus.
+
+    ONE query for every id handed in — callers pass a whole page's ids at once,
+    never one call per row. Non-fatal by design: any DB error returns an empty
+    map so the caller degrades to its own honest "unresolved" rendering rather
+    than failing a list read over a decoration.
+
+    This is the single papers-table lookup shared by the passport path
+    (:func:`_enrich_paper_titles_from_corpus`) and the generated-strategy list
+    route, so both resolve a citation the same way.
+    """
+    ids = [i for i in dict.fromkeys(arxiv_ids) if i]
+    if not ids:
+        return {}
+    try:
+        from archimedes.models.corpus_store import PaperRecord
+
+        rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(ids)).all()
+    except Exception:
+        return {}
+    return {row.arxiv_id: {"title": row.title, "year": _year_from_published(row.published)} for row in rows}
+
+
 def _enrich_paper_titles_from_corpus(
     refs: list,
     session,
@@ -1775,13 +1827,38 @@ def _enrich_paper_titles_from_corpus(
     missing_ids = list(dict.fromkeys(r.arxiv_id for r in refs if r.arxiv_id and not (r.title or "").strip()))
     if not missing_ids:
         return {}
-    try:
-        from archimedes.models.corpus_store import PaperRecord
+    meta = _corpus_paper_meta(missing_ids, session)
+    return {arxiv_id: m["title"] for arxiv_id, m in meta.items() if m["title"]}
 
-        rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(missing_ids)).all()
-        return {row.arxiv_id: row.title for row in rows if row.title}
-    except Exception:
-        return {}
+
+def _resolve_source_papers(source_papers, corpus_meta: dict[str, dict]) -> list[dict]:
+    """Stamp each generated-row citation with a RESOLVED paper title and year.
+
+    ``StrategyRecord.source_papers`` entries carry an ``arxiv_id`` but usually
+    no ``title``, so the Library card had nothing real to print and printed the
+    generated STRATEGY NAME in the cited-paper column instead — a fabricated
+    citation. Resolution order matches the passport's ``_resolved_title``:
+    stored title wins, the corpus fills a blank one, and when neither has one
+    ``resolved_title`` stays **None**. None is the honest answer; the frontend
+    renders it as "title unavailable — arXiv:<id>", never as the strategy name.
+
+    ``resolved_year`` is the CITED PAPER's publication year, which is not the
+    row's ``created_at`` — that is when the strategy was generated.
+    """
+    resolved: list[dict] = []
+    for paper in source_papers or []:
+        if not isinstance(paper, dict):
+            continue
+        entry = dict(paper)
+        arxiv_id = (entry.get("arxiv_id") or "").strip()
+        meta = corpus_meta.get(arxiv_id) or {}
+        stored_title = (entry.get("title") or "").strip()
+        corpus_title = (meta.get("title") or "").strip()
+        entry["resolved_title"] = stored_title or corpus_title or None
+        stored_year = entry.get("year")
+        entry["resolved_year"] = stored_year if isinstance(stored_year, int) else meta.get("year")
+        resolved.append(entry)
+    return resolved
 
 
 def _generation_cost_for(strategy_id: str, session) -> dict | None:
