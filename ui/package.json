@@ -39,7 +39,7 @@
     "eslint-plugin-react-refresh": "^0.5.4",
     "globals": "^17.9.0",
     "sass-embedded": "^1.102.0",
-    "unocss": "^66.7.5",
+    "unocss": "^66.8.1",
     "vite": "^8.2.1"
   }
 }
