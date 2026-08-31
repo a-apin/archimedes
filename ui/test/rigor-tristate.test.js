@@ -128,8 +128,11 @@ test("DeployabilityChip's degenerate branch precedes blocked_by_floor and claims
 	// And must NOT borrow pending's sentence: a degenerate row HAS persisted
 	// returns (they are flat), so "no backtest data" is a fresh false claim.
 	assert.doesNotMatch(branch, /no backtest data/);
-	// It must still say what IS true, in the same words chat_service.py:395
-	// already uses for this state.
+	// It must still say what IS true, in the same words
+	// agents/portfolio_agent.py `_format_strategies` already uses for this
+	// state. (The citation was chat_service.py:395 until the vault-chat
+	// surface was deleted; the wording itself is unchanged and still lives in
+	// the status map that survived.)
 	assert.match(branch, /zero-variance/);
 	assert.match(branch, /not a real evaluation/);
 });
