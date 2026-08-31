@@ -220,3 +220,246 @@ class TestCatalogSearchOnUnprocessedCorpus:
             papers_routes.list_papers(page=1, page_size=20, category="q-fin.PM", search=None, processed_only=True)
         )
         assert result["total"] == 1
+
+
+def _seed_author_fixture(session):
+    """A corpus slice where author names and prose deliberately do not overlap.
+
+    Every title/abstract here is neutral filler: no row contains the string
+    "Harvey" (or any other surname) anywhere except in its `authors` column, so
+    a hit can only have come from the author leg of the predicate. That is what
+    makes `test_author_only_match_is_returned` fail when the author leg is
+    removed rather than passing for an incidental prose reason.
+    """
+    _add_paper(
+        session,
+        "2601.20001",
+        authors=["Campbell R. Harvey", "Yan Liu"],
+        title="A neutral title about factor construction",
+        abstract="A neutral abstract about factor construction.",
+    )
+    _add_paper(
+        session,
+        "2601.20002",
+        authors=["Marcos Lopez de Prado"],
+        title="Backtest overfitting under multiple testing",
+        abstract="Deflated performance statistics for repeated trials.",
+    )
+    _add_paper(
+        session,
+        "2601.20003",
+        authors=["Ada Lovelace"],
+        title="Cross-sectional momentum in equities",
+        abstract="Momentum sorted portfolios across a broad universe.",
+    )
+    session.commit()
+
+
+class TestAuthorSearch:
+    """Author matching — issue #1451 item 1.
+
+    `PaperRecord.authors` is populated but was never part of the search
+    predicate, so searching a researcher's name returned only the papers that
+    happened to mention that name in the title or abstract. On the real corpus
+    that is close to zero: authors are cited by name in *other* people's
+    abstracts far more often than in their own.
+    """
+
+    def test_author_only_match_is_returned(self, session, monkeypatch):
+        """THE REGRESSION: a paper whose AUTHOR matches but whose title and
+        abstract do not contain the term must be returned."""
+        from archimedes.api import papers_routes
+
+        _seed_author_fixture(session)
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="Harvey", processed_only=True)
+        )
+
+        assert result["total"] == 1, "author search returned nothing — the author leg is missing"
+        hit = result["papers"][0]
+        assert hit["arxiv_id"] == "2601.20001"
+        assert "Campbell R. Harvey" in hit["authors"]
+        # Proof the hit came from the author leg and not from prose.
+        assert "harvey" not in hit["title"].lower()
+        assert "harvey" not in hit["abstract"].lower()
+
+    def test_author_search_is_case_insensitive(self, session, monkeypatch):
+        """ilike, not like — "lopez" must find "Lopez"."""
+        from archimedes.api import papers_routes
+
+        _seed_author_fixture(session)
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="lopez", processed_only=True)
+        )
+        assert result["total"] == 1
+        assert result["papers"][0]["arxiv_id"] == "2601.20002"
+
+    def test_title_and_abstract_legs_are_unchanged(self, session, monkeypatch):
+        """The author leg is additive: prose matching still behaves as before."""
+        from archimedes.api import papers_routes
+
+        _seed_author_fixture(session)
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="momentum", processed_only=True)
+        )
+        assert result["total"] == 1
+        assert result["papers"][0]["arxiv_id"] == "2601.20003"
+
+    def test_author_search_still_discriminates(self, session, monkeypatch):
+        """A name nobody in the fixture carries returns nothing."""
+        from archimedes.api import papers_routes
+
+        _seed_author_fixture(session)
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="Zzzznobody", processed_only=True)
+        )
+        assert result["total"] == 0
+
+
+class TestAuthorLegGuard:
+    """The author leg must reject the terms that would make it match everything.
+
+    `authors` is serialised JSON, so a bare substring over it can match the
+    serialisation instead of a name. Two classes of term do that; both are
+    rejected before the leg is added to the predicate, while title/abstract
+    matching for the same term is left untouched.
+    """
+
+    @pytest.mark.parametrize("term", ["a", "Li", " a ", ""])
+    def test_short_terms_do_not_reach_the_author_leg(self, term):
+        from archimedes.api import papers_routes
+
+        assert papers_routes._author_search_pattern(term) is None
+
+    @pytest.mark.parametrize("term", ['", "', '["', '"]', "], [", "Harvey\\", '{"a"'])
+    def test_json_structural_terms_do_not_reach_the_author_leg(self, term):
+        from archimedes.api import papers_routes
+
+        assert papers_routes._author_search_pattern(term) is None
+
+    def test_a_real_name_does_reach_the_author_leg(self):
+        """Anti-vacuity: the guard must still let a genuine name through, or it
+        is rejecting everything rather than rejecting the bad cases."""
+        from archimedes.api import papers_routes
+
+        assert papers_routes._author_search_pattern("Harvey") == "%Harvey%"
+        assert papers_routes._author_search_pattern("  Lopez de Prado  ") == "%Lopez de Prado%"
+
+    def test_like_wildcards_in_an_accepted_term_are_escaped(self):
+        """A literal '%' must search for a percent sign, not match every row."""
+        from archimedes.api import papers_routes
+
+        assert papers_routes._author_search_pattern("a%b") == r"%a\%b%"
+        assert papers_routes._author_search_pattern("a_b") == r"%a\_b%"
+
+    def test_single_char_query_does_not_return_the_whole_corpus(self, session, monkeypatch):
+        """End-to-end form of the anti-goal (#1451: "do NOT make the author leg
+        match on a 1-2 character query").
+
+        Both rows carry an "a" in their author names and no "a" anywhere in
+        title or abstract, so an unguarded author leg returns the whole corpus
+        for a one-letter query and a guarded one returns nothing.
+        """
+        from archimedes.api import papers_routes
+
+        _add_paper(session, "2601.30001", authors=["Ada Lovelace"], title="Nine", abstract="Nine.")
+        _add_paper(session, "2601.30002", authors=["Alan Turing"], title="Ten", abstract="Ten.")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="a", processed_only=True)
+        )
+        assert result["total"] == 0, "a one-character query reached the author leg and matched every row"
+
+    def test_structural_query_does_not_return_the_whole_corpus(self, session, monkeypatch):
+        """`", "` is the separator between every pair of serialised authors."""
+        from archimedes.api import papers_routes
+
+        _add_paper(session, "2601.30003", authors=["Ada Lovelace", "Alan Turing"], title="Zeta", abstract="Zeta.")
+        _add_paper(session, "2601.30004", authors=["Grace Hopper", "Jean Bartik"], title="Eta", abstract="Eta.")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search='", "', processed_only=True)
+        )
+        assert result["total"] == 0, "a JSON-structural term matched the serialisation of every author list"
+
+
+class TestAuthorLegGuardIsScopedToTheAuthorLeg:
+    """The guard must reject a term *for the author leg only*.
+
+    `_author_search_pattern` returning ``None`` means "do not add the author
+    leg", never "do not search". A guard applied one level too high — dropping
+    the whole predicate, or short-circuiting the `if search:` block — would
+    satisfy every test in :class:`TestAuthorLegGuard` while silently killing
+    prose search for short and punctuated terms.
+
+    That property was asserted in a code comment and in the PR description but
+    nothing enforced it: `TestAuthorSearch.test_title_and_abstract_legs_are_unchanged`
+    only searches "momentum", a 7-character term the guard never rejects, so it
+    passes either way. These two tests use terms the guard *does* reject.
+    """
+
+    def test_a_short_term_still_searches_title_and_abstract(self, session, monkeypatch):
+        """A 2-character term is refused by the author leg but must still match prose.
+
+        Real cost if this regresses: short surnames ("Xu", "Ho") and tickers
+        stop matching titles they literally appear in.
+        """
+        from archimedes.api import papers_routes
+
+        # "Xu" is in the TITLE of one row and in nobody's author list, so only
+        # the title leg can produce this hit.
+        _add_paper(session, "2601.50001", authors=["Ada Lovelace"], title="Xu estimator revisited", abstract="Zeta.")
+        _add_paper(session, "2601.50002", authors=["Alan Turing"], title="Unrelated work", abstract="Zeta.")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="Xu", processed_only=True)
+        )
+        assert result["total"] == 1, "the minimum-length guard leaked out of the author leg and broke prose search"
+        assert result["papers"][0]["arxiv_id"] == "2601.50001"
+
+    def test_a_structural_term_still_searches_title_and_abstract(self, session, monkeypatch):
+        """A comma is a JSON structural character, and also ordinary prose.
+
+        "Lopez de Prado, M. (2018)" is how an abstract cites a paper, so a
+        comma-bearing term is a real query — the author leg skips it (correctly:
+        a bare comma is a substring of every multi-author serialisation) while
+        the abstract leg must still find it.
+        """
+        from archimedes.api import papers_routes
+
+        _add_paper(
+            session,
+            "2601.50003",
+            authors=["Ada Lovelace"],
+            title="Zeta",
+            abstract="Following Lopez de Prado, M. (2018) we deflate the Sharpe ratio.",
+        )
+        _add_paper(session, "2601.50004", authors=["Alan Turing"], title="Eta", abstract="Unrelated.")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        assert papers_routes._author_search_pattern("Prado, M") is None, (
+            "precondition: the author leg refuses this term"
+        )
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="Prado, M", processed_only=True)
+        )
+        assert result["total"] == 1, (
+            "the structural-character guard leaked out of the author leg and broke prose search"
+        )
+        assert result["papers"][0]["arxiv_id"] == "2601.50003"
