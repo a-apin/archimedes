@@ -414,6 +414,16 @@ def _render_verify(body: dict) -> None:
         if reason:
             line += f" — {reason}"
         click.echo(line)
+    # #1409 round-4 review fix: the response has carried `rf_convention` since
+    # this endpoint was wired to thread per-bar dates through (round 3), but
+    # the default human-readable rendering never printed it — the DSR/OOS
+    # numbers above were computed against ONE of two materially different
+    # risk-free-rate conventions and the CLI user reading this output had no
+    # way to tell which. `--json` always carried it (the raw response body is
+    # echoed verbatim); this brings the human-readable path to parity.
+    rf_convention = body.get("rf_convention")
+    if rf_convention:
+        click.echo(f"rf_convention={rf_convention}")
 
     evaluated, runnable = body.get("legs_evaluated"), body.get("legs_runnable")
     total = body.get("legs_total")

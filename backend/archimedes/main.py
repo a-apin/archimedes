@@ -989,6 +989,53 @@ async def health(response: Response):
     except Exception:
         logger.debug("kb artifact probe failed", exc_info=True)
 
+    # Reveal-reconciliation observability (issue #1353, hardening #1352's
+    # audit-G9 pass). Both counts come off the durable index (SCARD is O(1),
+    # not a scan). Fail-safe like every other Redis-backed field on this
+    # endpoint: a Redis outage reports 0 rather than 500ing the whole health
+    # check.
+    #
+    # HOW TO READ "terminal" (#1403 review): it is a CUMULATIVE lifetime
+    # counter, not a level. Members are never removed from the terminal set,
+    # so the number only ever goes up for the life of the Redis keyspace and
+    # one historical give-up pins it above zero permanently. Watch the RATE OF
+    # INCREASE between samples; a static threshold on the value would fire once
+    # and stay fired. "pending" is the true level gauge — it goes up and down
+    # as commitments dangle and resolve.
+    #
+    # WHAT IS AND ISN'T WIRED (#1403 review): this publishes the SURFACE only.
+    # No alerting consumes these two fields — infra/cloudwatch.tf has no metric
+    # filter and no alarm over them, and unlike the HEALTH_CHAIN_DISCONNECTED
+    # and HEALTH_ORACLE_STALE literals this same handler logs elsewhere,
+    # nothing here emits a greppable literal a metric filter could key on
+    # (those two are the repo's only working log-literal ->
+    # aws_cloudwatch_log_metric_filter -> alarm pairs). Calling either field
+    # "alertable" would overstate what exists today: they are readable, not
+    # paging.
+    #
+    # MIGRATION CAVEAT (#1403 review): ``reveal_reconcile_pending`` under-counts
+    # any dangling record written before this index existed and not yet
+    # re-saved through the new ``save_trace`` path — it is SCARD of a set only
+    # that path populates, so a pre-index dangling record is invisible here
+    # until something re-saves it (the reconciliation pass's own retry does
+    # this the first time it touches one, same one-cycle migration window the
+    # bounded-scan backstop covers). This gauge can therefore read 0 at deploy
+    # time while real dangling reveals are outstanding; it becomes accurate
+    # once every pre-existing dangling record has been touched once.
+    reveal_reconcile_pending = 0
+    reveal_reconcile_terminal = 0
+    try:
+        from archimedes.services.redis_state import AgentStateStore
+
+        _reconcile_store = AgentStateStore()
+        try:
+            reveal_reconcile_pending = await _reconcile_store.get_reveal_reconcile_pending_count()
+            reveal_reconcile_terminal = await _reconcile_store.get_reveal_reconcile_terminal_count()
+        finally:
+            await _reconcile_store.close()
+    except Exception:
+        logger.debug("reveal reconciliation counts read failed", exc_info=True)
+
     return {
         "status": "ok" if connected else "degraded",
         "service": "archimedes-backend",
@@ -1046,6 +1093,13 @@ async def health(response: Response):
         # Strategy-library presence (issue #1039) — 0 means the image is missing
         # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
         "strategy_count": strategy_count,
+        # Reveal-reconciliation gauges (issue #1353). "pending" = a level:
+        # commitments currently dangling and awaiting a retry, up and down.
+        # "terminal" = a CUMULATIVE lifetime counter of permanent give-ups
+        # (never decreases — alert on its rate of increase, not its value).
+        # Nothing consumes either field yet; see the block above the return.
+        "reveal_reconcile_pending": reveal_reconcile_pending,
+        "reveal_reconcile_terminal": reveal_reconcile_terminal,
     }
 
 

@@ -211,8 +211,13 @@ test("leaderboard caveat banner is own-scope-gated (#1306; the refresh-residual 
 	// the curated view, whose freshness was verified against prod.
 	assert.doesNotMatch(leaderboard, /known to be incorrect/);
 	// The remaining banner renders ONLY under isOwn — the gate expression must
-	// immediately precede the banner's status div.
-	assert.match(leaderboard, /\{isOwn && \(\s*<div\s*\n?\s*role="status"/);
+	// immediately precede the banner's status div. Since the Lane 3.4 board
+	// split the gate also carries `isResearch`: the caveat is about
+	// backtest-era numbers being fixed at generation time, which is a claim
+	// about the RESEARCH board only — repeating it over the live paper board,
+	// whose numbers come from the forward ledger, would be false. Pinning both
+	// halves keeps the banner from drifting onto the wrong surface.
+	assert.match(leaderboard, /\{isResearch && isOwn && \(\s*<div\s*\n?\s*role="status"/);
 	// The one remaining residual: pre-correction rows are fixed at generation
 	// time (never refreshed) — see the dedicated test below (#1365).
 	assert.match(leaderboard, /before the August engine corrections/);
