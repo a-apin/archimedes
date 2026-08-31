@@ -1065,6 +1065,323 @@ resource "aws_cloudwatch_metric_alarm" "oracle_stale_alarm" {
   tags                = { Project = var.project_name }
 }
 
+# ── Reveal-reconciliation alarms — dangling commit-reveal pairs (issue #1596) ──
+#
+# #1403 made the dangling-reveal state COUNTABLE (`/health` publishes
+# `reveal_reconcile_pending` / `reveal_reconcile_terminal` off an O(1) SCARD)
+# and said so honestly in its own body: countable, not alertable — no metric
+# filter, no alarm. Countable-but-silent is the fail-soft shape
+# `docs/architectural-principles.md` forbids for anything a claim depends on,
+# and the claim here is provenance: a terminal record is a trade whose
+# reasoning can never be proven to have preceded it.
+#
+# WHERE THE SIGNAL COMES FROM. Not from `/health`. That handler logs no
+# greppable literal for these two fields (#1403 review recorded exactly that),
+# and #1596's anti-goals fence off editing it. The reconciliation loop itself
+# already logs both transitions, loudly and with stable literals
+# (`backend/archimedes/chain/agent_runner.py`, `_reconcile_terminal` and
+# `_reconcile_failure`) — so these filters key on the loop's own output, in the
+# `/archimedes/runners` log group the agent container ships to
+# (`runner_ec2.tf`'s awslogs driver, stream `agent`), NOT `/archimedes/app`
+# where the chain/oracle pairs above live. Wrong log group = a filter that
+# matches nothing, forever, while looking correct.
+#
+# THE COUNTER-VS-LEVEL TRAP, AND WHY A LOG FILTER SIDESTEPS IT. `/health`'s
+# `reveal_reconcile_terminal` is a CUMULATIVE lifetime count — members are
+# never removed from the set — so, as main.py's own comment warns, a static
+# threshold on that VALUE fires once at the first historical give-up and stays
+# fired forever. A log metric filter does not have this problem: it counts
+# EVENTS, so `Sum` over a period is the rate of NEW terminal transitions, which
+# is the quantity worth paging on. This is the reason these alarms are wired to
+# the loop's log rather than to the gauge the issue names.
+#
+# The `terraform plan`-before-apply caveat at the top of this file applies to
+# both resources below.
+
+resource "aws_cloudwatch_log_metric_filter" "reveal_reconcile_terminal" {
+  name           = "${var.project_name}-reveal-reconcile-terminal"
+  log_group_name = aws_cloudwatch_log_group.runners.name # runner_ec2.tf — the agent loop, not the web tier
+  pattern        = "\"REVEAL RECONCILIATION TERMINAL\""
+
+  metric_transformation {
+    name          = "RevealReconcileTerminalCount"
+    namespace     = "Archimedes/Reveal"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+# Terminal is a permanent give-up on making one executed trade's reasoning
+# on-chain-verifiable. It is supposed to be a never event, so a single
+# occurrence pages — no flap damping, deliberately: `evaluation_periods = 1`
+# here is not a copy-paste of the oracle/chain pairs' shape but the same
+# judgement they made, that one datapoint of a should-never-happen event is
+# signal rather than noise. (Contrast the pending alarm below, where recurrence
+# IS the signal and damping is what separates it from ordinary retry churn.)
+resource "aws_cloudwatch_metric_alarm" "reveal_reconcile_terminal_alarm" {
+  alarm_name          = "${var.project_name}-reveal-reconcile-terminal"
+  alarm_description   = "The agent gave up reconciling a dangling commit-reveal pair (REVEAL RECONCILIATION TERMINAL). That trade's reasoning trace can never be proven to have preceded it; the record stays honestly unverified. Counts NEW terminal transitions per 5 min, not /health's cumulative reveal_reconcile_terminal total."
+  namespace           = aws_cloudwatch_log_metric_filter.reveal_reconcile_terminal.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.reveal_reconcile_terminal.metric_transformation[0].name
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  period              = 300
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = { Project = var.project_name }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "reveal_reconcile_pending" {
+  name           = "${var.project_name}-reveal-reconcile-pending"
+  log_group_name = aws_cloudwatch_log_group.runners.name
+  # `_reconcile_failure`'s per-attempt WARNING. Deliberately NOT matching on
+  # "Reveal reconciliation" alone: the same module logs "Reveal reconciliation
+  # first-seen SEED FAILED" and "Reveal reconciliation persist FAILED", which
+  # are different failures with different responses. Narrowing to "attempt"
+  # keeps this metric one thing.
+  pattern = "\"Reveal reconciliation attempt\""
+
+  metric_transformation {
+    name          = "RevealReconcilePendingRetryCount"
+    namespace     = "Archimedes/Reveal"
+    value         = "1"
+    default_value = 0
+  }
+}
+
+# "Pending stuck beyond a threshold age", expressed as an alarm window rather
+# than as an age gauge — because the loop publishes no per-record age, and
+# #1596 forbids adding one.
+#
+# The arithmetic that makes this a real bound rather than a guessed one:
+# AGENT_INTERVAL_SECONDS defaults to 300 (one tick per 5-min period) and
+# REVEAL_RECONCILE_MAX_ATTEMPTS defaults to 3, so a record that is merely
+# failing its way to a normal give-up can emit this literal in at most ~3
+# consecutive periods before `_reconcile_terminal` closes it out and the
+# alarm above takes over. Requiring 10 breaching datapoints inside a 60-minute
+# window therefore cannot be produced by the ordinary attempt-cap path at all —
+# it takes either a record whose attempt counter is not persisting (the exact
+# compound failure #1353's max-age breaker exists for, where retries recur
+# unbounded for up to REVEAL_RECONCILE_MAX_AGE_SECONDS = 24h) or a sustained
+# arrival of new dangling commitments. Both warrant a human.
+#
+# 10-of-12 rather than 12-of-12 is the file's flap-damping idiom (alb_5xx_rate_high's
+# 2-of-3, alb_unhealthy_hosts' 5-of-5): a runner restart, a lease handover, or a
+# tick that scans nothing must not reset the clock on a genuinely stuck record.
+resource "aws_cloudwatch_metric_alarm" "reveal_reconcile_pending_stuck" {
+  alarm_name          = "${var.project_name}-reveal-reconcile-pending-stuck"
+  alarm_description   = "Reveal reconciliation has been retrying and failing in 10 of the last 12 five-minute periods (~50 of 60 min) — longer than the 3-attempt cap can produce. A commitment is stuck dangling: either its attempt counter is not persisting (#1353 compound failure) or new dangling commitments keep arriving."
+  namespace           = aws_cloudwatch_log_metric_filter.reveal_reconcile_pending.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.reveal_reconcile_pending.metric_transformation[0].name
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  period              = 300
+  evaluation_periods  = 12
+  datapoints_to_alarm = 10
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = { Project = var.project_name }
+}
+
+# ── Deploy drift — is prod running origin/main's tip? (issue #1596 / #1346 AC2) ──
+#
+# ⚠️  This block introduces TWO AWS services the stack has not used before —
+#     Lambda and EventBridge Rules. Per CLAUDE.md § "When to ask before
+#     acting", that is Dan's call (infra/AWS-account owner) and this PR does
+#     not apply it. Cost at the schedule below: 8,640 invocations/month at
+#     128 MB and ~1s each — inside the perpetual Lambda free tier, and the
+#     custom metric is 1 metric at $0.30/mo.
+#
+# WHY NOT A LOG METRIC FILTER, like every other alarm in this file. Because the
+# question is not answerable from AWS data. "Is the running image tag the tip of
+# origin/main" depends on a fact held outside the account, and the two in-repo
+# places that already know it (the deploy workflow; the /health handler, which
+# reports the running SHA as `version`) are both explicit #1596 anti-goals. The
+# issue anticipated this and names the alternative: "a CloudWatch alarm **or
+# scheduled job emitting a metric**". This is that job, and the alarm at the
+# bottom of the block is an ordinary metric alarm again.
+#
+# The probe's own reasoning — including why it reads git's ref advertisement
+# instead of the GitHub REST API, and why every "cannot tell" state publishes 1
+# rather than nothing — is documented in lambda/deploy_drift/index.py. Its pure
+# verdict logic is unit-tested in backend/tests/test_cloudwatch_alarms.py; the
+# wiring below is text-pinned by the same file.
+
+variable "deploy_drift_repo_url" {
+  description = "Git remote whose branch tip the deploy-drift probe compares the running image tag against. Public HTTPS clone URL; read anonymously via git's ref advertisement (no token)."
+  type        = string
+  default     = "https://github.com/a-apin/archimedes"
+}
+
+variable "deploy_drift_git_ref" {
+  description = "Fully-qualified ref the deploy-drift probe treats as the deploy source of truth. Must be fully qualified ('refs/heads/main', not 'main') — it is matched against the ref advertisement verbatim."
+  type        = string
+  default     = "refs/heads/main"
+}
+
+data "archive_file" "deploy_drift" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambda/deploy_drift"
+  output_path = "${path.module}/lambda/deploy_drift.zip"
+}
+
+resource "aws_iam_role" "deploy_drift" {
+  name = "${var.project_name}-deploy-drift"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = { Project = var.project_name }
+}
+
+# Read-only on ECS, write-only on one metric namespace and one log group. No
+# managed policy (AWSLambdaBasicExecutionRole grants logs:* on every group).
+resource "aws_iam_role_policy" "deploy_drift" {
+  name = "${var.project_name}-deploy-drift"
+  role = aws_iam_role.deploy_drift.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeServices"]
+        Resource = aws_ecs_service.backend.id # ecs.tf — the service ARN
+      },
+      {
+        # ecs:DescribeTaskDefinition does not support resource-level
+        # permissions (AWS service-authorization reference), so "*" is the
+        # only grantable form. It is a read of a task definition's own JSON —
+        # no secret VALUES, which resolve from SSM at task start.
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTaskDefinition"]
+        Resource = "*"
+      },
+      {
+        # PutMetricData has no resource ARN either; the namespace condition is
+        # the only way to scope it, and it does scope it — this role cannot
+        # write into AWS/* or any other namespace.
+        Effect    = "Allow"
+        Action    = ["cloudwatch:PutMetricData"]
+        Resource  = "*"
+        Condition = { StringEquals = { "cloudwatch:namespace" = "Archimedes/Deploy" } }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.deploy_drift.arn}:*"
+      }
+    ]
+  })
+}
+
+# Declared explicitly (rather than left to Lambda's implicit creation) so the
+# 90-day retention the AUDIT I8 section above establishes applies here too —
+# an implicitly-created Lambda log group retains forever.
+resource "aws_cloudwatch_log_group" "deploy_drift" {
+  name              = "/aws/lambda/${var.project_name}-deploy-drift"
+  retention_in_days = 90
+  tags              = { Project = var.project_name }
+}
+
+resource "aws_lambda_function" "deploy_drift" {
+  function_name    = "${var.project_name}-deploy-drift"
+  description      = "Publishes Archimedes/Deploy DeployDrift: 1 when the running ECS image tag is not ${var.deploy_drift_git_ref}'s tip (or cannot be compared to it), 0 when it is."
+  role             = aws_iam_role.deploy_drift.arn
+  handler          = "index.handler"
+  runtime          = "python3.12" # matches environment.yml's interpreter
+  filename         = data.archive_file.deploy_drift.output_path
+  source_code_hash = data.archive_file.deploy_drift.output_base64sha256
+  timeout          = 30 # the probe's own HTTP timeout is 10s; this is headroom, not a second budget
+  memory_size      = 128
+
+  # NOT in the VPC, deliberately: the probe's only egress is a public HTTPS
+  # GET, and putting it in the private subnets would route that through the
+  # fck-nat instances (vpc.tf) for no benefit while adding a NAT dependency to
+  # the thing that watches deploys.
+
+  # ECS_CONTAINER names the container whose image tag carries the commit SHA
+  # (ecs.tf's "backend"); nginx and auth are tagged from the same var but the
+  # backend is the one /health's `version` comes from.
+  environment {
+    variables = {
+      ECS_CLUSTER   = aws_ecs_cluster.main.name
+      ECS_SERVICE   = aws_ecs_service.backend.name
+      ECS_CONTAINER = "backend"
+      REPO_URL      = var.deploy_drift_repo_url
+      GIT_REF       = var.deploy_drift_git_ref
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.deploy_drift]
+  tags       = { Project = var.project_name }
+}
+
+# 5 minutes: fast enough that the alarm window below is made of real
+# datapoints, slow enough to stay free.
+resource "aws_cloudwatch_event_rule" "deploy_drift" {
+  name                = "${var.project_name}-deploy-drift"
+  description         = "Runs the deploy-drift probe every 5 minutes."
+  schedule_expression = "rate(5 minutes)"
+  tags                = { Project = var.project_name }
+}
+
+resource "aws_cloudwatch_event_target" "deploy_drift" {
+  rule      = aws_cloudwatch_event_rule.deploy_drift.name
+  target_id = "deploy-drift-lambda"
+  arn       = aws_lambda_function.deploy_drift.arn
+}
+
+resource "aws_lambda_permission" "deploy_drift_events" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.deploy_drift.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.deploy_drift.arn
+}
+
+# "Longer than one deploy cycle", sized against the deploy workflow's own
+# numbers rather than guessed: build-and-push has `timeout-minutes: 30` and
+# deploy-ecs budgets DEPLOY_ROLLOUT_BUDGET_SECONDS = 1200 (20 min) for the
+# rollout, so one full cycle is ~50 min worst case. The concurrency group
+# QUEUES rather than cancels (#1346), so a merge landing behind an in-flight
+# deploy can legitimately leave prod behind main for a second cycle. Requiring
+# 10 breaching datapoints in a 2-hour window clears both, while still catching
+# the failure #1346 named: prod stale for hours or days with nothing saying so.
+#
+# treat_missing_data = "breaching" is the load-bearing choice here. If the
+# probe stops running — IAM revoked, function deleted, schedule disabled — the
+# metric goes empty, and "empty" must not read as "aligned". A dead watchman
+# pages, ~100 minutes later, instead of going quiet.
+resource "aws_cloudwatch_metric_alarm" "deploy_drift" {
+  alarm_name          = "${var.project_name}-deploy-drift"
+  alarm_description   = "The running ECS backend image tag has not matched ${var.deploy_drift_git_ref}'s tip in 10 of the last 12 ten-minute periods (~100 of 120 min) — longer than one full deploy cycle. Either a deploy is failing silently or the probe itself stopped reporting; the probe's CloudWatch log line names which (reason=drifted | head-unreadable | image-untagged | image-tag-not-a-commit)."
+  namespace           = "Archimedes/Deploy"
+  metric_name         = "DeployDrift"
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  period              = 600
+  evaluation_periods  = 12
+  datapoints_to_alarm = 10
+  dimensions          = { Service = aws_ecs_service.backend.name }
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = { Project = var.project_name }
+}
+
 # ── Outputs ──────────────────────────────────────────────────────────────────
 
 output "alerts_topic_arn" {
