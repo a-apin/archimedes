@@ -27,7 +27,11 @@ from archimedes.services.redis_state import (
     KEY_REGIME,
     KEY_SIWE_NONCE_PREFIX,
     KEY_TRACE_INDEX,
+    KEY_TRACE_RECONCILE_FIRST_SEEN,
+    KEY_TRACE_RECONCILE_PENDING,
+    KEY_TRACE_RECONCILE_TERMINAL,
     AgentStateStore,
+    is_dangling_reveal,
 )
 
 
@@ -44,6 +48,14 @@ def _fake_redis() -> MagicMock:
     r.zadd = AsyncMock()
     r.zrevrange = AsyncMock(return_value=[])
     r.zcard = AsyncMock(return_value=0)
+    # Reveal-reconciliation durable index (#1353)
+    r.sadd = AsyncMock()
+    r.srem = AsyncMock()
+    r.smembers = AsyncMock(return_value=[])
+    r.scard = AsyncMock(return_value=0)
+    r.hsetnx = AsyncMock()
+    r.hget = AsyncMock(return_value=None)
+    r.hdel = AsyncMock()
     r.aclose = AsyncMock()
     return r
 
@@ -353,6 +365,339 @@ class TestTraces:
         store, fake = await _store_with_fake_redis()
         fake.zcard.return_value = 42
         assert await store.get_trace_count() == 42
+
+
+def _dangling_trace(trace_hash: str = "0xdangle", **overrides) -> dict:
+    """The exact dangling shape: commit + trade, no reveal, no closed state."""
+    base = {
+        "id": "t-dangle",
+        "trace_hash": trace_hash,
+        "timestamp": "2026-08-20T00:00:00+00:00",
+        "vault_address": "0xV",
+        "commit_tx_hash": "0xcommit",
+        "trade_tx_hash": "0xtrade",
+        "reveal_tx_hash": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestIsDanglingReveal:
+    """The canonical predicate (#1353) — save_trace's index maintenance and
+    agent_runner's scan filter both delegate to this single implementation."""
+
+    def test_matches_the_dangling_shape(self) -> None:
+        assert is_dangling_reveal(_dangling_trace()) is True
+
+    @pytest.mark.parametrize(
+        ("label", "overrides"),
+        [
+            ("no_trade", {"trade_tx_hash": None}),
+            ("already_revealed", {"reveal_tx_hash": "0xREVEALED"}),
+            ("no_commit", {"commit_tx_hash": None}),
+            ("terminal", {"reveal_reconcile_state": "terminal"}),
+            ("reconciled", {"reveal_reconcile_state": "reconciled"}),
+            ("reconciled_from_chain", {"reveal_reconcile_state": "reconciled_from_chain"}),
+        ],
+    )
+    def test_near_misses_are_excluded(self, label, overrides) -> None:
+        assert is_dangling_reveal(_dangling_trace(**overrides)) is False, label
+
+    def test_corrupt_entry_is_not_a_candidate(self) -> None:
+        assert is_dangling_reveal("not-a-dict") is False  # type: ignore[arg-type]
+
+
+class TestRevealReconcileIndex:
+    """save_trace's durable dangling-index maintenance (#1353).
+
+    save_trace is the single write choke-point every trace record passes
+    through (dangling or not) — these tests prove the index actually tracks
+    dangling-ness THROUGH that one call site, not via a separate update path
+    that could be forgotten.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dangling_trace_is_added_to_pending_and_first_seen(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        await store.save_trace(_dangling_trace())
+
+        fake.sadd.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING, "0xdangle")
+        fake.hsetnx.assert_awaited_once()
+        key, field, _value = fake.hsetnx.await_args.args
+        assert (key, field) == (KEY_TRACE_RECONCILE_FIRST_SEEN, "0xdangle")
+        # HSETNX, never HSET — a record retried many times must keep its
+        # ORIGINAL first-seen timestamp, which is what makes it a valid age
+        # bound (#1353 compound-failure guard). Redis enforces the
+        # set-once-only semantics; this asserts we call the right primitive.
+        fake.hset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_longer_dangling_trace_is_removed_from_pending_and_first_seen(self) -> None:
+        """GUARD DEMO: an already-revealed record must NOT sit in the pending
+        index — left in by mistake, it would send reconciliation straight at
+        a reveal() that reverts 'Already revealed' forever."""
+        store, fake = await _store_with_fake_redis()
+        await store.save_trace(_dangling_trace(reveal_tx_hash="0xREVEALED"))
+
+        fake.srem.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING, "0xdangle")
+        fake.hdel.assert_awaited_once_with(KEY_TRACE_RECONCILE_FIRST_SEEN, "0xdangle")
+        fake.sadd.assert_not_awaited()  # neither pending nor terminal
+
+    @pytest.mark.asyncio
+    async def test_terminal_trace_is_added_to_the_terminal_set(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        await store.save_trace(_dangling_trace(reveal_reconcile_state="terminal"))
+
+        fake.sadd.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL, "0xdangle")
+        fake.srem.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING, "0xdangle")
+
+    @pytest.mark.asyncio
+    async def test_ordinary_non_reconciliation_trace_never_touches_the_terminal_set(self) -> None:
+        """GUARD DEMO: a plain SKIP/error trace (no commit/trade hashes at
+        all) must never land in the terminal set — it was never dangling, so
+        it must not inflate the cumulative terminal count."""
+        store, fake = await _store_with_fake_redis()
+        await store.save_trace({"id": "skip-1", "trace_hash": "0xskip", "timestamp": "2026-08-20T00:00:00+00:00"})
+
+        fake.sadd.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_dangling_reveal_traces_reads_the_index_not_a_scan(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1", "h2"]
+        fake.get = AsyncMock(side_effect=[json.dumps({"id": "d1"}), json.dumps({"id": "d2"})])
+
+        traces = await store.list_dangling_reveal_traces()
+
+        fake.smembers.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING)
+        assert [t["id"] for t in traces] == ["d1", "d2"]
+
+    @pytest.mark.asyncio
+    async def test_list_dangling_reveal_traces_skips_missing_and_malformed(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1", "h2", "h3"]
+        fake.get = AsyncMock(side_effect=[None, "{not json", json.dumps({"id": "d3"})])
+
+        traces = await store.list_dangling_reveal_traces()
+
+        assert [t["id"] for t in traces] == ["d3"]
+
+    @pytest.mark.asyncio
+    async def test_list_dangling_reveal_traces_prunes_orphaned_index_members(self) -> None:
+        """#1403 review: a member whose blob is GONE (h1) must be removed
+        from the pending set and its first-seen field cleared — otherwise the
+        SCARD-backed pending gauge leaks upward forever with no path back to
+        zero. A malformed-but-PRESENT blob (h2) is left alone — that's a
+        content problem, not proof the index member is stale."""
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1", "h2", "h3"]
+        fake.get = AsyncMock(side_effect=[None, "{not json", json.dumps({"id": "d3"})])
+
+        traces = await store.list_dangling_reveal_traces()
+
+        assert [t["id"] for t in traces] == ["d3"]
+        fake.srem.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING, "h1")
+        fake.hdel.assert_awaited_once_with(KEY_TRACE_RECONCILE_FIRST_SEEN, "h1")
+
+    @pytest.mark.asyncio
+    async def test_list_dangling_reveal_traces_prune_is_loud_and_marks_terminal(self, caplog) -> None:
+        """Round-2 review finding: an orphan prune with no log and no terminal
+        SADD is a silent, untelemetered vanish from BOTH /health gauges — in a
+        PR whose stated purpose is making dangling-reveal state countable.
+        The prune must (a) log at WARNING with the trace hash and
+        (b) SADD the member into the terminal set, since a blob-less member
+        can never be revealed again."""
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1"]
+        fake.get = AsyncMock(return_value=None)
+
+        with caplog.at_level("WARNING"):
+            traces = await store.list_dangling_reveal_traces()
+
+        assert traces == []
+        assert "Pruned orphaned reconcile-index member" in caplog.text
+        assert "h1"[:16] in caplog.text
+        fake.sadd.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL, "h1")
+
+    @pytest.mark.asyncio
+    async def test_get_reveal_reconcile_pending_count_is_scard(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        fake.scard.return_value = 3
+        assert await store.get_reveal_reconcile_pending_count() == 3
+        fake.scard.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING)
+
+    @pytest.mark.asyncio
+    async def test_get_reveal_reconcile_terminal_count_is_scard(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        fake.scard.return_value = 7
+        assert await store.get_reveal_reconcile_terminal_count() == 7
+        fake.scard.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL)
+
+    @pytest.mark.asyncio
+    async def test_terminal_set_is_cumulative_no_path_ever_removes_a_member(self) -> None:
+        """The terminal gauge's documented reading (#1403 review) is "CUMULATIVE
+        counter — alert on rate of increase, not level", and that is only true
+        if NO code path removes a member. This drives every AgentStateStore
+        path that touches the three reconcile keys and asserts none of them
+        ever issues a removal against KEY_TRACE_RECONCILE_TERMINAL — so the
+        moment someone adds an SREM/DEL there (making the count a level that
+        can fall back), the docs and /health's comment become wrong and this
+        fails."""
+        store, fake = await _store_with_fake_redis()
+
+        base = {"timestamp": "2026-08-20T00:00:00+00:00"}
+        # 1. a dangling save (enters the pending index)
+        await store.save_trace(
+            {**base, "id": "a", "trace_hash": "0xa", "commit_tx_hash": "0xc", "trade_tx_hash": "0xt"}
+        )
+        # 2. the same record resolved (leaves pending, not terminal)
+        await store.save_trace(
+            {
+                **base,
+                "id": "a",
+                "trace_hash": "0xa",
+                "commit_tx_hash": "0xc",
+                "trade_tx_hash": "0xt",
+                "reveal_tx_hash": "0xr",
+                "reveal_reconcile_state": "reconciled",
+            }
+        )
+        # 3. a record saved in the terminal state (enters the terminal set)
+        await store.save_trace(
+            {
+                **base,
+                "id": "b",
+                "trace_hash": "0xb",
+                "commit_tx_hash": "0xc",
+                "trade_tx_hash": "0xt",
+                "reveal_reconcile_state": "terminal",
+            }
+        )
+        # 4. the direct, blob-independent terminal close
+        await store.mark_reveal_reconcile_terminal("0xb")
+        # 5. the orphan prune inside the index read
+        fake.smembers.return_value = ["0xgone"]
+        fake.get = AsyncMock(return_value=None)
+        await store.list_dangling_reveal_traces()
+        # 6. the independent first-seen seed
+        await store.seed_reveal_reconcile_first_seen("0xa")
+
+        removal_targets = [c.args[0] for c in fake.srem.await_args_list] + [
+            c.args[0] for c in fake.hdel.await_args_list
+        ]
+        assert KEY_TRACE_RECONCILE_TERMINAL not in removal_targets
+        # ...and the paths that DO write it only ever add.
+        assert [c.args[0] for c in fake.sadd.await_args_list] == [KEY_TRACE_RECONCILE_PENDING] + [
+            KEY_TRACE_RECONCILE_TERMINAL
+        ] * 3
+
+    @pytest.mark.asyncio
+    async def test_get_reveal_reconcile_first_seen_parses_iso(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        ts = datetime(2026, 8, 20, tzinfo=UTC)
+        fake.hget.return_value = ts.isoformat()
+        result = await store.get_reveal_reconcile_first_seen("0xh")
+        assert result == ts
+        fake.hget.assert_awaited_once_with(KEY_TRACE_RECONCILE_FIRST_SEEN, "0xh")
+
+    @pytest.mark.asyncio
+    async def test_get_reveal_reconcile_first_seen_returns_none_when_absent(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        fake.hget.return_value = None
+        assert await store.get_reveal_reconcile_first_seen("0xh") is None
+
+    @pytest.mark.asyncio
+    async def test_get_reveal_reconcile_first_seen_returns_none_on_malformed_value(self) -> None:
+        store, fake = await _store_with_fake_redis()
+        fake.hget.return_value = "not-a-timestamp"
+        assert await store.get_reveal_reconcile_first_seen("0xh") is None
+
+    @pytest.mark.asyncio
+    async def test_get_reveal_reconcile_first_seen_empty_hash_short_circuits(self) -> None:
+        """No Redis round-trip for a falsy trace_hash — nothing to look up."""
+        store, fake = await _store_with_fake_redis()
+        assert await store.get_reveal_reconcile_first_seen("") is None
+        fake.hget.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mark_reveal_reconcile_terminal_closes_all_three_structures(self) -> None:
+        """#1403 review round 2: agent_runner._reconcile_terminal and
+        _reconcile_failure both call this method with the assumption that it
+        durably closes the record — independent of the trace blob's own save
+        succeeding. Only a real AgentStateStore call proves the three ops
+        (SADD terminal / SREM pending / HDEL first_seen) actually fire against
+        the right keys; a MagicMock with these attributes hand-attached would
+        pass even if the method were renamed or its body deleted."""
+        store, fake = await _store_with_fake_redis()
+        await store.mark_reveal_reconcile_terminal("0xh")
+
+        fake.sadd.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL, "0xh")
+        fake.srem.assert_awaited_once_with(KEY_TRACE_RECONCILE_PENDING, "0xh")
+        fake.hdel.assert_awaited_once_with(KEY_TRACE_RECONCILE_FIRST_SEEN, "0xh")
+
+    @pytest.mark.asyncio
+    async def test_mark_reveal_reconcile_terminal_empty_hash_short_circuits(self) -> None:
+        """No Redis round-trip for a falsy trace_hash — nothing to close."""
+        store, fake = await _store_with_fake_redis()
+        await store.mark_reveal_reconcile_terminal("")
+
+        fake.sadd.assert_not_awaited()
+        fake.srem.assert_not_awaited()
+        fake.hdel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_reveal_reconcile_terminal_hashes_reads_the_terminal_set(self) -> None:
+        """_reconcile_dangling_reveals cross-checks every scan/index candidate
+        against this set so a record closed via mark_reveal_reconcile_terminal
+        can never re-enter the retry loop even while its own JSON blob still
+        reads 'pending' (#1403 review round 2). Confirms the real method reads
+        SMEMBERS on the terminal key and returns a `set`, not a list — the
+        caller does set membership checks (`in`) against the result."""
+        store, fake = await _store_with_fake_redis()
+        fake.smembers.return_value = ["h1", "h2"]
+
+        result = await store.list_reveal_reconcile_terminal_hashes()
+
+        fake.smembers.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL)
+        assert result == {"h1", "h2"}
+        assert isinstance(result, set)
+
+    @pytest.mark.asyncio
+    async def test_seed_reveal_reconcile_first_seen_uses_hsetnx_not_hset(self) -> None:
+        """#1403 review round 3: this method exists specifically so a
+        migration-era dangling record (no marker yet, because it predates the
+        index) can acquire a first-seen clock even when the blob write path
+        that normally seeds it is broken. It must use HSETNX (set-once) — a
+        plain HSET here would let every reconciliation pass reset the clock,
+        permanently disabling the max-age circuit breaker it exists to
+        support."""
+        store, fake = await _store_with_fake_redis()
+        await store.seed_reveal_reconcile_first_seen("0xh")
+
+        fake.hsetnx.assert_awaited_once()
+        key, field, _value = fake.hsetnx.await_args.args
+        assert (key, field) == (KEY_TRACE_RECONCILE_FIRST_SEEN, "0xh")
+        fake.hset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_seed_reveal_reconcile_first_seen_empty_hash_short_circuits(self) -> None:
+        """No Redis round-trip for a falsy trace_hash — nothing to seed."""
+        store, fake = await _store_with_fake_redis()
+        await store.seed_reveal_reconcile_first_seen("")
+        fake.hsetnx.assert_not_awaited()
+
+
+class TestReconcileClosedStatesStaySynced:
+    """redis_state._RECONCILE_CLOSED_STATES duplicates agent_runner's set
+    (documented as intentional — importing back would be circular). This
+    test is the tripwire: it fails loudly the moment the two diverge, which
+    is the failure mode duplication risks."""
+
+    def test_both_closed_state_sets_are_identical(self) -> None:
+        from archimedes.chain.agent_runner import _RECONCILE_CLOSED_STATES as agent_runner_states
+        from archimedes.services.redis_state import _RECONCILE_CLOSED_STATES as redis_state_states
+
+        assert redis_state_states == agent_runner_states
 
 
 class TestLifecycle:
