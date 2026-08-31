@@ -147,6 +147,17 @@ def _eval_condition(
 
 
 # ── Indicator wiring ──────────────────────────────────────────────────
+#
+# Bar-offset discipline, applied to every windowed read below and worth stating
+# once. ``line[-i]`` means "i bars ago" only while ``i >= 0``; for a negative
+# ``i`` the very same expression reads a bar that has not happened yet. A loop
+# written over ``range(<a call result>)`` or ``range(<a module constant>, -1, -1)``
+# is correct today and *uncheckable* — nothing in the enclosing scope pins the
+# sign of the index, so the difference between a trailing window and a look-ahead
+# leak is one edit nobody can see. So each windowed read below takes its window
+# length as a PARAMETER carrying an explicit precondition guard, and counts
+# upward from zero. The guard is the thing that establishes the sign; the offsets
+# are then non-positive by construction rather than by the reader's goodwill.
 
 
 class RealizedVolAnnualized(bt.Indicator):
@@ -172,6 +183,32 @@ class RealizedVolAnnualized(bt.Indicator):
     def __init__(self) -> None:
         self.addminperiod(int(self.p.period) + 1)
 
+    def _trailing_returns(self, period: int) -> list[float] | None:
+        """Simple returns over the last ``period`` bars, newest first.
+
+        ``returns[i]`` is the return INTO bar ``t - i``, i.e.
+        ``price[-i] / price[-i - 1] - 1``. ``None`` when any denominator in the
+        window is exactly zero, so the caller decides what an undefined return
+        publishes (here: NaN, never a fabricated 0.0).
+
+        The window is a parameter with a guard rather than a read of
+        ``self.p.period``, and that is the load-bearing part. ``period >= 1``
+        makes ``i`` run over ``0 … period - 1``, so ``-i`` and ``-i - 1`` can
+        only address bar ``t`` or earlier — the offsets are non-positive because
+        the precondition says so, not because the caller happens to be careful.
+        Read ``self.p.period`` inline instead and the sign of the index rests on
+        a params tuple defined two hundred lines away.
+        """
+        if period < 1:
+            raise DSLError(f"realized-vol return window must be >= 1 bar, got {period}")
+        returns: list[float] = []
+        for i in range(period):
+            prev = float(self.data[-i - 1])
+            if prev == 0.0:
+                return None
+            returns.append(float(self.data[-i]) / prev - 1.0)
+        return returns
+
     def next(self) -> None:
         n = int(self.p.period)
         if n < 2:
@@ -179,13 +216,15 @@ class RealizedVolAnnualized(bt.Indicator):
             # NaN is the honest answer rather than a fabricated 0.0.
             self.lines.realized_vol[0] = float("nan")
             return
-        returns: list[float] = []
-        for i in range(n):
-            prev = float(self.data[-i - 1])
-            if prev == 0.0:
-                self.lines.realized_vol[0] = float("nan")
-                return
-            returns.append(float(self.data[-i]) / prev - 1.0)
+        # n >= 2 here, so the window helper's `period >= 1` precondition holds.
+        # It reads newest-first in the same order the loop used to, so the
+        # summation order — and with it the last float bit that
+        # test_realized_vol_parity_per_bar pins — is unchanged.
+        returns = self._trailing_returns(n)
+        if returns is None:
+            # A zero price in the window leaves at least one return undefined.
+            self.lines.realized_vol[0] = float("nan")
+            return
         mean = sum(returns) / n
         variance = sum((r - mean) ** 2 for r in returns) / (n - 1)  # ddof=1
         self.lines.realized_vol[0] = math.sqrt(variance) * math.sqrt(float(self.p.annualization))
@@ -437,19 +476,34 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
             """
             return slot_weight(self.params.universe_slots)
 
-        def _sizing_realized_vol(self) -> float | None:
+        def _sizing_realized_vol(self, lookback: int = _SIZING_VOL_LOOKBACK) -> float | None:
             """Trailing sizing vol at this bar — delegates to the shared helper.
 
             The arithmetic lives at module scope (``sizing_realized_vol``) so the
             live evaluator sizes ``inverse_vol`` off the identical estimator
             instead of a second, drifting copy.
+
+            ``lookback`` is a guarded parameter rather than a direct read of
+            ``_SIZING_VOL_LOOKBACK`` because the guard is what fixes the sign of
+            every bar offset below it. A module constant is a name whose value
+            lives elsewhere and can change without this function noticing; the
+            guard turns "20, obviously" into a precondition stated where the
+            indices are actually formed.
             """
-            if len(self) <= _SIZING_VOL_LOOKBACK:
+            if lookback < 0:
+                raise DSLError(f"sizing vol lookback must be >= 0 bars, got {lookback}")
+            if len(self) <= lookback:
                 return None
-            # Chronological window ending at the current bar: index -k is k bars
-            # back, so range(LOOKBACK, -1, -1) yields oldest → newest.
-            closes = [float(self.data.close[-i]) for i in range(_SIZING_VOL_LOOKBACK, -1, -1)]
-            return sizing_realized_vol(closes)
+            # Chronological window ending at the current bar, counted UP from
+            # the current bar and then reversed. The obvious spelling —
+            # ``range(lookback, -1, -1)`` — is the same list, but it hides a sign
+            # error in its floor: ``range(n, -3, -1)`` yields -1 and -2, and
+            # ``close[1]`` is a bar that has not happened. Counting up, every
+            # offset is ``-k`` with ``k >= 0`` from the guard above, so no floor
+            # can put an index above zero.
+            newest_first = [float(self.data.close[-k]) for k in range(lookback + 1)]
+            newest_first.reverse()
+            return sizing_realized_vol(newest_first)
 
         def _order_full_invest(self, price: float) -> None:
             """All of the account's cash (less the exposure buffer) into this feed."""
