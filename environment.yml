@@ -79,7 +79,7 @@ dependencies:
       - eth-account>=0.13.7           # Local key management for testnet wallets
       - eth-abi>=5.2.0,<6             # ABI codec (direct import in marketplace/encoding.py). Cap <6: eth-account's pre-release specifier (`eth-abi>=4.0.0-b.2`) otherwise lets pip resolve the 6.0.0b1 beta — no betas on the funds path. Aligned with backend/requirements.txt.
       - eth-utils>=6.0.0
-      - cryptography>=50.0.0          # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
+      - cryptography>=50.0.1          # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt (dependabot PR #1585)
 
       # --- AWS / S3 ---
       - boto3>=1.43.71                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
