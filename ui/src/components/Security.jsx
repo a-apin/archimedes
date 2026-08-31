@@ -1,3 +1,5 @@
+import StorageDisclosure from "./StorageDisclosure";
+
 export default function Security() {
 	return (
 		<main className="security-page">
@@ -213,6 +215,13 @@ export default function Security() {
 					</ul>
 				</div>
 			</section>
+
+			{/* Browser-storage disclosure + the live consent controls (#1647).
+			    Rendered from src/storage-consent.js — the same inventory the
+			    gate reads before any write — so this section cannot drift from
+			    the keys the app actually sets. #1432's /privacy page can mount
+			    this identical component; nothing here is transcribed. */}
+			<StorageDisclosure />
 
 			<section
 				className="public-section security-evidence"
