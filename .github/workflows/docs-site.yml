@@ -1,49 +1,83 @@
-# Archimedes docs site — build + publish docs/ (via mkdocs-material) to
-# GitHub Pages. Issue #1381, Dan's decision: option B (GitHub Pages),
-# migrate to something else later only if we outgrow it.
+# Archimedes docs site — build + publish docs/ and the agent-generated
+# openwiki/ tree (via mkdocs-material) to GitHub Pages. Issue #1381, Dan's
+# decision: option B (GitHub Pages), migrate to something else later only if
+# we outgrow it.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# INERT UNTIL DAN FLIPS vars.DOCS_SITE_ENABLED — same repo-variable gate
-# pattern as deploy-runners.yml's RUNNER_DEPLOY_ENABLED. Both jobs skip
-# (grey, not red) until the variable is "true", so merging this file is safe
-# and quiet before setup. Three one-time manual steps, in order:
-#   1. Repo Settings → Pages → Source: "GitHub Actions" (custom domain +
-#      HTTPS enforcement are part of the same step; this also creates the
-#      Pages *environment* that `actions/deploy-pages` publishes into).
-#   2. Route 53 CNAME docs.archimedes-arc.com → a-apin.github.io.
-#   3. Repo Settings → Secrets and variables → Actions → Variables →
-#      DOCS_SITE_ENABLED = true (then dispatch this workflow once).
-# Enabling the variable BEFORE step 1 is still harmless: the deploy job
-# errors with "Get Pages site failed" and touches nothing. Full manual steps
-# and local-preview instructions: docs/runbooks/docs-site-setup.md.
+# TWO JOBS, TWO DIFFERENT GATES. Read this before changing either.
+#
+#   build   — ALWAYS runs on a qualifying push or PR. It is the check that
+#             keeps the site buildable: `mkdocs build --strict` fails on any
+#             link into docs/ or openwiki/ that names a file which does not
+#             exist. Gating the build on DOCS_SITE_ENABLED (as this workflow
+#             originally did) meant the site could rot silently for as long
+#             as the variable stayed unset — which is most of its life so far.
+#             It costs ~30s and needs no repo settings, so it runs regardless.
+#
+#   deploy  — INERT UNTIL DAN FLIPS vars.DOCS_SITE_ENABLED, and never runs on
+#             a pull request. Same repo-variable gate pattern as
+#             deploy-runners.yml's RUNNER_DEPLOY_ENABLED: it skips (grey, not
+#             red) until the variable is "true". Three one-time manual steps,
+#             in order:
+#               1. Repo Settings → Pages → Source: "GitHub Actions" (custom
+#                  domain + HTTPS enforcement are part of the same step; this
+#                  also creates the Pages *environment* that
+#                  `actions/deploy-pages` publishes into).
+#               2. Route 53 CNAME docs.archimedes-arc.com → a-apin.github.io.
+#               3. Repo Settings → Secrets and variables → Actions →
+#                  Variables → DOCS_SITE_ENABLED = true (then dispatch this
+#                  workflow once).
+#             Enabling the variable BEFORE step 1 is still harmless: the
+#             deploy job errors with "Get Pages site failed" and touches
+#             nothing. Full manual steps and local-preview instructions:
+#             docs/runbooks/docs-site-setup.md.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: Docs Site (GitHub Pages)
 
+# The two `paths:` lists below are duplicated on purpose: GitHub Actions does
+# not expand YAML anchors/aliases in workflow files. Keep them identical — the
+# PR build is only a useful check if it fires on the same changes the push
+# build does.
 on:
   push:
     branches: [main]
     paths:
       - "docs/**"
+      # The agent-generated wiki is published as its own nav section. It lives
+      # outside docs_dir, so without this line a regenerated wiki (the
+      # openwiki-update.yml PR) would merge and never reach the site.
+      - "openwiki/**"
       - "mkdocs.yml"
+      # The hook that mounts openwiki/ and rewrites out-of-docs_dir links, and
+      # the link regexes it reuses. A change to either changes the built site.
+      - ".github/scripts/mkdocs_hooks.py"
+      - ".github/scripts/docs_links.py"
+      - ".github/workflows/docs-site.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "openwiki/**"
+      - "mkdocs.yml"
+      - ".github/scripts/mkdocs_hooks.py"
+      - ".github/scripts/docs_links.py"
       - ".github/workflows/docs-site.yml"
   workflow_dispatch: {}
 
-# Pages deploys should never race each other — a slow run publishing after a
-# faster, newer one would put a stale site live. Don't cancel an in-flight
-# deploy though (cancel-in-progress: false is the actions/deploy-pages
-# convention): let it finish, then run the next one.
+# PR builds of the same branch supersede each other; pushes to main do not get
+# cancelled, because the deploy that follows must not be interrupted half-way.
+# The deploy job carries its own "pages" concurrency group (below) so a slow
+# run can never publish over a faster, newer one.
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: docs-site-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build (mkdocs build)
-    if: ${{ vars.DOCS_SITE_ENABLED == 'true' }}
+    name: Build (mkdocs build --strict)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,29 +91,30 @@ jobs:
       # mkdocs-material==9.7.7 — pinned per docs/CLAUDE.md's dep policy ("no
       # new dep without a sentence on what it does and why"): it's the
       # latest release on PyPI as of this workflow's authorship
-      # (2026-08-20) and the same version verified locally with
-      # `mkdocs build --strict`/`mkdocs build` (see
-      # docs/runbooks/docs-site-setup.md). Pinned rather than left open so a
-      # future mkdocs-material release can't silently change the built site
-      # (or its validation warnings) on an unrelated docs PR; bump
-      # deliberately, in its own commit, re-running the local build check
-      # from that runbook.
+      # (2026-08-20). Pinned rather than left open so a future
+      # mkdocs-material release can't silently change the built site (or its
+      # validation warnings) on an unrelated docs PR; bump deliberately, in
+      # its own commit, re-running the local build check from
+      # docs/runbooks/docs-site-setup.md.
       - name: Install mkdocs-material
         run: pip install --quiet mkdocs-material==9.7.7
 
-      # Not --strict — see mkdocs.yml's own comment and
-      # docs/runbooks/docs-site-setup.md § "mkdocs --strict findings" for
-      # why: ~300 pre-existing, correct links from docs/*.md out to files
-      # outside docs_dir (../CLAUDE.md, backend/..., contracts/..., etc.,
-      # per this repo's own "every claim is a link to a file" convention)
-      # register as unresolved to mkdocs, which only ever sees docs_dir.
-      # Those links are already the blocking check in docs-gate.yml
-      # (docs_links.py), which validates them against the real repo tree,
-      # not this site's.
+      # --strict, and it is clean. mkdocs promotes WARNING to a build failure
+      # under --strict; the ~371 warnings this tree used to produce were all
+      # correct out-of-docs_dir links (../CLAUDE.md, backend/..., per the
+      # repo's "every claim is a link to a file" convention), and
+      # .github/scripts/mkdocs_hooks.py now repoints those at GitHub blob URLs
+      # at build time instead of leaving them to 404 on the published site.
+      # What is left is a real gate: a link into docs/ or openwiki/ naming a
+      # file that does not exist fails here. Do not drop --strict to make a
+      # red build green — fix the link, or say why in the PR.
       - name: mkdocs build
-        run: mkdocs build --site-dir _site
+        run: mkdocs build --strict --site-dir _site
 
+      # Only the deploy path needs the artifact, and a PR never deploys — so a
+      # PR run stops at "did it build", with nothing uploaded.
       - name: Upload Pages artifact
+        if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-pages-artifact@v5
         with:
           path: _site
@@ -87,7 +122,17 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
+    # Never from a PR (a fork PR must not be able to publish), and not until
+    # Dan has done the three manual steps in the header.
+    if: ${{ github.event_name != 'pull_request' && vars.DOCS_SITE_ENABLED == 'true' }}
     runs-on: ubuntu-latest
+    # Pages deploys must never race each other — a slow run publishing after a
+    # faster, newer one would put a stale site live. Don't cancel an in-flight
+    # deploy though (cancel-in-progress: false is the actions/deploy-pages
+    # convention): let it finish, then run the next one.
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
     permissions:
       pages: write # to deploy to Pages
       id-token: write # to verify the deployment originated from this workflow run
