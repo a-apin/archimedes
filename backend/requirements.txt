@@ -78,7 +78,7 @@ anthropic>=0.120.2
 
 # On-chain / Web3
 web3>=7.16.0
-eth-account>=0.13.7
+eth-account>=0.14.0
 eth-utils>=6.0.0
 cryptography>=50.0.0
 # direct import in marketplace/encoding.py (derive_pool_id); do not rely on web3 transitive.
