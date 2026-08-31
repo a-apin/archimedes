@@ -159,3 +159,22 @@ def _clear_vault_owner_cache():
     clear_vault_owner_cache()
     yield
     clear_vault_owner_cache()
+
+
+@pytest.fixture(autouse=True)
+def _clear_health_probe_cache():
+    """Reset /health's last-known-value memo (services/health_cache.py) — #1592.
+
+    Third instance of the same hazard as the two fixtures above, and the one
+    with the sharpest teeth: this memo exists precisely so a timed-out probe can
+    serve a previous reading. Without a reset, a test that establishes
+    "chain_connected = True" hands that value to a later test whose whole point
+    is that the probe times out — the later test would then assert against a
+    ``stale_cached`` outcome it never set up, and, worse, a broken fallback path
+    could pass by inheriting a neighbour's success. Cleared before and after.
+    """
+    from archimedes.services.health_cache import clear_health_probe_cache
+
+    clear_health_probe_cache()
+    yield
+    clear_health_probe_cache()
