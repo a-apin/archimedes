@@ -1,4 +1,20 @@
-"""Reasoning trace endpoints — /api/traces/*."""
+"""Reasoning trace endpoints — /api/traces/*.
+
+Every READ route here is ownership-gated (#1556). Before that issue the four
+read routes carried no auth dependency at all and ``vault_address`` was a
+filter, not a gate — omitting it enumerated every trace on the platform, and
+``/canonical`` returned the full hashed body including holdings. The predicate
+lives in ``services.trace_visibility`` and is never re-implemented here; these
+routes only decide the *status code* for a denial, which is uniformly **404**,
+matching the #850 ownership contract in ``strategies_routes``: a caller who may
+not read a trace must not learn that it exists.
+
+``?strategy_id=`` carries a SECOND gate for a different subject. #1556 decides
+who may read a *trace*; ``assert_strategy_visible`` decides who may learn that a
+*strategy* exists, and "how many traces reference id X" is a statement about X.
+Both run — a caller who passes the strategy gate still only sees the traces
+#1556 lets them see. Neither substitutes for the other.
+"""
 
 from __future__ import annotations
 
@@ -71,18 +87,38 @@ def _anchored_only_trace(trace_id: str, detail: dict) -> TraceResponse:
     )
 
 
-def _trace_from_off_chain(t: dict) -> TraceResponse:
-    """Project one persisted trace dict onto the list-row response.
+def _caller_identity(request: Request) -> tuple[str | None, str | None]:
+    """``(user_id, linked_wallet)`` for the caller — both ``None`` if anonymous.
 
-    Single projection for both display routes. They used to carry two
-    hand-maintained copies of this twenty-field constructor, which is exactly
-    how a field lands on the detail route and silently never appears in the
-    list (or vice versa) — the same drift the shared visibility gate exists to
-    prevent, one layer down. ``get_trace`` widens the result to
-    ``TraceDetailResponse``; it does not re-derive it.
+    Anonymous is a normal outcome, not an error: the public proof pages read
+    this API without a session and are entitled to the house-public traces.
+    The wallet lookup is a DB read (``get_linked_wallet_address``) and is
+    wrapped because its failure must degrade the caller to "no wallet" — which
+    can only ever *reduce* what they can see — never 500 a read route.
+    """
+    from archimedes.api.account_auth import get_current_user
+
+    user = get_current_user(request)
+    try:
+        from archimedes.api.auth_siwe import get_verified_wallet
+
+        wallet = get_verified_wallet(request)
+    except Exception:
+        logger.warning("trace read: linked-wallet resolution failed — treating caller as wallet-less", exc_info=True)
+        wallet = None
+    return (user.id if user else None), wallet
+
+
+def _offchain_trace_response(t: dict, fallback_id: str = "") -> TraceResponse:
+    """Project a stored off-chain trace record onto the wire schema.
+
+    The ONE projection both display routes use. ``get_trace`` widens the result
+    to :class:`TraceDetailResponse`; it does not re-derive it. Two
+    hand-maintained copies of a twenty-field constructor is how a field lands on
+    the detail route and silently never appears in the list.
     """
     return TraceResponse(
-        id=t.get("id", ""),
+        id=t.get("id", fallback_id),
         vault_address=t.get("vault_address", ""),
         decision_type=t.get("decision_type", "unknown"),
         trigger=t.get("trigger", "unknown"),
@@ -92,6 +128,8 @@ def _trace_from_off_chain(t: dict) -> TraceResponse:
         trace_hash=t.get("trace_hash", ""),
         arc_tx_hash=t.get("arc_tx_hash"),
         is_verified=t.get("is_verified", False),
+        # `or {}` not a default: a persisted trace can carry an explicit
+        # market_context of null, and `.get(k, {})` returns that null.
         regime_at_decision=(t.get("market_context") or {}).get("regime"),
         trades_executed=t.get("trades_executed", []),
         strategies_referenced=t.get("strategies_referenced", []),
@@ -104,6 +142,22 @@ def _trace_from_off_chain(t: dict) -> TraceResponse:
         temporal_binding_valid=t.get("temporal_binding_valid"),
         temporal_binding_source=t.get("temporal_binding_source", "none"),
     )
+
+
+def _assert_can_read(trace: dict, request: Request) -> None:
+    """404 unless the caller may read this trace (#1556).
+
+    404 rather than 403 deliberately: a 403 on someone else's trace id
+    confirms the id exists, which is half of the enumeration the gate is here
+    to prevent.
+    """
+    from fastapi import HTTPException
+
+    from archimedes.services.trace_visibility import can_read_trace
+
+    caller_user_id, caller_wallet = _caller_identity(request)
+    if not can_read_trace(trace, caller_wallet, caller_user_id=caller_user_id):
+        raise HTTPException(status_code=404, detail="Trace not found")
 
 
 @traces_router.get("/", response_model=TraceListResponse)
@@ -121,50 +175,81 @@ async def list_traces(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List reasoning traces, newest first -- on-chain IDs merged with off-chain metadata.
+    """List reasoning traces -- merges on-chain IDs with off-chain metadata.
 
-    Unfiltered, this is public product material: every row is an agent decision
-    on a platform vault whose hash is already anchored in a public registry on
-    a public chain, so gating the read would hide nothing that isn't already
-    readable from Arc.
+    Scoped to what the caller may read (#1556): house-public traces for an
+    anonymous caller, plus their own for a signed-in one. ``vault_address``
+    stays a *filter* — it narrows the visible set, it never widens it — so
+    dropping it can no longer enumerate the platform.
 
-    ``strategy_id`` is the exception, and it is not about the traces. Reporting
-    "0 traces" vs "3 traces" for an id is an existence oracle for the *strategy*,
-    and generated strategies are private-until-published (#850). So the scoped
-    listing runs ``assert_strategy_visible`` first and 404s exactly as
-    ``GET /api/strategies/{id}`` and ``/debate`` do — same gate, one
-    implementation, never a 403 (which would confirm the id).
+    ``strategy_id`` needs a gate of its own, and it is not about the traces.
+    Reporting "0 traces" vs "3 traces" for an id is an existence oracle for the
+    *strategy*, and generated strategies are private-until-published (#850). So
+    the scoped listing runs ``assert_strategy_visible`` first and 404s exactly
+    as ``GET /api/strategies/{id}`` and ``/debate`` do — same gate, one
+    implementation, never a 403 (which would confirm the id). The #1556 per-row
+    filter still runs afterwards: passing the strategy gate grants no read on a
+    trace you do not own.
     """
     from archimedes.services.redis_state import AgentStateStore
+    from archimedes.services.trace_visibility import (
+        MAX_TRACE_SCAN,
+        is_trace_visible,
+        safe_resolve_vault_owners,
+        trace_owner_view,
+    )
 
     if strategy_id:
         assert_strategy_visible(strategy_id, request)
 
+    caller_user_id, caller_wallet = _caller_identity(request)
+
     state = AgentStateStore()
     try:
         try:
-            off_chain_traces, total = await state.list_traces(
+            # Fetch the whole candidate set and window AFTER filtering. Windowing
+            # first would return short pages whose length leaks how many of
+            # somebody else's traces were skipped.
+            off_chain_traces, _ = await state.list_traces(
                 vault_address=vault_address,
                 decision_type=decision_type,
                 strategy_id=strategy_id,
-                limit=limit,
-                offset=offset,
+                limit=MAX_TRACE_SCAN,
+                offset=0,
             )
         except Exception:
             logger.warning("list_traces: Redis unavailable — falling back to on-chain-only listing", exc_info=True)
-            off_chain_traces, total = [], 0
+            off_chain_traces = []
 
         if off_chain_traces:
-            traces = [_trace_from_off_chain(t) for t in off_chain_traces if t.get("trigger") != "empty_vault"]
-            return TraceListResponse(traces=traces, total=total)
+            # One batched ownership lookup for the whole page, and only for rows
+            # that lack an on-record stamp — a stamped row needs no DB at all.
+            owners = safe_resolve_vault_owners(
+                {
+                    str(t.get("vault_address") or "")
+                    for t in off_chain_traces
+                    if not (t.get("owner_user_id") or t.get("owner_wallet"))
+                }
+            )
+            visible = [
+                t
+                for t in off_chain_traces
+                if t.get("trigger") != "empty_vault"
+                and is_trace_visible(trace_owner_view(t, owners), caller_wallet, caller_user_id=caller_user_id)
+            ]
+            total = len(visible)
+            return TraceListResponse(
+                traces=[_offchain_trace_response(t) for t in visible[offset : offset + limit]],
+                total=total,
+            )
 
         if strategy_id:
             # The on-chain fallback below CANNOT answer a strategy-scoped
-            # question: the registry entry is (agent, vault, hash, timestamp)
-            # and records no strategy reference at all. Falling through would
-            # return the whole unfiltered registry under a filter the caller
-            # asked for — every row a false positive. An empty result is the
-            # honest answer to "no off-chain body, so no strategy link".
+            # question: a registry entry is (agent, vault, hash, timestamp) and
+            # records no strategy reference at all. Falling through would return
+            # the whole unfiltered registry under a filter the caller asked for
+            # — every row a false positive. An empty result is the honest answer
+            # to "no off-chain body, so no strategy link".
             return TraceListResponse(traces=[], total=0)
 
         from archimedes.chain.trace_publisher import trace_publisher
@@ -183,6 +268,7 @@ async def list_traces(
             start = max(1, total_count - offset - limit + 1)
             end = max(1, total_count - offset)
 
+            on_chain_details: list[tuple[int, dict]] = []
             for trace_id in range(end, start - 1, -1):
                 detail = await trace_publisher.get_trace_by_id(trace_id)
                 if detail is None:
@@ -191,6 +277,17 @@ async def list_traces(
                 if vault_address and detail["vault"].lower() != vault_address.lower():
                     continue
 
+                on_chain_details.append((trace_id, detail))
+
+            # The registry-only projection carries no reasoning body, but it
+            # still names the vault and the anchor — gate it on exactly the
+            # same predicate so a caller cannot enumerate another user's
+            # vault's trace ids by taking Redis out of the picture.
+            owners = safe_resolve_vault_owners({str(d["vault"]) for _, d in on_chain_details})
+            for trace_id, detail in on_chain_details:
+                view = trace_owner_view({"vault_address": detail["vault"]}, owners)
+                if not is_trace_visible(view, caller_wallet, caller_user_id=caller_user_id):
+                    continue
                 traces.append(_anchored_only_trace(str(trace_id), detail))
         except Exception:
             logger.debug("on-chain trace listing failed", exc_info=True)
@@ -201,13 +298,21 @@ async def list_traces(
 
 
 @traces_router.get("/{trace_id}", response_model=TraceDetailResponse)
-async def get_trace(trace_id: str):
+async def get_trace(trace_id: str, request: Request):
     """Get one reasoning trace in full, by UUID, trace hash, or on-chain id.
 
     Returns the reasoning text plus the rest of the hashed body — the market
-    context the agent read, the portfolio before and after, and the paper
-    hashes it consulted. That is the readable form of what the anchor commits
-    to; ``/canonical`` remains the byte-exact form for re-hashing.
+    context the agent read, the portfolio before and after, and the paper hashes
+    it consulted. That is the readable form of what the anchor commits to;
+    ``/canonical`` remains the byte-exact form for re-hashing.
+
+    **The widened body is exactly why the #1556 gate is load-bearing here.**
+    ``portfolio_before``/``portfolio_after`` are holdings and ``market_context``
+    is what the agent saw — the same fields that made ``/canonical`` the
+    CRITICAL surface in that issue. Widening this route without the gate would
+    have re-opened it in a friendlier format, so a non-owner gets 404 (never
+    403, never a redacted 200) whether the trace resolves off-chain or only
+    from the registry.
 
     The on-chain-only fallback widens to the same model but leaves every added
     field at its empty default, because the registry stores no body. That is a
@@ -227,7 +332,10 @@ async def get_trace(trace_id: str):
             logger.warning("get_trace: Redis unavailable — falling back to on-chain-only lookup", exc_info=True)
             off_chain = None
         if off_chain:
-            row = _trace_from_off_chain({**off_chain, "id": off_chain.get("id", trace_id)})
+            # Gate BEFORE projecting: the projection below is the widened body,
+            # and a 404 must be indistinguishable from "no such trace".
+            _assert_can_read(off_chain, request)
+            row = _offchain_trace_response(off_chain, fallback_id=trace_id)
             return TraceDetailResponse(
                 **row.model_dump(),
                 market_context=off_chain.get("market_context") or {},
@@ -247,6 +355,7 @@ async def get_trace(trace_id: str):
         if detail is None:
             raise HTTPException(status_code=404, detail="Trace not found")
 
+        _assert_can_read({"vault_address": detail["vault"]}, request)
         return TraceDetailResponse(**_anchored_only_trace(trace_id, detail).model_dump())
     finally:
         await state.close()
@@ -257,6 +366,12 @@ async def publish_trace(req: TracePublishRequest, _: None = Depends(require_inte
     """Publish a reasoning trace: compute hash, anchor on Arc, persist off-chain.
 
     Internal-only: requires X-Internal-Agent-Key header.
+
+    Ownership (#1556) is stamped onto the stored record by
+    ``AgentStateStore.save_trace``, resolved from the vault this trace is for.
+    It is done there rather than here on purpose: this route is one of five
+    trace write paths, and the guarantee that matters is "every persisted trace
+    knows its owner", which only a single choke point can make true.
     """
     import uuid
     from datetime import datetime
@@ -354,8 +469,14 @@ async def publish_trace(req: TracePublishRequest, _: None = Depends(require_inte
 
 @traces_router.get("/{trace_id}/verify", response_model=TraceVerifyResponse)
 @limiter.exempt
-async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slowapi @limiter.exempt inspects param name
-    """Verify a reasoning trace against its on-chain anchor."""
+async def verify_trace(trace_id: str, request: Request):
+    """Verify a reasoning trace against its on-chain anchor.
+
+    Ownership-gated (#1556) on the same predicate as the display routes: the
+    response names the vault, the agent and the anchor timestamp, so an
+    ungated verify is an enumeration oracle even though it carries no
+    reasoning body.
+    """
     from fastapi import HTTPException
 
     from archimedes.chain.trace_publisher import trace_publisher
@@ -388,6 +509,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
             if not detail:
                 raise HTTPException(status_code=404, detail="Trace not found")
 
+            _assert_can_read({"vault_address": detail["vault"]}, request)
             return TraceVerifyResponse(
                 trace_id=int_id,
                 trace_hash=detail["trace_hash"],
@@ -398,6 +520,8 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                 on_chain_timestamp=detail["timestamp"],
                 details="Hash is anchored on-chain — no off-chain trace body was stored, so no hashes were compared",
             )
+
+        _assert_can_read(off_chain, request)
 
         trace_hash = off_chain.get("trace_hash", "")
         is_verified = False
@@ -456,8 +580,14 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
 
 
 @traces_router.get("/{trace_id}/canonical")
-async def get_trace_canonical(trace_id: str):
-    """Get the canonical JSON used to compute the trace hash."""
+async def get_trace_canonical(trace_id: str, request: Request):
+    """Get the canonical JSON used to compute the trace hash.
+
+    The most sensitive of the four reads and the reason #1556 was filed
+    CRITICAL: the canonical body is the FULL hashed record —
+    ``portfolio_before`` / ``portfolio_after`` (holdings) and
+    ``market_context`` — so it is ownership-gated like the rest.
+    """
     from fastapi import HTTPException
     from fastapi.responses import PlainTextResponse
 
@@ -475,6 +605,8 @@ async def get_trace_canonical(trace_id: str):
             raise HTTPException(status_code=503, detail="Trace store temporarily unavailable — retry.") from None
         if not off_chain:
             raise HTTPException(status_code=404, detail="Trace not found")
+
+        _assert_can_read(off_chain, request)
 
         trace = ReasoningTrace(
             id=off_chain["id"],
