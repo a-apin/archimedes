@@ -6788,7 +6788,7 @@ body:has(.public-site) {
 	border-radius: 10px;
 }
 
-.public-use-case-scenes .is-custody {
+.public-use-case-scenes .is-rigor {
 	border-color: var(--accent);
 	background: var(--accent);
 	color: var(--accent-on);

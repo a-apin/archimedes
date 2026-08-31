@@ -1,16 +1,21 @@
 import { useEffect, useState } from "react";
 
 import { apiGet } from "../api";
-import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
-import { landing as ROADMAP_COPY } from "../roadmapCopy.js";
 
-// ConfigService exposes these core singleton fields. Arc-native USDC,
-// per-asset oracles, and user vaults are not fully represented, so the
-// derived total remains a floor rather than a complete inventory.
+// ConfigService exposes these core singleton fields. The list is deliberately
+// scoped to the contracts backing the claims this page actually makes —
+// research, the rigor gate, and on-chain trace anchoring. Arc-native USDC and
+// per-asset oracles are not fully represented either, so the derived total
+// stays a floor rather than a complete inventory.
+//
+// The execution-side factory field is deliberately omitted: this page makes no
+// execution claim at all, and the claim-integrity guard in
+// ui/test/roadmap-copy.test.js asserts that literally by source-scanning this
+// whole file — see EXECUTION_CLAIM_FREE_SURFACES there. That scan is why the
+// words it forbids do not appear in these comments either.
 const CORE_CONTRACT_FIELDS = [
 	"synthetic_factory",
 	"amm_router",
-	"vault_factory",
 	"reasoning_trace_registry",
 	"asset_registry",
 	"price_oracle",
@@ -57,12 +62,8 @@ const WORKFLOW = [
 		body: "The selected method faces DSR, PBO, out-of-sample, and look-ahead checks before sizing diagnostics expose its tradeoffs.",
 	},
 	{
-		title: "Authorize",
-		body: "You review the passport and sign any vault action with your linked wallet.",
-	},
-	{
 		title: "Inspect",
-		body: "Reasoning traces bind context, papers, actions, and an Arc transaction reference into one record.",
+		body: "Every run leaves a reasoning trace — brief, cited papers, considered rejects, and the gate verdict — content-hashed and anchored on Arc.",
 	},
 ];
 
@@ -80,13 +81,12 @@ const FAQS = [
 	{
 		question: "Do I need a wallet to explore Archimedes?",
 		answer:
-			"No. Create an account to generate and save strategies. Link a wallet only when you need proof of on-chain control or want to authorize a vault action.",
+			"No. Create an account to generate and save strategies. Link a wallet only when you want proof of on-chain control.",
 	},
 	{
-		question: "Can Archimedes withdraw from my vault?",
+		question: "Does Archimedes trade for me?",
 		answer:
-			"No. The agent receives rebalance authority within contract rules. Vault ownership and withdrawals stay with the user wallet.",
-		roadmapOnly: true,
+			"No. Today Archimedes generates, gates, and records strategies, and can run them against paper trading. It does not execute with capital, and it never takes the other side of a trade.",
 	},
 	{
 		question: "Is this running with real money?",
@@ -119,12 +119,11 @@ export default function Landing() {
 		coreCount != null && synthCount != null && poolCount != null
 			? coreCount + synthCount + poolCount
 			: null;
-	const visibleWorkflow = ROADMAP_SURFACES_ENABLED
-		? WORKFLOW
-		: WORKFLOW.slice(0, 3);
-	const visibleFaqs = ROADMAP_SURFACES_ENABLED
-		? FAQS
-		: FAQS.filter((item) => !item.roadmapOnly);
+	// Every step and answer below describes a path that runs today, so there
+	// is no roadmap branch left to filter on — the execution tail was removed
+	// in the 2026-08-30 claim scrub (owner decision).
+	const visibleWorkflow = WORKFLOW;
+	const visibleFaqs = FAQS;
 
 	return (
 		<main className="public-landing">
@@ -139,9 +138,9 @@ export default function Landing() {
 								<span>Portfolio strategy,</span> <span>under scrutiny.</span>
 							</h1>
 							<p className="public-hero__lede">
-								{ROADMAP_SURFACES_ENABLED
-									? ROADMAP_COPY.heroLede
-									: "Archimedes turns a plain-language brief into a paper-grounded strategy, then tests it for selection bias against a rigor gate it must pass before anything runs live."}
+								Archimedes turns a plain-language brief into a paper-grounded
+								strategy, then tests it for selection bias against a rigor gate it
+								must pass before anything runs live.
 							</p>
 							<div className="public-actions">
 								<a
@@ -221,9 +220,8 @@ export default function Landing() {
 							Built for inspection, not spectacle.
 						</h2>
 						<p>
-							{ROADMAP_SURFACES_ENABLED
-								? "Every surface answers one question: what was requested, what was rejected, what survived, who authorized it, and what happened."
-								: "Every surface answers one question: what was requested, what was rejected, and what survived the rigor gate."}
+							Every surface answers one question: what was requested, what was
+							rejected, and what survived the rigor gate.
 						</p>
 					</div>
 
@@ -265,22 +263,20 @@ export default function Landing() {
 					<div className="public-context__intro">
 						<h2 id="use-cases-title">Useful when trust needs evidence.</h2>
 						<p>
-							{ROADMAP_SURFACES_ENABLED
-								? "Archimedes fits decisions where research, delegated action, and custody must stay separable."
-								: "Archimedes fits research decisions where sources, rejected candidates, and measured limits must stay visible."}
+							Archimedes fits research decisions where sources, rejected
+							candidates, and measured limits must stay visible.
 						</p>
 					</div>
 
 					<div className="public-use-case-scenes">
-						{ROADMAP_SURFACES_ENABLED && (
-							<article className="is-custody">
-								<span>Controlled autonomy</span>
-								<h3>Test idle USDC without surrendering withdrawal authority.</h3>
-								<p>
-									Arc public testnet keeps the experiment honest and reversible.
-								</p>
-							</article>
-						)}
+						<article className="is-rigor">
+							<span>Measured admission</span>
+							<h3>Find out whether an idea survives its own backtest.</h3>
+							<p>
+								Four independent checks run outside the generator, on real
+								persisted returns.
+							</p>
+						</article>
 						<article className="is-research">
 							<span>Legible evidence</span>
 							<h3>Run quant research without building a quant desk.</h3>
@@ -332,7 +328,7 @@ export default function Landing() {
 				</div>
 			</section>
 
-			{ROADMAP_SURFACES_ENABLED && <AuthorityBoundary />}
+			<AuthorityBoundary />
 
 			<section
 				id="faq"
@@ -391,11 +387,7 @@ function ProductWorkspace({
 		<figure id="product" className="public-product-frame">
 			<div className="public-product-frame__bar">
 				<span>Strategy workspace</span>
-				<span>
-					{ROADMAP_SURFACES_ENABLED
-						? "Brief → gate → authority"
-						: "Brief → debate → gate"}
-				</span>
+				<span>Brief → debate → gate</span>
 			</div>
 			<img
 				src="/product-workspace.png"
@@ -447,17 +439,8 @@ function EvidenceLedger() {
 						<span>Failures remain part of the record.</span>
 					</li>
 					<li>
-						{ROADMAP_SURFACES_ENABLED ? (
-							<>
-								<strong>You hold authority</strong>
-								<span>Wallet proof appears only for on-chain control.</span>
-							</>
-						) : (
-							<>
-								<strong>Verdict stays visible</strong>
-								<span>Measured failures remain part of the record.</span>
-							</>
-						)}
+						<strong>Verdict stays visible</strong>
+						<span>Measured failures remain part of the record.</span>
 					</li>
 				</ul>
 				<nav className="public-proof-strip__links" aria-label="Evidence links">
@@ -497,6 +480,13 @@ function RigorMatrix() {
 	);
 }
 
+// The admission boundary — what the system decides versus what you decide.
+// Rewritten in the 2026-08-30 claim scrub (owner decision): this section used
+// to describe an owner/agent authority split over an on-chain execution path
+// that is not live — there are zero live user deployments of it. Every line
+// below describes a path that runs today: generation, the external rigor
+// gate, paper trading, and on-chain trace anchoring. Structure and class
+// names are unchanged so the section keeps its existing layout.
 function AuthorityBoundary() {
 	return (
 		<section
@@ -506,37 +496,37 @@ function AuthorityBoundary() {
 		>
 			<div className="public-shell">
 				<div className="public-section__intro">
-					<h2 id="authority-title">Agent cannot withdraw.</h2>
+					<h2 id="authority-title">The gate decides admission. You decide what runs.</h2>
 					<p>
-						Autonomy stops at ownership. Account identity, wallet control, and
-						agent authority remain separate by contract.
+						Account identity, wallet proof, and the research pipeline stay
+						separate. Nothing reaches a live path by asserting that it should.
 					</p>
 				</div>
 				<div className="authority-boundary__grid">
 					<div className="authority-boundary__side authority-boundary__side--agent">
-						<p className="authority-boundary__owner">Agent may</p>
+						<p className="authority-boundary__owner">Archimedes may</p>
 						<ul>
-							<li>Read market conditions and research evidence</li>
-							<li>Propose allocations and rebalance within vault rules</li>
-							<li>Commit its reasoning before an enforced trade</li>
+							<li>Read market conditions and cited research</li>
+							<li>Propose, rank, and reject candidate strategies</li>
+							<li>Anchor its reasoning on Arc before it reports a verdict</li>
 						</ul>
 					</div>
 					<div className="authority-boundary__line" aria-hidden="true">
-						<span>contract boundary</span>
+						<span>admission boundary</span>
 					</div>
 					<div className="authority-boundary__side authority-boundary__side--user">
 						<p className="authority-boundary__owner">Only you may</p>
 						<ul>
-							<li>Authorize deposits with your wallet</li>
-							<li>Retain withdrawal authority over your vault</li>
-							<li>Choose whether a validated strategy receives capital</li>
+							<li>Set the brief, the assets, and the risk appetite</li>
+							<li>Keep or discard a strategy after reading its passport</li>
+							<li>Link a wallet, when you want proof of on-chain control</li>
 						</ul>
 					</div>
 				</div>
 				<div className="authority-boundary__verdict" role="note">
-					<span>Ownership invariant</span>
-					<strong>You retain vault ownership.</strong>
-					<span>Withdrawals stay with your wallet.</span>
+					<span>Admission invariant</span>
+					<strong>A failed gate is not overridable.</strong>
+					<span>The measured reason stays on the record.</span>
 				</div>
 				<a className="authority-boundary__link" href="/security">
 					Read security posture

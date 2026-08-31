@@ -63,8 +63,14 @@ test("security page separates verified controls from known limits", () => {
 	assert.match(security, /Security is enforced boundaries, not a guarantee/i);
 	assert.match(security, /Better Auth/);
 	assert.match(security, /five-minute/i);
-	assert.match(security, /Agent may mis-rebalance/i);
-	assert.match(security, /cannot withdraw/i);
+	// Post-scrub (2026-08-30): the known-limits list must still lead with the
+	// two limits that matter most on a page with no execution behind it —
+	// that Archimedes does not trade, and that a passed gate is not a
+	// judgement guarantee. These replace the old "Agent may mis-rebalance …
+	// cannot withdraw" pair, which pinned a custody claim the page no longer
+	// makes.
+	assert.match(security, /does not trade with\s+capital today/);
+	assert.match(security, /Model risk:/);
 	assert.match(security, /No independent security audit/i);
 	assert.match(security, /Arc public testnet/i);
 	assert.match(security, /<main className="security-page">/);
@@ -95,11 +101,14 @@ test("landing has complete evidence-led conversion narrative", () => {
 	assert.match(landing, /EvidenceLedger/);
 	assert.match(landing, /RigorMatrix/);
 	assert.match(landing, /AuthorityBoundary/);
-	assert.match(
-		landing,
-		/\{ROADMAP_SURFACES_ENABLED && <AuthorityBoundary \/>\}/,
-	);
-	assert.match(landing, /WORKFLOW\.slice\(0, 3\)/);
+	// Post-scrub (2026-08-30): AuthorityBoundary no longer describes an
+	// execution-authority split, so it is no longer flag-gated — it renders
+	// unconditionally and describes the admission boundary that is live. The
+	// WORKFLOW roadmap tail is gone with it, so there is nothing left to
+	// slice: every step in WORKFLOW describes a path that runs today.
+	assert.match(landing, /^\t\t\t<AuthorityBoundary \/>$/m);
+	assert.doesNotMatch(landing, /ROADMAP_SURFACES_ENABLED/);
+	assert.doesNotMatch(landing, /WORKFLOW\.slice\(/);
 	assert.match(landing, /Deflated Sharpe Ratio/);
 	assert.match(landing, /Probability of Backtest Overfitting/);
 	assert.match(landing, /Walk-forward out-of-sample/);
