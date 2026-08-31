@@ -170,7 +170,11 @@ entire marketing wedge.
 User describes intent in the UI
         │
         ▼
-POST /api/strategies/generate           (engine v2, Chuan #95)
+POST /api/generate/start                (the debate society — sole entry point.
+                                         POST /api/strategies/generate, the old
+                                         direct-fusion bypass, was deleted
+                                         2026-08-31. Fusion is now a step INSIDE
+                                         the society, not a route of its own.)
         │
         ▼
 FusionBrief built
