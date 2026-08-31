@@ -8,6 +8,7 @@ strategies to their origin arXiv documents for full traceability.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from datetime import UTC, datetime
@@ -50,7 +51,12 @@ class StrategyRecord(Base):
 
     # Generation provenance
     generation_method = Column(String(32), nullable=False)  # fusion|architect|curated
-    source_papers = Column(Text, nullable=False, default="[]")  # JSON: [{arxiv_id, sha256}]
+    # JSON list of ``assoc/v1`` records — see ``models/paper_assoc.py`` for the
+    # key set and the honesty rules. Normalized on write by upsert_strategy, so
+    # every row holds one shape regardless of which writer produced it (#1637).
+    # This comment previously claimed ``[{arxiv_id, sha256}]``, which was a
+    # FOURTH shape nothing actually emitted.
+    source_papers = Column(Text, nullable=False, default="[]")
     provenance_hash = Column(String(66), nullable=True)
 
     # Strategy definition
@@ -182,13 +188,24 @@ class StrategyRecord(Base):
         NOT a full passport reconstruction (rigor/backtest columns live on
         ``strategy_passports`` instead — see ``StrategyPassportRecord``).
         """
+        from archimedes.models.paper_assoc import assoc_to_paper_ref, cited
         from archimedes.models.paper_ref import PaperRef
         from archimedes.models.strategy import StrategyPassport
 
         source_papers = json.loads(self.source_papers) if self.source_papers else []
+        # Only the CITED subset reaches the passport: a "considered" association
+        # records that the selector surfaced a paper, not that this strategy is
+        # built on it, and putting one in ``papers`` would claim provenance the
+        # strategy never had.
         papers = [
-            PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title") or self.strategy_name or "")
-            for p in source_papers
+            # ``title or strategy_name`` is a display fallback the legacy
+            # keyword evaluator depends on (``_get_evaluator(paper_title, …)``),
+            # NOT a provenance claim — the wire projections
+            # (``_resolve_source_papers``, ``PassportPaperRef.to_dict``) keep an
+            # unresolvable title NULL rather than printing the strategy's name
+            # in the cited-paper column.
+            _with_display_title(assoc_to_paper_ref(a), self.strategy_name)
+            for a in cited(source_papers)
         ] or [PaperRef(title=self.strategy_name or "")]
 
         return StrategyPassport(
@@ -203,6 +220,21 @@ class StrategyRecord(Base):
         )
 
 
+def _with_display_title(ref, strategy_name: str):
+    """Fill a blank ``PaperRef.title`` with the strategy name, for DISPLAY only.
+
+    ``to_strategy_passport`` feeds the live signal evaluator, whose legacy
+    keyword path selects an evaluator from ``paper_title``; a blank title there
+    silently drops the strategy from the scan. This is the one place that
+    fallback is legitimate, and it is deliberately NOT applied on any wire
+    projection — printing the strategy's own name in a "cited paper" column is
+    a fabricated citation (see ``_resolve_source_papers``).
+    """
+    if ref.title:
+        return ref
+    return dataclasses.replace(ref, title=strategy_name or "")
+
+
 def _compute_content_hash(
     generation_method: str,
     strategy_name: str,
@@ -210,7 +242,54 @@ def _compute_content_hash(
     source_papers: list[dict],
     asset_universe: list[str],
 ) -> str:
-    """Deterministic keccak256 content hash for dedup."""
+    """Deterministic keccak256 content hash for dedup.
+
+    **The hash sees paper IDENTITY only** — ``assoc_identity`` reduces
+    ``source_papers`` to sorted, de-duplicated ``(arxiv_id, role)`` pairs
+    before it reaches the canonical JSON (#1637).
+
+    It used to hash the whole association dicts. That made the *shape* part of
+    the strategy's identity: the same paper set arriving through the fusion
+    job (``{arxiv_id, sha256: ""}``) and through the debate engine
+    (``{arxiv_id, title: ""}``) produced two hashes, two ids and two "different"
+    strategies, and backfilling a title onto a stored association would have
+    forked one strategy into two all over again. A title is a fact *about* a
+    paper; it is not what makes the association a different association.
+    """
+    from web3 import Web3
+
+    from archimedes.models.paper_assoc import assoc_identity
+
+    canonical = json.dumps(
+        {
+            "generation_method": generation_method,
+            "strategy_name": strategy_name,
+            "thesis": thesis,
+            "source_papers": assoc_identity(source_papers),
+            "asset_universe": sorted(asset_universe),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return Web3.keccak(text=canonical).hex()
+
+
+def _compute_content_hash_v0(
+    generation_method: str,
+    strategy_name: str,
+    thesis: str,
+    source_papers: list[dict],
+    asset_universe: list[str],
+) -> str:
+    """The pre-#1637 hash, kept ONLY so ``upsert_strategy`` can recognise its
+    own historical rows.
+
+    Frozen by definition: this is not a hash function we compute new values
+    with, it is the key that existing ``strategy_store`` rows were written
+    under. Its ONE legitimate caller is migration ``b41c7e0d95a2``, which uses
+    it to recognise a row it is about to re-stamp. Never call it to *store*
+    anything.
+    """
     from web3 import Web3
 
     canonical = json.dumps(
@@ -264,12 +343,30 @@ def upsert_strategy(
     branches below store the same thing: a blank brief has nothing to show,
     and a row holding ``"   "`` would render an empty "Your brief" card on the
     passport instead of no card at all.
+
+    ``source_papers`` is normalized to ``assoc/v1`` here (#1637) regardless of
+    which writer's legacy shape arrived, so the column holds ONE shape and the
+    hash sees paper identity only.
     """
+    from archimedes.models.paper_assoc import normalize_assocs
+
     owner_wallet = owner_wallet.lower() if owner_wallet else None
     # Normalize before either branch reads it — see the docstring. Doing it in
     # one place is what keeps the new-row branch and the backfill branch from
     # disagreeing about what "no brief" means.
     brief_intent = (brief_intent or "").strip() or None
+    # Same one-place rule for associations: the hash, the stored column and the
+    # log line below all read the SAME normalized list.
+    #
+    # Rows written before #1637 were hashed under _compute_content_hash_v0 and
+    # would no longer dedup against their own content. They are re-stamped ONCE,
+    # exactly, by migration ``b41c7e0d95a2`` — which recomputes the historical
+    # hash from each row's own stored columns and only rewrites the row when the
+    # recomputation reproduces what is actually stored. That is why there is no
+    # legacy-hash fallback lookup here: after the migration there is nothing left
+    # for one to find, and a fallback that GUESSED at the three historical shapes
+    # would be a second, weaker definition of identity living next to the real one.
+    source_papers = normalize_assocs(source_papers)
     content_hash = _compute_content_hash(
         generation_method,
         strategy_name,

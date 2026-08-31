@@ -1727,3 +1727,267 @@ def test_alembic_grading_engine_version_columns_added_and_removed(tmp_path):
 
     reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
     assert reupgrade_again.returncode == 0, reupgrade_again.stderr
+
+
+# ── assoc/v1 paper associations (b41c7e0d95a2, issue #1637) ────────────────
+
+_ASSOC_MIGRATION_REVISION = "b41c7e0d95a2"
+
+
+def _assoc_migration_down_revision() -> str:
+    """Looked up from the script directory, not hardcoded — same rationale as
+    ``_dedupe_migration_down_revision``."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision(_ASSOC_MIGRATION_REVISION).down_revision
+    assert isinstance(target, str), f"expected a single down_revision, got {target!r}"
+    return target
+
+
+def _seed_pre_assoc_strategy_rows(db_path: Path) -> dict[str, str]:
+    """Seed one row per historical writer shape, each stored under the hash the
+    PRE-#1637 function really produced for it, plus one provider-example row
+    whose hash that function never produced.
+
+    Returns ``{row_id: stored_content_hash}`` so the test can assert which rows
+    the migration re-stamped and which it correctly refused to touch.
+    """
+    import hashlib
+    import json as _json
+
+    from archimedes.models.strategy_store import _compute_content_hash_v0
+
+    rows = {
+        "debate_row": [{"arxiv_id": "2301.00001", "title": ""}],
+        "fusion_row": [{"arxiv_id": "2301.00001", "sha256": ""}],
+        "fixture_row": [{"arxiv_id": "2301.00001", "title": "Momentum"}],
+    }
+
+    seeded: dict[str, str] = {}
+    con = sqlite3.connect(str(db_path))
+    try:
+        cur = con.cursor()
+        for row_id, papers in rows.items():
+            content_hash = _compute_content_hash_v0("fusion", "Same Name", "Same thesis", papers, ["SPY"])
+            seeded[row_id] = content_hash
+            cur.execute(
+                "INSERT INTO strategy_store (id, content_hash, generation_method, source_papers, "
+                "strategy_name, thesis, asset_universe, risk_profile, status, is_example, is_published, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row_id,
+                    content_hash,
+                    "fusion",
+                    _json.dumps(papers),
+                    "Same Name",
+                    "Same thesis",
+                    _json.dumps(["SPY"]),
+                    "moderate",
+                    "candidate",
+                    0,
+                    0,
+                    "2026-08-01 00:00:00",
+                    "2026-08-01 00:00:00",
+                ),
+            )
+        # A provider example: main.py stamps a domain-separated SHA-256 that
+        # _compute_content_hash_v0 never produced and can never reproduce.
+        example_hash = "0x" + hashlib.sha256(b"example:example_row").hexdigest()
+        seeded["example_row"] = example_hash
+        cur.execute(
+            "INSERT INTO strategy_store (id, content_hash, generation_method, source_papers, "
+            "strategy_name, thesis, asset_universe, risk_profile, status, is_example, is_published, "
+            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "example_row",
+                example_hash,
+                "curated",
+                _json.dumps([{"arxiv_id": "2301.00002", "title": "Curated", "authors": ["Ada"]}]),
+                "Curated Example",
+                "Curated thesis",
+                _json.dumps(["SPY"]),
+                "moderate",
+                "live",
+                1,
+                0,
+                "2026-08-01 00:00:00",
+                "2026-08-01 00:00:00",
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return seeded
+
+
+def _fetch_strategy_rows(db_path: Path) -> dict[str, sqlite3.Row]:
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT id, content_hash, source_papers FROM strategy_store")
+        return {row["id"]: row for row in cur.fetchall()}
+    finally:
+        con.close()
+
+
+def test_assoc_migration_restamps_only_rows_that_reproduce_their_stored_hash(tmp_path):
+    """#1637. Three writer-shaped rows all recompute to ONE identity; the
+    oldest takes it, the other two keep their legacy hash, and the
+    provider-example row is left byte-for-byte alone.
+
+    Three properties in one run:
+
+    1. **The re-stamp is exact.** A row is only rewritten when the frozen
+       pre-#1637 function reproduces the hash actually stored on it. The
+       provider example — seeded with ``main.py``'s domain-separated
+       ``sha256("example:" + id)`` — never reproduces, so it is skipped by
+       construction rather than by a special case.
+    2. **The unique constraint survives.** ``strategy_store`` carries
+       ``UNIQUE(content_hash)`` and the new identity is exactly the thing that
+       makes duplicate rows agree, so a naive UPDATE would abort the migration
+       on the very databases it is for. Collisions keep their legacy hash.
+    3. **``id`` is never recomputed** — it is a foreign key from four other
+       tables.
+    """
+    import json as _json
+
+    from archimedes.models.paper_assoc import ASSOC_KEYS, ASSOC_SCHEMA
+    from archimedes.models.strategy_store import _compute_content_hash
+
+    db_path = tmp_path / "assoc_restamp.db"
+    database_url = f"sqlite:///{db_path}"
+
+    pre = _run_alembic("upgrade", _assoc_migration_down_revision(), database_url=database_url)
+    assert pre.returncode == 0, pre.stderr
+
+    seeded = _seed_pre_assoc_strategy_rows(db_path)
+    # Sanity: the three writer shapes really did hash to three different values.
+    writer_hashes = {seeded[k] for k in ("debate_row", "fusion_row", "fixture_row")}
+    assert len(writer_hashes) == 3, "fixture no longer reproduces the pre-#1637 three-way split"
+
+    post = _run_alembic("upgrade", "head", database_url=database_url)
+    assert post.returncode == 0, f"assoc migration failed:\nSTDOUT:\n{post.stdout}\nSTDERR:\n{post.stderr}"
+
+    rows = _fetch_strategy_rows(db_path)
+
+    expected = _compute_content_hash(
+        "fusion",
+        "Same Name",
+        "Same thesis",
+        [{"arxiv_id": "2301.00001"}],
+        ["SPY"],
+    )
+
+    # 1. Exactly one of the three colliding rows carries the new identity —
+    #    the OLDEST (all three share created_at, so the id tiebreak decides).
+    writer_rows = {k: rows[k]["content_hash"] for k in ("debate_row", "fusion_row", "fixture_row")}
+    restamped = [k for k, h in writer_rows.items() if h == expected]
+    assert len(restamped) == 1, f"exactly one row may take the shared identity, got {writer_rows}"
+
+    # 2. The other two kept their ORIGINAL hash — not a mangled or empty value.
+    for row_id, stored in writer_rows.items():
+        if row_id not in restamped:
+            assert stored == seeded[row_id], f"{row_id} was rewritten to something it did not earn"
+
+    # 3. …and the migration said so, by id, rather than failing silently.
+    assert "kept their legacy content_hash" in post.stderr
+    for row_id in writer_rows:
+        if row_id not in restamped:
+            assert row_id in post.stderr
+
+    # 4. The provider-example row is untouched — it never reproduced.
+    assert rows["example_row"]["content_hash"] == seeded["example_row"]
+
+    # 5. Every row's source_papers is assoc/v1, example row included.
+    for row_id, row in rows.items():
+        assocs = _json.loads(row["source_papers"])
+        assert assocs, row_id
+        for a in assocs:
+            assert set(a) == ASSOC_KEYS, row_id
+            assert a["schema"] == ASSOC_SCHEMA
+
+    # 6. ids are NOT recomputed — they are FKs from four other tables.
+    assert set(rows) == {"debate_row", "fusion_row", "fixture_row", "example_row"}
+
+
+def test_assoc_migration_restamps_a_lone_row_onto_the_new_identity(tmp_path):
+    """The common case, isolated from the collision case above: with nothing to
+    collide with, a legacy row really does move onto the identity the current
+    hash function produces — which is what makes the next upsert dedup onto it
+    instead of inserting a second row."""
+    from archimedes.models.strategy_store import _compute_content_hash
+
+    db_path = tmp_path / "assoc_lone.db"
+    database_url = f"sqlite:///{db_path}"
+
+    assert _run_alembic("upgrade", _assoc_migration_down_revision(), database_url=database_url).returncode == 0
+    seeded = _seed_pre_assoc_strategy_rows(db_path)
+
+    # Drop the two rows that would collide, leaving one legacy-shaped row.
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("DELETE FROM strategy_store WHERE id IN ('debate_row', 'example_row')")
+        con.execute("DELETE FROM strategy_store WHERE id = 'fixture_row'")
+        con.commit()
+    finally:
+        con.close()
+
+    post = _run_alembic("upgrade", "head", database_url=database_url)
+    assert post.returncode == 0, post.stderr
+
+    row = _fetch_strategy_rows(db_path)["fusion_row"]
+    assert row["content_hash"] != seeded["fusion_row"], "the legacy hash must not survive"
+    assert row["content_hash"] == _compute_content_hash(
+        "fusion", "Same Name", "Same thesis", [{"arxiv_id": "2301.00001"}], ["SPY"]
+    )
+
+
+def test_assoc_migration_columns_added_and_removed(tmp_path):
+    db_path = tmp_path / "assoc_columns.db"
+    database_url = f"sqlite:///{db_path}"
+    target = _assoc_migration_down_revision()
+
+    def _cols(table: str) -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            return {r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
+        finally:
+            con.close()
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert {"role", "selection_rank", "semantic_score", "content_hash"} <= _cols("passport_paper_refs")
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert not {"role", "selection_rank", "semantic_score", "content_hash"} & _cols("passport_paper_refs")
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert {"role", "selection_rank", "semantic_score", "content_hash"} <= _cols("passport_paper_refs")
+
+
+def test_assoc_migration_upgrade_is_idempotent(tmp_path):
+    """Re-running the re-stamp over already-normalized data must be a no-op.
+
+    Second pass: the legacy hash no longer reproduces (source_papers is now
+    assoc/v1), so no row qualifies for a re-stamp — which is exactly right,
+    because they are already stamped. The values must not move.
+    """
+    db_path = tmp_path / "assoc_idempotent.db"
+    database_url = f"sqlite:///{db_path}"
+    target = _assoc_migration_down_revision()
+
+    assert _run_alembic("upgrade", target, database_url=database_url).returncode == 0
+    _seed_pre_assoc_strategy_rows(db_path)
+    assert _run_alembic("upgrade", "head", database_url=database_url).returncode == 0
+    first = {k: (v["content_hash"], v["source_papers"]) for k, v in _fetch_strategy_rows(db_path).items()}
+
+    assert _run_alembic("downgrade", target, database_url=database_url).returncode == 0
+    assert _run_alembic("upgrade", "head", database_url=database_url).returncode == 0
+    second = {k: (v["content_hash"], v["source_papers"]) for k, v in _fetch_strategy_rows(db_path).items()}
+
+    assert first == second

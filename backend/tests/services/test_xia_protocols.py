@@ -425,20 +425,28 @@ class TestTraceIntegration:
 
 
 class TestSourceTrackingRuntimeWiring:
-    """Confirms _paper_hashes_from_signals is wired into agent_runner (not test-only)."""
+    """Confirms _paper_hashes_from_signals is wired into agent_runner (not test-only).
 
-    def test_paper_hashes_from_signals_non_empty(self):
-        """Helper produces non-empty hashes when signals carry arxiv_ids."""
-        from archimedes.chain.agent_runner import _paper_hashes_from_signals
+    Rewritten for #1637. The previous version asserted the DEFECT: it required
+    ``any("abc123" in h ...)`` where ``abc123`` was a *strategy id*, pinning the
+    behaviour where a strategy with no arXiv id had its own id written into the
+    paper field, and every entry carried the strategy id as its "content hash".
+    That field is inside ``ReasoningTrace._HASH_FIELDS`` and is signed, so the
+    old assertions were guarding a fabricated provenance claim in place.
+    """
+
+    @staticmethod
+    def _signals():
         from archimedes.services.strategy_signal_evaluator import StrategySignals
 
-        signals = [
+        return [
             StrategySignals(
                 strategy_id="abc123",
                 strategy_name="Faber SMA200",
                 paper_title="A Quantitative Approach to Tactical Asset Allocation",
                 signals=[],
                 paper_arxiv_id="",
+                paper_arxiv_ids=[],
             ),
             StrategySignals(
                 strategy_id="def456",
@@ -446,12 +454,51 @@ class TestSourceTrackingRuntimeWiring:
                 paper_title="Time Series Momentum",
                 signals=[],
                 paper_arxiv_id="1105.0212",
+                paper_arxiv_ids=["1105.0212", "2301.00002"],
             ),
         ]
-        hashes = _paper_hashes_from_signals(signals)
-        assert len(hashes) == 2
-        assert any("abc123" in h for h in hashes)
-        assert any("1105.0212" in h for h in hashes)
+
+    def test_records_every_cited_paper_never_the_strategy_id(self):
+        """One entry per CITED PAPER — and no strategy id anywhere in the field."""
+        from unittest.mock import patch
+
+        from archimedes.chain.agent_runner import _paper_hashes_from_signals
+
+        with patch("archimedes.chain.agent_runner.corpus_content_hashes", return_value={}):
+            hashes = _paper_hashes_from_signals(self._signals())
+
+        # Two papers cited across the two strategies; the paper-less strategy
+        # contributes NOTHING rather than contributing itself.
+        assert hashes == ["1105.0212:", "2301.00002:"]
+        assert not any("abc123" in h or "def456" in h for h in hashes)
+
+    def test_suffix_is_the_corpus_hash_when_the_corpus_has_one(self):
+        from unittest.mock import patch
+
+        from archimedes.chain.agent_runner import _paper_hashes_from_signals
+
+        with patch(
+            "archimedes.chain.agent_runner.corpus_content_hashes",
+            return_value={"1105.0212": "deadbeef", "2301.00002": ""},
+        ):
+            hashes = _paper_hashes_from_signals(self._signals())
+
+        assert hashes == ["1105.0212:deadbeef", "2301.00002:"]
+
+    def test_corpus_outage_still_records_the_papers(self):
+        """An outage loses the hashes, never the ids — and never raises."""
+        from unittest.mock import patch
+
+        from archimedes.chain.agent_runner import _paper_hashes_from_signals
+        from archimedes.services.source_tracker import CorpusUnavailable
+
+        with patch(
+            "archimedes.chain.agent_runner.corpus_content_hashes",
+            side_effect=CorpusUnavailable("down"),
+        ):
+            hashes = _paper_hashes_from_signals(self._signals())
+
+        assert hashes == ["1105.0212:", "2301.00002:"]
 
     def test_paper_hashes_from_signals_empty_signals(self):
         """Empty signals list produces empty hashes — no KeyError."""
@@ -459,8 +506,8 @@ class TestSourceTrackingRuntimeWiring:
 
         assert _paper_hashes_from_signals([]) == []
 
-    def test_strategy_signals_has_paper_arxiv_id_field(self):
-        """StrategySignals carries paper_arxiv_id — runtime wiring is possible."""
+    def test_strategy_signals_carries_the_full_cited_set(self):
+        """StrategySignals carries every cited id, not just the first."""
         from archimedes.services.strategy_signal_evaluator import StrategySignals
 
         ss = StrategySignals(
@@ -469,5 +516,7 @@ class TestSourceTrackingRuntimeWiring:
             paper_title="x",
             signals=[],
             paper_arxiv_id="2510.02209",
+            paper_arxiv_ids=["2510.02209", "1105.0212"],
         )
         assert ss.paper_arxiv_id == "2510.02209"
+        assert ss.paper_arxiv_ids == ["2510.02209", "1105.0212"]

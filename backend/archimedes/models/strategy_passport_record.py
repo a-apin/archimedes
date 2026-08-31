@@ -238,6 +238,20 @@ class PassportPaperRef(Base):
     citation_count = Column(Integer, nullable=True)
     contribution = Column(Text, nullable=True)  # Fusion: what this paper contributed
 
+    # ── assoc/v1 projection (#1637) ──────────────────────────────────────
+    # The passport row is a projection of the association record in
+    # ``strategy_store.source_papers``; these four columns are the fields that
+    # projection was silently dropping. All nullable with no server_default:
+    # "not recorded" must stay distinguishable from a real value, and #1091
+    # means ``content_hash`` is genuinely NULL for every production paper.
+    # ``role`` is the one exception — it defaults to "cited" because every
+    # association that existed before this column WAS a citation; that is a
+    # recoverable fact, not a guess.
+    role = Column(String(16), nullable=False, default="cited", server_default="cited")
+    selection_rank = Column(Integer, nullable=True)
+    semantic_score = Column(Float, nullable=True)
+    content_hash = Column(String(64), nullable=True)
+
     passport = relationship("StrategyPassportRecord", back_populates="paper_refs")
 
     def to_paper_ref(self) -> PaperRef:
@@ -250,15 +264,33 @@ class PassportPaperRef(Base):
             year=self.year,
             citation_count=self.citation_count,
             contribution=self.contribution,
+            role=self.role or "cited",
+            selection_rank=self.selection_rank,
+            semantic_score=self.semantic_score,
+            content_hash=self.content_hash,
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Wire projection of one paper reference.
+
+        ``contribution`` was absent here (#1637) while ``StrategyPassport.jsx``
+        rendered a column for it — the passport promised a table it could not
+        fill. The four ``assoc/v1`` fields ride along for the same reason: the
+        renderer cannot show what the projection never emitted.
+        """
         return {
             "arxiv_id": self.arxiv_id,
-            "title": self.title,
+            # ``""`` is not a title. A blank one becomes None so the renderer
+            # prints "title unavailable — arXiv:<id>" instead of empty quotes.
+            "title": self.title or None,
             "authors": json.loads(self.authors) if self.authors else [],
             "doi": self.doi,
             "venue": self.venue,
             "year": self.year,
             "citation_count": self.citation_count,
+            "contribution": self.contribution,
+            "role": self.role or "cited",
+            "selection_rank": self.selection_rank,
+            "semantic_score": self.semantic_score,
+            "content_hash": self.content_hash,
         }

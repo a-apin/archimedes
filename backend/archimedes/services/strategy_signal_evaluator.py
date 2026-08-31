@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -553,7 +553,17 @@ class StrategySignals:
     strategy_name: str
     paper_title: str
     signals: list[AssetSignal]
+    #: Display-only convenience: the FIRST paper's id. Never use it for
+    #: provenance — a fusion strategy cites several and this names one of them
+    #: (see ``StrategyPassport.paper_arxiv_id``). ``paper_arxiv_ids`` below is
+    #: the provenance field.
     paper_arxiv_id: str = ""
+    #: Every arXiv id this strategy cites (#1637). This is what the reasoning
+    #: trace's ``consulted_paper_hashes`` is built from; before it existed the
+    #: agent runner wrote a single-element list whose "content hash" was the
+    #: strategy id, so a multi-paper decision recorded one paper it had not
+    #: actually hashed.
+    paper_arxiv_ids: list[str] = field(default_factory=list)
 
     @property
     def total_weight(self) -> float:
@@ -1627,6 +1637,16 @@ class StrategySignalEvaluator:
                         paper_title=strategy.paper_title,
                         signals=signals,
                         paper_arxiv_id=strategy.paper_arxiv_id,
+                        # The FULL cited set (#1637) — the reasoning trace binds
+                        # to this, not to the first-paper convenience field.
+                        #
+                        # getattr, not attribute access: this function's
+                        # `strategies` argument is duck-typed (StrategyPassport,
+                        # StrategyRecord.to_strategy_passport(), and test
+                        # doubles all flow through it). A strategy object with
+                        # no `papers` must contribute no papers — never abort
+                        # the whole market scan with an AttributeError.
+                        paper_arxiv_ids=[p.arxiv_id for p in (getattr(strategy, "papers", None) or []) if p.arxiv_id],
                     )
                 )
 

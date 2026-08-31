@@ -230,28 +230,34 @@ def safe_json_loads(raw, *, context: str):
 
 #: Decision types whose ``strategies_referenced`` really does hold strategy ids.
 #:
-#: The field's NAME promises strategy ids everywhere; its contents do not, and
-#: that is the whole reason this constant exists rather than a blanket match:
+#: The field's NAME promises strategy ids everywhere; its contents did not, and
+#: that is why this constant exists rather than a blanket match:
 #:
 #:   * ``chain/agent_runner.py`` (rebalance / rotation / regime_change / skip)
 #:     writes ``[ss.strategy_id for ss in all_signals]`` — genuine strategy ids.
-#:   * ``api/strategies_routes.py`` ``_run_fusion_job`` writes
+#:   * ``services/paper_trace.py`` writes ``[strategy_id]`` — one id, exactly.
+#:   * ``api/strategies_routes.py`` ``_run_fusion_job`` wrote
 #:     ``result.source_arxiv_ids`` on a ``construction`` trace — arXiv ids.
-#:   * ``api/strategies_routes.py``'s construction-trace writer writes the set of
-#:     ``paper_anchor`` values from the allocations — paper anchors.
+#:     **Fixed in #1637:** it now writes ``[strategy_id]`` and moves the arXiv
+#:     ids into ``consulted_paper_hashes``, the field that is for them.
 #:
-#: Both non-conforming writers emit ``decision_type="construction"``, so scoping
-#: the strategy filter to the decision types above is what makes the filter's
-#: promise true instead of accidentally-true. Without the scope a construction
-#: trace can never match a strategy id anyway — it just fails *silently*, which
-#: reads as "this strategy has no construction trace" when the truth is "this
-#: filter cannot see construction traces at all".
+#: ``"construction"`` is admitted here as a consequence of that fix. Until it
+#: was, a construction trace was structurally invisible to
+#: ``GET /api/traces/?strategy_id=`` — a passport could never show the trace of
+#: its own construction, and the failure was *silent*: it read as "this strategy
+#: has no construction trace" when the truth was "this filter cannot see
+#: construction traces at all".
 #:
-#: If a construction writer that records real strategy ids is ever wired
-#: (``services/construction_trace.py`` builds one, but nothing persists it
-#: today), add ``"construction"`` here AND fix the two writers above — do not
-#: special-case it at a call site.
-STRATEGY_REFERENCE_DECISION_TYPES = frozenset({"rebalance", "rotation", "regime_change", "skip"})
+#: The remaining exposure is the generic ``POST /api/traces/publish`` route,
+#: which takes ``strategies_referenced`` from an internal-agent-key caller and
+#: does not police its contents for any decision type. That is unchanged by
+#: this issue and is bounded by :func:`trace_references_strategy` matching whole
+#: strings: an arXiv id is not a 16-hex ``strategy_store`` id, so a
+#: non-conforming publisher records no match rather than a wrong one.
+#:
+#: If another construction writer appears, make it record real strategy ids —
+#: do not special-case it at a call site.
+STRATEGY_REFERENCE_DECISION_TYPES = frozenset({"construction", "rebalance", "rotation", "regime_change", "skip"})
 
 
 def trace_references_strategy(trace: dict, strategy_id: str) -> bool:
@@ -268,8 +274,11 @@ def trace_references_strategy(trace: dict, strategy_id: str) -> bool:
       whatever a future writer happens to key a mapping by into a provenance
       claim. No writer produces a dict here; an unrecognised shape records no
       references, so it matches nothing.
-    * A ``construction`` trace's list holds paper anchors and arXiv ids, not
-      strategy ids — see :data:`STRATEGY_REFERENCE_DECISION_TYPES`.
+    * A ``construction`` trace's list used to hold arXiv ids rather than
+      strategy ids, which is why the decision-type scope exists at all. #1637
+      fixed the writer and admitted ``"construction"``; the scope stays,
+      because it is what keeps the promise true for any future writer that
+      gets it wrong — see :data:`STRATEGY_REFERENCE_DECISION_TYPES`.
 
     Everything unrecognised answers False. "I cannot establish that this
     decision consulted that strategy" is the honest answer, and it is the safe
@@ -653,11 +662,11 @@ class AgentStateStore:
         Returns ``(window, total)`` where ``total`` counts everything matching
         the filters, not just the returned page.
 
-        ``strategy_id`` keeps only DECISION traces that name exactly this
-        strategy in ``strategies_referenced`` — see
-        :func:`trace_references_strategy` for why the match is exact and why
-        construction/generation traces are out of scope (their
-        ``strategies_referenced`` holds paper anchors and arXiv ids). It is
+        ``strategy_id`` keeps only traces that name exactly this strategy in
+        ``strategies_referenced`` — see :func:`trace_references_strategy` for
+        why the match is exact and :data:`STRATEGY_REFERENCE_DECISION_TYPES`
+        for which decision types are in scope (``construction`` joined them in
+        #1637, once its writer started recording strategy ids). It is
         applied **here**, alongside the other filters and *before* windowing,
         for the same reason they are: filtering a page after it has been cut
         would make ``total`` count unfiltered rows and hand the caller a

@@ -73,7 +73,11 @@ from archimedes.services.portfolio_constructor import PortfolioConstructor
 from archimedes.services.redis_state import AgentStateStore
 from archimedes.services.redis_state import is_dangling_reveal as _needs_reveal_reconciliation
 from archimedes.services.runner_lease import RunnerLeaseGuard
-from archimedes.services.source_tracker import build_consulted_hashes
+from archimedes.services.source_tracker import (
+    CorpusUnavailable,
+    build_consulted_hashes,
+    corpus_content_hashes,
+)
 from archimedes.services.strategy_provider import default_provider
 from archimedes.services.strategy_signal_evaluator import (
     StrategySignals,
@@ -220,11 +224,37 @@ def _compute_confidence(all_signals: list[StrategySignals]) -> float:
 def _paper_hashes_from_signals(all_signals: list[StrategySignals]) -> list[str]:
     """Build consulted-paper hash list (Xia § 4.3 Source Tracking) from strategy signals.
 
-    Uses strategy_id as the content hash — it is a SHA-256 of paper + methodology,
-    so it IS a stable content fingerprint even without a separate pdf_sha256.
+    Records **every** cited paper, as ``"{arxiv_id}:{content_hash or ''}"``
+    (#1637).
+
+    What this replaced was worse than incomplete. It emitted one entry per
+    *strategy* — ``ss.paper_arxiv_id or ss.strategy_id`` — with the strategy id
+    as the "content hash". So a fusion strategy synthesized from six papers
+    recorded exactly one, the recorded hash was a hash of the strategy rather
+    than of any paper, and when the strategy carried no arXiv id the *paper id
+    itself* was the strategy id. The field is inside ``_HASH_FIELDS`` and is
+    signed, so that value was anchored on-chain as provenance.
+
+    Content hashes come from the corpus and are ``""`` when unhydrated — which
+    is every paper in production today (#1091). An empty suffix asserts
+    nothing; a synthesized one would assert something false to earn a green
+    checkmark. A corpus outage is treated the same way: the ids are still
+    recorded, the hashes are simply absent.
+
+    Old traces are NOT re-anchored. They keep their signed single-paper field
+    and are legacy by construction; this only fixes what is written from here on.
     """
-    papers = [{"arxiv_id": ss.paper_arxiv_id or ss.strategy_id, "content_hash": ss.strategy_id} for ss in all_signals]
-    return build_consulted_hashes(papers)
+    arxiv_ids = sorted({aid for ss in all_signals for aid in (ss.paper_arxiv_ids or []) if aid})
+    if not arxiv_ids:
+        return []
+
+    try:
+        resolved = corpus_content_hashes(arxiv_ids)
+    except CorpusUnavailable:
+        logger.warning("agent_runner: corpus unavailable — recording consulted papers with no content hashes")
+        resolved = {}
+
+    return build_consulted_hashes([{"arxiv_id": aid, "content_hash": resolved.get(aid, "")} for aid in arxiv_ids])
 
 
 # _needs_reveal_reconciliation is imported (aliased) from
@@ -1516,7 +1546,11 @@ class StrategyRunner:
             confidence=_compute_confidence(all_signals),
             trades_executed=[{"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount} for t in trades],
             strategies_referenced=[ss.strategy_id for ss in all_signals],
-            consulted_paper_hashes=_paper_hashes_from_signals(all_signals),
+            # to_thread: this reads the corpus for content hashes, and a blocking
+            # DB call made directly on the loop stalls every other in-flight
+            # coroutine — same rule as `_assert_can_read` (#1573). The helper
+            # stays sync so it can be unit-tested without a loop.
+            consulted_paper_hashes=await asyncio.to_thread(_paper_hashes_from_signals, all_signals),
         )
 
         trace.compute_hash()
@@ -2297,7 +2331,11 @@ class StrategyRunner:
             confidence=_compute_confidence(all_signals),
             trades_executed=[{"symbol": t.symbol, "direction": t.direction.value, "amount": t.amount} for t in trades],
             strategies_referenced=[ss.strategy_id for ss in all_signals],
-            consulted_paper_hashes=_paper_hashes_from_signals(all_signals),
+            # to_thread: this reads the corpus for content hashes, and a blocking
+            # DB call made directly on the loop stalls every other in-flight
+            # coroutine — same rule as `_assert_can_read` (#1573). The helper
+            # stays sync so it can be unit-tested without a loop.
+            consulted_paper_hashes=await asyncio.to_thread(_paper_hashes_from_signals, all_signals),
         )
 
         trace.compute_hash()

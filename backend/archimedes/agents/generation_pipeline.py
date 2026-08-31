@@ -787,6 +787,8 @@ async def _run_fixture_candidate(
         name = f"{brief.risk_appetite.title()} Blend — {intent_snippet}"
         weights = {"sSPY": 0.5, "sGLD": 0.3, "sBTC": 0.2}
     # Fixture source_papers: pull from curated library (same fallback as live)
+    from archimedes.models.paper_assoc import make_assoc
+
     fixture_source_papers: list[dict[str, Any]] = []
     try:
         from archimedes.services.strategy_provider import default_provider
@@ -795,7 +797,12 @@ async def _run_fixture_candidate(
             title = getattr(s, "paper_title", "") or ""
             arxiv_id = getattr(s, "paper_arxiv_id", "") or ""
             if title or arxiv_id:
-                fixture_source_papers.append({"arxiv_id": arxiv_id, "title": title})
+                # assoc/v1 (#1637). The `title or arxiv_id` condition is kept
+                # deliberately: every curated strategy declares
+                # `PAPER_ARXIV_ID = None`, so requiring an arXiv id here would
+                # make this list permanently empty. A title-identified paper is
+                # a real association — see `paper_assoc.assoc_handle`.
+                fixture_source_papers.append(make_assoc(arxiv_id or None, title=title))
     except Exception:
         logger.debug("failed to collect fixture source papers", exc_info=True)
 
@@ -1675,13 +1682,16 @@ async def _persist_candidate(
 
             # Also write to the unified strategy_passports table (Issue #160)
             try:
-                from archimedes.models.paper_ref import PaperRef
+                from archimedes.models.paper_assoc import assoc_to_paper_ref, cited
                 from archimedes.models.strategy import StrategyPassport, StrategyStatus
                 from archimedes.services.passport_loader import ingest_passport
 
-                papers = [
-                    PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title", "")) for p in (c.source_papers or [])
-                ]
+                # assoc/v1 projection (#1637): carry EVERY association field
+                # into the passport, not just id+title. The id+title-only
+                # rebuild is what the passport merge now has to defend against,
+                # and the defence is cheaper if the write side stops throwing
+                # the enrichment away in the first place.
+                papers = [assoc_to_paper_ref(p) for p in cited(c.source_papers or [])]
                 # Map candidate regime to passport regime_tag
                 _regime_tag_map = {"bull": "bull", "bear": "bear"}
                 _regime_tag = _regime_tag_map.get(c.regime, "regime_neutral")
@@ -1795,14 +1805,14 @@ def _refresh_passport_real_metrics(
     """
     from datetime import date as _date
 
-    from archimedes.models.paper_ref import PaperRef
+    from archimedes.models.paper_assoc import assoc_to_paper_ref, cited
     from archimedes.models.strategy import StrategyPassport, StrategyStatus
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import ingest_passport
 
     record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
     status_val = StrategyStatus(record.status) if record and record.status else StrategyStatus.CANDIDATE
-    papers = [PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title", "")) for p in (c.source_papers or [])]
+    papers = [assoc_to_paper_ref(p) for p in cited(c.source_papers or [])]
     regime_tag = {"bull": "bull", "bear": "bear"}.get(c.regime, "regime_neutral")
     passport = StrategyPassport(
         id=strategy_id,
@@ -2060,7 +2070,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         from datetime import date as _date
 
         from archimedes.db import get_session
-        from archimedes.models.paper_ref import PaperRef
+        from archimedes.models.paper_assoc import assoc_to_paper_ref, cited
         from archimedes.models.strategy import StrategyPassport, StrategyStatus
         from archimedes.models.strategy_store import StrategyRecord
         from archimedes.services.backtest_mapper import canonical_artifact_hash
@@ -2146,7 +2156,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
             #    in-place update.
             record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
             status_val = StrategyStatus(record.status) if record and record.status else StrategyStatus.CANDIDATE
-            papers = [PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title", "")) for p in (c.source_papers or [])]
+            papers = [assoc_to_paper_ref(p) for p in cited(c.source_papers or [])]
             _regime_tag_map = {"bull": "bull", "bear": "bear"}
             _regime_tag = _regime_tag_map.get(c.regime, "regime_neutral")
             passport = StrategyPassport(

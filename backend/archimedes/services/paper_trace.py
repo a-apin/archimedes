@@ -416,36 +416,31 @@ def resolve_paper_hashes(arxiv_ids: list[str]) -> list[str]:
     every settle — a permanent "nothing resolves" that was indistinguishable
     from the honest empty result the docstring above describes.
 
-    So the imports sit OUTSIDE the try, and the catch is ``DBAPIError`` — the
-    database-side family (connection refused, table absent, permission denied),
-    which is what "the corpus is unavailable" actually raises. Deliberately NOT
-    the ``SQLAlchemyError`` base: that also covers ``ArgumentError`` /
+    So the imports sit OUTSIDE the try, and the catch is the DBAPI family
+    (connection refused, table absent, permission denied), which is what "the
+    corpus is unavailable" actually raises. Deliberately NOT the
+    ``SQLAlchemyError`` base: that also covers ``ArgumentError`` /
     ``InvalidRequestError``, which is how a wrong model class or a malformed
     query surfaces, and those are this module being wrong rather than the
     corpus being down. ``ImportError``/``AttributeError``/``NameError`` reach
     the caller for the same reason.
+
+    Both of those rules now live in ``source_tracker.corpus_content_hashes``
+    (#1637), which raises ``CorpusUnavailable`` for the outage and lets every
+    other class through — so this module and the trace verifier cannot drift
+    into two different ideas of what the corpus says. The *policy* stays here
+    and is unchanged: only ids whose hash resolves are emitted, and an outage
+    records nothing.
     """
-    wanted = [i for i in (arxiv_ids or []) if i]
-    if not wanted:
-        return []
-
-    from sqlalchemy.exc import DBAPIError
-
-    from archimedes.db import get_session
-    from archimedes.models.corpus_store import PaperRecord
+    from archimedes.services.source_tracker import CorpusUnavailable, corpus_content_hashes
 
     try:
-        with get_session() as session:
-            rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(sorted(set(wanted)))).all()
-    except DBAPIError:
-        logger.warning("paper trace: corpus content-hash lookup failed — recording no consulted hashes", exc_info=True)
+        resolved = corpus_content_hashes(arxiv_ids or [])
+    except CorpusUnavailable:
+        logger.warning("paper trace: corpus content-hash lookup failed — recording no consulted hashes")
         return []
 
-    # Outside the try: an attribute this code is wrong about is a bug, not an
-    # outage, and must not be laundered into an empty list.
-    return sorted(
-        f"{row.arxiv_id}:{content_hash}" for row in rows if (content_hash := (row.content_hash or row.pdf_sha256 or ""))
-    )
+    return sorted(f"{arxiv_id}:{content_hash}" for arxiv_id, content_hash in resolved.items() if content_hash)
 
 
 # ── Publishing (the only I/O in this module) ─────────────────────────────

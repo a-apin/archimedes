@@ -186,7 +186,17 @@ class StrategyPassport:
 
     @property
     def paper_arxiv_id(self) -> str:
-        """arxiv_id of the primary (first) paper, or empty string."""
+        """arxiv_id of the primary (first) paper, or empty string.
+
+        **Display only. Never use this for provenance (#1637).** A fusion
+        strategy synthesizes from several papers and this names exactly one of
+        them, so anything that binds a decision, a trace or a hash to it
+        under-reports the strategy by construction — which is precisely how
+        ``agent_runner`` came to write a single-element ``consulted_paper_hashes``
+        for multi-paper strategies and sign it. The provenance surfaces are
+        ``papers`` (the full list) and, on the signal path,
+        ``StrategySignals.paper_arxiv_ids``.
+        """
         return (self.papers[0].arxiv_id or "") if self.papers else ""
 
     @property

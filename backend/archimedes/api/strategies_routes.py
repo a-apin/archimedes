@@ -126,13 +126,20 @@ def _to_strategy_response(
     papers_list = [
         PaperRefResponse(
             arxiv_id=p.arxiv_id,
-            title=p.title,
+            # `or None` (#1637): a blank title is not a title. `""` renders as
+            # an empty pair of quotes on the passport; `null` renders as the
+            # absence it is.
+            title=p.title or None,
             authors=p.authors,
             doi=p.doi,
             venue=p.venue,
             year=p.year,
             citation_count=p.citation_count,
             contribution=p.contribution,
+            role=getattr(p, "role", None) or "cited",
+            selection_rank=getattr(p, "selection_rank", None),
+            semantic_score=getattr(p, "semantic_score", None),
+            content_hash=getattr(p, "content_hash", None),
         )
         for p in s.papers
     ]
@@ -141,8 +148,10 @@ def _to_strategy_response(
         id=s.id,
         papers=papers_list,
         # Legacy scalar fields from papers[0]
-        paper_arxiv_id=s.paper_arxiv_id,
-        paper_title=s.paper_title,
+        paper_arxiv_id=s.paper_arxiv_id or None,
+        # `or None` (#1637, acceptance 12): a zero-paper passport has no paper
+        # title, and `""` printed as `""` on the card.
+        paper_title=s.paper_title or None,
         paper_authors=s.paper_authors,
         methodology_summary=s.methodology_summary,
         asset_universe=s.asset_universe,
@@ -1234,13 +1243,21 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
     # Enrich missing titles from the corpus when a session is available.
     corpus_titles: dict[str, str] = _enrich_paper_titles_from_corpus(refs, session) if session is not None else {}
 
-    def _resolved_title(r) -> str:
-        """Stored title wins; fall back to corpus; fall back to bare arxiv_id."""
+    def _resolved_title(r) -> str | None:
+        """Stored title wins; fall back to corpus; otherwise **None** (#1637).
+
+        The last fallback used to be the bare ``arxiv_id``, which put an id in
+        a column labelled "title" — the same class of defect as printing the
+        strategy name there, just less obviously wrong. ``None`` is the honest
+        answer and matches ``_resolve_source_papers``'s ``resolved_title``
+        rule; the id is already carried in ``arxiv_id`` for the renderer to
+        compose "title unavailable — arXiv:<id>" from.
+        """
         if (r.title or "").strip():
             return r.title
         if r.arxiv_id and corpus_titles.get(r.arxiv_id):
             return corpus_titles[r.arxiv_id]
-        return r.arxiv_id or ""
+        return None
 
     papers_list = [
         PaperRefResponse(
@@ -1252,6 +1269,10 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
             year=r.year,
             citation_count=r.citation_count,
             contribution=r.contribution,
+            role=r.role or "cited",
+            selection_rank=r.selection_rank,
+            semantic_score=r.semantic_score,
+            content_hash=r.content_hash,
         )
         for r in refs
     ]
@@ -1259,7 +1280,7 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
     asset_universe = json.loads(record.asset_universe) if record.asset_universe else []
 
     # The enriched first-paper title (may have been filled from corpus above).
-    first_title = papers_list[0].title if papers_list else (first.title if first else "")
+    first_title = papers_list[0].title if papers_list else (first.title if first else None)
 
     return_source_enum, return_source_note = classify_return_source(
         StrategyView(
@@ -2078,11 +2099,23 @@ async def _run_fusion_job(job_id: str) -> None:
                 "backtest_end": bt.backtest_end.isoformat() if bt.backtest_end else None,
             }
 
+        # assoc/v1 (#1637). ``sha256: ""`` was the third of three incompatible
+        # shapes, and ``""`` claimed a hash that was never computed — the corpus
+        # column is NULL in prod (#1091), so the honest value is None and the
+        # normalizer enforces it.
+        #
+        # Built OUTSIDE the persist try: the construction trace below cites the
+        # same associations whether or not the DB write succeeded, and a
+        # DB-unavailable job must not turn into a NameError on the trace path.
+        from archimedes.models.paper_assoc import make_assoc
+        from archimedes.services.source_tracker import build_consulted_hashes
+
+        source_papers = [make_assoc(aid) for aid in result.source_arxiv_ids]
+
         strategy_id = None
         persist_error: str | None = None
         try:
             with get_session() as session:
-                source_papers = [{"arxiv_id": aid, "sha256": ""} for aid in result.source_arxiv_ids]
                 record = upsert_strategy(
                     session,
                     generation_method="fusion",
@@ -2166,7 +2199,20 @@ async def _run_fusion_job(job_id: str) -> None:
                         ),
                         "confidence": 0.0,
                         "trades_executed": [],
-                        "strategies_referenced": result.source_arxiv_ids,
+                        # #1637: strategy ids only. This wrote arXiv ids into a
+                        # field whose whole contract is strategy ids, which made
+                        # the construction trace structurally invisible to
+                        # ``GET /api/traces/?strategy_id=`` — a passport could
+                        # never show the trace of its own construction. The
+                        # papers moved to ``consulted_paper_hashes`` below,
+                        # which is the field that is FOR them.
+                        #
+                        # Empty when the persist above failed: naming a strategy
+                        # id we do not have would be inventing one, and the
+                        # arXiv ids stay recorded in consulted_paper_hashes
+                        # either way.
+                        "strategies_referenced": [strategy_id] if strategy_id else [],
+                        "consulted_paper_hashes": build_consulted_hashes(source_papers),
                         "trace_hash": trace_hash,
                         "arc_tx_hash": None,
                         "is_verified": False,

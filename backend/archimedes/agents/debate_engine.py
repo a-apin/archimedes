@@ -46,6 +46,7 @@ from archimedes.agents.generation_pipeline import (
     _CandidateResult,
     _society_num_trials,
 )
+from archimedes.models.paper_assoc import make_assoc
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
 from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
@@ -527,7 +528,10 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         strategy_name=proposal.strategy_name or "Debate candidate",
         thesis=proposal.thesis,
         asset_universe=list(spec.get("asset_universe", []) or []),
-        source_papers=[{"arxiv_id": a, "title": ""} for a in proposal.source_arxiv_ids],
+        # assoc/v1 (#1637) — one shape across all four writers. The bare
+        # ``{"arxiv_id": a, "title": ""}`` this emitted was one of three
+        # incompatible shapes, and the shape was inside the content hash.
+        source_papers=[make_assoc(a) for a in proposal.source_arxiv_ids],
         weights={},  # debate emits a DSL spec, not a static weight vector
         reasoning=proposal.fusion_reasoning or proposal.novelty_rationale or "",
         rigor_verdict=_rigor_verdict_dict(ev),
