@@ -9,6 +9,7 @@ import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 
 import { apiGet, apiPost, apiDelete } from '../api'
 import { compactCostCell } from '../generationCost.js'
+import MetricValue from './MetricValue'
 import {
   isUnknownRigorGateStatus,
   warnUnknownRigorGateStatus,
@@ -110,12 +111,12 @@ function statusLabel(status, passesRigor) {
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
-function fmt(v, decimals = 2) {
-  return v != null ? v.toFixed(decimals) : '—'
-}
-function fmtPct(v) {
-  return v != null ? `${(v * 100).toFixed(1)}%` : '—'
-}
+// No local number formatter lives here any more. Every metric this file renders
+// goes through MetricValue / metricDomain.js (#1651): the old `fmt`/`fmtPct`
+// pair had no idea what quantity it was formatting, which is precisely how a
+// stored max_drawdown of 1.303 became a displayed "−130.3%". Re-adding one
+// would give the next cell a way around the domain check —
+// ui/test/metric-domain.test.js fails if either name comes back.
 
 // "2002-01-01" -> Date; null on bad input
 function isoToDate(iso) {
@@ -294,26 +295,31 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
           </div>
         </td>
         <td className="mono" style={{ textAlign: 'right' }}>
-          {fmt(s.sharpe_ratio)}
+          {/* Every measured number in this row goes through MetricValue, which
+              is the only formatter that knows each metric's domain and cannot
+              render a value outside it without saying so (#1651). */}
+          <MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library table" />
           {sharpeCI && (
             <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }}>
-              [{fmt(sharpeCI[0])}, {fmt(sharpeCI[1])}]
+              [<MetricValue metric="sharpe_ci_lower" value={sharpeCI[0]} row={s} surface="Library table" />, <MetricValue metric="sharpe_ci_upper" value={sharpeCI[1]} row={s} surface="Library table" />]
             </div>
           )}
           {s.dsr_p_value != null && (
             <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }}>
-              (DSR conf={s.dsr_p_value.toFixed(2)})
+              (DSR conf=<MetricValue metric="dsr_p_value" value={s.dsr_p_value} row={s} surface="Library table" />)
             </div>
           )}
         </td>
-        <td className={`mono ${signClass(s.cagr)}`} style={{ textAlign: 'right' }}>{fmtPct(s.cagr)}</td>
+        <td className={`mono ${signClass(s.cagr)}`} style={{ textAlign: 'right' }}>
+          <MetricValue metric="cagr" value={s.cagr} row={s} surface="Library table" />
+        </td>
         <td className="mono negative" style={{ textAlign: 'right' }}>
-          {s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}
+          <MetricValue metric="max_drawdown" value={s.max_drawdown} row={s} surface="Library table" />
           {/* Same defect: crossing the 0.5 overfitting threshold was signalled
               only by the colour swap to --negative (1.4.1). */}
           {s.pbo_score != null && (
             <div style={{ fontSize: '0.68rem', color: s.pbo_score > 0.5 ? 'var(--negative)' : 'var(--text-4)' }}>
-              (PBO {s.pbo_score.toFixed(2)}{s.pbo_score > 0.5 && <span aria-hidden="true"> ⚠</span>})
+              (PBO <MetricValue metric="pbo_score" value={s.pbo_score} row={s} surface="Library table" />{s.pbo_score > 0.5 && <span aria-hidden="true"> ⚠</span>})
               {s.pbo_score > 0.5 && (
                 <span className="sr-only"> — above the 0.50 overfitting threshold</span>
               )}
@@ -431,13 +437,17 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
             )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            <div><div className="caption">DSR</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.deflated_sharpe_ratio)}</div></div>
-            <div><div className="caption">PBO</div><div className="mono" style={{ fontWeight: 700 }}>{fmtPct(s.pbo_score)}</div></div>
-            <div><div className="caption">OOS Sharpe</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.out_of_sample_sharpe)}</div></div>
+            <div><div className="caption">DSR</div><div className="mono" style={{ fontWeight: 700 }}><MetricValue metric="deflated_sharpe_ratio" value={s.deflated_sharpe_ratio} row={s} surface="Library detail" /></div></div>
+            {/* PBO is a probability in [0,1] and this cell renders it as a
+                percentage — the DOMAIN is keyed off the metric, the format is
+                the cell's choice, so the table's "0.62" and this "62.0%" stay
+                two renderings of one bounded quantity. */}
+            <div><div className="caption">PBO</div><div className="mono" style={{ fontWeight: 700 }}><MetricValue metric="pbo_score" value={s.pbo_score} row={s} format="pct" surface="Library detail" /></div></div>
+            <div><div className="caption">OOS Sharpe</div><div className="mono" style={{ fontWeight: 700 }}><MetricValue metric="out_of_sample_sharpe" value={s.out_of_sample_sharpe} row={s} surface="Library detail" /></div></div>
           </div>
           {s.paper_claimed_sharpe != null && (
             <div className="caption mt-2">
-              Paper claim: <strong>{fmt(s.paper_claimed_sharpe)}</strong> · Backtest: <strong>{fmt(s.sharpe_ratio)}</strong>
+              Paper claim: <strong><MetricValue metric="paper_claimed_sharpe" value={s.paper_claimed_sharpe} row={s} surface="Library detail" /></strong> · Backtest: <strong><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library detail" /></strong>
               {/* The pass/fail judgement against the 50% replication threshold
                   used to live in the green/red class alone — "(43%)" and
                   "(97%)" rendered identically to a colourblind reader (1.4.1).
@@ -563,9 +573,9 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
         <DeployabilityChip deploy={deploy} level={level} />
       </div>
       <div className="lib-card-stats">
-        <div><div className="caption">Sharpe</div><div className="mono">{fmt(s.sharpe_ratio)}</div></div>
-        <div><div className="caption">CAGR</div><div className={`mono ${signClass(s.cagr)}`}>{fmtPct(s.cagr)}</div></div>
-        <div><div className="caption">Max DD</div><div className="mono negative">{s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}</div></div>
+        <div><div className="caption">Sharpe</div><div className="mono"><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library card" /></div></div>
+        <div><div className="caption">CAGR</div><div className={`mono ${signClass(s.cagr)}`}><MetricValue metric="cagr" value={s.cagr} row={s} surface="Library card" /></div></div>
+        <div><div className="caption">Max DD</div><div className="mono negative"><MetricValue metric="max_drawdown" value={s.max_drawdown} row={s} surface="Library card" /></div></div>
         <div title={genCost.title}><div className="caption">Gen tokens</div><div className={genCost.measured ? 'mono' : 'caption'}>{genCost.label}</div></div>
       </div>
       {open && (
