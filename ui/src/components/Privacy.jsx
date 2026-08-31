@@ -471,7 +471,8 @@ export default function Privacy() {
 					that exist only for you are erased: your sessions, your linked sign-in
 					providers, your linked wallets, your profile row — which is the one
 					holding your encrypted contact email — your paper-trading history, and
-					your payment receipts. Records that other accounts can reference by id
+					your payment receipts and credits. Records that other accounts can
+					reference by id
 					are detached from you rather than destroyed: your strategies, their
 					passports, the generation records behind them, and vault descriptions
 					keep existing with the link to you removed, so that deleting your
