@@ -218,13 +218,14 @@ curl -s https://archimedes-arc.com/api/metrics/visitors
 ## Metrics (admin-gated) — summary
 
 `/api/metrics/private/cost`, `/api/metrics/private/wallets`, and
-`/api/metrics/private/wallets/connections` require a Better Auth session
-**and** a linked wallet **and** membership in the `PLATFORM_ADMIN_WALLETS`
-env allowlist — anonymous gets `401`, a signed-in-but-non-admin caller gets
-`403`. These moved off the public router entirely in #1373 (closing #1366)
-after a full-tree audit found the wallet-roster routes serving a complete
-per-identity address list to anonymous callers. Full endpoint reference,
-request/response shapes, and the exact three-step gate order live in
+`/api/metrics/private/wallets/connections` require a Better Auth session whose
+**account** is a platform admin — listed in `PLATFORM_ADMIN_ACCOUNTS`, or
+holding a linked wallet listed in `PLATFORM_ADMIN_WALLETS` (#1648: keyed on the
+account, never on the request's wallet header). Anonymous gets `401`, a
+signed-in non-admin gets `403`. These moved off the public router entirely in
+#1373 (closing #1366) after a full-tree audit found the wallet-roster routes
+serving a complete per-identity address list to anonymous callers. Full
+endpoint reference, request/response shapes, and the exact gate order live in
 [`admin-private.md`](admin-private.md) — this doc does not duplicate them.
 
 ---
