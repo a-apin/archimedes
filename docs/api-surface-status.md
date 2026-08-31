@@ -93,13 +93,15 @@ tracked here rather than silently absent.
   (session + a verified linked wallet) — each spends backend-signer gas or
   writes state.
 - **`strategies_router`** — curated/generated reads are public, with optional
-  personalization via `get_current_user` (never mandatory). `GET /generated`,
-  `PATCH /{strategy_id}`, `POST /generate`, and `GET /generate/{job_id}`
-  require `require_current_user`. `POST /generate` is the second live,
-  LLM-spending generation endpoint flagged in
-  [`docs/sprint/cluster-7-ui-surface.md`](sprint/cluster-7-ui-surface.md) — no
-  UI consumer as of this writing; cluster-4 routes it through the meter
-  rather than deleting it.
+  personalization via `get_current_user` (never mandatory). `GET /generated`
+  and `PATCH /{strategy_id}` require `require_current_user`. **This router
+  hosts no generation endpoint.** `POST /generate` and `GET
+  /generate/{job_id}` — the second live, LLM-spending generation path flagged in
+  [`docs/sprint/cluster-7-ui-surface.md`](sprint/cluster-7-ui-surface.md) — were
+  deleted on 2026-08-31; generation is `POST /api/generate/start` only, guarded
+  by `backend/tests/test_sole_generation_route_guard.py`. Historic context: it
+  never had a UI consumer, and cluster-4 chose to route it through the
+  generation quota meter rather than delete it; deletion is the resolution.
 - **`traces_router`** — reads are public. `POST /publish` requires
   `X-Internal-Agent-Key` (`require_internal_agent_key`) — the agent runner
   only, never the browser.
