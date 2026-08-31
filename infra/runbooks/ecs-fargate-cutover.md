@@ -808,6 +808,9 @@ step 1's gate is still red.**
    entirely — the `deploy-ecs` job (issue #1039 C1) has independently
    redeployed Fargate on every push since before Phase 4 ran, so this step is
    purely deleting the now-unreachable EC2 code path, not changing behavior.
+   **Done:** the SSM `deploy` job went in the #1039 fast-follow; the orphaned
+   `EC2_INSTANCE_ID` env — which outlived its instance by twelve days after the
+   2026-08-19 decommission — was deleted 2026-08-31.
    (Separately, once step 1's gate is green, `.github/workflows/deploy-runners.yml`'s
    `push` trigger can be uncommented — see that workflow's header — so runner
    deploys stop being a manual `workflow_dispatch`.)
