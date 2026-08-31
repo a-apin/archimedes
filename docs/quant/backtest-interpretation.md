@@ -161,8 +161,11 @@ of red-flag #2.
 **What supports it.** A low PBO from `compute_pbo(...)` is the formal version: if the
 strategy keeps winning across `C(16,8)` different IS/OOS partitions, it is not
 sensitive to which slice of history it was tuned on. A high DSR p-value
-(`compute_dsr → dsr_p_value ≥ 0.95`) confirms the Sharpe survives multiple-testing
-deflation.
+(`compute_dsr → dsr_p_value ≥ 0.90` at the strictest level) confirms the Sharpe survives
+multiple-testing deflation. **Corrected 2026-08-31:** this said `≥ 0.95` and disagreed with
+the `≥ 0.90` stated later in this same doc ("Putting it together", step 2). 0.90 is the
+live bar (PR #901; `dsr_p_min` in
+[`rigor_profiles.py`](../../backend/archimedes/services/rigor_profiles.py)).
 
 ### 3. Realistic transaction costs
 
