@@ -148,6 +148,8 @@ test("PaperTrading.jsx imports the shared copy/format helpers from ../paperCopy"
 		"marksStalenessNote",
 		"noMarksNote",
 		"marksUnavailableNote",
+		"markBasisNote",
+		"MARK_BASIS_DISCLOSURE",
 	]) {
 		assert.ok(imported.has(name), `expected ${name} to be imported from ../paperCopy`);
 	}
