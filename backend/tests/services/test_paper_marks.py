@@ -528,3 +528,184 @@ def test_the_env_knobs_fail_safe_to_their_defaults(monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         assert paper_marks.interval_minutes() == 15
     assert any("not an integer" in r.message for r in caplog.records)
+
+
+# ── 8. The DISCLOSED limitations, pinned so they cannot regress silently ──
+#
+# These three do not test that the code is right. They test that the code is
+# what the docs, the route docstring, and the UI say it is. Each one pins a
+# known v1 gap with the exact fixture the disclosure describes, so:
+#
+#   * the gap cannot quietly widen;
+#   * a FIX for the gap cannot land without touching the pin — which forces
+#     the docs, the route docstring, and the UI copy to be updated in the same
+#     change, instead of leaving three stale honesty claims behind.
+#
+# A limitation you have written down but never executed is a claim, not a
+# known quantity.
+
+
+def test_a_cash_sleeve_is_still_marked_as_if_invested():
+    """THE cash-sleeve gap, as the disclosure states it: settled +0.00%, live
+    +10.00%, on the same deployment at the same instant.
+
+    A mark re-prices the strategy's ASSET BASKET — the sleeve weights the last
+    daily settle established — and applies each asset's move since that
+    settle. It has no idea whether the strategy is actually holding those
+    assets: ``replay_spec`` returns dated portfolio returns, not a per-sleeve
+    invested/flat vector, so a strategy whose exit condition fired and is
+    sitting in CASH is marked exactly like one that is fully invested.
+
+    The fixture is that strategy. The settled ledger records 0.00% for the day
+    (it held cash; nothing moved). The underlying rose 10%. The mark reads
+    +10.00%, and ``deployment_summary`` hands the UI both numbers at once.
+
+    THIS TEST ASSERTING +10% IS NOT AN ENDORSEMENT — it is the disclosed
+    behavior, pinned. If a future change gives the marks loop a real position
+    vector, this test MUST fail, and whoever fixes it must then also update:
+      * docs/api/paper-trading.md ("Known limitation: a mark cannot see cash")
+      * ``paper_routes.get_paper_deployment_marks``'s docstring
+      * ``paper_marks``'s module docstring
+      * ``ui/src/paperCopy.js``'s ``MARK_BASIS_DISCLOSURE`` (and its UI test)
+    That forced coupling is the entire point of pinning it here.
+    """
+    with _session() as s:
+        dep = _spy(s)
+        settle_date = _SESSION_OPEN.date()
+        # The settled truth: the strategy was FLAT this day. A real 0.0, not a
+        # missing row — that is what makes the divergence visible instead of
+        # merely absent.
+        s.add(PaperDailyReturn(deployment_id=dep.id, date=settle_date, daily_return=0.0))
+        s.flush()
+
+        now = _SESSION_OPEN + timedelta(hours=3)
+        mark_all(s, now=now, provider=_FakeProvider({"SPY": (550.0, now)}))  # 500 → 550, +10%
+
+        from archimedes.services.paper_trading import deployment_summary
+
+        summary = deployment_summary(s, dep)
+        assert summary["total_return"] == pytest.approx(0.0), "the settled ledger says the strategy made nothing"
+        assert summary["latest_mark"] is not None
+        live_return = summary["latest_mark"]["portfolio_value"] - 1.0
+        assert live_return == pytest.approx(0.10), (
+            "DISCLOSED v1 gap: the mark prices the asset basket, not the position — a cash sleeve "
+            "is marked as if invested. If this now fails, the gap was closed: update the disclosure "
+            "in docs/api/paper-trading.md, paper_routes, paper_marks, and ui/src/paperCopy.js."
+        )
+        # The gap is bounded to the DECORATION and never reaches the ledger:
+        # one settled row, still 0.0, whatever the mark said.
+        rows = s.query(PaperDailyReturn).filter_by(deployment_id=dep.id).all()
+        assert [(r.date, r.daily_return) for r in rows] == [(settle_date, 0.0)]
+
+
+def test_ts_is_the_oldest_fresh_leg_not_the_newest():
+    """THE min→max mutation catcher, which nothing else in this file catches.
+
+    ``mark_deployment`` stamps ``ts = min(fresh_bar_times)``: a portfolio is
+    only as current as the stalest price inside it, and taking the newest
+    would let one live leg lend its timestamp to legs that have not moved
+    since — a stale price wearing a fresh label.
+
+    Every other mixed-universe test here has exactly ONE fresh leg, so
+    ``min == max`` and a mutation from one to the other passes them all. This
+    test is the one with TWO fresh legs at DIFFERENT bar times, which is the
+    only shape where the two differ.
+
+    Demonstrated to reject: changing ``min(fresh_bar_times)`` to
+    ``max(fresh_bar_times)`` makes this test fail (ts becomes 15:10) while the
+    whole rest of this file still passes.
+    """
+    with _session() as s:
+        dep = _deploy(
+            s,
+            _MIXED_SPEC,
+            weights={"SPY": 0.5, "BTC-USD": 0.5},
+            ref_prices={"SPY": 500.0, "BTC-USD": 60000.0},
+        )
+        older = datetime(2026, 8, 31, 15, 0, tzinfo=UTC)
+        newer = datetime(2026, 8, 31, 15, 10, tzinfo=UTC)
+        now = datetime(2026, 8, 31, 15, 12, tzinfo=UTC)
+        mark_all(
+            s,
+            now=now,
+            provider=_FakeProvider({"SPY": (505.0, older), "BTC-USD": (61000.0, newer)}),
+        )
+        row = s.query(PaperMark).filter_by(deployment_id=dep.id).one()
+        # Both legs really did contribute — otherwise this would pass for the
+        # trivial reason that there was only one bar time to choose from.
+        assert set(json.loads(row.prices_json)) == {"SPY", "BTC-USD"}
+        assert row.ts.replace(tzinfo=UTC) == older
+        assert row.ts.replace(tzinfo=UTC) != newer
+
+
+def test_a_mixed_universe_loses_marks_while_a_frozen_leg_pins_the_stamp(monkeypatch):
+    """The DISCLOSED cadence cost of ``ts`` being both the honesty stamp and
+    the dedupe key (see the long comment in ``mark_deployment``).
+
+    For as long as a frozen equity leg is still inside the staleness window it
+    pins ``ts = min(fresh_bar_times)`` to its last bar, so every subsequent
+    tick dedupes against the row already written at that timestamp — and the
+    live crypto leg's marks are dropped. Roughly an hour of crypto marks per
+    equity close, at the 60-minute default.
+
+    Five ticks from 20:00 to 21:00, one frozen SPY bar at 19:45 and a fresh
+    BTC bar at every tick:
+      * the crypto-only deployment gets all five;
+      * the mixed deployment gets TWO — the 19:45 row, then nothing until the
+        equity leg finally ages out of the window at 21:00.
+
+    The second half pins the part that is genuinely surprising: the staleness
+    knob is NON-MONOTONIC here. RAISING the cap to 180 minutes makes it WORSE
+    (one row, not two), because the frozen leg stays inside the window for the
+    whole run. An operator who sees marks stalling and reaches for the
+    tolerance dial would make it worse; that is exactly why it is written down
+    and executed rather than left to be discovered in prod.
+
+    This test pins v1 AS IT IS, not as it should be. Splitting the dedupe key
+    from the stamp needs a second timestamp column and a migration (the unique
+    constraint is on the stored ``ts``); stamping ``max`` instead is rejected
+    outright because it buys cadence with a false freshness claim. If a v2
+    fixes this, these counts change and the disclosure changes with them.
+    """
+    frozen_equity_bar = datetime(2026, 8, 31, 19, 45, tzinfo=UTC)
+    ticks = [datetime(2026, 8, 31, 20, 0, tzinfo=UTC) + timedelta(minutes=15 * i) for i in range(5)]
+
+    def _run() -> tuple[int, int]:
+        with _session() as s:
+            mixed = _deploy(
+                s,
+                _MIXED_SPEC,
+                weights={"SPY": 0.5, "BTC-USD": 0.5},
+                ref_prices={"SPY": 500.0, "BTC-USD": 60000.0},
+            )
+            crypto_only = _btc(s)
+            for i, t in enumerate(ticks):
+                mark_all(
+                    s,
+                    now=t,
+                    provider=_FakeProvider(
+                        {"SPY": (512.0, frozen_equity_bar), "BTC-USD": (60000.0 + i, t)},
+                    ),
+                )
+            return (
+                s.query(PaperMark).filter_by(deployment_id=mixed.id).count(),
+                s.query(PaperMark).filter_by(deployment_id=crypto_only.id).count(),
+            )
+
+    mixed_at_60, crypto_at_60 = _run()
+    assert crypto_at_60 == 5, "a crypto-only deployment marks every tick — nothing pins its stamp"
+    assert mixed_at_60 == 2, (
+        "DISCLOSED v1 cadence cost: the frozen equity leg pins ts to 19:45 until it ages past the "
+        "60-minute cap, so the live crypto leg's marks are deduped away in between"
+    )
+
+    # Non-monotonic: MORE tolerance, FEWER marks.
+    monkeypatch.setenv("PAPER_MARKS_MAX_STALENESS_MINUTES", "180")
+    mixed_at_180, crypto_at_180 = _run()
+    assert crypto_at_180 == 5, "the knob does not affect a single-leg universe"
+    assert mixed_at_180 < mixed_at_60, (
+        "raising PAPER_MARKS_MAX_STALENESS_MINUTES must be shown to REDUCE mixed-universe marks — "
+        "the non-monotonicity is the disclosed wart, and an operator reaching for this dial to fix "
+        "stalled marks would make it worse"
+    )
+    assert mixed_at_180 == 1

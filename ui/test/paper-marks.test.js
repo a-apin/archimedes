@@ -3,16 +3,21 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+	MARK_BASIS_DISCLOSURE,
+	MARK_BASIS_SHORT,
 	markAnnouncement,
+	markBasisNote,
 	markLabel,
 	marksStalenessNote,
 	marksUnavailableNote,
 	noMarksNote,
 } from "../src/paperCopy.js";
 
-// Intraday marks (design §5.1). A mark re-PRICES the position the daily replay
-// established; it never re-decides it. The card's job is to say exactly that
-// much and no more, which is what every assertion below pins.
+// Intraday marks (design §5.1). A mark re-PRICES the ASSET BASKET the daily
+// replay established; it never re-decides it, and it does not know whether the
+// strategy is currently holding that basket or sitting in cash. The card's job
+// is to say exactly that much and no more, which is what every assertion below
+// pins.
 
 const MARK = { portfolio_value: 1.0042, ts: "2026-08-30T14:45:00Z", is_delayed: true };
 
@@ -195,4 +200,70 @@ test("PaperTrading.jsx draws the intraday tail distinguishably from the settled 
 test("PaperTrading.jsx routes the marks failure through marksUnavailableNote, never a bare message", () => {
 	assert.match(paperTrading, /marksUnavailableNote\(res\.reason\)/);
 	assert.doesNotMatch(paperTrading, /nextErrors\[id\] = res\.reason/);
+});
+
+// ── The DISCLOSED v1 limitation, at the point of render ─────────────────────
+//
+// The backend cannot tell whether a strategy is invested or in cash: replay_spec
+// returns dated portfolio returns, not a per-sleeve invested/flat vector. So a
+// flat strategy is marked as if invested — a settled +0.00% day can carry a
+// +10.00% mark (pinned server-side by
+// test_a_cash_sleeve_is_still_marked_as_if_invested).
+//
+// v1's honest answer to that is DISCLOSURE, and disclosure only counts where
+// the number is read. These tests pin the wording so it cannot be softened or
+// deleted in passing, and pin that the OLD overclaim never comes back.
+
+test("MARK_BASIS_DISCLOSURE names the basket, names cash, and points at the settle", () => {
+	assert.match(MARK_BASIS_DISCLOSURE, /asset basket/i);
+	assert.match(MARK_BASIS_DISCLOSURE, /\bcash\b/i);
+	// It must state the CONSEQUENCE, not merely that a limitation exists — "a
+	// flat strategy can still show a live value that moves" is the sentence a
+	// user can act on.
+	assert.match(MARK_BASIS_DISCLOSURE, /flat strategy can still show a live value that moves/i);
+	// And it must say which number to trust instead.
+	assert.match(MARK_BASIS_DISCLOSURE, /daily settle is the honest number/i);
+});
+
+test("the page never claims a mark re-prices 'that same position'", () => {
+	// The exact overclaim this fix removed: v1 re-prices the BASKET, and the
+	// position may be cash. Pinned as a negative because the wrong sentence is
+	// the natural one to write — it reads more confident and is cheaper to say.
+	assert.doesNotMatch(paperTrading, /re-prices that same position/);
+	assert.doesNotMatch(MARK_BASIS_DISCLOSURE, /that same position/);
+});
+
+test("PaperTrading.jsx renders the disclosure in the intro AND beside the number", () => {
+	// Two placements, because they serve two readers: someone reading the page
+	// top-down, and someone who scans straight to the figure. A caveat that only
+	// exists in the intro is invisible to the second reader.
+	// The intro placement: rendered as paragraph TEXT, not merely referenced.
+	// `title={MARK_BASIS_DISCLOSURE}` would satisfy a bare
+	// /{MARK_BASIS_DISCLOSURE}/ match, so that weaker form would pass with the
+	// intro disclosure deleted — this asserts the closing </p> after it.
+	assert.match(paperTrading, /\{MARK_BASIS_DISCLOSURE\}\s*<\/p>/);
+	// The per-card placement: the short note beside the figure, with the full
+	// sentence reachable as its tooltip.
+	assert.match(paperTrading, /markBasisNote\(latest\)/);
+	assert.match(paperTrading, /title=\{MARK_BASIS_DISCLOSURE\}/);
+});
+
+test("markBasisNote qualifies a rendered value and stays silent when there is none", () => {
+	// A limitation notice hung off an em-dash qualifies nothing — the no-mark
+	// state is already fully honest, and adding a caveat there is noise that
+	// makes the caveat easier to ignore where it matters.
+	assert.equal(markBasisNote(MARK), MARK_BASIS_SHORT);
+	assert.equal(markBasisNote(null), null);
+	assert.equal(markBasisNote(undefined), null);
+	// markLabel returns "—" for a value-less mark; the note follows it.
+	assert.equal(markBasisNote({ ...MARK, portfolio_value: null }), null);
+	assert.equal(markBasisNote({ ...MARK, ts: "not-a-date" }), null);
+});
+
+test("MARK_BASIS_SHORT is the same claim, not a softer one", () => {
+	assert.match(MARK_BASIS_SHORT, /basket/i);
+	assert.match(MARK_BASIS_SHORT, /cash/i);
+	// "not modelled" — never "approximate", "estimated", or any word that
+	// implies the cash case is handled roughly rather than not at all.
+	assert.doesNotMatch(MARK_BASIS_SHORT, /approximate|estimated|roughly/i);
 });

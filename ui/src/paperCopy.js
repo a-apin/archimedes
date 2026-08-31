@@ -103,9 +103,12 @@ export function paperErrorMessage(err, fallback = 'Something went wrong.') {
 
 // ── Intraday marks (design §5.1) ─────────────────────────────────────────────
 //
-// A mark is a re-PRICING of the position the daily replay established — not a
-// re-decision. The settled daily ledger is the track record that carries to
-// mainnet; a mark is an unsettled decoration the backend deletes past 90 days.
+// A mark is a re-PRICING of the ASSET BASKET the daily replay established —
+// not a re-decision, and NOT a claim about what the strategy is holding right
+// now (see MARK_BASIS_DISCLOSURE: v1 has no position vector, so a strategy
+// sitting in cash is still marked as if invested). The settled daily ledger is
+// the track record that carries to mainnet; a mark is an unsettled decoration
+// the backend deletes past 90 days.
 // Every helper below exists so the card can never state more than that:
 //
 //   - markLabel: never a bare number. Always value + as-of time, and the word
@@ -121,6 +124,8 @@ export function paperErrorMessage(err, fallback = 'Something went wrong.') {
 //     number going stale across a weekend/gap — so the note states the OBSERVED
 //     age and never asserts a market state ("closed", "halted") the client has
 //     no way to know.
+//   - markBasisNote / MARK_BASIS_DISCLOSURE: the v1 limitation, disclosed AT
+//     THE POINT OF RENDER rather than only in docs — see below.
 
 /** HH:MM in UTC for a mark's `ts`, or null if the timestamp is unusable.
  * Never renders "Invalid Date" and never throws — same defensive contract as
@@ -213,6 +218,52 @@ export function noMarksNote(status) {
   return status === 'active'
     ? 'No live value yet — the first intraday mark lands at the next 15-minute tick.'
     : 'No live value — marks stop when a deployment is stopped.'
+}
+
+/**
+ * THE DISCLOSED v1 LIMITATION, in the two places a reader can actually meet
+ * it: the page intro and the live-value line itself.
+ *
+ * A mark re-prices the strategy's ASSET BASKET — the sleeve weights the last
+ * daily settle established — by applying each asset's move since that settle.
+ * It does NOT know whether the strategy is currently invested or sitting in
+ * CASH: the backend's `replay_spec` returns dated portfolio returns, not a
+ * per-sleeve invested/flat vector, so there is no position vector to read and
+ * inferring one from the return series would be a guess dressed as a
+ * measurement.
+ *
+ * The consequence is user-visible and must be stated, not implied: a strategy
+ * that is flat can show a live value that moves. A settled +0.00% day can sit
+ * under a +10.00% mark if the underlying rose 10% (the backend pins that exact
+ * fixture in test_a_cash_sleeve_is_still_marked_as_if_invested).
+ *
+ * The earlier copy here said a mark "re-prices that same position", which is
+ * precisely the claim v1 cannot make — it re-prices the BASKET, and the
+ * position may be cash. That wording is what this constant replaces.
+ *
+ * Kept as an exported constant rather than inlined in the JSX so the wording
+ * is pinned by a test: the honesty claim is the product, and a silent edit to
+ * it should fail a build, not ship.
+ */
+export const MARK_BASIS_DISCLOSURE =
+  "Marks re-price the strategy's asset basket and do not know whether the strategy is currently in cash — " +
+  'a flat strategy can still show a live value that moves. The daily settle is the honest number.'
+
+/**
+ * The short form of the same disclosure, for the live-value line under a
+ * single deployment's total return, where the long sentence does not fit.
+ * Says the same thing — never a softer version of it.
+ */
+export const MARK_BASIS_SHORT = 'basket re-priced · cash not modelled'
+
+/**
+ * The disclosure to render beside a live value. Returns the short form when
+ * there is a value on screen to qualify, and `null` when there is not: a
+ * limitation notice attached to an em-dash qualifies nothing and just adds
+ * noise to the one state that is already fully honest.
+ */
+export function markBasisNote(mark) {
+  return mark && markLabel(mark) !== '—' ? MARK_BASIS_SHORT : null
 }
 
 /**

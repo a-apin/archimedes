@@ -150,6 +150,24 @@ async def get_paper_deployment_marks(
     deletes past 90 days. A client must render the two distinguishably; it
     must never present a mark as a settled return.
 
+    **A mark cannot see cash — the disclosed v1 limitation.** A mark
+    re-prices the strategy's ASSET BASKET (the sleeve weights the last daily
+    settle established) by applying each asset's move since that settle. It
+    does NOT know whether the strategy is currently invested or flat:
+    ``replay_spec`` returns dated portfolio returns, not a per-sleeve
+    invested/flat vector, so v1 has no position vector to read and inferring
+    one from the return series would be a guess dressed as a measurement.
+
+    Concretely: a strategy sitting in CASH still shows a live value that moves
+    with the assets it would hold — a settled ``+0.00%`` day can carry a
+    ``+10.00%`` mark if the underlying rose 10%
+    (``test_a_cash_sleeve_is_still_marked_as_if_invested`` pins exactly that).
+    The error never touches the ledger and the next daily advance re-settles
+    the anchor, so it is bounded to one session and cannot accumulate — but a
+    client must DISCLOSE it at the point of render, not bury it. The settled
+    daily return is the honest number. Closing the gap needs a position vector
+    out of the graded engine: the marks-v2 follow-up.
+
     ``limit`` is clamped to the same bound the storage tier is designed for
     (a day of raw crypto marks is 96 rows, a week is 672) so a client cannot
     ask for an unbounded scan; the newest ``limit`` rows are returned.

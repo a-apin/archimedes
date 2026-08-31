@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiGet, apiPost } from '../api'
 import {
+  MARK_BASIS_DISCLOSURE,
   driftTooltip,
   formatTotalReturn,
   markAnnouncement,
+  markBasisNote,
   markLabel,
   marksStalenessNote,
   marksUnavailableNote,
@@ -136,6 +138,11 @@ function Sparkline({ series, intraday }) {
 //   4. marks not loaded yet   -> nothing at all, so a card cannot flash an
 //                                "unavailable" claim it has not established.
 //
+// State 1 also carries markBasisNote — the v1 limitation (marks re-price the
+// asset BASKET and cannot see cash) rendered beside the number it qualifies,
+// not only in the page intro. A number a reader scans to must arrive with its
+// own caveat attached.
+//
 // The value's own colour is deliberately NOT the accent/negative pair the
 // settled figure uses: an unsettled number should not be dressed like a
 // settled one.
@@ -159,6 +166,7 @@ function LiveValue({ dep, marks, error }) {
     )
   }
   const stale = marksStalenessNote(latest)
+  const basis = markBasisNote(latest)
   return (
     <div style={{ marginTop: 6 }}>
       <div
@@ -171,6 +179,16 @@ function LiveValue({ dep, marks, error }) {
       <div className="caption" style={{ color: 'var(--text-3)' }}>
         live · unsettled
       </div>
+      {basis && (
+        // The v1 limitation, next to the number it qualifies — not only in the
+        // page intro and not only in the docs. A reader who scans straight to
+        // the figure must still be told the basket, not the position, is what
+        // was re-priced. Full sentence in the title so the short form is never
+        // the only version available.
+        <div className="caption" style={{ color: 'var(--text-3)' }} title={MARK_BASIS_DISCLOSURE}>
+          {basis}
+        </div>
+      )}
       {stale && (
         <div className="caption" style={{ color: 'var(--text-3)' }}>
           {stale}
@@ -298,8 +316,11 @@ export default function PaperTrading({ onNavigate }) {
           snapshots the strategy spec at deploy time and appends one real-data return per trading
           day; later regeneration of the strategy never rewrites a running ledger. This is the
           track record that carries to mainnet. The <strong>live value</strong> beneath each total
-          return re-prices that same position every 15 minutes — it is unsettled, carries the time
-          it was observed, and never changes what the strategy does.
+          return re-prices the strategy&apos;s asset basket every 15 minutes — it is unsettled,
+          carries the time it was observed, and never changes what the strategy does.
+        </p>
+        <p className="caption" style={{ marginTop: 4 }}>
+          {MARK_BASIS_DISCLOSURE}
         </p>
       </div>
 

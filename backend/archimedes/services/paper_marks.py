@@ -26,6 +26,25 @@ what a brokerage statement does between trades. Re-deciding it more often is a
 DIFFERENT STRATEGY from the one the rigor gate graded, and would need
 re-grading. That is v2, behind an ADR.
 
+**The disclosed v1 limitation: a mark cannot see cash.** What is re-priced is
+the strategy's ASSET BASKET — the sleeve weights the last daily settle
+established — not its live position. ``replay_spec`` returns dated portfolio
+returns, not a per-sleeve invested/flat vector, so this module has no way to
+know that a strategy's exit condition fired and it is sitting in cash. It
+marks it as if invested. A settled ``+0.00%`` day can therefore carry a
+``+10.00%`` mark when the underlying rose 10% —
+``test_a_cash_sleeve_is_still_marked_as_if_invested`` pins that exact fixture
+so the gap cannot silently regress, and so a fix that closes it is forced to
+update the pin rather than slip past it.
+
+The error is bounded and self-correcting: it never touches
+``paper_daily_returns``, and the next daily advance re-anchors the cache to
+the ledger, so a mark can be wrong for at most one session and cannot
+accumulate. That is what makes DISCLOSURE (the API doc, the route docstring,
+and the UI at the point of render) the honest v1 answer rather than a guess at
+the position. Closing it needs a per-sleeve position vector out of the graded
+engine: the marks-v2 follow-up.
+
 **Marks are not the track record.** ``paper_daily_returns`` remains
 append-only-by-law and remains the thing that carries to mainnet.
 ``paper_marks`` is a decoration with a TTL and is safe to delete wholesale —
@@ -91,6 +110,22 @@ def interval_minutes() -> int:
 
 
 def max_staleness_minutes() -> int:
+    """How old a bar may be and still contribute to a mark (default 60).
+
+    **This knob is not monotonic on a mixed universe, and that is a known v1
+    wart, not a bug to discover in production.** On a single-asset deployment,
+    raising it does the obvious thing: more bars qualify, so marks keep being
+    written for longer after the vendor goes quiet. On a MIXED equity+crypto
+    deployment it does the opposite — a frozen equity leg that is still inside
+    the window pins ``ts = min(fresh_bar_times)`` to its last bar, and every
+    subsequent tick dedupes against the row already written at that timestamp.
+    Raising the cap widens that window and therefore SUPPRESSES MORE crypto
+    marks; lowering it lets the equity leg drop out sooner and the crypto
+    cadence resume.
+
+    See the long comment in ``mark_deployment`` for why the stamp and the
+    dedupe key are the same value in v1 and what splitting them would cost.
+    """
     return _int_env("PAPER_MARKS_MAX_STALENESS_MINUTES", DEFAULT_MAX_STALENESS_MINUTES)
 
 
@@ -254,7 +289,42 @@ def mark_deployment(
         return None
 
     # The mark is only as current as the OLDEST price inside it. Taking the
-    # newest would let one live leg lend its timestamp to the whole portfolio.
+    # newest would let one live leg lend its timestamp to the whole portfolio —
+    # a stale price wearing a fresh label, which is the defect this whole
+    # module's timestamp discipline exists to prevent. Pinned by
+    # `test_ts_is_the_oldest_fresh_leg_not_the_newest` (a min→max mutation
+    # fails it).
+    #
+    # ── The known cost, stated rather than hidden (v1 accepted tradeoff) ──
+    # This one value is BOTH the honesty stamp and the dedupe key: the row is
+    # deduped on (deployment_id, ts, granularity) just below, and `ts` is what
+    # is stored. On a MIXED universe those two jobs disagree.
+    #
+    # Concretely, at a 60-minute staleness cap: for the hour after an equity
+    # close the equity leg's 19:45 bar is still "fresh", so it pins `ts` to
+    # 19:45 on every tick while the crypto leg keeps printing new bars. Tick 1
+    # writes the 19:45 row; ticks 2-4 compute the same `ts`, find that row, and
+    # write NOTHING — roughly an hour of crypto marks is lost at each equity
+    # close. Once the equity bar ages past the cap it drops out of
+    # `fresh_bar_times` entirely and the crypto cadence resumes.
+    #
+    # That also makes the staleness knob NON-MONOTONIC on a mixed universe:
+    # RAISING PAPER_MARKS_MAX_STALENESS_MINUTES produces FEWER marks, because it
+    # widens the window in which a frozen equity leg pins the stamp. See
+    # `max_staleness_minutes` and `test_a_mixed_universe_loses_marks_while_a_
+    # frozen_leg_pins_the_stamp`, which pins the cadence as it actually is.
+    #
+    # Not fixed in v1, deliberately. Splitting the dedupe key from the stamp
+    # (dedupe on max(fresh_bar_times), store min) cannot work against the
+    # current schema: `uq_paper_marks_dep_ts_gran` is on the STORED ts, so two
+    # ticks that agree on min and differ on max would collide on insert. A real
+    # split needs a SECOND timestamp column and a migration — not a small
+    # change, and not one to make while its only beneficiary (mixed
+    # equity+crypto universes) is a minority of deployments. The alternative,
+    # stamping max, is rejected outright: it buys cadence by letting the
+    # portfolio claim to be as current as its freshest leg, which is the lie.
+    # A missing mark is an honest gap; a mislabelled one is not. Tracked as
+    # marks-v2 alongside the position vector.
     ts = min(fresh_bar_times)
 
     existing = (

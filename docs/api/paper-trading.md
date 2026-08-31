@@ -108,6 +108,33 @@ created between ticks, a deployment on `SPY` before the session opens, or any
 deployment whose daily advance has not yet stamped a position set. Render it
 as an em-dash with a reason — never as `+0.00%`.
 
+#### Known limitation: a mark cannot see cash
+
+A mark re-prices the strategy's **asset basket** — the sleeve weights the last
+daily settle established — by applying each asset's move since that settle. It
+**does not know whether the strategy is currently invested or sitting in
+cash.** `replay_spec` returns dated portfolio returns, not a per-sleeve
+invested/flat vector, so v1 has no position vector to read, and inferring one
+from a return series would be a guess dressed as a measurement.
+
+The consequence, stated plainly: **a strategy that is flat (its exit condition
+fired, or it never entered) still shows a live value that moves with the assets
+it would hold.** A day where the settled ledger records `+0.00%` because the
+strategy held cash can carry a mark reading `+10.00%` if the underlying asset
+rose 10% — a real, reproducible divergence, pinned by
+`test_a_cash_sleeve_is_still_marked_as_if_invested` in
+`backend/tests/services/test_paper_marks.py`.
+
+The error is bounded and self-correcting: it never touches
+`paper_daily_returns`, and the next daily advance re-settles the anchor
+against the ledger, so a mark can be wrong for at most one session and cannot
+accumulate. **The settled daily return is the honest number** — marks are
+labelled unsettled for exactly this reason, and a client must say so at the
+point of render, not only in a tooltip.
+
+Closing the gap needs a per-sleeve position vector out of the graded engine —
+tracked as the marks-v2 follow-up, not a v1 constant.
+
 Each `mark`:
 
 | Field | Type | Meaning |
