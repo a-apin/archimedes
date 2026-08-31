@@ -41,7 +41,7 @@ def _audited_spec():
 
     ``apply_rigor_gate``'s look-ahead leg is a REAL audit now
     (``services/dsl_lookahead_audit.py``): with no spec to verify it returns
-    ``passed_declared_only``, which is deliberately NOT a pass. Tests below that
+    ``pending``, which is deliberately NOT a pass. Tests below that
     exercise the OTHER legs (provenance, OOS, PBO) pass this so the look-ahead
     leg is satisfied honestly rather than by a bypass. Tests that are ABOUT the
     look-ahead leg live in test_dsl_lookahead_audit.py.
@@ -110,7 +110,7 @@ def _make_high_sharpe_metrics(data_source: str = "csv:test.csv") -> BacktestMetr
         data_source=data_source,
         # Stands in for a real cerebro run: the broker cheat-on-close/open check
         # ran and passed. Without it the look-ahead audit is incomplete and
-        # cannot reach passed_structural (that is the point of the None default).
+        # cannot reach a `pass` (that is the point of the None default).
         broker_cheat_check_passed=True,
     )
 
@@ -252,8 +252,15 @@ class TestRigorGateAppliesToDslOutput:
         assert rigor.oos_sharpe is not None
         assert math.isfinite(rigor.oos_sharpe)
 
-        # Look-ahead is guaranteed by DSL design (rejected at validation).
+        # Look-ahead is DERIVED by the structural audit, not declared. Faber
+        # sits inside the audited interpreter surface and the run's broker check
+        # passed, so this is a real computed "pass" — not the constant True the
+        # removed self-declared look_ahead_safe flag used to produce, and not a
+        # word the generator supplied.
+        assert rigor.look_ahead_status == "pass"
         assert rigor.look_ahead_clean is True
+        assert rigor.look_ahead_label.startswith("PASS (structural)")
+        assert "self-attested" not in rigor.look_ahead_label
 
         # The gate produces a deterministic boolean verdict.
         assert isinstance(rigor.passing, bool)
@@ -270,11 +277,26 @@ class TestInvalidSpecHandling:
         assert result.error is not None
         assert "missing required" in result.error.lower() or "invalid" in result.error.lower()
 
-    def test_look_ahead_unsafe_returns_error(self):
-        unsafe = {**FABER_2007_SPEC, "look_ahead_safe": False}
-        result = evaluate_fusion_spec(unsafe)
-        assert not result.success
-        assert "look_ahead_safe" in result.error.lower()
+    def test_legacy_self_declared_flag_no_longer_gates_evaluation(self):
+        """A persisted spec still carrying the removed flag evaluates normally.
+
+        Both directions: the pipeline neither rejects a legacy ``false`` nor
+        credits a legacy ``true``. The declaration is inert.
+        """
+        verdicts = {}
+        for declared in (True, False):
+            result = evaluate_fusion_spec({**FABER_2007_SPEC, "look_ahead_safe": declared})
+            assert result.success, f"legacy look_ahead_safe={declared} must not block evaluation"
+            assert result.error is None
+            verdicts[declared] = result.rigor
+
+        # The declaration is inert in BOTH directions: the two runs produce the
+        # same derived verdict. A legacy `false` is not honoured as a failure and
+        # a legacy `true` is not credited as a pass — the value comes from the
+        # structural audit of the spec, which is identical either way.
+        assert verdicts[True].look_ahead_status == verdicts[False].look_ahead_status == "pass"
+        assert verdicts[True].look_ahead_label == verdicts[False].look_ahead_label
+        assert verdicts[True].look_ahead_clean is verdicts[False].look_ahead_clean is True
 
 
 class TestFusionWithVariantsComputesRealPbo:

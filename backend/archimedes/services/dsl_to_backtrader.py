@@ -630,7 +630,6 @@ def interpret_variant(
         exit=new_exit,
         position_sizing=copy.deepcopy(spec.position_sizing),
         source_arxiv_ids=list(spec.source_arxiv_ids),
-        look_ahead_safe=spec.look_ahead_safe,
         indicators=new_indicators,
         parameter_variants=None,
     )

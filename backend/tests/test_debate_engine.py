@@ -28,6 +28,8 @@ import pytest
 from archimedes.agents import debate_engine as de
 from archimedes.agents.strategy_fusion import FusionBrief, StrategyFusion, load_corpus, select_candidates
 from archimedes.api.generate_schemas import GenerateBrief
+from archimedes.services.dsl_lookahead_audit import PASS as LOOK_AHEAD_PASS
+from archimedes.services.dsl_lookahead_audit import DslLookAheadAudit
 
 # ── Fixture corpus: 3 momentum-flavored + 3 defensive-flavored + 1 noise ──────
 
@@ -151,6 +153,16 @@ class _CannedFusionBackend:
 
 # ── Fake FusionEvalResult-shaped objects (deterministic critic inputs) ────────
 
+#: A real look-ahead audit in its clean state, used to fill the rigor double's
+#: look-ahead fields. Built from the production dataclass so a change to the
+#: status vocabulary or the label text shows up here instead of leaving a stale
+#: hand-typed string that no longer matches anything the gate produces.
+_CLEAN_LOOK_AHEAD = DslLookAheadAudit(
+    status=LOOK_AHEAD_PASS,
+    interpreter_verified=True,
+    broker_cheat_check=True,
+)
+
 
 def _fake_ev(*, cagr, dsr=1.5, passing=True, oos=1.2, num_trials=5):
     rigor = SimpleNamespace(
@@ -159,17 +171,14 @@ def _fake_ev(*, cagr, dsr=1.5, passing=True, oos=1.2, num_trials=5):
         pbo_score=0.1,
         oos_sharpe=oos,
         in_sample_sharpe=1.3,
-        look_ahead_clean=True,
         # Mirrors a RigorVerdict that cleared the real structural look-ahead
-        # audit (services/dsl_lookahead_audit.py): the three-state field is what
-        # _rigor_verdict_dict now carries, and `declared` is the LLM's demoted
-        # self-declaration kept only as a record.
-        look_ahead_audit="passed_structural",
-        # The rendering axis, distinct from the gating one on purpose.
-        look_ahead_render_state="passed",
-        look_ahead_declared=True,
-        look_ahead_reasons=(),
-        look_ahead_label="clean",
+        # audit (services/dsl_lookahead_audit.py). The fields are read off an
+        # actual DslLookAheadAudit rather than typed as literals, so this double
+        # cannot drift into a state the production verdict never produces.
+        look_ahead_clean=_CLEAN_LOOK_AHEAD.passed,
+        look_ahead_status=_CLEAN_LOOK_AHEAD.status,
+        look_ahead_label=_CLEAN_LOOK_AHEAD.label,
+        look_ahead_reason=_CLEAN_LOOK_AHEAD.reason,
         num_trials=num_trials,
         passing=passing,
         data_source="synthetic",

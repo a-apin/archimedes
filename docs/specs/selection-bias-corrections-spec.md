@@ -483,24 +483,30 @@ three parts: an AST pass over the DSL interpreter proving every bar-indexed read
 carries an offset ≤ 0 (bar *t* or earlier); a walk of the validated spec proving
 it uses nothing outside that audited surface; and the broker
 cheat-on-close/cheat-on-open check charged on the real `cerebro` the backtest
-ran. The verdict is three-state — `passed_structural` /
-`passed_declared_only` / `failed` — and **only `passed_structural` clears the
-LEAK criterion**. The LLM's own boolean survives as `look_ahead_declared`, a
-record with no vote.
+ran. The verdict is four-state — `pass` / `fail` / `pending` (nothing was
+audited) / `degenerate` (the audit ran and could not decide) — and **only `pass`
+clears the LEAK criterion**. The LLM's own boolean does not survive in any form:
+`look_ahead_safe` is deleted from the DSL schema, the `StrategySpec` dataclass
+and the generation prompt, so there is no declaration left to read back.
 
 Two consequences worth stating plainly, because they pull in opposite
 directions and both are deliberate:
 
-- **Deployability is fail-closed.** `passed_declared_only` — the structural
-  audit could not be completed — blocks the gate exactly as hard as `failed`.
-  An unfinished audit is not evidence.
-- **Rendering is honest.** That same state must be *shown* as "not audited",
-  never as a failure, because nothing found a leak — nothing finished looking.
-  The verdict carries `look_ahead_render_state`
-  (`passed` / `not_checked` / `failed`) as a separate axis from the gating
-  boolean for exactly this reason, and `gate_details["look_ahead"]` renders a
-  leg that never ran as `NOT_RUN (…) — blocks admission (fail-closed)` rather
-  than `FAIL`.
+- **Deployability is fail-closed.** `pending` and `degenerate` block the gate
+  exactly as hard as `fail`. An audit that reached no verdict is not evidence.
+- **Rendering is honest.** Those same states must be *shown* as "not audited" /
+  "undecidable", never as a failure, because nothing found a leak — nothing
+  concluded. The four-state `look_ahead_status` is the single vocabulary every
+  surface reads (there is no second render vocabulary to keep in sync), and
+  `gate_details["look_ahead"]` renders those legs as
+  `NOT_RUN (…) — blocks admission (fail-closed)` /
+  `DEGENERATE (…) — blocks admission (fail-closed)` rather than `FAIL`.
+- **Persisted rows get the same treatment.** `GET /api/selection-bias/gate/{id}`
+  for a generated strategy grades stored columns, not a live spec, so it reads
+  `look_ahead_audit_source` alongside the boolean: a row whose provenance is the
+  retired `self_attested` (the boolean *was* the LLM's declaration) or
+  `dsl_audit_not_run` is `pending`, not a pass — a stored `True` from the old
+  self-attested path no longer deploys anything.
 
 What still keeps generated strategies badge-gated is the remaining wiring: the
 live *per-level* re-grade path takes curated strategies only. That is a
