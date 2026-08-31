@@ -48,6 +48,7 @@ from archimedes.agents.generation_pipeline import (
 )
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
+from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from archimedes.agents.generation_pipeline import _Emitter
@@ -74,11 +75,15 @@ _MECHANISM_AXIS: tuple[str, ...] = (
 # Cartesian product (regime × mechanism) = 18 distinct steers; `_pool_max()` caps the fan-out.
 _STEERS: tuple[tuple[str | None, str], ...] = tuple((r, m) for r in _REGIME_AXIS for m in _MECHANISM_AXIS)
 
-# Indicator stems interpret_spec actually supports. ``realized_vol_N`` *validates*
-# via validate_strategy_spec but raises DSLError("unsupported indicator") inside
-# interpret_spec — which would throw in C-rigor. The conformance guard (fix A5)
-# drops such specs from the pool BEFORE they reach evaluate_fusion_spec.
-_CONFORMANT_INDICATORS = {"sma", "ema", "rsi", "momentum"}
+# Indicator stems interpret_spec actually supports — IMPORTED, not re-typed.
+# The A5 guard drops specs the interpreter cannot build BEFORE they reach
+# evaluate_fusion_spec, where a DSLError would take down the whole leaderboard
+# build. It used to be a hand-maintained literal that excluded ``realized_vol``
+# because interpret_spec raised on it; now that the interpreter implements the
+# indicator, a hand-maintained copy would silently drop backtestable specs
+# instead. Binding to the interpreter's own set means the guard tracks what the
+# interpreter can actually do, in both directions.
+_CONFORMANT_INDICATORS = set(SUPPORTED_INDICATORS)
 
 # DSL price operands (not indicator aliases) — excluded from the conformance scan.
 _PRICE_OPERANDS = {"close", "open", "high", "low", "volume"}
@@ -152,10 +157,11 @@ def _indicator_alias_stems(spec: dict[str, Any]) -> set[str]:
 def _dsl_conformance_ok(spec: dict[str, Any] | None) -> bool:
     """True iff ``spec`` is backtestable by ``interpret_spec`` (fix A5).
 
-    Rejects specs whose indicator aliases fall outside ``{sma, ema, rsi,
-    momentum}`` — those validate but raise ``DSLError`` at interpret time, which
-    would otherwise throw inside C-rigor and take down the whole leaderboard
-    build. A spec must also carry both an ``entry`` and an ``exit`` tree.
+    Rejects specs whose indicator aliases fall outside
+    ``dsl_to_backtrader.SUPPORTED_INDICATORS`` — anything else validates but
+    raises ``DSLError`` at interpret time, which would otherwise throw inside
+    C-rigor and take down the whole leaderboard build. A spec must also carry
+    both an ``entry`` and an ``exit`` tree.
     """
     if not isinstance(spec, dict):
         return False
@@ -470,7 +476,19 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         "pbo": r.pbo_score,
         "oos_sharpe": r.oos_sharpe,
         "in_sample_sharpe": r.in_sample_sharpe,
+        # DERIVED from the structural audit below, not the LLM's declaration.
         "lookahead_audit_passed": bool(r.look_ahead_clean),
+        # The honest surfaced field: "passed_structural" | "passed_declared_only"
+        # | "failed". `passed_declared_only` is NOT a pass — see
+        # services/dsl_lookahead_audit.py.
+        "look_ahead_audit": r.look_ahead_audit,
+        # SEPARATE axis from the gate: "passed" | "not_checked" | "failed".
+        # `passed_declared_only` blocks deploy but renders "not_checked".
+        "look_ahead_render_state": r.look_ahead_render_state,
+        # What the generator CLAIMED (spec.look_ahead_safe), kept as a record
+        # with no vote in the gate.
+        "look_ahead_declared": r.look_ahead_declared,
+        "look_ahead_reasons": list(r.look_ahead_reasons),
         "look_ahead_label": r.look_ahead_label,
         "num_trials": int(r.num_trials),  # own pool_size, decouple #2
         "passing": bool(r.passing),

@@ -69,9 +69,9 @@ const RIGOR_CRITERIA = [
 		name: "Look-ahead audit",
 		question: "Did information from the future reach a decision?",
 		method:
-			"Generated strategies are written in a closed language that rejects a spec declaring itself unsafe before any backtest starts.",
+			"Generated strategies are checked structurally, against a compiler proven to read only the current bar and earlier — not on the generator's own say-so.",
 		limit:
-			"Recorded as self-attested, not source-audited — the static audit runs on cited library code.",
+			"The proof covers the strategy's decision path in our closed language — it cannot audit the market data itself for after-the-fact revisions.",
 	},
 ];
 

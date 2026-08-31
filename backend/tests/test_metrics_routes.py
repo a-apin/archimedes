@@ -81,6 +81,38 @@ async def test_metrics_endpoint_shape_keys_present():
 
 
 @pytest.mark.asyncio
+async def test_metrics_real_users_is_null_not_zero_on_account_count_failure():
+    """Round 4 fix: a DB error reading the account count must render as an
+    honest null, not a fabricated 0 that looks like a real, measured "zero
+    real users" — the same fail-soft violation CLAUDE.md's claims-must-be-true
+    section names, and the same class of bug engagement_metrics.py's round-2
+    fix already closed for the adjacent "Accounts (total)" tile.
+
+    Mutation-verified: reverting metrics_routes.get_metrics's
+    get_distinct_user_count_or_none() call back to get_distinct_user_count()
+    makes this assertion fail (`assert 0 is None` -> real_users reads 0).
+    """
+    from archimedes.main import app
+    from archimedes.services import user_stats
+
+    _reset_request_snapshot()
+    user_stats._reset_cache()
+    with (
+        patch(
+            "archimedes.services.telemetry_store.TelemetryStore.get_counts_or_none",
+            new=AsyncMock(return_value=(0, 0)),
+        ),
+        patch("archimedes.api.metrics_routes.get_distinct_user_count_or_none", return_value=None),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/metrics")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["real_users"] is None
+
+
+@pytest.mark.asyncio
 async def test_metrics_endpoint_falls_back_to_snapshot_when_redis_down():
     """When Redis is unreachable, the durable Postgres snapshot is served, not a false zero (D8/AC6).
 

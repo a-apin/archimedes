@@ -649,3 +649,11 @@ Full rules: [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md). Before you write a doc
 _Disagree with something here? Discuss in Discord, agree, and update the file — don't let
 it silently drift. Anything that decays does not belong in this file; put it where readers
 expect decay._
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+See [AGENTS.md](AGENTS.md) for OpenWiki agent instructions.
+
+<!-- OPENWIKI:END -->

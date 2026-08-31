@@ -79,7 +79,19 @@ deliberately **ADVISORY/annotation only**, not wired into `RigorGateResult.passe
 any strictness threshold (see that function's own docstring for the scope rationale). So
 the correction above still holds for the thing it was written about — no per-strategy
 `passes_all` verdict moves because of a board-level FDR adjustment — but "zero non-test
-callers" is no longer accurate as a blanket statement; correct as of 2026-08-21 (this PR).
+callers" is no longer accurate as a blanket statement; correct as of 2026-08-21.
+
+**Where the correction is served, as of #1564 (2026-08-31).** On `GET /api/leaderboard`,
+and nowhere else. It used to ride the per-strategy gate response
+(`StrategyRigorResult.board_fdr_*` + a top-level `board_level_fdr`); the owner decision is
+that the strategy passport carries only information about the strategy itself, and the
+leaderboard is the one cross-strategy surface. `GET /api/selection-bias/gate*` now carries
+no `board_fdr` key at all — guarded by
+`test_selection_bias_routes.py::TestBoardFdrStaysOffThePerStrategyGate`, which fails if one
+reappears. The board renders it: a per-row column plus the honest board-level line ("not
+yet distinguishable from selection noise at board level" when nothing clears, which is the
+state prod is in). An uncorrected row — no finite `dsr_p_value` — renders an em-dash, never
+a verdict.
 
 **Why it's better than raw Sharpe:** The standard Sharpe assumes returns are normally
 distributed, serially independent, and that you only ran one backtest. None of those is

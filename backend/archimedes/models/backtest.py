@@ -110,7 +110,15 @@ class BacktestResult:
     # this field a reader cannot tell a genuine audit pass from the constant.
     #   "broker_config_only"                — execution-timing check only, never fails
     #   "ast_audit"                         — rigor_evaluator.look_ahead_audit ran on real source
-    #   "self_attested"                     — closed-DSL path, no inspectable source
+    #   "dsl_structural_audit"              — closed-DSL path, PROVEN: the spec sits
+    #                                          inside a surface whose interpreter was
+    #                                          AST-audited to read only bar t and
+    #                                          earlier, and the broker cheat-on-
+    #                                          close/open check passed
+    #                                          (services/dsl_lookahead_audit.py)
+    #   "self_attested"                     — closed-DSL path, structural audit not
+    #                                          completed or failed; the boolean beside
+    #                                          this label is False
     #   "static_rebalance_no_signal_shift"  — portfolio simulator: t-1 held weights
     #                                          earn t returns (mechanically look-ahead-
     #                                          free), but the weight matrix itself is

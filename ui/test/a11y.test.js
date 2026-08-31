@@ -397,7 +397,25 @@ test("a failed deep link does not share the landing page's title", () => {
 	// guarded behavior (a dedicated not-found title, keyed off route.kind)
 	// is what matters, not the quoting.
 	assert.match(app, /["']not-found["']: ["']Page not found · Archimedes["']/);
-	assert.match(app, /route\.kind === ["']not-found["'] \? ["']not-found["'] : route\.page/);
+	// A denied /app/insights admin-gate probe (owner directive 2026-08-20)
+	// titles the tab as 'not-found' too — see the next test — so this key
+	// computation ORs in that case rather than checking route.kind alone.
+	assert.match(
+		app,
+		/const key = route\.kind === ["']not-found["'] \|\| deniedInsights \? ["']not-found["'] : route\.page/,
+	);
+});
+
+test("a denied insights admin-gate probe titles the tab as not-found, not 'Insights'", () => {
+	// "do not advertise existence" (owner directive 2026-08-20) applies to the
+	// tab title too — a many-tabs user must not be able to tell "unknown
+	// route" apart from "gated route I'm not allowed on" — or from "gate
+	// still resolving" (round 3: isInsightsPageBlocked treats an unresolved
+	// probe the same as a denied one, for the title as well as the render).
+	assert.match(
+		app,
+		/const deniedInsights = isInsightsPageBlocked\(route\.page, insightsAdmin\)/,
+	);
 });
 
 // ── 2.1.1 Keyboard / 4.1.2 Name, Role, Value ──────────────────────────────

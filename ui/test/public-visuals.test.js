@@ -203,9 +203,9 @@ test("each rigor panel states its own limit, and the deck names all four verdict
 	// note (level-1 dsr_p_min = 0.90); PBO → compute_pbo's "Known limitations"
 	// (a selection-set property, a neighbour can flip it); OOS →
 	// compute_oos_sharpe's "a single chronological hold-out, NOT a rolling
-	// walk-forward re-estimation ... no purge/embargo gap"; LEAK →
-	// generation_pipeline.py persisting look_ahead_audit_source="self_attested"
-	// while the AST audit runs only on cited library source.
+	// walk-forward re-estimation ... no purge/embargo gap"; LEAK → the
+	// structural audit (#1566: AST offset proof over dsl_to_backtrader + spec
+	// walk) covers the DSL decision path, never the data feed's own revisions.
 	const criteria = landing.slice(
 		landing.indexOf("const RIGOR_CRITERIA = ["),
 		landing.indexOf("const BOARD_FDR = {"),
@@ -218,7 +218,8 @@ test("each rigor panel states its own limit, and the deck names all four verdict
 	assert.match(criteria, /0\.90 level/);
 	assert.match(criteria, /selection set, not one strategy/);
 	assert.match(criteria, /not a rolling refit/);
-	assert.match(criteria, /self-attested, not source-audited/);
+	assert.match(criteria, /proven to read only the current bar and earlier/);
+	assert.match(criteria, /cannot audit the market data itself/);
 	assert.match(landing, /className="public-proof-deck__limit"/);
 
 	// Four states, verbatim from services/live_rigor_gate.py. "pending" and
@@ -432,12 +433,19 @@ test("metadata and sitemap describe canonical anonymous public routes", () => {
 		sitemap,
 		/<loc>https:\/\/archimedes-arc\.com\/architecture<\/loc>/,
 	);
-	for (const route of ["explore", "leaderboard", "corpus", "insights"]) {
+	for (const route of ["explore", "leaderboard", "corpus"]) {
 		assert.match(
 			sitemap,
 			new RegExp(`<loc>https://archimedes-arc\\.com/${route}</loc>`),
 		);
 	}
+	// `insights` was in the list above until the admin-gate PR (owner
+	// directive 2026-08-20, supersedes #1028 D8) made /app/insights
+	// ADMIN-ONLY. It is not an anonymous public route any more, so it must
+	// not be advertised — see ui/test/sitemap.test.js for the whole-file
+	// guard and its rationale. Asserting its ABSENCE here, rather than just
+	// deleting it from the loop, keeps this test honest about the change.
+	assert.doesNotMatch(sitemap, /insights/i);
 	assert.doesNotMatch(
 		sitemap,
 		/<loc>https:\/\/archimedes-arc\.com\/(marketplace|portfolio|publish|subscriptions)<\/loc>/,

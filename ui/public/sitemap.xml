@@ -15,6 +15,10 @@
     - strategy, vault-detail, market-strategy — dynamic routes that require
       an id/address in the path; there is no single canonical URL to list.
 
+  This file is publicly served: routes deliberately kept undiscoverable are
+  not listed AND not named here — see ui/test/sitemap.test.js for the
+  enforced property and its rationale.
+
   URLs are the app's real client-side routes (window.history.pushState on
   ui/src/App.jsx's PAGE_TO_PATH, e.g. /explore, /architecture — NOT hash
   fragments like /#/explore). nginx serves these with a SPA fallback
@@ -53,10 +57,5 @@
     <loc>https://archimedes-arc.com/corpus</loc>
     <priority>0.7</priority>
     <changefreq>weekly</changefreq>
-  </url>
-  <url>
-    <loc>https://archimedes-arc.com/insights</loc>
-    <priority>0.5</priority>
-    <changefreq>daily</changefreq>
   </url>
 </urlset>
