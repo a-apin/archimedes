@@ -976,11 +976,17 @@ async def health(response: Response):
     else:
         is_available, llm_backend, llm_reason, llm_model = llm_outcome.value
         llm_probe_fields = llm_outcome.payload_fields("llm")
-        if not llm_outcome.is_live:
-            # The staleness reason is ALSO the substantive one when the probe
-            # never answered — mirrors how oracle_reason absorbs probe_timeout
-            # rather than leaving the operator to join two fields.
-            llm_reason = f"{llm_outcome.reason} (last completed read: {llm_reason or 'available'})"
+        if llm_outcome.state == "stale_cached":
+            # A served-from-cache reading has to say so in the field an operator
+            # actually reads, not only in the sibling llm_probe_* fields. Exact
+            # shape of the oracle_reason composition below (main.py:1089).
+            llm_reason = (
+                f"{llm_outcome.reason}; last completed read {llm_outcome.age_s}s ago: {llm_reason or 'available'}"
+            )
+        elif not llm_outcome.is_live:
+            # probe_timeout with nothing ever cached. There is no prior reading,
+            # so nothing is quoted as one — the timeout IS the whole reason.
+            llm_reason = llm_outcome.reason
 
     # DB-backed corpus diagnostics
     db_count = 0

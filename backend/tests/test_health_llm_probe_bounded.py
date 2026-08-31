@@ -45,6 +45,7 @@ import threading
 import time
 from unittest.mock import patch
 
+import pytest
 from archimedes.chain.client import chain_client
 from archimedes.services import oracle_health as oracle_health_mod
 from archimedes.services.oracle_health import OracleHealth
@@ -62,6 +63,39 @@ _HARD_STOP_SECONDS = 8.0
 # over _LLM_PROBE_BUDGET_SECONDS (1.0s) so the probe MUST time out, and under
 # the hard stop so a regression is a fast red rather than a wedged run.
 _BLOCK_SECONDS = 3.0
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _warm_the_app():
+    """Pay /health's one-time costs BEFORE anything is timed.
+
+    The first ``/health`` in a process also loads the corpus and walks the
+    DB-miss paths — hundreds of milliseconds that have nothing to do with the
+    LLM probe, and that made the first timing assertion in this file flake at
+    2.11s against a 2.0s budget on a loaded box. Loosening the budget would
+    have hidden the very regression the budget exists to catch, so the fix is
+    to measure the WARM path instead: the ECS container HEALTHCHECK and the ALB
+    target-group check hit a warm process every 30s forever, so warm is also
+    the honest thing to hold to the promise.
+
+    ``asyncio.run`` on a throwaway loop, then the probe cache is cleared: this
+    call runs UNPATCHED, so its real chain/oracle/LLM readings must not survive
+    into a test that is about what happens when those probes go dark. (The
+    conftest's function-scoped ``_clear_health_probe_cache`` clears again before
+    each test; this is belt-and-braces for the module-scope ordering.)
+    """
+
+    async def _once():
+        from archimedes.main import app
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.get("/health")
+
+    asyncio.run(_once())
+
+    from archimedes.services.health_cache import clear_health_probe_cache
+
+    clear_health_probe_cache()
 
 
 class _LiveBackend:
