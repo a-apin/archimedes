@@ -255,9 +255,25 @@ class OracleUpdater:
 
         # Cascade: a STALE Pyth observation must NOT count as "covered". Otherwise the
         # symbol is dropped downstream by the staleness gate (_validate_for_push) with
-        # no yfinance/CoinGecko fallback to fill it — the exact gap the cascade exists
-        # to close (e.g. off-hours equity feeds). Only FRESH Pyth prices count as
-        # covered; stale ones fall through to the fallback sources below.
+        # no yfinance/CoinGecko fallback even attempted. Only FRESH Pyth prices count
+        # as covered; stale ones fall through to the fallback sources below.
+        #
+        # NOTE — what this can and cannot rescue, now that _fetch_yfinance stamps the
+        # UPSTREAM bar time. This comment used to claim the fallback closed the
+        # off-hours equity gap. It did, but only because the fallback's timestamp was
+        # the poll time and therefore ALWAYS passed the staleness gate — the gap was
+        # "closed" by a price that was just as stale as Pyth's and merely labelled
+        # fresh. It is not closed any more, and it was never honestly closed:
+        #
+        #   * INTRADAY, market open — unchanged. A stale Pyth read falls through to a
+        #     live yfinance bar, which passes the gate on its own merits.
+        #   * OFF-HOURS / weekends — the fallback is attempted and its price is now
+        #     correctly rejected downstream as stale, so the symbol IS dropped. That is
+        #     the intended outcome: nothing pushes rather than a Friday close wearing a
+        #     Saturday timestamp. Crypto (24/7) is unaffected either way.
+        #
+        # So the cascade still rescues a Pyth outage during the session, and no longer
+        # manufactures a rescue outside it.
         cap = self._max_upstream_staleness_s
 
         def _is_fresh(p: AssetPrice) -> bool:
@@ -766,34 +782,51 @@ class OracleUpdater:
         ``"yfinance"``, so a vendor swap is visible on every downstream
         consumer of these prices (including the #775 cross-check).
 
-        **This leg still stamps the POLL time, deliberately — on-chain
-        behavior is unchanged here.** ``get_intraday_quotes_batch`` now
-        returns ``(price, bar_ts)`` (widened for the paper-marks loop, which
-        must store an upstream observation time), so the tuple is unpacked —
-        but ``bar_ts`` is discarded on this path and ``timestamp`` (``now``,
-        from ``fetch_prices``) is what lands on the ``AssetPrice``.
+        **Each price carries its UPSTREAM bar timestamp, not the poll time —
+        and that CHANGES WHAT GETS PUSHED ON-CHAIN. Read the second half of
+        this docstring before approving.**
 
-        That is a known, tracked honesty gap and NOT a silent one:
-        ``_validate_for_push`` computes ``age_s`` from this same field, so on
-        the yfinance leg the staleness gate compares now against now and
-        cannot reject a stale bar (the Pyth cascade does carry a real
-        observation time; this leg does not). Stamping ``bar_ts`` here would
-        close it — and would ALSO stop every off-hours equity push, because a
-        Friday-close bar is hours older than
-        ``ORACLE_MAX_UPSTREAM_STALENESS_SECONDS``. That is a live-chain
-        behavior change with weekend-freshness consequences (#1528), so it
-        does not ride along in a paper-trading change: it is split out to
-        ``dbrowneup/oracle-bar-time-stamp`` for its own review.
-        ``test_stamps_the_poll_time_unchanged_by_the_widened_batch_seam``
-        pins that this branch did not quietly flip it.
+        *What it fixes.* ``_validate_for_push`` computes ``age_s`` as
+        ``now - price.timestamp``. While this leg stamped ``timestamp``
+        (``now``, from ``fetch_prices``), that gate compared now against now
+        and **could not reject a stale bar at all** — on the one leg where the
+        staleness cap is doing user-visible work. ``fetch_prices``'s own
+        docstring promises "every price keeps its true source + upstream
+        timestamp so the on-chain push staleness/deviation gates stay
+        meaningful"; that was true of the Pyth cascade, which carries a real
+        observation time, and false here. So the gate was not lenient — it was
+        inert, which is worse, because an inert gate reports the same green as
+        a passing one.
+
+        *What it breaks, deliberately.* An equity bar is only printed while
+        the market is open. Outside the session the newest bar is the last
+        close, which by Saturday is tens of hours old — far past
+        ``ORACLE_MAX_UPSTREAM_STALENESS_SECONDS`` (900s). So **off-hours
+        equity pushes now stop** instead of pushing the Friday close under a
+        fresh-looking timestamp. On-chain ``sSPY`` will hold its last
+        weekday value across the weekend rather than being re-pushed with a
+        new block time, and the runner logs a staleness rejection each cycle.
+
+        That is the correct behavior — a stale price wearing a fresh stamp is
+        the exact defect the gate exists to catch, and re-pushing an unchanged
+        weekend price also feeds the wedged-tx idempotency problem
+        ``DEFAULT_TX_MAX_REPOLLS`` exists to work around. But it is a REAL
+        behavior change to a live chain, it interacts with weekend-freshness
+        handling (#1528), and consumers that read on-chain age must be able to
+        tolerate a weekend-old ``updatedAt``. **Owner ack required before
+        merge.**
+
+        ``timestamp`` is kept as the poll-time FALLBACK — a vendor that ever
+        hands back a null bar time still produces a usable price, stamped with
+        the only time we can honestly claim to know.
         """
         from archimedes.services.market_data_provider import get_provider, provider_name
 
         quotes = get_provider().get_intraday_quotes_batch(symbols)
         source = provider_name()
         return [
-            AssetPrice(symbol=synth_symbol, price_usd=price, timestamp=timestamp, source=source)
-            for synth_symbol, (price, _bar_ts) in quotes.items()
+            AssetPrice(symbol=synth_symbol, price_usd=price, timestamp=bar_ts or timestamp, source=source)
+            for synth_symbol, (price, bar_ts) in quotes.items()
         ]
 
     async def _fetch_crypto(self, timestamp: datetime) -> list[AssetPrice]:

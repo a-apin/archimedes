@@ -24,7 +24,7 @@ own ``patch.object(mdp, "get_provider", ...)`` regardless of run order.
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -72,37 +72,87 @@ class TestFetchYfinance:
         assert by_symbol["sTSLA"] == 250.0
         assert by_symbol["sSPY"] == 500.0
 
-    def test_stamps_the_poll_time_unchanged_by_the_widened_batch_seam(self, updater):
-        """ON-CHAIN BEHAVIOR IS UNCHANGED by the paper-marks batch-seam widening.
+    def test_price_carries_the_upstream_bar_time_not_the_poll_time(self, updater):
+        """The honesty gap this change closes.
 
-        `get_intraday_quotes_batch` now returns `(price, bar_ts)` because the
-        paper-marks loop cannot be honest without an upstream observation
-        time. This leg unpacks that tuple and DISCARDS `bar_ts`: the
-        `AssetPrice` still carries the poll time, so `_validate_for_push`'s
-        `age_s` — and therefore which prices get pushed on-chain — is bit-for-
-        bit what it was before this branch.
+        `_validate_for_push` computes `age_s` as `now - price.timestamp`.
+        While this leg stamped the POLL time, that gate compared now against
+        now and could not reject a stale bar — on the one leg where the
+        staleness cap (DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS) is doing
+        user-visible work. The gate was not lenient; it was inert.
 
-        This is a REGRESSION PIN, not an endorsement. Stamping `bar_ts` here
-        is a real improvement (it makes the staleness gate able to reject a
-        stale bar at all) AND it silently stops every off-hours equity push,
-        because a Friday-close bar is hours older than the 900s cap. That
-        trade is split out to `dbrowneup/oracle-bar-time-stamp` with its own
-        off-hours test. A paper-trading PR must not change what gets written
-        on-chain at the weekend, and this test is what makes that visible.
-
-        Demonstrated to reject: changing `timestamp=timestamp` back to
-        `timestamp=bar_ts or timestamp` in `_fetch_yfinance` makes this test
-        fail (the stamp becomes `_BAR_TS`), while
-        `test_parses_multi_ticker_close` above still passes — the prices stay
-        right and only the *time* moves, which is exactly why the price test
-        alone could never have caught it.
+        Demonstrated to reject: restoring `timestamp=timestamp` in
+        `_fetch_yfinance` makes this test fail (the stamp becomes `poll_time`)
+        while `test_parses_multi_ticker_close` above still passes — i.e. the
+        price was right and the *time* was the lie, which is why no
+        price-valued test could ever have caught it.
         """
         poll_time = datetime(2026, 8, 30, 23, 59, tzinfo=UTC)
         fake_yf = _fake_yfinance_multi({"SPY": 500.0})
         with patch.dict(sys.modules, {"yfinance": fake_yf}):
             results = updater._fetch_yfinance({"sSPY": "SPY"}, poll_time)
-        assert results[0].timestamp == poll_time
-        assert results[0].timestamp != _BAR_TS, "the bar time is available here and deliberately not used (yet)"
+        assert results[0].timestamp == _BAR_TS
+        assert results[0].timestamp != poll_time
+
+    async def test_an_off_hours_equity_bar_is_now_REFUSED_for_the_on_chain_push(self, updater):
+        """THE BEHAVIOR CHANGE, executed end to end rather than described.
+
+        This is the whole reason this change is its own PR. Fetch an equity
+        price the way the runner does, at a wall-clock hours after the last
+        printed bar (a weekend), and hand the result to the real push gate.
+        Before this change the gate returned None — push it — because the
+        price wore the poll time. Now it returns a staleness rejection, so
+        NOTHING is pushed on-chain for `sSPY` until the market prints again.
+
+        On-chain consequence, stated plainly so a reviewer can weigh it:
+        `sSPY` holds its last weekday value across the weekend instead of
+        being re-pushed at a fresh block time, and the runner logs one
+        rejection per cycle. Anything reading the oracle's `updatedAt` must
+        tolerate a weekend-old value. Interacts with #1528.
+
+        Demonstrated to reject: restoring `timestamp=timestamp` in
+        `_fetch_yfinance` makes `reason` None and fails this test — which is
+        exactly the assertion that the old code shipped an inert gate.
+        """
+        saturday = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)  # ~40h after the Friday close
+        friday_close = datetime(2026, 9, 3, 20, 0, tzinfo=UTC)
+        fake_yf = _fake_yfinance_multi({"SPY": 500.0}, bar_ts=friday_close)
+        with patch.dict(sys.modules, {"yfinance": fake_yf}):
+            prices = updater._fetch_yfinance({"sSPY": "SPY"}, saturday)
+
+        assert prices[0].timestamp == friday_close
+
+        # The real gate, with a reference price present so nothing else can be
+        # the thing that rejects it.
+        with (
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(int(500.0 * 1e6), True))),
+            patch("archimedes.chain.oracle_updater.datetime") as fake_dt,
+        ):
+            fake_dt.now.return_value = saturday
+            reason = await updater._validate_for_push(prices[0], int(500.0 * 1e6))
+
+        assert reason is not None, "an off-hours equity bar must no longer pass the on-chain staleness gate"
+        assert "stale upstream data" in reason
+
+    async def test_an_in_session_equity_bar_still_passes_the_push_gate(self, updater):
+        """The other side of the same change — a guard that rejects everything
+        is not a guard, it is an outage. Same call, same shapes; only the bar
+        age differs. A live intraday bar is pushed exactly as before.
+        """
+        now = datetime(2026, 9, 3, 15, 0, tzinfo=UTC)
+        fresh_bar = now - timedelta(minutes=2)
+        fake_yf = _fake_yfinance_multi({"SPY": 500.0}, bar_ts=fresh_bar)
+        with patch.dict(sys.modules, {"yfinance": fake_yf}):
+            prices = updater._fetch_yfinance({"sSPY": "SPY"}, now)
+
+        with (
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(int(500.0 * 1e6), True))),
+            patch("archimedes.chain.oracle_updater.datetime") as fake_dt,
+        ):
+            fake_dt.now.return_value = now
+            reason = await updater._validate_for_push(prices[0], int(500.0 * 1e6))
+
+        assert reason is None, "a live intraday bar must still push — the change must not be a blanket refusal"
 
     def test_import_error_returns_empty(self, updater):
         # Force the `import yfinance as yf` inside to raise (no mock object needed —
