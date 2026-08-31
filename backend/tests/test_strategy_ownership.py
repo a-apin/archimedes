@@ -409,17 +409,37 @@ async def test_debate_unpublished_404_unless_owner():
     assert [t["role"] for t in body["transcript"]] == ["bull", "bear"]
 
 
-async def test_debate_published_is_public():
+async def test_debate_published_is_still_owner_only():
+    """#1557 INVERTS the old ``test_debate_published_is_public`` contract.
+
+    Publishing a strategy shares the strategy, not the multi-agent argument
+    that produced it. The transcript is REASONING and gates on ownership, so
+    ``is_published`` grants nothing here — while the card (``GET
+    /api/strategies/{id}``) stays public for exactly the same row, which is
+    asserted alongside so this cannot pass by the row simply being invisible.
+    """
     sid = "dbt00000000000002"
     _mk_strategy(sid, owner=_W_OWNER, published=True)
+    _mk_passport(sid)
     _mk_debate_transcript(sid)
 
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get(f"/api/strategies/{sid}/debate")
-    assert resp.status_code == 200
-    assert resp.json()["strategy_id"] == sid
+        anon = await client.get(f"/api/strategies/{sid}/debate")
+        other = await client.get(f"/api/strategies/{sid}/debate", cookies=_siwe_cookies(_W_OTHER))
+        owner = await client.get(f"/api/strategies/{sid}/debate", cookies=_siwe_cookies(_W_OWNER))
+        card = await client.get(f"/api/strategies/{sid}")
+
+    assert anon.status_code == 404
+    assert other.status_code == 404  # 404, not 403 — existence stays hidden
+    # Positive control: the transcript really is persisted and reachable, so
+    # the two 404s above are the GATE, not missing data.
+    assert owner.status_code == 200
+    assert owner.json()["strategy_id"] == sid
+    # The card of the very same published row stays public — this is a
+    # reasoning gate, not a re-privatisation of published strategies.
+    assert card.status_code == 200
 
 
 async def test_debate_404_when_strategy_exists_but_no_transcript_was_persisted():

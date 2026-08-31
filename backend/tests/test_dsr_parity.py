@@ -102,3 +102,23 @@ def test_convention_is_excess_not_raw() -> None:
     raw_sr = float(arr.mean()) / sigma
     excess_sr = (float(arr.mean()) - 0.05 / 252) / sigma
     assert abs(raw_sr - excess_sr) > 1e-3, "test series too flat to distinguish raw vs excess"
+
+
+def test_parity_unaffected_by_1409s_optional_dates_parameter() -> None:
+    """#1409 adds an optional `dates` kwarg to the backend's `compute_dsr` for
+    the historical T-bill rf series. The fixture side (analytics-engine) does
+    NOT gain this parameter — it keeps grading on the flat convention, by
+    design (only the live backend gate consumes the vendored series). This
+    guards that omitting `dates` (every call in this parity file) still
+    produces the EXACT flat-rate numbers the fixture side parity-checks
+    against — i.e. adding the parameter did not silently change the default
+    path either implementation exercises here."""
+    returns = _series(0.0004, 0.011, 400, 1)
+    f_dsr, f_p = fixture_compute_dsr(returns, 3)
+    b_dsr, b_p = backend_compute_dsr(returns, 3, average_correlation=0.0)
+    b_dsr_explicit_none, b_p_explicit_none = backend_compute_dsr(returns, 3, average_correlation=0.0, dates=None)
+
+    assert b_dsr == b_dsr_explicit_none
+    assert b_p == b_p_explicit_none
+    assert abs(f_dsr - b_dsr) <= _TOL
+    assert abs(f_p - b_p) <= _TOL

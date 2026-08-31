@@ -143,6 +143,13 @@ class IdentityEvent(Base):
     __table_args__ = (
         Index("ix_identity_events_wallet_type", "wallet", "event_type"),
         Index("ix_identity_events_type_time", "event_type", "occurred_at"),
+        # Schema-relations Phase 1: neither index above serves "one user's
+        # activity over time" (the literal shape of a repeat-user metric) —
+        # the first (wallet, event_type) leads with wallet but has no
+        # occurred_at column, so it can filter to one user but not serve an
+        # efficient time-ordered scan; the second (event_type, occurred_at)
+        # has no wallet column at all, so it can't even filter to one user.
+        Index("ix_identity_events_wallet_time", "wallet", "occurred_at"),
         CheckConstraint(
             "actor_class IN ('human','agent','operator_dogfood','system')",
             name="ck_identity_events_actor_class",
