@@ -105,6 +105,20 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bar_ts_to_utc(ts) -> datetime:
+    """Normalize a pandas bar-index entry to a tz-aware UTC ``datetime``.
+
+    Extracted from ``YFinanceProvider.get_intraday_quote`` so the single- and
+    batch-quote siblings normalize identically — the batch method's widened
+    return is only interchangeable with the single one if "UTC" means the
+    same thing on both. A naive index (yfinance returns one for some daily
+    frames) is LOCALIZED to UTC rather than converted, matching what the
+    single-quote path has always done.
+    """
+    ts = ts.tz_convert("UTC") if ts.tzinfo is not None else ts.tz_localize("UTC")
+    return ts.to_pydatetime()
+
+
 # ─── Provider interface ─────────────────────────────────────────────────
 
 
@@ -126,9 +140,31 @@ class MarketDataProvider(ABC):
         None on any failure. Never cached — see module docstring."""
 
     @abstractmethod
-    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
-        """Latest intraday price for many tickers in one vendor call. Keyed
-        like ``get_daily_close_batch``. Never cached."""
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, tuple[float, datetime]]:
+        """Latest intraday ``(price, bar_timestamp)`` for many tickers in one
+        vendor call. Keyed like ``get_daily_close_batch``. Never cached.
+
+        The bar timestamp is part of the contract, not a nicety — same shape
+        ``get_intraday_quote`` already returns for a single ticker, and
+        ``bar_timestamp`` is always tz-aware UTC. Two consumers need it and
+        neither can be honest without it:
+
+          - ``oracle_updater._validate_for_push`` gates an on-chain push on
+            ``now - price.timestamp``. When this method returned price only,
+            ``_fetch_yfinance`` had nothing to stamp but the POLL time, so on
+            the yfinance leg that gate compared now against now and could
+            never reject a stale bar (the Pyth cascade always carried a real
+            observation time; this leg did not).
+          - the paper-marks loop (``services.paper_marks``) stores the
+            UPSTREAM observation time on every mark and writes NO row when
+            the newest bar is stale. Both rules are unbuildable on a bare
+            float.
+
+        A symbol whose bar time is genuinely old (an equity outside market
+        hours) is still returned with its true, old timestamp — deciding what
+        counts as too stale belongs to the caller's policy, not to the vendor
+        seam.
+        """
 
     @abstractmethod
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
@@ -227,14 +263,24 @@ class YFinanceProvider(MarketDataProvider):
                 close = data["Close"]
                 if hasattr(close, "columns"):
                     close = close.iloc[:, 0]
-                bar_ts = data.index[-1]
-                bar_ts = bar_ts.tz_convert("UTC") if bar_ts.tzinfo is not None else bar_ts.tz_localize("UTC")
-                return float(close.iloc[-1]), bar_ts.to_pydatetime()
+                return float(close.iloc[-1]), _bar_ts_to_utc(data.index[-1])
         except Exception as exc:
             logger.warning("Failed to fetch %s: %s", ticker, exc)
         return None
 
-    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, tuple[float, datetime]]:
+        """One ``yf.download`` for the whole list; ``(price, bar_ts)`` per key.
+
+        The bar timestamp was always in hand here and thrown away: the frame
+        this method already holds is indexed by bar time. It is read
+        PER SYMBOL (``col.dropna().index[-1]``), not once off the frame's own
+        last index, because a mixed universe's legs do not share a last bar
+        — an equity outside the session and a 24/7 crypto pair sit in the same
+        frame with the equity column NaN across the tail. Taking the frame's
+        last index for both would stamp the equity leg with the crypto leg's
+        time, i.e. exactly the "stale price wearing a fresh timestamp" defect
+        the widened signature exists to make impossible.
+        """
         try:
             import yfinance as yf
         except ImportError:
@@ -244,7 +290,7 @@ class YFinanceProvider(MarketDataProvider):
         tickers_str = " ".join(tickers.values())
         data = yf.download(tickers_str, period="1d", interval="1m", progress=False)
 
-        results: dict[str, float] = {}
+        results: dict[str, tuple[float, datetime]] = {}
         for key, yf_ticker in tickers.items():
             try:
                 if data.empty:
@@ -253,14 +299,15 @@ class YFinanceProvider(MarketDataProvider):
                     close = data["Close"]
                     if hasattr(close, "columns"):
                         close = close.iloc[:, 0]
-                    price = float(close.iloc[-1])
                 else:
                     close = data["Close"]
-                    if yf_ticker in close.columns:
-                        price = float(close[yf_ticker].dropna().iloc[-1])
-                    else:
+                    if yf_ticker not in close.columns:
                         continue
-                results[key] = price
+                    close = close[yf_ticker]
+                close = close.dropna()
+                if close.empty:
+                    continue
+                results[key] = (float(close.iloc[-1]), _bar_ts_to_utc(close.index[-1]))
             except Exception as exc:
                 logger.warning("Failed to fetch %s: %s", key, exc)
         return results
@@ -711,6 +758,32 @@ def provider_name() -> str:
     return raw
 
 
+# Whether a vendor's INTRADAY feed is a delayed tape rather than a real-time
+# one. A property of the vendor contract, declared here once, so a consumer
+# that has to label a number for a user ("delayed") reads a stated fact
+# instead of guessing from a timestamp at render time.
+#
+# yfinance: True. Its 1-minute bars come off a consolidated feed with a lag
+# Yahoo does not contract to bound — the same property `oracle_updater`'s
+# DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS already treats as first-class.
+_INTRADAY_DELAYED_BY_PROVIDER: dict[str, bool] = {
+    "yfinance": True,
+}
+
+
+def intraday_is_delayed() -> bool:
+    """Does the ACTIVE provider's intraday feed carry a delay?
+
+    Fails toward ``True`` for a vendor that has not declared otherwise:
+    claiming real-time for a feed nobody verified is the dishonest
+    direction, and an unnecessary "delayed" badge costs nothing. A new
+    provider that genuinely serves real-time intraday adds itself to
+    ``_INTRADAY_DELAYED_BY_PROVIDER`` with ``False`` and a note saying what
+    contract backs that claim.
+    """
+    return _INTRADAY_DELAYED_BY_PROVIDER.get(provider_name(), True)
+
+
 # ─── Postgres read-through cache (asset_daily_bars) ────────────────────
 
 
@@ -998,7 +1071,12 @@ class CachingMarketDataProvider(MarketDataProvider):
     def get_intraday_quote(self, ticker: str) -> tuple[float, datetime] | None:
         return self._inner.get_intraday_quote(ticker)
 
-    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, tuple[float, datetime]]:
+        # Pass-through, and it must STAY a pass-through: intraday is uncached
+        # by design (module docstring) — a cached quote handed to the on-chain
+        # push gate or to a paper mark is a stale reading wearing a fresh
+        # label, which is the failure both consumers' staleness rules exist
+        # to prevent.
         return self._inner.get_intraday_quotes_batch(tickers)
 
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:

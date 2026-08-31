@@ -127,6 +127,64 @@ function WindowLabel({ start, end }) {
   )
 }
 
+// ── Board-level FDR (#1564) ─────────────────────────────────────────────────
+// The cohort-relational half of a row's rigor story, and the only surface that
+// carries it: the passport says whether a strategy is sound on its own
+// evidence, this board says whether it stands out from the field once you
+// price in that you are picking one strategy out of many. Both can be true at
+// once; on the prod pull recorded in #1555 (2026-08-30) they disagreed on every
+// curated row, nothing clearing the board-level threshold at any conventional
+// level. That disagreement is exactly why this is rendered rather than hidden
+// (owner: "render it as best we can"). What renders is whatever the payload
+// says today — no state of the correction is hard-coded here.
+//
+// The honesty rules this block exists to hold, guarded in
+// ui/test/leaderboard-board-fdr.test.js:
+//   • `board_fdr_significant == null` means the correction did not run for
+//     this row (no DSR confidence to correct). It renders an EM-DASH. It is
+//     never rendered as "not significant", and no verdict word is ever
+//     synthesised for it.
+//   • The headline counts come from the payload's own `board_level_fdr`
+//     block, never from a literal and never recounted off the visible rows —
+//     the visible rows are filtered and paged, the correction is not.
+const BOARD_FDR_NOT_DISTINGUISHABLE = 'Not yet distinguishable from selection noise at board level'
+const BOARD_FDR_ABSENT = '—'
+
+// BOARD-FDR-CELL:BEGIN — the per-row renderer. The guard slices on these
+// sentinels; renaming or dropping one must fail loudly there rather than
+// silently widen what gets scanned.
+
+function boardFdrTitle(entry, fdrLevel) {
+  const alpha = fdrLevel != null ? `α=${fdrLevel}` : 'the board α'
+  if (entry.board_fdr_significant == null) {
+    return 'Not corrected: this row has no DSR confidence for the board-level correction to act on.'
+  }
+  const adjusted = entry.board_fdr_adjusted_p != null ? ` BH-adjusted p=${fmt(entry.board_fdr_adjusted_p, 3)}.` : ''
+  return entry.board_fdr_significant
+    ? `Clears the board-level Benjamini–Hochberg correction at ${alpha}.${adjusted} Advisory — it does not change the rigor-gate badge.`
+    : `${BOARD_FDR_NOT_DISTINGUISHABLE} (Benjamini–Hochberg, ${alpha}).${adjusted} This does not mean the strategy is unsound — the rigor gate answers that separately.`
+}
+
+function BoardFdrCell({ entry, fdrLevel }) {
+  const title = boardFdrTitle(entry, fdrLevel)
+  if (entry.board_fdr_significant == null) {
+    return <span style={{ color: 'var(--text-3)' }} title={title}>{BOARD_FDR_ABSENT}</span>
+  }
+  return (
+    <span title={title}>
+      {entry.board_fdr_significant
+        ? <span className="tag-positive">Clears</span>
+        : <span className="tag-muted">Not distinguishable</span>}
+      {entry.board_fdr_adjusted_p != null && (
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
+          adj p {fmt(entry.board_fdr_adjusted_p, 3)}
+        </div>
+      )}
+    </span>
+  )
+}
+// BOARD-FDR-CELL:END
+
 function rigorBadge(entry) {
   if (entry.is_backtest_placeholder) {
     return <span className="tag-muted" title="No real backtest yet">No backtest</span>
@@ -214,6 +272,12 @@ export default function Leaderboard() {
 
   const engine = data?.scoring_engine
   const sb = engine?.stockbench_global
+  // Board-level BH-FDR block, straight off the payload (#1564). Read here and
+  // nowhere else so no part of the page can recount it off the filtered/paged
+  // rows: the correction runs over the whole board cohort on purpose (a
+  // smaller cohort makes every row look MORE significant), so a count derived
+  // from what happens to be on screen would be a different, false number.
+  const boardFdr = data?.board_level_fdr
   // The scope actually served (may differ from scopeParam — an anonymous
   // request for "own" is transparently served "curated"). This, not the
   // request param, is the source of truth for labeling the page.
@@ -244,9 +308,10 @@ export default function Leaderboard() {
   return (
     <div className="leaderboard-page" style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 18 }}>
-        <h2 className="serif" style={{ fontSize: '2rem', marginBottom: 8 }}>
-          {isOwn ? 'Your Strategy Leaderboard' : 'Strategy Leaderboard'}
-        </h2>
+        <header className="app-page-heading">
+          <p className="app-eyebrow">Transparent ranking</p>
+          <h1>{isOwn ? 'Your strategy leaderboard' : 'Strategy leaderboard'}</h1>
+        </header>
 
         {/* Board switch. Two surfaces, two bases, never averaged — the labels
             say which is which before a single number is read. */}
@@ -456,6 +521,38 @@ export default function Leaderboard() {
               {sb && <span title={`${sb.window} · ${sb.source}`}>Sortino {fmt(sb.sortino)}, return {sb.return_pct}%, rank {sb.rank}</span>}.
             </div>
           </div>
+          {/* BOARD-FDR-SUMMARY:BEGIN — the board-level headline. Rendered
+              whenever there is a cohort to correct; suppressed only when
+              nothing was tested, because a correction over an empty cohort has
+              nothing to say. Every number in it comes from the payload's own
+              `board_level_fdr` block — see the `boardFdr` comment above for
+              why it must not be recounted off the visible rows. */}
+          {boardFdr && boardFdr.n_tested > 0 && (
+            <div style={{ flex: '1 1 100%', borderTop: '1px solid var(--glass-border)', paddingTop: 12 }}>
+              <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6 }}>
+                Board-level correction
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
+                {boardFdr.n_significant === 0 ? (
+                  <>
+                    <strong>{BOARD_FDR_NOT_DISTINGUISHABLE}.</strong> None of the{' '}
+                    <strong>{boardFdr.n_tested}</strong> strateg{boardFdr.n_tested === 1 ? 'y' : 'ies'} on this board
+                    with a DSR to correct clears the correction. That is a statement about the field, not a verdict
+                    on any one strategy — the rigor gate answers that separately, per row.
+                  </>
+                ) : (
+                  <>
+                    <strong>{boardFdr.n_significant}</strong> of the <strong>{boardFdr.n_tested}</strong> strateg
+                    {boardFdr.n_tested === 1 ? 'y' : 'ies'} on this board with a DSR to correct{' '}
+                    {boardFdr.n_significant === 1 ? 'is' : 'are'} distinguishable from selection noise at board level;
+                    the rest are not.
+                  </>
+                )}{' '}
+                <span style={{ color: 'var(--text-3)' }}>{boardFdr.methodology}</span>
+              </div>
+            </div>
+          )}
+          {/* BOARD-FDR-SUMMARY:END */}
         </div>
       )}
 
@@ -540,6 +637,12 @@ export default function Leaderboard() {
                 <th style={{ padding: '8px 10px' }}>Max DD</th>
                 <th style={{ padding: '8px 10px' }}>Rigor</th>
                 <th style={{ padding: '8px 10px' }} title="Deflated Sharpe Ratio — Sharpe adjusted for selection bias / multiple testing">DSR</th>
+                <th
+                  style={{ padding: '8px 10px' }}
+                  title="Board-level Benjamini–Hochberg FDR: does this row stand out from the whole board once the multiple testing of picking one strategy out of many is priced in? Advisory — it never changes the rigor-gate badge."
+                >
+                  Board FDR
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -592,6 +695,9 @@ export default function Leaderboard() {
                     )}
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.deflated_sharpe_ratio)}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                    <BoardFdrCell entry={e} fdrLevel={boardFdr?.fdr_level} />
+                  </td>
                 </tr>
               ))}
             </tbody>

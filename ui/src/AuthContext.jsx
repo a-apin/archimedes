@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
+import { _resetAdminProbeCache } from './adminProbe.js'
 import { getSession, signOut as endSession } from './auth-client'
 
 const AuthContext = createContext(null)
@@ -23,6 +24,12 @@ export function AuthProvider({ children }) {
   const signOut = useCallback(async () => {
     await endSession()
     setSession(null)
+    // A cached "admin" determination must not survive into whatever
+    // signs in next on this browser (owner directive 2026-08-20 admin
+    // gate) — the shared probe cache is keyed on nothing session-specific,
+    // so it has to be cleared explicitly here rather than expiring on its
+    // own short TTL.
+    _resetAdminProbeCache()
   }, [])
 
   const value = useMemo(() => ({
