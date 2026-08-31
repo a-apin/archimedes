@@ -18,8 +18,17 @@ Env:
     AGENT_LEASE_RENEW_S     — lease renewal interval (default: 50s, ~ttl/3)
     REVEAL_RECONCILE_MAX_ATTEMPTS  — retries before a dangling commitment goes
                               TERMINAL (default: 3)
-    REVEAL_RECONCILE_SCAN_LIMIT    — newest traces scanned per tick (default: 200)
+    REVEAL_RECONCILE_SCAN_LIMIT    — newest traces scanned per tick, kept as a
+                              migration backstop alongside the durable index
+                              (default: 200)
     REVEAL_RECONCILE_MAX_PER_TICK  — reveals retried per tick (default: 5)
+    REVEAL_RECONCILE_MAX_AGE_SECONDS — independent circuit breaker (#1353): a
+                              record goes TERMINAL past this age since first
+                              seen dangling regardless of its attempt counter,
+                              so a compound failure (a broken save_trace write
+                              path on top of a broken reveal) cannot retry
+                              forever just because the persisted counter never
+                              advanced (default: 86400 = 24h)
 
 Exactly-once (#1043): this runner is a funds-adjacent singleton whose
 rebalance is NOT idempotent (it issues absolute swap amounts, not deltas) —
@@ -62,6 +71,7 @@ from archimedes.models.trace import DecisionType, ReasoningTrace
 from archimedes.services.gmm_regime_detector import GmmRegimeDetector
 from archimedes.services.portfolio_constructor import PortfolioConstructor
 from archimedes.services.redis_state import AgentStateStore
+from archimedes.services.redis_state import is_dangling_reveal as _needs_reveal_reconciliation
 from archimedes.services.runner_lease import RunnerLeaseGuard
 from archimedes.services.source_tracker import build_consulted_hashes
 from archimedes.services.strategy_provider import default_provider
@@ -110,6 +120,8 @@ USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
 REVEAL_RECONCILE_MAX_ATTEMPTS = int(os.getenv("REVEAL_RECONCILE_MAX_ATTEMPTS", "3"))
 REVEAL_RECONCILE_SCAN_LIMIT = int(os.getenv("REVEAL_RECONCILE_SCAN_LIMIT", "200"))
 REVEAL_RECONCILE_MAX_PER_TICK = int(os.getenv("REVEAL_RECONCILE_MAX_PER_TICK", "5"))
+# Compound-failure circuit breaker (#1353) — see the module docstring.
+REVEAL_RECONCILE_MAX_AGE_SECONDS = int(os.getenv("REVEAL_RECONCILE_MAX_AGE_SECONDS", str(24 * 3600)))
 
 _RECONCILE_PENDING = "pending"  # retried, failed, eligible for another attempt
 _RECONCILE_TERMINAL = "terminal"  # given up on — LOUD, countable, never retried
@@ -215,30 +227,39 @@ def _paper_hashes_from_signals(all_signals: list[StrategySignals]) -> list[str]:
     return build_consulted_hashes(papers)
 
 
-def _needs_reveal_reconciliation(record: dict) -> bool:
-    """True iff a persisted trace is a dangling commitment awaiting a reveal retry.
+# _needs_reveal_reconciliation is imported (aliased) from
+# archimedes.services.redis_state.is_dangling_reveal above (#1353) — that
+# module now owns the canonical predicate so it can be shared with the
+# save_trace index-maintenance the durable dangling-index (see
+# KEY_TRACE_RECONCILE_PENDING) is built on, without the two ever drifting
+# into different ideas of "dangling". The name is kept module-private and
+# unchanged here so every existing call site (and the reveal-reconciliation
+# test suite, which imports it by this name) is untouched.
 
-    The exact shape (#1276): ``commit_tx_hash IS NOT NULL AND reveal_tx_hash IS
-    NULL AND trade_tx_hash IS NOT NULL`` — a trade that really executed, whose
-    reasoning was really committed, whose reveal never landed.
 
-    Everything else must NOT match, and each exclusion is load-bearing:
-      - no ``trade_tx_hash``  → nothing executed (a SKIP trace, a lease-not-held
-        cycle, a dry run). There is no money-moved asymmetry to repair, and the
-        commitment is simply unused.
-      - ``reveal_tx_hash`` present → already revealed. Retrying would revert
-        "Already revealed" and burn gas for nothing.
-      - no ``commit_tx_hash`` → nothing was ever anchored, so there is no
-        commitment to reveal against.
-      - a CLOSED ``reveal_reconcile_state`` → already resolved or already given
-        up on. This is what makes "terminal" terminal: without it the bounded
-        retry counter would still be re-scanned forever.
+def _merge_dangling_candidates(index_records: list[dict], scan_records: list[dict]) -> list[dict]:
+    """Union the durable-index and bounded-scan candidate sets, deduped by hash.
+
+    The durable index (#1353, ``KEY_TRACE_RECONCILE_PENDING``) is the exact
+    source of truth going forward — SMEMBERS never ages a member out
+    regardless of trace volume. The bounded scan (#1276,
+    ``list_recent_traces``) is kept as a one-cycle migration backstop: it
+    still catches a record written dangling by code that predates this index
+    (and so was never added to it) — the very next time ANYTHING writes that
+    record via ``save_trace`` (including this pass's own retry), the index
+    takes over for it for good.
     """
-    if not isinstance(record, dict):
-        return False  # a corrupt store entry is not a reconciliation candidate
-    if record.get("reveal_reconcile_state") in _RECONCILE_CLOSED_STATES:
-        return False
-    return bool(record.get("commit_tx_hash")) and bool(record.get("trade_tx_hash")) and not record.get("reveal_tx_hash")
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for record in (*index_records, *scan_records):
+        if not isinstance(record, dict):
+            continue
+        key = record.get("trace_hash") or record.get("id")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(record)
+    return merged
 
 
 def _rebuild_committed_trace(record: dict) -> ReasoningTrace:
@@ -1759,6 +1780,18 @@ class StrategyRunner:
             ``REVEAL_RECONCILE_MAX_ATTEMPTS``, after which the record goes
             TERMINAL with a loud ERROR. Terminal is a state, not a deletion —
             the honest unverified trace stays exactly as #1275 persisted it.
+          - the candidate set is the UNION of the durable index (#1353,
+            ``list_dangling_reveal_traces`` — exact regardless of trace
+            volume) and the bounded scan (#1276, ``list_recent_traces`` —
+            kept as a one-cycle migration backstop for records written
+            dangling before the index existed); either source failing is
+            logged loudly but degrades to the other rather than aborting the
+            whole pass, since a partial candidate set is still real work;
+          - candidates are then cross-checked against the durable TERMINAL
+            set (#1403 review, ``list_reveal_reconcile_terminal_hashes``) and
+            dropped if present — this is what makes a record closed by
+            ``mark_reveal_reconcile_terminal`` stay closed even on a tick
+            where its own JSON blob failed to save and still reads "pending".
         """
         if DRY_RUN:
             logger.debug("[tick %s] DRY RUN — skipping reveal reconciliation (no chain reads, no writes)", tick_id)
@@ -1773,12 +1806,34 @@ class StrategyRunner:
             return
 
         try:
+            indexed = await self.state.list_dangling_reveal_traces()
+        except Exception as e:
+            logger.error("[tick %s] Reveal reconciliation index read FAILED: %s", tick_id, e)
+            indexed = []
+
+        try:
             records = await self.state.list_recent_traces(REVEAL_RECONCILE_SCAN_LIMIT)
         except Exception as e:
             logger.error("[tick %s] Reveal reconciliation scan FAILED: %s", tick_id, e)
-            return
+            records = []
 
-        dangling = [r for r in (records or []) if _needs_reveal_reconciliation(r)]
+        # Durable-terminal cross-check (#1403 review): ``mark_reveal_reconcile_terminal``
+        # closes the index directly, independent of whether that record's own
+        # JSON blob save (below, in ``_reconcile_terminal``) succeeded. A
+        # candidate's blob can therefore still read "pending" here even
+        # though it was already durably closed on an earlier tick — trust
+        # the index over the blob, or the compound-failure breaker's verdict
+        # would never actually stop the retries it computes.
+        try:
+            terminal_hashes = await self.state.list_reveal_reconcile_terminal_hashes()
+        except Exception as e:
+            logger.error("[tick %s] Reveal reconciliation terminal-index read FAILED: %s", tick_id, e)
+            terminal_hashes = set()
+
+        candidates = _merge_dangling_candidates(indexed or [], records or [])
+        if terminal_hashes:
+            candidates = [c for c in candidates if c.get("trace_hash") not in terminal_hashes]
+        dangling = [r for r in candidates if _needs_reveal_reconciliation(r)]
         if not dangling:
             return
 
@@ -1861,6 +1916,35 @@ class StrategyRunner:
             # retryable failure so the attempt cap still bounds it.
             await self._reconcile_failure(
                 record, tick_id, "on-chain commitment unreadable (registry read failed, or no such commitment)"
+            )
+            return
+
+        # ── Permanently unrevealable #3: the signer that committed is no
+        # longer the backend's confirmed signer (#1353, hardened by #1403
+        # review) ──
+        #
+        # reveal() requires msg.sender == committer. After a key rotation the
+        # OLD retry loop burned all REVEAL_RECONCILE_MAX_ATTEMPTS on "Not
+        # committer" reverts before going terminal — wasted gas on a result
+        # that can never change. Checking it here is a cheap, zero-attempt
+        # short-circuit straight to terminal instead. Skipped (falls through
+        # to the normal path) when the signer can't be CONFIRMED
+        # (``backend_signer_address_confirmed`` returns None — always true on
+        # the Circle path, where the only address available, WALLET_ADDRESS,
+        # is a hand-maintained mirror of the real signer rather than a
+        # cryptographic derivation of it, see executor.py) or the commitment
+        # carries no committer — never guess, only reject a CONFIRMED
+        # mismatch, because terminal here is irreversible and a false
+        # positive would permanently kill a perfectly recoverable reveal.
+        configured_addr = chain_executor.backend_signer_address_confirmed()
+        committer = commitment.get("committer")
+        if configured_addr and committer and str(committer).lower() != str(configured_addr).lower():
+            await self._reconcile_terminal(
+                record,
+                tick_id,
+                f"signer mismatch: reveal() requires msg.sender == committer ({committer}), but the "
+                f"confirmed agent signer is {configured_addr} (key rotation since commit) — every "
+                "future attempt would revert 'Not committer'",
             )
             return
 
@@ -1971,13 +2055,75 @@ class StrategyRunner:
             and commit_block < trade_block <= reveal_block
         )
 
+    async def _reveal_reconcile_first_seen(self, trace_hash: str | None, tick_id: str) -> datetime | None:
+        """Read the durable first-seen-dangling marker; failure degrades to skipping the age guard.
+
+        A read failure here must NOT block the normal attempt-cap path (that
+        one still works off the in-memory ``record``) — this is a SECOND,
+        independent bound, and losing it for one tick just means the
+        compound-failure circuit breaker doesn't fire this cycle, not that
+        reconciliation stops.
+        """
+        if not trace_hash:
+            return None
+        try:
+            return await self.state.get_reveal_reconcile_first_seen(trace_hash)
+        except Exception as e:
+            logger.warning(
+                "[tick %s] Reveal reconciliation first-seen read FAILED for %s: %s — age guard skipped this cycle",
+                tick_id,
+                trace_hash[:16],
+                e,
+            )
+            return None
+
+    async def _seed_missing_first_seen(self, trace_hash: str | None, tick_id: str) -> None:
+        """Independently seed a missing first-seen marker (#1403 review, item 4).
+
+        A migration-era dangling record — one that was already dangling
+        before this index existed — has no first-seen marker, and normally
+        only ``save_trace`` writes one, as a side effect of persisting the
+        full trace JSON blob. If THAT blob write is the thing broken, the
+        marker can never get seeded that way, so the max-age circuit breaker
+        can never fire for exactly the compound failure it exists to close.
+
+        Seeding here — a small, independent write, NOT gated on the blob
+        save — gives such a record a clock (starting now) on its first
+        reconciliation pass, regardless of whether the blob save this same
+        tick succeeds. A write failure here is loud but never blocking: the
+        normal attempt-cap path still works off the in-memory ``record``.
+        """
+        if not trace_hash:
+            return
+        try:
+            await self.state.seed_reveal_reconcile_first_seen(trace_hash)
+        except Exception as e:
+            logger.warning(
+                "[tick %s] Reveal reconciliation first-seen SEED FAILED for %s: %s — will retry seeding "
+                "next cycle; age guard stays unbounded for this record until it succeeds",
+                tick_id,
+                trace_hash[:16],
+                e,
+            )
+
     async def _reconcile_failure(self, record: dict, tick_id: str, reason: str) -> None:
-        """Count one failed retry; go terminal at the cap.
+        """Count one failed retry; go terminal at the cap OR past the max age.
 
         The verification fields are pointedly NOT touched here — a failed retry
         leaves the #1275 honest-degradation contract exactly as it was
         (``is_verified`` False, reveal fields None, binding invalid, dangling
         commit preserved). Only the reconciliation bookkeeping moves.
+
+        Two INDEPENDENT bounds gate terminal, not one (#1353, compound-failure
+        finding on #1352): the attempt cap trusts ``reveal_reconcile_attempts``,
+        a field inside the SAME JSON blob ``save_trace`` just tried (and may
+        keep failing) to persist — a broken Redis write path on top of a
+        broken reveal can leave that counter stuck below the cap forever. The
+        max-age check reads a marker written directly to Redis (HSETNX, set
+        once) the moment this record FIRST entered the dangling index, wholly
+        independent of whether the counter's own persistence ever succeeds
+        again — so this bound still fires even when the counter cannot be
+        trusted.
         """
         attempts = int(record.get("reveal_reconcile_attempts") or 0) + 1
         record["reveal_reconcile_attempts"] = attempts
@@ -1987,6 +2133,27 @@ class StrategyRunner:
         if attempts >= REVEAL_RECONCILE_MAX_ATTEMPTS:
             await self._reconcile_terminal(record, tick_id, reason)
             return
+
+        first_seen = await self._reveal_reconcile_first_seen(record.get("trace_hash"), tick_id)
+        if first_seen is not None:
+            age_s = (datetime.now(UTC) - first_seen).total_seconds()
+            if age_s > REVEAL_RECONCILE_MAX_AGE_SECONDS:
+                await self._reconcile_terminal(
+                    record,
+                    tick_id,
+                    f"{reason} — AND max age exceeded ({age_s:.0f}s > {REVEAL_RECONCILE_MAX_AGE_SECONDS}s since "
+                    "first seen dangling), independent of the attempt counter (compound-failure guard, #1353)",
+                )
+                return
+        else:
+            # No marker at all (as opposed to a transient read failure) means
+            # this record — likely migration-era — has never had a clock.
+            # Seed one now, independently of whether this tick's blob save
+            # below succeeds (#1403 review, item 4): otherwise a record whose
+            # dangling-ness predates this index, combined with a blob write
+            # path that stays broken, can never acquire a first-seen marker
+            # and the age guard stays permanently unbounded for it.
+            await self._seed_missing_first_seen(record.get("trace_hash"), tick_id)
 
         record["reveal_reconcile_state"] = _RECONCILE_PENDING
         logger.warning(
@@ -2006,14 +2173,41 @@ class StrategyRunner:
 
         The failure mode this exists to prevent is an infinite silent retry
         loop. Terminal is a STATE, not a deletion: the trace stays persisted
-        exactly as it was, honestly unverified, and becomes countable/alertable
-        via ``reveal_reconcile_state == "terminal"`` — which is also what stops
+        exactly as it was, honestly unverified, and becomes COUNTABLE via
+        ``reveal_reconcile_state == "terminal"`` — which is also what stops
         ``_needs_reveal_reconciliation`` from ever picking it up again.
+        Countable, not yet alerted on: the ERROR below is loud in the log and
+        the count is published on ``/health``, but no metric filter or alarm
+        consumes either (#1403 review — see
+        ``AgentStateStore.get_reveal_reconcile_terminal_count``).
+
+        The durable index close (#1403 review) runs FIRST and independently
+        of the trace blob save below: ``mark_reveal_reconcile_terminal`` is
+        three small ops (SADD/SREM/HDEL) on their own keys, not gated on the
+        (larger) trace JSON's own ``SET`` succeeding. Without this, a broken
+        write path specifically on the blob would recompute "should be
+        terminal" correctly every tick without it ever sticking in Redis —
+        so the record would still read "pending" on the next scan and the
+        actual guarded ``reveal()`` call would keep firing, unbounded, exactly
+        the compound failure the max-age breaker exists to close.
         """
         record["reveal_reconcile_state"] = _RECONCILE_TERMINAL
         record["reveal_reconcile_terminal_reason"] = reason
         record["reveal_reconcile_terminal_at"] = datetime.now(UTC).isoformat()
         record.setdefault("reveal_reconcile_attempts", 0)
+
+        trace_hash = record.get("trace_hash")
+        if trace_hash:
+            try:
+                await self.state.mark_reveal_reconcile_terminal(trace_hash)
+            except Exception as e:
+                logger.error(
+                    "[tick %s] Durable terminal-index write FAILED for trace %s: %s — the trace "
+                    "blob save below is the only remaining chance this transition sticks this tick",
+                    tick_id,
+                    record.get("id"),
+                    e,
+                )
 
         logger.error(
             "[tick %s] REVEAL RECONCILIATION TERMINAL — trace %s (hash %s, vault %s, commit %s) "
