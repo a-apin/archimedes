@@ -118,8 +118,10 @@ htmlcov/
 **/.terraform/
 **/.terraform.lock.hcl
 
-
-#
+# Local agent and browser runtime artifacts
+.worktrees/
+.pi-subagents/
+**/.playwright-cli/
 .agents/
 .AGENTS.md
 

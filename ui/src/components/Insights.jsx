@@ -147,7 +147,7 @@ export default function Insights() {
       </p>
 
       {error && (
-        <div style={{ ...card, borderColor: 'var(--negative-bd)', color: 'var(--negative)', marginBottom: 16 }}>
+        <div role="alert" style={{ ...card, borderColor: 'var(--negative-bd)', color: 'var(--negative)', marginBottom: 16 }}>
           Couldn’t load metrics: {error}
         </div>
       )}
@@ -165,7 +165,7 @@ export default function Insights() {
           that loaded the app (JS-gated) — this is the funnel’s <em>Landed</em> count below, and it still
           includes sessions the telemetry classifier positively tags as agents. See the human / external
           bot / internal split under each stage below for exactly how many.
-          <strong> Real users</strong> = canonical Better Auth accounts, all-time. This differs from
+          <strong> Real users</strong> = canonical accounts, all-time. This differs from
           “Connected Wallet”, which counts visitor sessions reaching optional wallet-link step.
         </p>
         <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--glass-border)', fontSize: 12, color: 'var(--text-3)' }}>
@@ -181,9 +181,9 @@ export default function Insights() {
       <section style={{ ...card, marginBottom: 16 }}>
         <h2 style={{ marginTop: 0, fontSize: 16 }}>Conversion funnel — distinct visitors</h2>
         {loading && !funnel ? (
-          <Empty>Loading…</Empty>
+          <Empty role="status">Loading…</Empty>
         ) : !funnel ? (
-          <Empty>Couldn’t load the funnel{error ? `: ${error}` : '.'}</Empty>
+          <Empty role="alert">Couldn’t load the funnel{error ? `: ${error}` : '.'}</Empty>
         ) : landed === 0 ? (
           <Empty>
             No visitors recorded yet.{' '}
@@ -232,9 +232,9 @@ export default function Insights() {
           <code>ZZ</code> (unknown / not provided) until the visitor's country is available.
         </p>
         {loading && !visitors && !visitorsError ? (
-          <Empty>Loading visitor insights…</Empty>
+          <Empty role="status">Loading visitor insights…</Empty>
         ) : visitorsError ? (
-          <Empty>Couldn’t load visitor insights: {visitorsError}</Empty>
+          <Empty role="alert">Couldn’t load visitor insights: {visitorsError}</Empty>
         ) : !visitors || ((visitors.countries?.length ?? 0) === 0 && totalDevices === 0) ? (
           <Empty>No visitors recorded yet.</Empty>
         ) : (
@@ -287,6 +287,6 @@ function Stat({ label, value, accent }) {
   )
 }
 
-function Empty({ children }) {
-  return <p style={{ color: 'var(--text-2)', fontSize: 13.5, margin: 0 }}>{children}</p>
+function Empty({ children, role }) {
+  return <p role={role} style={{ color: 'var(--text-2)', fontSize: 13.5, margin: 0 }}>{children}</p>
 }
