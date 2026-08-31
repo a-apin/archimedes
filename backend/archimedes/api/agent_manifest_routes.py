@@ -26,6 +26,13 @@ makes no claim about marketplace payment/billing settlement (that is tracked
 separately and out of scope for this file — see the ``auth`` block below, which
 advertises no payment scheme).
 
+The ``erc8004`` block (#1527) is the on-chain identity leg and is deliberately the
+weakest claim in this document: the spec-typed registration file is published, and
+that is ALL it says. ``agentId``/``tokenURI`` are null and ``status`` is
+``registration_pending`` until an owner-signed ``register()`` lands on Arc — an agent
+reading this must not treat Archimedes as an ERC-8004-registered, reputed, or
+validated counterparty.
+
 ``auth_required`` is a per-GROUP flag, so a route belongs to the group whose gating it
 actually shares — the three ``/api/wallets/*`` routes all sit behind
 ``require_current_user`` and therefore live in ``walletLink`` (auth_required True), NOT
@@ -58,6 +65,64 @@ agent_manifest_router = APIRouter(prefix="/api/agent", tags=["agent"])
 # the value the rest of the backend actually enforces.
 _CHAIN_ID = int(os.getenv("ARC_CHAIN_ID", "5042002"))
 
+# ── ERC-8004 identity (#1527) ────────────────────────────────────────────────
+#
+# Arc names ERC-8004 as its on-chain agent-identity standard (docs/arc-integration.md →
+# submodules/context-arc/.../build/agentic-economy.md). This block advertises the leg
+# that EXISTS today — the spec-typed registration file and the registry we would
+# register against — and asserts nothing beyond it.
+#
+# Registration is an owner-signed on-chain transaction (``register(string agentURI)``,
+# planned by ``scripts/register_erc8004_identity.py``). Until the owner sends it there
+# is no agentId and no tokenURI, so both are ``None`` here rather than guessed,
+# defaulted to 0, or read from an env var a deploy could set with no receipt behind
+# it. ``status`` is derived from ``_ERC8004_AGENT_ID`` rather than written separately,
+# so "registered" cannot be claimed while the id is absent.
+_ERC8004_IDENTITY_REGISTRY = os.getenv("ERC8004_IDENTITY_REGISTRY", "0x8004A818BFB912233c491871b3d84c89A494BD9e")
+
+# The URL an ``agentURI`` would point at — the ERC-8004 registration file served from
+# ui/public/.well-known/. It is NOT a tokenURI: nothing on-chain references it yet.
+_ERC8004_REGISTRATION_URI = "https://archimedes-arc.com/.well-known/agent-registration.json"
+
+# Both stay None until a real ``Registered(agentId, agentURI, owner)`` event exists.
+# Filling them is a reviewed code change carrying the transaction hash, never a
+# config flip — see test_erc8004_identity.py, which fails if either is set without
+# the registration file's ``registrations`` list agreeing.
+_ERC8004_AGENT_ID: int | None = None
+_ERC8004_TOKEN_URI: str | None = None
+
+_ERC8004_PENDING_NOTE = (
+    "Not registered on-chain: no register() transaction has been sent, so agentId and "
+    "tokenURI are null and NO ERC-8004 identity, reputation, or validation claim is made. "
+    "Publishing a spec-typed registration file at registrationUri is not the same as "
+    "being registered. Plan the call with scripts/register_erc8004_identity.py --plan."
+)
+
+
+def erc8004_identity() -> dict:
+    """The ERC-8004 identity block, shared by every discovery surface.
+
+    One builder so the served manifest, the static agent card, and the two
+    registration files cannot disagree about whether we are registered — the
+    exact failure mode #1448 caught between the first two surfaces.
+    """
+    registered = _ERC8004_AGENT_ID is not None
+    return {
+        "chain": f"eip155:{_CHAIN_ID}",
+        "identityRegistry": _ERC8004_IDENTITY_REGISTRY,
+        "agentId": _ERC8004_AGENT_ID,
+        "tokenURI": _ERC8004_TOKEN_URI,
+        "status": "registered" if registered else "registration_pending",
+        "registrationUri": _ERC8004_REGISTRATION_URI,
+        "note": (
+            f"Registered as agent {_ERC8004_AGENT_ID} on {_ERC8004_IDENTITY_REGISTRY}. "
+            "Registration is an identity record only — it asserts nothing about reputation "
+            "or validation, neither of which this agent claims."
+            if registered
+            else _ERC8004_PENDING_NOTE
+        ),
+    }
+
 
 @agent_manifest_router.get("/manifest")
 async def get_agent_manifest():
@@ -77,8 +142,11 @@ async def get_agent_manifest():
         "docs": {
             "llms_txt": "/llms.txt",
             "agent_api": "https://github.com/a-apin/archimedes/blob/main/docs/agent-api.md",
+            "quickstart": "https://github.com/a-apin/archimedes/blob/main/docs/agent-quickstart.md",
             "agent_card": "/.well-known/agent.json",
         },
+        # On-chain identity leg — pending, and says so. See erc8004_identity().
+        "erc8004": erc8004_identity(),
         "auth": {
             "scheme": "Better Auth session",
             "methods": ["emailPassword", "google", "github"],
@@ -163,9 +231,18 @@ async def get_agent_manifest():
             # checks over a bare returns series the caller submits. Only DSR and
             # walk-forward OOS are evaluable from a bare series — PBO and the
             # look-ahead audit report `not_evaluable`, never a silent pass.
+            # #1481: `passes` is a quorum over the two RUNNABLE legs, so an agent
+            # reading the scalar alone cannot mistake it for the passport gate.
             "rigor": {
                 "status": "live",
                 "auth_required": True,
+                "verdict_note": (
+                    "`passes` requires BOTH runnable legs (DSR, OOS consistency) to have run "
+                    "and passed. PBO and look-ahead can never run on a bare returns series, so "
+                    "the verdict is capped: it is NOT equivalent to the strategy passport gate. "
+                    "The response carries legs_evaluated / legs_runnable / legs_total / "
+                    "verdict_capped so the scalar is qualifiable without re-deriving leg statuses."
+                ),
                 "routes": {
                     "verify": "POST /api/rigor/verify",
                 },

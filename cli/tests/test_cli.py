@@ -23,7 +23,7 @@ import httpx
 import pytest
 from archimedes_cli import __version__
 from archimedes_cli.cli import main
-from archimedes_cli.exits import AUTH, GATE_FAILED, NOT_IMPLEMENTED, OK, USAGE
+from archimedes_cli.exits import AUTH, GATE_FAILED, INCOMPLETE, NOT_IMPLEMENTED, OK, USAGE
 from archimedes_cli.session import SESSION_COOKIE_NAME, save_session, session_path
 from click.testing import CliRunner
 
@@ -122,6 +122,12 @@ _VERIFY_PASS_BODY = {
     "trials": 1,
     "self_attested": True,
     "n_bars": 300,
+    # #1481: the server qualifies `passes` with the quorum it was computed over.
+    "legs_evaluated": 2,
+    "legs_runnable": 2,
+    "legs_total": 4,
+    "legs_not_run": ["pbo", "look_ahead"],
+    "verdict_capped": True,
     "dsr": {
         "status": "pass",
         "reason": "self-attested trials=1: DSR p-value 0.9997 >= floor 0.50 (Newey-West HAC standard error)",
@@ -149,6 +155,11 @@ _VERIFY_FAIL_BODY = {
     "trials": 1,
     "self_attested": True,
     "n_bars": 300,
+    "legs_evaluated": 2,
+    "legs_runnable": 2,
+    "legs_total": 4,
+    "legs_not_run": ["pbo", "look_ahead"],
+    "verdict_capped": True,
     "dsr": {
         "status": "fail",
         "reason": "self-attested trials=1: DSR p-value 0.0002 < floor 0.50 (Newey-West HAC standard error)",
@@ -170,6 +181,11 @@ _VERIFY_NOT_EVALUABLE_BODY = {
     "trials": 1,
     "self_attested": True,
     "n_bars": 3,
+    "legs_evaluated": 0,
+    "legs_runnable": 2,
+    "legs_total": 4,
+    "legs_not_run": ["dsr", "pbo", "oos_consistency", "look_ahead"],
+    "verdict_capped": True,
     "dsr": {"status": "not_evaluable", "reason": "return series too short or degenerate for DSR (need >= 4 bars)"},
     "pbo": {"status": "not_evaluable", "reason": "PBO requires a trial matrix."},
     "oos_consistency": {"status": "not_evaluable", "reason": "insufficient data for a walk-forward OOS split"},
@@ -482,7 +498,10 @@ class TestVerify:
         assert "[PASS] OOS consistency" in result.stdout
         assert "[N/A] PBO" in result.stdout
         assert "[N/A] Look-ahead" in result.stdout
-        assert "PASSES" in result.stdout
+        # Never an unqualified "PASSES" (#1481): two of the four gate legs cannot
+        # run on a bare returns series, so the verdict is reported as capped.
+        assert "PASSES (capped" in result.stdout
+        assert "legs evaluated: 2/2 runnable here of 4 in the full gate" in result.stdout
 
     def test_json_on_a_lookahead_free_strong_oos_series_exits_0(self, runner, monkeypatch):
         """The issue's literal acceptance check, second half: `--json` on a series with
@@ -511,18 +530,65 @@ class TestVerify:
         assert payload["pbo"]["status"] == "not_evaluable"  # issue's literal acceptance check
 
     def test_not_evaluable_rendering_when_nothing_could_run(self, runner, monkeypatch):
-        """The honesty-contract case from the issue's acceptance criteria: every check
-        not_evaluable must render as such (never a silent pass) and still exit 1."""
+        """Every check not_evaluable must render as such (never a silent pass).
+
+        Exit code changed deliberately in #1481: this used to exit GATE_FAILED(1).
+        But `exits.py` reserves 1 for "the gate ran and the answer was no" — a real
+        verdict about the strategy — and a 3-bar series produced no verdict at all.
+        Collapsing it into 1 reported "too few bars" as "strategy rejected", which
+        is the exact confusion that module's docstring warns against. It now exits
+        INCOMPLETE(4)."""
         _seed_session()
         _install_transport(
             monkeypatch, _route({("POST", "/api/rigor/verify"): httpx.Response(200, json=_VERIFY_NOT_EVALUABLE_BODY)})
         )
         result = runner.invoke(main, ["verify", "returns.csv"])
-        assert result.exit_code == GATE_FAILED
+        assert result.exit_code == INCOMPLETE
         assert result.stdout.count("[N/A]") == 4
         assert "[PASS]" not in result.stdout
         assert "[FAIL]" not in result.stdout
-        assert "FAILS" in result.stdout
+        assert "INCOMPLETE" in result.stdout
+        assert "PASSES" not in result.stdout
+
+    def test_partially_evaluated_series_exits_incomplete_not_ok(self, runner, monkeypatch):
+        """#1481 REGRESSION, CLI half. A 4-bar series where DSR passed but the OOS
+        split could not run is one leg of four — `archimedes verify && deploy` used
+        to succeed on it. It must not exit OK, and must not print PASSES."""
+        _seed_session()
+        body = {
+            **_VERIFY_PASS_BODY,
+            "passes": False,
+            "n_bars": 4,
+            "legs_evaluated": 1,
+            "legs_runnable": 2,
+            "legs_not_run": ["pbo", "oos_consistency", "look_ahead"],
+            "oos_consistency": {
+                "status": "not_evaluable",
+                "reason": "insufficient data for a walk-forward OOS split",
+            },
+        }
+        _install_transport(monkeypatch, _route({("POST", "/api/rigor/verify"): httpx.Response(200, json=body)}))
+        result = runner.invoke(main, ["verify", "returns.csv"])
+        assert result.exit_code == INCOMPLETE
+        assert "PASSES" not in result.stdout
+        assert "INCOMPLETE" in result.stdout
+
+    def test_server_without_quorum_fields_fails_closed(self, runner, monkeypatch):
+        """Defence in depth: `--api-url` can point at a host predating the #1481 fix,
+        which returns `passes: true` on a partial evaluation and carries no `legs_*`
+        fields at all. An unreported quorum is an unproven one, so the CLI must not
+        exit OK on it — it re-derives the quorum from the leg statuses and fails
+        closed."""
+        _seed_session()
+        legacy = {k: v for k, v in _VERIFY_PASS_BODY.items() if not k.startswith("legs_")}
+        legacy.pop("verdict_capped", None)
+        legacy["passes"] = True
+        legacy["n_bars"] = 4
+        legacy["oos_consistency"] = {"status": "not_evaluable", "reason": "too short"}
+        _install_transport(monkeypatch, _route({("POST", "/api/rigor/verify"): httpx.Response(200, json=legacy)}))
+        result = runner.invoke(main, ["verify", "returns.csv"])
+        assert result.exit_code == INCOMPLETE
+        assert "PASSES" not in result.stdout
 
     def test_trials_option_is_sent_to_the_api(self, runner, monkeypatch):
         _seed_session()

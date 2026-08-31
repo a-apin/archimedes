@@ -1,7 +1,9 @@
 """Settlement sweep: Gateway balance → agent wallet → PaymentSplitter.depositToPool → withdraw.
 
 Three cadences:
-  Stage A — Gateway → wallet (threshold-based, ~2.01 USDC fee per withdrawal).
+  Stage A — Gateway → wallet (threshold-based; Circle's fee is charged on top
+            of the burn amount, so the request holds back a reserve — see
+            ``marketplace.config``).
   Stage B — wallet USDC → depositToPool (per tick interval, 1 USDC min).
   Stage C — PaymentSplitter.withdraw(pool_id, amount) — creator/platform payout.
 
@@ -21,19 +23,32 @@ from decimal import Decimal
 from circlekit.client import GatewayClient
 from circlekit.wallets import CircleTxExecutor, CircleWalletSigner
 
-from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+from archimedes.marketplace.config import (
+    format_usdc,
+    gateway_chain,
+    gateway_sweep_amount,
+)
 
 logger = logging.getLogger(__name__)
 
 # Config
 SWEEP_WITHDRAW_THRESHOLD_USDC = os.getenv(
     "SWEEP_WITHDRAW_THRESHOLD_USDC",
-    "10.0",  # must exceed several multiples of the ~2.01 USDC withdrawal fee
+    "10.0",  # enough that a withdrawal is worth its own transaction
 )
 SWEEP_MIN_DEPOSIT_RAW = int(os.getenv("SWEEP_MIN_DEPOSIT_RAW", "1000000"))  # 1 USDC, raw 6-dec
-GATEWAY_CHAIN = os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN)
+GATEWAY_CHAIN = gateway_chain()
 
 _THRESHOLD_RAW = int(Decimal(SWEEP_WITHDRAW_THRESHOLD_USDC) * 10**6)
+
+# TOTAL wall-clock budget for one balance read, retries and backoff included, and
+# the attempt count it is split across. Deliberately looser than the async client's
+# 3s: nothing here sits behind an ALB health check, and a sweep that reads a stale
+# balance is worse than a sweep that waits. What matters is that it is BOUNDED —
+# this call previously had no timeout of any kind. RPC_BALANCE_TIMEOUT_SECONDS /
+# RPC_BALANCE_ATTEMPTS override.
+_RPC_TOTAL_BUDGET_SECONDS = float(os.getenv("RPC_BALANCE_TIMEOUT_SECONDS", "10.0"))
+_RPC_ATTEMPTS = int(os.getenv("RPC_BALANCE_ATTEMPTS", "3"))
 
 
 class SettlementSweeper:
@@ -114,12 +129,22 @@ class SettlementSweeper:
                 )
                 return
 
-            amount = balances.formatted_available  # decimal string e.g. "12.50"
-            result = await client.withdraw(amount=amount)
+            # NOT the whole balance: Circle charges its withdrawal fee on top
+            # of the burn amount, so requesting all of it is always rejected
+            # with "available X, required X+fee" (see marketplace.config).
+            try:
+                amount, fee_reserve_raw = gateway_sweep_amount(balances.available)
+            except ValueError as exc:
+                logger.info("[%s] Stage A: %s — skip withdraw", pub.strategy_id, exc)
+                return
+
+            result = await client.withdraw(amount=amount, max_fee=fee_reserve_raw)
             logger.info(
-                "[%s] Stage A: withdrew %s USDC from Gateway → wallet; tx=%s",
+                "[%s] Stage A: withdrew %s of %s USDC available (%s held for fee) from Gateway → wallet; tx=%s",
                 pub.strategy_id,
                 amount,
+                balances.formatted_available,
+                format_usdc(fee_reserve_raw),
                 result.mint_tx_hash,
             )
         except Exception:
@@ -271,10 +296,35 @@ class SettlementSweeper:
 
         Uses web3 (already a dependency) rather than pulling in another SDK.
         """
+        from requests.exceptions import ConnectionError as _ReqConnectionError
+        from requests.exceptions import HTTPError as _ReqHTTPError
+        from requests.exceptions import Timeout as _ReqTimeout
         from web3 import Web3
+        from web3.providers.rpc.utils import ExceptionRetryConfiguration
 
+        from archimedes.chain.client import RPC_BACKOFF_FACTOR, rpc_retry_policy
+
+        # This runs inside asyncio.to_thread, so an unbounded call does not just
+        # stall one sweep — it parks a worker from the default executor pool for
+        # as long as the RPC stays dark, and enough of them stall every other
+        # to_thread caller in the process. Bound it the same way the async client
+        # is bounded: a TOTAL budget, split across a small attempt count, because
+        # web3 retries eth_call five times by default and would otherwise turn
+        # this into 5x whatever timeout we set. requests takes a bare number
+        # (aiohttp needs a ClientTimeout — see chain/client.py).
         rpc_url = os.getenv("RPC_URL", "http://localhost:8545")
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        per_attempt, attempts = rpc_retry_policy(_RPC_TOTAL_BUDGET_SECONDS, _RPC_ATTEMPTS)
+        w3 = Web3(
+            Web3.HTTPProvider(
+                rpc_url,
+                request_kwargs={"timeout": per_attempt},
+                exception_retry_configuration=ExceptionRetryConfiguration(
+                    errors=(_ReqConnectionError, _ReqHTTPError, _ReqTimeout),
+                    retries=attempts,
+                    backoff_factor=RPC_BACKOFF_FACTOR,
+                ),
+            )
+        )
         usdc_addr = Web3.to_checksum_address(self._settings.usdc_address)
         addr = Web3.to_checksum_address(address)
 

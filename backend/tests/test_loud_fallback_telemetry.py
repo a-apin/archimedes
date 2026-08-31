@@ -226,7 +226,7 @@ async def test_health_surfaces_corpus_honesty_fields() -> None:
     body = resp.json()
 
     # The honesty fields are present and machine-readable booleans / ints.
-    for key in ("corpus_embedded", "corpus_kg_built", "corpus_artifact_present"):
+    for key in ("paper_rerank_model_live", "corpus_embedded_at_rest", "corpus_kg_built", "corpus_artifact_present"):
         assert key in body, f"missing honesty field {key!r}"
         assert isinstance(body[key], bool)
     for key in ("corpus_kg_entities", "corpus_kg_relations"):
@@ -238,8 +238,15 @@ async def test_health_surfaces_corpus_honesty_fields() -> None:
     assert body["corpus_kg_entities"] == 0
     assert body["corpus_kg_relations"] == 0
     assert body["corpus_artifact_present"] is False
-    # corpus_embedded tracks paper_rag: "live" => embedded; anything else => not.
-    assert body["corpus_embedded"] == (body.get("paper_rag") == "live")
+    # paper_rerank_model_live tracks paper_rag: is a model object loaded in THIS
+    # process. It is deliberately no longer named corpus_embedded (#1488) — that
+    # name claimed a property of the corpus while carrying this process-local value.
+    assert body["paper_rerank_model_live"] == (body.get("paper_rag") == "live")
+    # The corpus itself is not embedded at rest, and that does not move with the
+    # reranker's liveness.
+    assert body["corpus_embedded_at_rest"] is False
+    assert body["corpus_embedded_at_rest_reason"]
+    assert body["rerank_candidate_cap"] > 0
 
     # The legacy count keys are untouched (no consumer breakage).
     assert "corpus_papers" in body

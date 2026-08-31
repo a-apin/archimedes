@@ -559,7 +559,15 @@ export default function VaultDetail({ address, onBack }) {
                   <code className="vault-trace-hash">{t.trace_hash?.slice(0, 16)}…</code>
                 )}
                 <span className="vault-trace-time">{timeAgo(t.timestamp)}</span>
-                {t.is_verified && <span className="vault-trace-verified i-lucide-check" style={{width:12,height:12}} />}
+                {t.is_verified && (
+                  <span
+                    className={t.verification_mode === 'anchored_only' ? 'vault-trace-hash i-lucide-anchor' : 'vault-trace-verified i-lucide-check'}
+                    style={{width:12,height:12}}
+                    title={t.verification_mode === 'anchored_only'
+                      ? 'Anchored on-chain; no off-chain body to compare, so no hashes were checked.'
+                      : 'On-chain hash confirmed.'}
+                  />
+                )}
               </div>
             ))}
           </div>

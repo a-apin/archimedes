@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import math
 import os
 from datetime import UTC
 
@@ -39,6 +38,28 @@ from archimedes.services.rigor_evaluator import RigorGateResult
 logger = logging.getLogger(__name__)
 
 strategies_router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+
+
+def _display_metrics_source(s, bt) -> str:
+    """Which link of the display-metric fallback chain actually supplied values.
+
+    The chain is `s.real_* -> bt.* -> s.stub_*`, and its last link is a hardcoded
+    placeholder. Unlike the rigor fields (whose fallback #1187/#1340 removed
+    outright) these are descriptive stats, so the chain stays — but an
+    un-named chain means a stub renders identically to a real backtest.
+
+    Keyed on `real_sharpe` / `sharpe_ratio` as the representative field: the whole
+    block is populated from one link, so one probe describes all of them.
+    """
+    if s.real_sharpe is not None:
+        # NOT "measured": for the curated library this traces to the #1187
+        # fixture snapshot. It is what the strategy record stores, no more.
+        return "strategy_record"
+    if bt is not None and bt.sharpe_ratio is not None:
+        return "persisted_backtest"
+    if s.stub_sharpe is not None:
+        return "stub_placeholder"
+    return "unavailable"
 
 
 def _to_strategy_response(
@@ -175,6 +196,13 @@ def _to_strategy_response(
         # "pass" | "fail" | "pending" | "degenerate".
         passes_rigor_gate=verdict.passes,
         rigor_gate_status=verdict.status,
+        # A3: name the source of the numbers instead of leaving the reader to
+        # infer it. "live_gate" iff the live gate actually produced a result for
+        # this strategy; otherwise every rigor field above is None and this says
+        # so. No "persisted_backtest" branch exists here on purpose — see
+        # StrategyResponse.metrics_source.
+        metrics_source=("live_gate" if rigor_result is not None else "unavailable"),
+        display_metrics_source=_display_metrics_source(s, bt),
         # is_backtest_placeholder: True when no BacktestResultRecord row exists.
         # ``has_real`` is now bt is not None so this is the honest gate.
         is_backtest_placeholder=not has_real,
@@ -190,6 +218,19 @@ def _to_strategy_response(
             if s.real_backtest_end
             else (bt.backtest_end.isoformat() if bt and bt.backtest_end else None)
         ),
+        # ── Engine attribution (left-behind batch close, docs/sprint/a6-rerun.md /
+        # sprint README row 5) ────────────────────────────────────────────────
+        # Both columns have lived on BacktestResultRecord since the cost SSOT /
+        # 2026-08-03 provenance audit and are already declared on StrategyResponse
+        # (see schemas.py "Engine attribution"), but no construction site ever
+        # populated them — the values stopped at the DB. `bt` here is the
+        # BacktestResult dataclass hydrated straight off the latest
+        # BacktestResultRecord row (BacktestResultRecord.to_backtest_result(),
+        # via LocalStrategyProvider.get_backtest_result), so these are real,
+        # never fabricated: None when no persisted backtest exists, or when the
+        # row predates the column (both honest NULLs, never a guessed engine).
+        backtest_engine=(bt.backtest_engine if bt else None),
+        cost_model_id=(bt.cost_model_id if bt else None),
         regime_tag=s.regime_tag,
         return_source=return_source,
         return_source_note=return_source_note,
@@ -636,13 +677,27 @@ async def list_generated_strategies(
             from archimedes.models.generation_cost import generation_costs_for_strategies
 
             costs = generation_costs_for_strategies(session, [r.id for r in records])
-            rows = []
+            page = []
             for r in records:
                 d = r.to_dict()
                 d["can_publish"] = bool(caller) and wallet_can_publish(
                     session, strategy_id=r.id, wallet_address=caller, is_example=False
                 )
                 d["generation_cost"] = costs.get(r.id)
+                page.append(d)
+            # Citation truth: ``StrategyRecord.to_dict()`` returns source_papers
+            # exactly as stored — arxiv_id, no title — so the Library card had no
+            # real paper title to print and printed the generated strategy's own
+            # name in the cited-paper column. Resolve real titles here, against
+            # the SAME papers table the passport path reads, in ONE query for the
+            # whole page (see _corpus_paper_meta) rather than one per row.
+            corpus_meta = _corpus_paper_meta(
+                [p.get("arxiv_id") for d in page for p in (d.get("source_papers") or []) if isinstance(p, dict)],
+                session,
+            )
+            rows = []
+            for d in page:
+                d["source_papers"] = _resolve_source_papers(d.get("source_papers"), corpus_meta)
                 rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
         # Full exception detail is logged server-side only — never echoed to
@@ -722,811 +777,6 @@ async def get_strategy_signals():
 # They fabricated returns via np.random.default_rng(42) — synthetic data
 # masquerading as measured correlations. Honest alternatives require real
 # backtest return series, which is a post-submission feature.
-
-
-# ── Advisor (large endpoint) ──────────────────────────────────
-
-
-@strategies_router.get("/advisor")
-async def get_portfolio_advisor(
-    risk_profile: str = Query("moderate", pattern="^(fixed_income|conservative|moderate|aggressive|hyper_risky)$"),
-):
-    """Portfolio allocation recommendation based on Kelly + risk-parity math."""
-    from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
-    from archimedes.models.regime import Regime
-    from archimedes.services.redis_state import AgentStateStore
-
-    state = AgentStateStore()
-    try:
-        regime_data = await state.load_regime()
-        if not regime_data:
-            # No market detector wired — fall back to the ensemble-consensus
-            # bucket so the advisor still has a directional prior (#659). The
-            # bucket names line up with Regime values, so the deleverage map
-            # below still resolves; it is consensus-driven, not market-driven.
-            consensus = await state.load_ensemble_consensus()
-            if consensus:
-                regime_data = {"regime": consensus.get("label"), "confidence": consensus.get("confidence")}
-    except Exception:
-        regime_data = None
-    finally:
-        await state.close()
-
-    regime_value = regime_data.get("regime", "transition") if regime_data else "transition"
-    regime_confidence = regime_data.get("confidence", 0.5) if regime_data else 0.5
-    try:
-        regime_enum = Regime(regime_value)
-    except ValueError:
-        regime_enum = Regime.TRANSITION
-
-    _DELEVERAGE: dict[Regime, float] = {
-        Regime.RISK_ON: 0.5,
-        Regime.TRANSITION: 1.0,
-        Regime.RISK_OFF: 2.5,
-        Regime.CRISIS: 5.0,
-    }
-
-    rp_map = {
-        "fixed_income": RiskProfile.FIXED_INCOME,
-        "conservative": RiskProfile.CONSERVATIVE,
-        "moderate": RiskProfile.MODERATE,
-        "aggressive": RiskProfile.AGGRESSIVE,
-        "hyper_risky": RiskProfile.HYPER_RISKY,
-    }
-    rp = rp_map.get(risk_profile, RiskProfile.MODERATE)
-    params = RISK_PROFILE_PARAMS[rp]
-
-    usdc_floor_base = params["usyc_floor"]
-    deleverage = _DELEVERAGE.get(regime_enum, 1.0)
-    usdc_floor = min(usdc_floor_base * deleverage, 0.95)
-    synth_budget = max(0.0, 1.0 - usdc_floor)
-
-    all_strategies = [s for s in strategy_provider().list_strategies() if s.real_sharpe is not None]
-
-    # Apply regime-aware tilt to strategy ordering
-    from archimedes.services.regime_weight_schedule import apply_regime_tilt
-
-    strategies, regime_mix = apply_regime_tilt(all_strategies, regime_value, risk_profile)
-
-    from archimedes.agents.portfolio_agent import get_portfolio_agent
-    from archimedes.services.strategy_signal_evaluator import (
-        DEFAULT_SCAN_UNIVERSE,
-        GLOBAL_ASSETS,
-        _fetch_price_histories,
-        strategy_evaluator,
-    )
-    from archimedes.services.strategy_signal_evaluator import (
-        Signal as _Signal,
-    )
-
-    try:
-        price_histories = await asyncio.wait_for(
-            asyncio.to_thread(_fetch_price_histories, DEFAULT_SCAN_UNIVERSE, "2y"),
-            timeout=45.0,
-        )
-    except Exception:
-        price_histories = {}
-
-    try:
-        market_ranking = strategy_evaluator.rank_market(
-            price_histories,
-            lookback_days=90,
-            top_n=25,
-        )
-    except Exception:
-        market_ranking = []
-
-    # Live rigor gate (#821/#868) — computed BEFORE the portfolio LLM runs, as
-    # ONE memoized batch (the same machinery + cache entry the library list
-    # uses), serving three consumers from a single computation:
-    #   * the LLM prompt's per-strategy rigor label — the in-memory
-    #     Strategy.passes_rigor_gate is a fail-closed sentinel (always False),
-    #     and presenting it to the model as a verdict told it every curated
-    #     strategy had failed the gate;
-    #   * the per-pick badge in the response (_rigor_fields);
-    #   * the five numeric rigor statistics in the response, previously served
-    #     from the frozen fixture fields on the in-memory objects.
-    # Both layers fail closed without raising: an empty batch result maps every
-    # id to a "pending" verdict, never a fabricated pass.
-    advisor_results = await asyncio.to_thread(_live_rigor_results_for_strategies, strategies)
-    advisor_verdicts = {s.id: _verdict_from_result(advisor_results.get(s.id)) for s in strategies}
-    rigor_statuses = {sid: v.status for sid, v in advisor_verdicts.items()}
-
-    agent = get_portfolio_agent()
-    agent_portfolio = None
-    if agent.available and market_ranking:
-        try:
-            agent_portfolio = await asyncio.wait_for(
-                asyncio.to_thread(
-                    agent.propose_portfolio_with_tools,
-                    regime_value,
-                    regime_confidence,
-                    risk_profile,
-                    usdc_floor,
-                    synth_budget,
-                    market_ranking,
-                    strategies,
-                    set(DEFAULT_SCAN_UNIVERSE),
-                    price_histories,
-                    rigor_statuses,
-                ),
-                timeout=120.0,
-            )
-        except Exception:
-            agent_portfolio = None
-        if agent_portfolio is None:
-            try:
-                agent_portfolio = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        agent.propose_portfolio,
-                        regime_value,
-                        regime_confidence,
-                        risk_profile,
-                        usdc_floor,
-                        synth_budget,
-                        market_ranking,
-                        strategies,
-                        set(DEFAULT_SCAN_UNIVERSE),
-                        rigor_statuses,
-                    ),
-                    timeout=60.0,
-                )
-            except Exception:
-                agent_portfolio = None
-
-    top_synths = [r["synth"] for r in market_ranking] if market_ranking else list(price_histories.keys())
-
-    try:
-        all_signals = await asyncio.wait_for(
-            asyncio.to_thread(
-                strategy_evaluator.evaluate_strategies,
-                strategies,
-                top_synths,
-                price_histories,
-                True,
-            ),
-            timeout=30.0,
-        )
-    except Exception:
-        all_signals = []
-
-    strat_by_id = {s.id: s for s in strategies}
-
-    # advisor_verdicts / advisor_results were computed above, BEFORE the
-    # portfolio LLM call, so the prompt and this response share one live-gate run.
-
-    from archimedes.services.stress_engine import stress_all as _stress_all
-
-    async def _build_and_anchor_trace(
-        allocations_for_trace: list[dict],
-        thesis_for_trace: str,
-        agent_obj,  # noqa: ARG001 — accepted for symmetry with caller; closure captures rather than reads
-    ) -> dict:
-        import uuid
-
-        from archimedes.models.trace import DecisionType, ReasoningTrace
-
-        registry_address: str | None = None
-        try:
-            from archimedes.chain.client import chain_client as _cc
-
-            registry_address = _cc.settings.reasoning_trace_registry_address or None
-        except Exception:
-            registry_address = None
-        try:
-            trace = ReasoningTrace(
-                id=str(uuid.uuid4()),
-                vault_address="0x0000000000000000000000000000000000000000",
-                decision_type=DecisionType.PORTFOLIO_CONSTRUCTION,
-                trigger=f"advisor_request:regime={regime_value}:profile={risk_profile}",
-                market_context={
-                    "regime": regime_value,
-                    "regime_confidence": regime_confidence,
-                    "risk_profile": risk_profile,
-                    "usdc_floor": usdc_floor,
-                    "synth_budget": synth_budget,
-                    "universe_size": len(DEFAULT_SCAN_UNIVERSE),
-                    "universe_fetched": len(price_histories),
-                    "top_opportunities": [
-                        {"symbol": r.get("display"), "score": r.get("score")} for r in (market_ranking or [])[:10]
-                    ],
-                },
-                portfolio_before={},
-                portfolio_after={
-                    "usdc_weight": round(usdc_floor, 4),
-                    "synth_weight": round(synth_budget, 4),
-                    "picks": [
-                        {
-                            "symbol": a.get("symbol"),
-                            "asset_class": a.get("asset_class"),
-                            "exchange": a.get("exchange"),
-                            "weight": round(float(a.get("weight") or 0.0), 4),
-                            "paper_anchor": a.get("paper_anchor"),
-                            "code_hash": a.get("strategy_code_hash"),
-                        }
-                        for a in allocations_for_trace
-                    ],
-                },
-                reasoning=thesis_for_trace,
-                confidence=float(regime_confidence or 0.0),
-                expected_outcome="Portfolio constructed; pending user vault deployment",
-                trades_executed=[],
-                strategies_referenced=list(
-                    {a.get("paper_anchor") for a in allocations_for_trace if a.get("paper_anchor")}
-                ),
-            )
-            content_hash = trace.compute_hash()
-
-            tx_hash: str | None = None
-            try:
-                from archimedes.chain.trace_publisher import TracePublisher
-
-                publisher = TracePublisher()
-                tx_hash = await publisher.publish(trace)
-            except Exception:
-                tx_hash = None
-
-            return {
-                "trace_id": trace.id,
-                "trace_hash": content_hash if content_hash.startswith("0x") else f"0x{content_hash}",
-                "canonical_preview": trace.canonical_json()[:500] + ("…" if len(trace.canonical_json()) > 500 else ""),
-                "anchored_on_chain": tx_hash is not None,
-                "anchor_tx_hash": tx_hash,
-                "registry_address": registry_address,
-                "decision_type": trace.decision_type.value,
-                "trigger": trace.trigger,
-            }
-        except Exception:
-            import logging as _logging
-
-            _logging.getLogger(__name__).exception("build/anchor reasoning trace failed")
-            return {"trace_id": None, "trace_hash": None, "error": "trace build failed"}
-
-    def _run_stress(allocs: list[dict], usdc_w: float) -> list:
-        try:
-            return _stress_all(allocs, usdc_weight=usdc_w)
-        except Exception:
-            return []
-
-    def _rigor_fields(st) -> dict:
-        paper_delta_sharpe = None
-        if st.paper_claimed_sharpe is not None and st.real_sharpe is not None:
-            paper_delta_sharpe = round(st.real_sharpe - st.paper_claimed_sharpe, 4)
-        paper_delta_cagr = None
-        if st.paper_claimed_cagr is not None and st.real_cagr is not None:
-            paper_delta_cagr = round(st.real_cagr - st.paper_claimed_cagr, 4)
-        paper_delta_max_dd = None
-        if st.paper_claimed_max_dd is not None and st.real_max_dd is not None:
-            paper_delta_max_dd = round(st.real_max_dd - st.paper_claimed_max_dd, 4)
-
-        # Badge from the live gate (#821), not st.passes_rigor_gate (always False on
-        # the in-memory object). Fail-closed to "pending" if the strategy isn't in the
-        # verdict map (it always should be, but never claim an unearned pass).
-        _verdict = advisor_verdicts.get(st.id)
-        # Numeric rigor stats from the SAME live gate run that produced the badge
-        # (#868 contract, mirrored from _to_strategy_response): the fixture fields
-        # on the in-memory object are frozen values the live gate never wrote, so
-        # serving them next to a live badge let the advisor's numbers disagree
-        # with GET /api/selection-bias/gate. SOLELY the live result (honesty fix
-        # #1187, same scope as _to_strategy_response): these five fields render
-        # None — never st.<field> — when the live gate could not run for this
-        # strategy. Do not reintroduce the st.<field> fallback here; that is
-        # precisely the defect #1187 tracks, now closed for both response paths.
-        _live = advisor_results.get(st.id)
-        return {
-            "passes_rigor_gate": _verdict.passes if _verdict else False,
-            "rigor_gate_status": _verdict.status if _verdict else "pending",
-            "deflated_sharpe_ratio": _live.deflated_sharpe if _live else None,
-            "dsr_p_value": _live.dsr_p_value if _live else None,
-            "num_trials_in_selection": _live.num_trials if _live else None,
-            "pbo_score": _live.pbo_score if _live else None,
-            "out_of_sample_sharpe": _live.oos_sharpe if _live else None,
-            "paper_claimed_sharpe": st.paper_claimed_sharpe,
-            "paper_claimed_cagr": st.paper_claimed_cagr,
-            "paper_claimed_max_dd": st.paper_claimed_max_dd,
-            "paper_delta_sharpe": paper_delta_sharpe,
-            "paper_delta_cagr": paper_delta_cagr,
-            "paper_delta_max_dd": paper_delta_max_dd,
-            "sharpe_ci_lower": st.sharpe_ci_lower,
-            "sharpe_ci_upper": st.sharpe_ci_upper,
-            "n_obs_daily": st.n_obs_daily,
-            "strategy_code_hash": st.strategy_code_hash,
-        }
-
-    def _build_rigor_summary(active_rows: list[dict]) -> dict:
-        n = len(active_rows)
-        if n == 0:
-            return {
-                "total_picks": 0,
-                "passes_rigor_gate": 0,
-                "dsr_significant": 0,
-                "pbo_acceptable": 0,
-                "oos_positive": 0,
-            }
-        passes = sum(1 for r in active_rows if r.get("passes_rigor_gate"))
-        dsr_sig = sum(1 for r in active_rows if r.get("dsr_p_value") is not None and r["dsr_p_value"] < 0.05)
-        pbo_ok = sum(1 for r in active_rows if r.get("pbo_score") is not None and r["pbo_score"] < 0.5)
-        oos_pos = sum(
-            1 for r in active_rows if r.get("out_of_sample_sharpe") is not None and r["out_of_sample_sharpe"] > 0
-        )
-        avg_dsr = [r["dsr_p_value"] for r in active_rows if r.get("dsr_p_value") is not None]
-        avg_pbo = [r["pbo_score"] for r in active_rows if r.get("pbo_score") is not None]
-        return {
-            "total_picks": n,
-            "passes_rigor_gate": passes,
-            "dsr_significant": dsr_sig,
-            "dsr_significant_threshold": 0.05,
-            "pbo_acceptable": pbo_ok,
-            "pbo_acceptable_threshold": 0.50,
-            "oos_positive": oos_pos,
-            "avg_dsr_p_value": round(sum(avg_dsr) / len(avg_dsr), 4) if avg_dsr else None,
-            "avg_pbo_score": round(sum(avg_pbo) / len(avg_pbo), 4) if avg_pbo else None,
-        }
-
-    scored: list[dict] = []
-
-    if agent_portfolio and agent_portfolio.picks:
-
-        def _find_strategy_for_anchor(anchor: str):
-            anchor_l = (anchor or "").lower()
-            if not anchor_l:
-                return strategies[0] if strategies else None
-            for st in strategies:
-                if (
-                    anchor_l in (st.strategy_code_path or "").lower()
-                    or anchor_l in (st.paper_title or "").lower()
-                    or anchor_l in st.id.lower()
-                ):
-                    return st
-            return strategies[0] if strategies else None
-
-        for pick in agent_portfolio.picks:
-            anchor_strat = _find_strategy_for_anchor(pick.paper_anchor)
-            if anchor_strat is None:
-                continue
-            sr = anchor_strat.real_sharpe if anchor_strat.real_sharpe is not None else 0.5
-            mu_d = (anchor_strat.real_cagr if anchor_strat.real_cagr is not None else 0.08) / 252
-            sigma_d = abs(mu_d / (sr / math.sqrt(252))) if sr != 0 else 0.01
-            vol_ann = sigma_d * math.sqrt(252)
-            scored.append(
-                {
-                    "id": f"agent_{pick.synth}",
-                    "title": f"{anchor_strat.paper_title} → {pick.ticker}",
-                    "symbol": pick.ticker,
-                    "asset_class": pick.asset_class,
-                    "exchange": pick.exchange,
-                    "sharpe": round(sr, 4),
-                    "cagr": round(anchor_strat.real_cagr if anchor_strat.real_cagr is not None else 0.0, 4),
-                    "max_drawdown": round(anchor_strat.real_max_dd if anchor_strat.real_max_dd is not None else 0.0, 4),
-                    "vol_ann": round(vol_ann, 4),
-                    "kelly_fraction": round(pick.weight, 4),
-                    **_rigor_fields(anchor_strat),
-                    "signal_reason": pick.reasoning,
-                    "agent_weight": pick.weight,
-                    "paper_anchor": pick.paper_anchor,
-                    "vote_count": 1,
-                    "strategies": [{"title": anchor_strat.paper_title, "kelly": pick.weight}],
-                }
-            )
-
-    if not scored and all_signals:
-        _MAX_PER_STRATEGY = 4
-        for strat_signals in all_signals:
-            s = strat_by_id.get(strat_signals.strategy_id)
-            if s is None or s.real_sharpe is None:
-                continue
-            sr = s.real_sharpe
-            if sr < 0.3:
-                continue
-            mu_ann = s.real_cagr if s.real_cagr is not None else 0.08
-            vol_ann = abs(mu_ann / sr)
-            full_kelly = mu_ann / max(vol_ann**2, 1e-6)
-            # Shrink full Kelly by the ratio OOS/IS Sharpe so the fraction
-            # reflects walk-forward edge rather than inflated in-sample edge.
-            # Falls back to half-Kelly when no OOS Sharpe is stored.
-            sr_oos = s.out_of_sample_sharpe if s.out_of_sample_sharpe is not None else sr
-            base_kelly = min(0.5 * (sr_oos / max(sr, 1e-6)) * full_kelly, 0.5)
-
-            active = [sig for sig in strat_signals.signals if sig.signal != _Signal.FLAT and sig.weight > 0]
-            active.sort(key=lambda x: x.weight, reverse=True)
-            for asset_signal in active[:_MAX_PER_STRATEGY]:
-                entry = GLOBAL_ASSETS.get(asset_signal.asset)
-                display_symbol = entry[1] if entry else asset_signal.asset
-                asset_class = entry[2] if entry else "unknown"
-                exchange = entry[3] if entry else "?"
-                effective_kelly = round(base_kelly * asset_signal.weight, 4)
-                scored.append(
-                    {
-                        "id": f"{s.id}_{asset_signal.asset}",
-                        "title": s.paper_title,
-                        "symbol": display_symbol,
-                        "asset_class": asset_class,
-                        "exchange": exchange,
-                        "sharpe": round(sr, 4),
-                        "cagr": round(s.real_cagr if s.real_cagr is not None else 0.0, 4),
-                        "max_drawdown": round(s.real_max_dd if s.real_max_dd is not None else 0.0, 4),
-                        "vol_ann": round(vol_ann, 4),
-                        "kelly_fraction": effective_kelly,
-                        **_rigor_fields(s),
-                        "signal_reason": asset_signal.reason,
-                    }
-                )
-
-    if not scored:
-        _TICKER_DISPLAY = {
-            "SPY": "SPY",
-            "NIKKEI": "NIKKEI",
-            "GOLD": "GLD",
-            "TREASURY": "BIL",
-            "OIL": "OIL",
-            "BIL": "BIL",
-        }
-        for s in strategies:
-            sr = s.real_sharpe if s.real_sharpe is not None else 0.5
-            if sr < 0.3:
-                continue
-            mu_ann = s.real_cagr if s.real_cagr is not None else 0.08
-            vol_ann = abs(mu_ann / sr)
-            kelly = min(0.5 * (mu_ann / max(vol_ann**2, 1e-6)), 0.5)
-            universe = s.asset_universe if s.asset_universe else ["SPY"]
-            per_asset_kelly = round(kelly / len(universe), 4)
-            for ticker in universe:
-                scored.append(
-                    {
-                        "id": f"{s.id}_{ticker}",
-                        "title": s.paper_title,
-                        "symbol": _TICKER_DISPLAY.get(ticker, ticker),
-                        "asset_class": "unknown",
-                        "exchange": "?",
-                        "sharpe": round(sr, 4),
-                        "cagr": round(s.real_cagr if s.real_cagr is not None else 0.0, 4),
-                        "max_drawdown": round(s.real_max_dd if s.real_max_dd is not None else 0.0, 4),
-                        "vol_ann": round(vol_ann, 4),
-                        "kelly_fraction": per_asset_kelly,
-                        **_rigor_fields(s),
-                        "signal_reason": None,
-                    }
-                )
-
-    if not scored:
-        return {"error": "No strategies with real backtest data available", "allocations": []}
-
-    # Agent path
-    if agent_portfolio and agent_portfolio.picks:
-        from archimedes.services.portfolio_optimizer import (
-            correlation_pairs,
-            kelly_optimize_from_prices,
-            kelly_risk_decomposition,
-        )
-
-        pick_synths = [sc["id"].removeprefix("agent_") for sc in scored]
-        mu_override: dict[str, float] = {}
-        for sc, synth in zip(scored, pick_synths, strict=False):
-            mu_override[synth] = float(sc.get("cagr") or 0.08)
-
-        opt = None
-        try:
-            opt = await asyncio.to_thread(
-                kelly_optimize_from_prices,
-                pick_synths,
-                price_histories,
-                risk_profile,
-                synth_budget,
-                0.20,
-                mu_override,
-                0.5,  # mu_shrinkage (existing default)
-                regime_value,  # regime — T-PE.7 regime-aware γ scaling
-            )
-        except Exception:
-            opt = None
-
-        allocations = []
-        risk_decomp: list[dict] = []
-        corr_pairs: list[dict] = []
-
-        if opt is not None:
-            risk_decomp = kelly_risk_decomposition(opt)
-            corr_pairs = correlation_pairs(opt, top_n=8)
-            weight_by_synth = {sym: float(w) for sym, w in zip(opt.symbols, opt.weights, strict=False)}
-            for sc, synth in zip(scored, pick_synths, strict=False):
-                w = weight_by_synth.get(synth, 0.0)
-                allocations.append({**sc, "weight": round(w, 4)})
-        else:
-            for sc in scored:
-                w = float(sc.get("agent_weight", sc.get("kelly_fraction", 0.0)))
-                allocations.append({**sc, "weight": min(max(w, 0.0), 0.20)})
-            total = sum(a["weight"] for a in allocations)
-            if total > 0:
-                for a in allocations:
-                    a["weight"] = round(a["weight"] / total * synth_budget, 4)
-
-        allocations.sort(key=lambda x: -x["weight"])
-        total_w = sum(a["weight"] for a in allocations)
-        if opt is not None:
-            exp_sharpe = opt.expected_sharpe
-            exp_cagr = opt.expected_return
-            exp_max_dd = 2.0 * opt.expected_vol
-        else:
-            exp_sharpe = sum(a["sharpe"] * a["weight"] for a in allocations) / max(total_w, 1e-9)
-            exp_cagr = sum(a["cagr"] * a["weight"] for a in allocations) / max(total_w, 1e-9)
-            exp_max_dd = sum(a["max_drawdown"] * a["weight"] for a in allocations) / max(total_w, 1e-9)
-
-        regime_narratives_agent = {
-            "risk_on": "Markets are calm (low VIX, price above MA). Full synth exposure recommended.",
-            "transition": "Markets are transitioning. Moderate caution; holding base USDC floor.",
-            "risk_off": "Markets are stressed. USDC floor increased 2.5x; reduced synth exposure.",
-            "crisis": "Crisis conditions. Maximum USDC floor (5x multiplier); minimal synth exposure.",
-        }
-
-        return {
-            "regime": regime_value,
-            "regime_confidence": round(regime_confidence, 4),
-            "regime_narrative": regime_narratives_agent.get(regime_value, ""),
-            "risk_profile": risk_profile,
-            "usdc_weight": round(usdc_floor, 4),
-            "synth_weight": round(synth_budget, 4),
-            "allocations": allocations,
-            "expected_portfolio": {
-                "sharpe": round(exp_sharpe, 4),
-                "cagr": round(exp_cagr, 4),
-                "max_drawdown": round(exp_max_dd, 4),
-                "vol_ann": round(opt.expected_vol, 4) if opt else None,
-                "diversification_ratio": round(opt.diversification_ratio, 4) if opt else None,
-                "risk_aversion_gamma": round(opt.risk_aversion, 2) if opt else None,
-                "optimizer_converged": opt.converged if opt else False,
-            },
-            "regime_breakdown": {
-                "bull_weight": round(regime_mix["bull"], 4),
-                "bear_weight": round(regime_mix["bear"], 4),
-                "neutral_weight": round(regime_mix["neutral"], 4),
-            },
-            "risk_decomposition": risk_decomp,
-            "correlation_pairs": corr_pairs,
-            "rigor_summary": _build_rigor_summary(allocations),
-            "stress_tests": [
-                {
-                    "scenario": r.scenario,
-                    "label": r.label,
-                    "description": r.description,
-                    "portfolio_pnl": r.portfolio_pnl,
-                    "portfolio_value_after": r.portfolio_value_after,
-                    "per_asset_pnl": r.per_asset_pnl,
-                }
-                for r in _run_stress(allocations, usdc_floor)
-            ],
-            "market_scan": {
-                "universe_size": len(DEFAULT_SCAN_UNIVERSE),
-                "fetched": len(price_histories),
-                "top_opportunities": market_ranking,
-            },
-            "agent": {
-                "used": True,
-                "thesis": agent_portfolio.thesis,
-                "model_id": agent_portfolio.model_id,
-                "served_model": agent_portfolio.served_model,
-                "num_picks": len(agent_portfolio.picks),
-                "iterations": agent_portfolio.iterations,
-                "tool_calls": [
-                    {
-                        "tool": tc.tool,
-                        "inputs": tc.inputs,
-                        "output_summary": tc.output_summary,
-                    }
-                    for tc in (agent_portfolio.tool_calls or [])
-                ],
-            },
-            "reasoning_trace": await _build_and_anchor_trace(
-                allocations,
-                agent_portfolio.thesis,
-                agent_portfolio,
-            ),
-        }
-
-    # Rule-based aggregate
-    _RIGOR_KEYS = (
-        "deflated_sharpe_ratio",
-        "dsr_p_value",
-        "num_trials_in_selection",
-        "pbo_score",
-        "out_of_sample_sharpe",
-        "paper_claimed_sharpe",
-        "paper_claimed_cagr",
-        "paper_claimed_max_dd",
-        "paper_delta_sharpe",
-        "paper_delta_cagr",
-        "paper_delta_max_dd",
-        "sharpe_ci_lower",
-        "sharpe_ci_upper",
-        "n_obs_daily",
-        "strategy_code_hash",
-    )
-    agg: dict[str, dict] = {}
-    for sc in scored:
-        sym = sc["symbol"]
-        if sym not in agg:
-            agg[sym] = {
-                "id": f"agg_{sym}",
-                "symbol": sym,
-                "asset_class": sc.get("asset_class", "unknown"),
-                "exchange": sc.get("exchange", "?"),
-                "title": f"Multi-strategy: {sym}",
-                "strategies": [],
-                "signal_reasons": [],
-                "sharpe": sc["sharpe"],
-                "cagr": sc["cagr"],
-                "max_drawdown": sc["max_drawdown"],
-                "vol_ann": sc["vol_ann"],
-                "kelly_fraction": 0.0,
-                "passes_rigor_gate": False,
-                **{k: sc.get(k) for k in _RIGOR_KEYS},
-            }
-        row = agg[sym]
-        row["strategies"].append({"title": sc["title"], "kelly": sc["kelly_fraction"]})
-        if sc.get("signal_reason"):
-            row["signal_reasons"].append(sc["signal_reason"])
-        for k in _RIGOR_KEYS:
-            existing = row.get(k)
-            new = sc.get(k)
-            if new is None:
-                continue
-            if existing is None:
-                row[k] = new
-            elif k in ("dsr_p_value", "pbo_score"):
-                row[k] = min(existing, new)
-            elif k in (
-                "deflated_sharpe_ratio",
-                "out_of_sample_sharpe",
-                "sharpe_ci_lower",
-                "sharpe_ci_upper",
-                "n_obs_daily",
-                "num_trials_in_selection",
-                "paper_delta_sharpe",
-                "paper_delta_cagr",
-            ):
-                row[k] = max(existing, new)
-            elif k == "paper_delta_max_dd":
-                row[k] = min(existing, new)
-        row["kelly_fraction"] = max(row["kelly_fraction"], sc["kelly_fraction"])
-        row["sharpe"] = max(row["sharpe"], sc["sharpe"])
-        row["cagr"] = max(row["cagr"], sc["cagr"])
-        row["max_drawdown"] = max(row["max_drawdown"], sc["max_drawdown"])
-        row["passes_rigor_gate"] = row["passes_rigor_gate"] or sc["passes_rigor_gate"]
-
-    for row in agg.values():
-        n_votes = len(row["strategies"])
-        row["kelly_fraction"] = round(min(row["kelly_fraction"] * math.sqrt(n_votes), 0.5), 4)
-        row["vote_count"] = n_votes
-        top_strat = max(row["strategies"], key=lambda s: s["kelly"])["title"]
-        if n_votes == 1:
-            row["title"] = top_strat
-        else:
-            row["title"] = f"{top_strat} (+{n_votes - 1} other{'s' if n_votes > 2 else ''})"
-
-    scored = list(agg.values())
-
-    from archimedes.services.portfolio_optimizer import (
-        correlation_pairs,
-        kelly_optimize_from_prices,
-        kelly_risk_decomposition,
-    )
-
-    display_to_synth: dict[str, str] = {d: s for s, (_yf, d, _ac, _ex) in GLOBAL_ASSETS.items()}
-    rule_synths = [display_to_synth.get(sc["symbol"]) for sc in scored]
-    rule_synths_valid = [s for s in rule_synths if s and s in price_histories]
-    mu_override_rb: dict[str, float] = {}
-    for sc, syn in zip(scored, rule_synths, strict=False):
-        if syn:
-            mu_override_rb[syn] = float(sc.get("cagr") or 0.08)
-
-    opt_rb = None
-    if len(rule_synths_valid) >= 2:
-        try:
-            opt_rb = await asyncio.to_thread(
-                kelly_optimize_from_prices,
-                rule_synths_valid,
-                price_histories,
-                risk_profile,
-                synth_budget,
-                0.20,
-                mu_override_rb,
-                0.5,  # mu_shrinkage (existing default)
-                regime_value,  # regime — T-PE.7 regime-aware γ scaling
-            )
-        except Exception:
-            opt_rb = None
-
-    risk_decomp_rb: list[dict] = []
-    corr_pairs_rb: list[dict] = []
-    allocations = []
-
-    if opt_rb is not None:
-        risk_decomp_rb = kelly_risk_decomposition(opt_rb)
-        corr_pairs_rb = correlation_pairs(opt_rb, top_n=8)
-        weight_by_synth = {sym: float(w) for sym, w in zip(opt_rb.symbols, opt_rb.weights, strict=False)}
-        for sc, syn in zip(scored, rule_synths, strict=False):
-            w = weight_by_synth.get(syn, 0.0) if syn else 0.0
-            allocations.append({**sc, "weight": round(w, 4)})
-    else:
-        total_kelly = sum(sc["kelly_fraction"] for sc in scored)
-        inv_vols = [1.0 / max(sc["vol_ann"], 0.001) for sc in scored]
-        total_inv_vol = sum(inv_vols)
-        for i, sc in enumerate(scored):
-            kelly_w = (sc["kelly_fraction"] / max(total_kelly, 1e-9)) if total_kelly > 0 else 1 / len(scored)
-            rp_w = inv_vols[i] / max(total_inv_vol, 1e-9)
-            blended = 0.6 * kelly_w + 0.4 * rp_w
-            allocations.append({**sc, "weight": round(min(blended * synth_budget, 0.20), 4)})
-        total_synth = sum(a["weight"] for a in allocations)
-        if total_synth > 0:
-            for a in allocations:
-                a["weight"] = round(a["weight"] / total_synth * synth_budget, 4)
-
-    allocations.sort(key=lambda x: -x["weight"])
-    total_w = sum(a["weight"] for a in allocations)
-    if opt_rb is not None:
-        exp_sharpe = opt_rb.expected_sharpe
-        exp_cagr = opt_rb.expected_return
-        exp_max_dd = 2.0 * opt_rb.expected_vol
-    else:
-        exp_sharpe = sum(a["sharpe"] * a["weight"] for a in allocations) / max(total_w, 1e-9)
-        exp_cagr = sum(a["cagr"] * a["weight"] for a in allocations) / max(total_w, 1e-9)
-        exp_max_dd = sum(a["max_drawdown"] * a["weight"] for a in allocations) / max(total_w, 1e-9)
-
-    regime_narratives = {
-        "risk_on": "Markets are calm (low VIX, price above MA). Full synth exposure recommended.",
-        "transition": "Markets are transitioning. Moderate caution; holding base USDC floor.",
-        "risk_off": "Markets are stressed. USDC floor increased 2.5x; reduced synth exposure.",
-        "crisis": "Crisis conditions. Maximum USDC floor (5x multiplier); minimal synth exposure.",
-    }
-
-    return {
-        "regime": regime_value,
-        "regime_confidence": round(regime_confidence, 4),
-        "regime_narrative": regime_narratives.get(regime_value, ""),
-        "risk_profile": risk_profile,
-        "usdc_weight": round(usdc_floor, 4),
-        "synth_weight": round(synth_budget, 4),
-        "allocations": allocations,
-        "expected_portfolio": {
-            "sharpe": round(exp_sharpe, 4),
-            "cagr": round(exp_cagr, 4),
-            "max_drawdown": round(exp_max_dd, 4),
-            "vol_ann": round(opt_rb.expected_vol, 4) if opt_rb else None,
-            "diversification_ratio": round(opt_rb.diversification_ratio, 4) if opt_rb else None,
-            "risk_aversion_gamma": round(opt_rb.risk_aversion, 2) if opt_rb else None,
-            "optimizer_converged": opt_rb.converged if opt_rb else False,
-        },
-        "risk_decomposition": risk_decomp_rb,
-        "correlation_pairs": corr_pairs_rb,
-        "rigor_summary": _build_rigor_summary(allocations),
-        "stress_tests": [
-            {
-                "scenario": r.scenario,
-                "label": r.label,
-                "description": r.description,
-                "portfolio_pnl": r.portfolio_pnl,
-                "portfolio_value_after": r.portfolio_value_after,
-                "per_asset_pnl": r.per_asset_pnl,
-            }
-            for r in _run_stress(allocations, usdc_floor)
-        ],
-        "market_scan": {
-            "universe_size": len(DEFAULT_SCAN_UNIVERSE),
-            "fetched": len(price_histories),
-            "top_opportunities": market_ranking,
-        },
-        "agent": {
-            "used": False,
-            "thesis": None,
-            "model_id": None,
-            "served_model": None,
-            "num_picks": 0,
-        },
-        "reasoning_trace": await _build_and_anchor_trace(
-            allocations,
-            f"Rule-based covariance-aware Kelly MVO for {regime_value} regime, {risk_profile} profile",
-            None,
-        ),
-    }
 
 
 # ── Stress scenarios ───────────────────────────────────────────
@@ -1708,6 +958,44 @@ async def get_strategy_passport(request: Request, strategy_id: str):
         return _redact_owner_wallet(record.to_dict(), caller)
 
 
+def _year_from_published(published: str | None) -> int | None:
+    """Publication year from a corpus ``published`` stamp, or None.
+
+    ``PaperRecord.published`` is a free-form arXiv date string ("2019",
+    "2019-03-11", "2019-03-11T00:00:00Z"). Only a leading 4-digit year is
+    trusted; anything else yields None, because a guessed year on a citation
+    is the same class of lie as a guessed title.
+    """
+    head = (published or "").strip()[:4]
+    if len(head) == 4 and head.isdigit():
+        return int(head)
+    return None
+
+
+def _corpus_paper_meta(arxiv_ids: list[str | None], session) -> dict[str, dict]:
+    """Batch-resolve arXiv ids → ``{"title": str, "year": int | None}`` from the corpus.
+
+    ONE query for every id handed in — callers pass a whole page's ids at once,
+    never one call per row. Non-fatal by design: any DB error returns an empty
+    map so the caller degrades to its own honest "unresolved" rendering rather
+    than failing a list read over a decoration.
+
+    This is the single papers-table lookup shared by the passport path
+    (:func:`_enrich_paper_titles_from_corpus`) and the generated-strategy list
+    route, so both resolve a citation the same way.
+    """
+    ids = [i for i in dict.fromkeys(arxiv_ids) if i]
+    if not ids:
+        return {}
+    try:
+        from archimedes.models.corpus_store import PaperRecord
+
+        rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(ids)).all()
+    except Exception:
+        return {}
+    return {row.arxiv_id: {"title": row.title, "year": _year_from_published(row.published)} for row in rows}
+
+
 def _enrich_paper_titles_from_corpus(
     refs: list,
     session,
@@ -1722,13 +1010,38 @@ def _enrich_paper_titles_from_corpus(
     missing_ids = list(dict.fromkeys(r.arxiv_id for r in refs if r.arxiv_id and not (r.title or "").strip()))
     if not missing_ids:
         return {}
-    try:
-        from archimedes.models.corpus_store import PaperRecord
+    meta = _corpus_paper_meta(missing_ids, session)
+    return {arxiv_id: m["title"] for arxiv_id, m in meta.items() if m["title"]}
 
-        rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(missing_ids)).all()
-        return {row.arxiv_id: row.title for row in rows if row.title}
-    except Exception:
-        return {}
+
+def _resolve_source_papers(source_papers, corpus_meta: dict[str, dict]) -> list[dict]:
+    """Stamp each generated-row citation with a RESOLVED paper title and year.
+
+    ``StrategyRecord.source_papers`` entries carry an ``arxiv_id`` but usually
+    no ``title``, so the Library card had nothing real to print and printed the
+    generated STRATEGY NAME in the cited-paper column instead — a fabricated
+    citation. Resolution order matches the passport's ``_resolved_title``:
+    stored title wins, the corpus fills a blank one, and when neither has one
+    ``resolved_title`` stays **None**. None is the honest answer; the frontend
+    renders it as "title unavailable — arXiv:<id>", never as the strategy name.
+
+    ``resolved_year`` is the CITED PAPER's publication year, which is not the
+    row's ``created_at`` — that is when the strategy was generated.
+    """
+    resolved: list[dict] = []
+    for paper in source_papers or []:
+        if not isinstance(paper, dict):
+            continue
+        entry = dict(paper)
+        arxiv_id = (entry.get("arxiv_id") or "").strip()
+        meta = corpus_meta.get(arxiv_id) or {}
+        stored_title = (entry.get("title") or "").strip()
+        corpus_title = (meta.get("title") or "").strip()
+        entry["resolved_title"] = stored_title or corpus_title or None
+        stored_year = entry.get("year")
+        entry["resolved_year"] = stored_year if isinstance(stored_year, int) else meta.get("year")
+        resolved.append(entry)
+    return resolved
 
 
 def _generation_cost_for(strategy_id: str, session) -> dict | None:
@@ -1757,7 +1070,62 @@ def _generation_cost_for(strategy_id: str, session) -> dict | None:
         return None
 
 
-def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
+# Sentinel distinguishing "no returns were prefetched for this call" from "the
+# prefetch ran and this strategy genuinely has no persisted series". The two
+# must not collapse: the first means we do not know, the second is a fact.
+_RETURNS_NOT_PREFETCHED = object()
+
+
+def _rollback_quietly(session) -> None:
+    """Roll back after a swallowed read so the transaction is usable again.
+
+    Postgres aborts the whole transaction on a failed statement; every later
+    statement then raises InFailedSqlTransaction. sqlite does not, so a suite
+    that runs on sqlite cannot observe the difference — which is why this is
+    written down rather than left to the reader.
+    """
+    try:
+        session.rollback()
+    except Exception:  # pragma: no cover — nothing useful to do if rollback fails
+        pass
+
+
+def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, bool]:
+    """Tri-state + degenerate status for a generated/fusion passport row.
+
+    Returns ``(status, is_placeholder)``.
+
+    #1184: the stored aggregate alone cannot tell a zero-variance persisted
+    series apart from an ungraded one. Both leave ``record.sharpe_ratio`` NULL,
+    so reading the aggregate by itself reported a flat, broken, or zero-trade
+    backtest as ``"pending"`` — "we have not graded this yet", which is a claim,
+    and a false one. The curated path already answers this correctly via
+    ``_verdict_from_result``; this is the same predicate applied to the persisted
+    series the passport path had never loaded.
+
+    ``daily_returns`` empty means no persisted series was found, which is the
+    genuine "not graded yet" case — the aggregate three-way is then correct.
+    """
+    if daily_returns:
+        from archimedes.services.rigor_evaluator import (
+            is_oos_zero_variance_series,
+            is_zero_variance_series,
+        )
+
+        # OR'd exactly as run_rigor_gate ORs them into is_degenerate, so this
+        # read path and the gate agree by construction on both kinds of
+        # flatness (whole-series, and flat only inside the OOS slice).
+        if is_zero_variance_series(daily_returns) or is_oos_zero_variance_series(daily_returns):
+            # A persisted series exists, so this is not an ungraded placeholder;
+            # it is a graded row whose series carries no variance to grade.
+            return "degenerate", False
+
+    if record.sharpe_ratio is None:
+        return "pending", True
+    return ("pass" if bool(record.passes_rigor_gate) else "fail"), False
+
+
+def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_NOT_PREFETCHED) -> StrategyResponse:
     """Reshape a StrategyPassportRecord (fusion/architect output) into the
     StrategyResponse schema that StrategyPassport.jsx expects. Curated
     strategies still flow through LocalStrategyProvider above; this is the
@@ -1768,6 +1136,14 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     (fusion generation stores only arxiv_ids), the corpus join backfills them so
     the UI can display a human-readable title instead of a bare arxiv id.
     Falls back to the arxiv_id string when the corpus has no matching row.
+
+    ``daily_returns`` — this strategy's persisted daily-return series, when the
+    caller has already bulk-loaded it for a whole page of rows. List callers
+    pass it so the degenerate check below costs one cohort read per request
+    instead of one per row; the single-row detail path leaves it unset and this
+    function loads its own. Left unset with no ``session`` either, the
+    degenerate check is skipped and the status falls back to the stored
+    aggregate — see ``_passport_rigor_status``.
     """
     from archimedes.api.schemas import PaperRefResponse
     from archimedes.services.return_source_classifier import (
@@ -1780,6 +1156,32 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     # is also the answer for every strategy generated before the meter existed.
     # Either way the UI renders "not measured"; nothing is zeroed or invented.
     generation_cost = _generation_cost_for(record.id, session)
+
+    # #1184: resolve this row's persisted return series so the rigor status
+    # below can tell a zero-variance (degenerate) series apart from an ungraded
+    # one. Prefetched by list callers; self-loaded on the single-row path.
+    if daily_returns is _RETURNS_NOT_PREFETCHED:
+        _returns: list[float] = []
+        if session is not None:
+            try:
+                from archimedes.services.backtest_repository import get_daily_returns
+
+                _returns = get_daily_returns(session, record.id) or []
+            except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "persisted-returns read failed for %s (%s) — rigor status falls back to the stored aggregate",
+                    record.id,
+                    type(exc).__name__,
+                )
+                # See _passport_responses: without this, everything later in the
+                # request fails on Postgres and succeeds on sqlite.
+                _rollback_quietly(session)
+    else:
+        _returns = list(daily_returns or [])
+
+    _rigor_status, _is_placeholder = _passport_rigor_status(record, _returns)
 
     refs = list(record.paper_refs or [])
     first = refs[0] if refs else None
@@ -1866,21 +1268,15 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         # *live* verdict, not a fixture boolean — so it is a legitimate badge source
         # per #821 ("read a persisted live-gate verdict"). Map it to the tri-state:
         # a passport with no real backtest (sharpe_ratio is None) is "pending".
-        passes_rigor_gate=bool(record.passes_rigor_gate),
-        # #1184 KNOWN GAP: this three-state map is NOT threaded through the
-        # DEGENERATE category live_rigor_gate/_verdict_from_result added — it
-        # reads only the stored aggregate (record.sharpe_ratio /
-        # passes_rigor_gate), not the persisted daily-return series, so a
-        # generated/fusion strategy with a zero-variance series still reports
-        # "fail" here rather than "degenerate". Fixing this needs the same
-        # is_zero_variance_series/is_oos_zero_variance_series check run against
-        # this passport's own persisted returns (get_daily_returns), which this
-        # read path does not currently load. Tracked as an open follow-up on
-        # #1184, not closed by this PR.
-        rigor_gate_status=(
-            "pending" if record.sharpe_ratio is None else ("pass" if bool(record.passes_rigor_gate) else "fail")
-        ),
-        is_backtest_placeholder=record.sharpe_ratio is None,
+        # A degenerate row is never a pass, whatever the stored boolean says.
+        passes_rigor_gate=bool(record.passes_rigor_gate) and _rigor_status != "degenerate",
+        # #1184: four-state, derived from this passport's OWN persisted series
+        # (see _passport_rigor_status). The stored aggregate alone cannot
+        # separate a zero-variance series from an ungraded one — both leave
+        # sharpe_ratio NULL — so reading it by itself reported broken data as
+        # "pending", which is a claim ("not graded yet"), and a false one.
+        rigor_gate_status=_rigor_status,
+        is_backtest_placeholder=_is_placeholder,
         sharpe_ci_lower=None,
         sharpe_ci_upper=None,
         backtest_start=record.backtest_start,
@@ -1898,6 +1294,50 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
 # Curated strategies are UNCHANGED: callers keep sourcing those from
 # strategy_provider() and concatenate the GENERATED half these return on top —
 # nothing here alters the curated path.
+
+
+def _passport_responses(records, session) -> list[StrategyResponse]:
+    """Map passport rows to responses, bulk-loading their persisted returns once.
+
+    #1184 made ``_passport_to_strategy_response`` consult each row's persisted
+    daily-return series so a zero-variance one reports ``degenerate`` instead of
+    ``pending``. This routes that through ``get_all_daily_returns`` — the same DB
+    boundary ``live_rigor_gate`` and the selection-bias route already read
+    through, and the one the suite mocks — then hands each row its own slice.
+
+    **Cost, stated honestly:** ``get_all_daily_returns`` is a Python loop over
+    ``get_daily_returns``, so this is N indexed single-row reads, not one batched
+    query. It is the same query count reading per row would cost; the helper buys
+    a single mocking boundary and one failure decision, not a batching win. Each
+    read deserializes that strategy's whole ``artifact_json`` blob, so the real
+    cost scales with the generated corpus, and ``list_passports`` has no LIMIT.
+    Making the degenerate answer cheap needs it persisted at write time rather
+    than re-derived on read — tracked separately; do not paper over it here by
+    skipping rows, because which rows you skip is exactly the claim at stake.
+    """
+    if not records:
+        return []
+    try:
+        from archimedes.services.backtest_repository import get_all_daily_returns
+
+        returns_by_id = get_all_daily_returns(session, [r.id for r in records]) or {}
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "cohort persisted-returns read failed (%s) — falling back to a per-row read",
+            type(exc).__name__,
+        )
+        # A failed statement aborts the surrounding Postgres transaction, so
+        # every later read in this request would raise InFailedSqlTransaction.
+        # sqlite tolerates it, which is why no test can see this.
+        _rollback_quietly(session)
+        # NOT ``{}``: an empty map would hand every row [] — "the read found no
+        # series" — when the truth is "we do not know". That collapse is what
+        # sends a flat series back to "pending", the exact false claim #1184 is
+        # about. The sentinel makes each row decide for itself instead.
+        return [_passport_to_strategy_response(r, session) for r in records]
+    return [_passport_to_strategy_response(r, session, returns_by_id.get(r.id, [])) for r in records]
 
 
 def _generated_strategy_responses(
@@ -1919,7 +1359,7 @@ def _generated_strategy_responses(
     if not records:
         return []
     visible = _visible_passports(session, records, caller, caller_user_id)
-    return [_passport_to_strategy_response(r, session) for r in visible]
+    return _passport_responses(visible, session)
 
 
 def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
@@ -1953,7 +1393,7 @@ def _public_generated_strategy_responses(session) -> list[StrategyResponse]:
         )
     }
     visible = [r for r in records if r.id in published_ids]
-    return [_passport_to_strategy_response(r, session) for r in visible]
+    return _passport_responses(visible, session)
 
 
 def _owned_generated_strategy_responses(
@@ -1995,7 +1435,7 @@ def _owned_generated_strategy_responses(
         }
         if is_strategy_visible(row_view, caller_wallet, caller_user_id=caller_user_id):
             owned.append(r)
-    return [_passport_to_strategy_response(r, session) for r in owned]
+    return _passport_responses(owned, session)
 
 
 @strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
@@ -2073,6 +1513,60 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     )
 
 
+@strategies_router.get("/{strategy_id}/debate")
+async def get_strategy_debate(strategy_id: str, request: Request):
+    """Return the persisted bull/bear debate transcript for a generated strategy.
+
+    Response shape: ``{strategy_id, generation_id, candidate_id, created_at,
+    transcript: [{role, round, verdict, claims}, ...]}``.
+
+    Auth mirrors ``GET /api/strategies/{id}/returns`` and the plain detail
+    route exactly: curated strategies are always public; a generated
+    strategy's transcript is 404 unless the caller owns the row (existence
+    stays hidden either way — never a 403).
+
+    404 with ``{"detail": "no debate transcript"}`` when the strategy exists
+    and is visible but no transcript was ever persisted for it — every
+    strategy generated before this table existed, every curated strategy
+    (the debate society never ran for those), and any run whose debate step
+    genuinely produced nothing (no LLM backend reachable). Never fabricates a
+    transcript.
+    """
+    from fastapi import HTTPException
+
+    from archimedes.db import get_session
+
+    # ── 1. Existence + ownership gate (mirrors get_strategy / get_strategy_returns) ──
+    strat = strategy_provider().get_strategy(strategy_id)
+    is_curated = strat is not None
+
+    if not is_curated:
+        from archimedes.api.auth_siwe import get_verified_wallet
+        from archimedes.models.strategy_store import StrategyRecord
+        from archimedes.services.strategy_visibility import is_strategy_visible
+
+        with get_session() as session:
+            row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+            caller = get_verified_wallet(request)
+            user = get_current_user(request)
+            if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
+                raise HTTPException(status_code=404, detail="Strategy not found")
+
+    # ── 2. Load the persisted transcript ──────────────────────────────────
+    from archimedes.models.debate_transcript import debate_transcript_for_strategy
+
+    try:
+        with get_session() as session:
+            payload = debate_transcript_for_strategy(session, strategy_id)
+    except Exception as exc:
+        logger.warning("debate endpoint DB read failed for %s: %s", strategy_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load debate transcript") from exc
+
+    if payload is None:
+        raise HTTPException(status_code=404, detail="no debate transcript")
+    return payload
+
+
 @strategies_router.get("/{strategy_id}", response_model=StrategyResponse)
 async def get_strategy(strategy_id: str, request: Request):
     """Get a single strategy by ID. Tries LocalStrategyProvider (curated)
@@ -2105,7 +1599,42 @@ async def get_strategy(strategy_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Strategy not found")
         record = get_passport(session, strategy_id)
         if record is not None:
-            return _passport_to_strategy_response(record, session=session)
+            resp = _passport_to_strategy_response(record, session=session)
+            # The user's own brief (v8 Lane 3.3) lives on strategy_store, not
+            # the strategy_passports row `_passport_to_strategy_response`
+            # reads — `row` (StrategyRecord) is already loaded above for the
+            # visibility check, so this is a free attribute read, not an
+            # extra query. Deliberately set HERE, not inside the shared
+            # helper: that helper also backs Library and the public
+            # leaderboard (`_passport_responses` /
+            # `_public_generated_strategy_responses`), and a user's free-text
+            # brief has no business on either of those.
+            #
+            # OWNER-GATED, and deliberately STRICTER than the 404 visibility
+            # check above: `is_strategy_visible` lets ANYONE read a PUBLISHED
+            # row, but the brief is the user's own words, and publishing a
+            # strategy consents to sharing the STRATEGY, not the sentence its
+            # owner typed to ask for it (same reasoning as
+            # `_redact_owner_wallet` for owner_wallet). So the same #850
+            # predicate is re-asked in ownership-only form — `is_example` and
+            # `is_published` pinned False in the row_view so neither
+            # public-visibility clause can grant it — which is exactly the
+            # shape `_owned_generated_strategy_responses` uses for the
+            # leaderboard's "own" scope. Never re-implement the owner match
+            # at a call site; ask the one predicate. Non-owners and anonymous
+            # callers keep the schema default (None).
+            if row is not None and is_strategy_visible(
+                {
+                    "is_example": False,
+                    "is_published": False,
+                    "owner_user_id": row.owner_user_id,
+                    "owner_wallet": row.owner_wallet,
+                },
+                caller,
+                caller_user_id=user.id if user else None,
+            ):
+                resp.brief_intent = row.brief_intent
+            return resp
 
     raise HTTPException(status_code=404, detail="Strategy not found")
 
