@@ -97,6 +97,10 @@ class TestInterpreterSurfaceAudit:
             "self.data.low[...]",
             "self.data.open[...]",
             "self.data.volume[...]",
+            # RealizedVolAnnualized (#1567) reads its own input line directly:
+            # inside an Indicator `self.data` IS the line it was constructed
+            # with, so the read has no `.close` suffix to render.
+            "self.data[...]",
         ]
 
 

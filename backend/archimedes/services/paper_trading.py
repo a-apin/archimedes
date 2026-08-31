@@ -197,6 +197,13 @@ def _sleeve_dated_returns(
         # fact this module knows rather than one it guesses when it has to
         # value a sleeve that never traded.
         initial_cash=_sleeve_initial_cash() if initial_cash is None else initial_cash,
+        # universe_slots=1: this is ONE sleeve of the universe, capitalized in
+        # full, exactly like the graded path's run_dsl_backtest_portfolio.
+        # Letting the strategy default to len(asset_universe) here would size
+        # equal_weight / inverse_vol sleeves at 1/N of what the graded run
+        # used and manufacture a replay drift that has nothing to do with the
+        # data.
+        universe_slots=1,
     )
     curve = list(metrics.equity_curve or [])
     if len(curve) < 2:

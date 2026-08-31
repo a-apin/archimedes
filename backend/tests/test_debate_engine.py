@@ -12,7 +12,8 @@ Covers spec §9 Phase-1 tests:
   4. DebateUnavailable on empty pool → honest fallback signal (subclass)
   5. pool_size → num_trials (fix A1): evaluate_fusion_spec called with pool_size
   6. model threading (fix A3): FusionProposal.model reflects the user pick
-  7. DSL conformance (fix A5): realized_vol_N dropped, no DSLError escapes
+  7. DSL conformance (fix A5): non-interpretable indicator stems dropped, no
+     DSLError escapes
   8. flag-OFF byte-identical (fix A2): _pick_pipeline never returns "debate" OFF
   9. cited-paper union non-empty; transcript in fixed role order (R3 determinism)
 """
@@ -100,11 +101,17 @@ _CONFORMANT_SPEC = {
     "parameter_variants": {"momentum": [10, 20, 40]},
 }
 
+# The A5 trap: an indicator stem the LLM can plausibly emit that
+# ``dsl_to_backtrader._make_indicator`` cannot build. It used to be
+# ``realized_vol_5`` — that one is now implemented, so the example moved to a
+# stem that is genuinely absent from ``SUPPORTED_INDICATORS``. The guard's job
+# is unchanged: keep an un-interpretable spec out of C-rigor, where a DSLError
+# would take down the whole leaderboard build.
 _NONCONFORMANT_SPEC = {
-    "name": "Realized-vol trap",
+    "name": "MACD trap",
     "asset_universe": ["SPY"],
     "rebalance_frequency": "monthly",
-    "entry": {"gt": ["realized_vol_5", 0.2]},  # validates but raises DSLError at interpret
+    "entry": {"gt": ["macd_12", 0]},  # no macd in SUPPORTED_INDICATORS
     "exit": {"lt": ["close", "sma_200"]},
     "position_sizing": {"type": "full_invested_when_in_market"},
     "look_ahead_safe": True,
@@ -328,7 +335,10 @@ def test_model_pick_threads_into_served_model(monkeypatch, corpus):
 # ── Test 7 — DSL conformance (fix A5) ─────────────────────────────────────────
 
 
-def test_dsl_conformance_guard_rejects_realized_vol():
+def test_dsl_conformance_guard_rejects_uninterpretable_indicators():
+    # realized_vol is now implemented by the interpreter, so it must PASS the
+    # guard — the guard tracks SUPPORTED_INDICATORS in both directions.
+    assert "realized_vol" in de._CONFORMANT_INDICATORS
     assert de._dsl_conformance_ok(_CONFORMANT_SPEC) is True
     assert de._dsl_conformance_ok(_NONCONFORMANT_SPEC) is False
     assert de._dsl_conformance_ok(None) is False
@@ -346,7 +356,7 @@ async def test_propose_pool_drops_nonconformant_specs(monkeypatch, corpus):
 
     brief = GenerateBrief(intent="momentum equities", max_papers=4)
     pool = await de._propose_pool(brief, "m", corpus)
-    # Every proposal emitted realized_vol_5 → all dropped by the A5 guard; no DSLError.
+    # Every proposal emitted macd_12 → all dropped by the A5 guard; no DSLError.
     assert pool == []
 
 
