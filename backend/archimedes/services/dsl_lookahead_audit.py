@@ -2,11 +2,19 @@
 
 Why this module exists
 ----------------------
-The strategy DSL carries a ``look_ahead_safe`` boolean that the **LLM declares
-about its own output**. A self-declared boolean is not an audit: nothing outside
-the generator ever checked it, and the value was nevertheless persisted, gated
-on, and surfaced as if it were one. This module replaces that with a check the
-generator does not control.
+The strategy DSL used to carry a ``look_ahead_safe`` boolean that the **LLM
+declared about its own output**. A self-declared boolean is not an audit:
+nothing outside the generator ever checked it, and the value was nevertheless
+persisted, gated on, and surfaced as if it were one. That field is now **removed
+from the DSL entirely** — not demoted, not recorded-but-ignored — and this module
+is what the gate reads instead: a check the generator does not control and cannot
+address.
+
+This module is also the ONLY place the system answers "is this DSL strategy
+look-ahead clean?". There is no second module, no injectable verifier seam, and
+no import-by-name indirection: :func:`audit_dsl_strategy` is called directly by
+``fusion_evaluator``, so a build on which the audit is missing is a build that
+does not import, rather than one that silently reports "not checked" forever.
 
 What is actually proven, and what is not
 ----------------------------------------
@@ -51,44 +59,60 @@ Honest limits, stated rather than hidden:
   question, handled by ``fusion_evaluator``'s ``data_source`` / ``admissible``
   legs, not here.
 
-Three-state result
-------------------
-``passed_structural``    — steps 1 and 2 both hold and the broker execution-timing
-                           check ran and passed. This is the ONLY state that
-                           satisfies the gate's LEAK criterion.
-``passed_declared_only`` — the structural audit could not be completed (no
-                           validated spec, or no broker check was performed), so
-                           the only thing supporting the claim is the LLM's own
-                           declaration. Explicitly **NOT** a pass for the gate.
-``failed``               — a real violation: an out-of-surface construct, an
-                           interpreter that reads future bars, or a broker
-                           configured to cheat.
+Four-state result
+-----------------
+The same four words the rest of the rigor stack already uses for a verdict that
+may not exist yet (``live_rigor_gate.RigorGateVerdict``,
+``rigor_verify_routes``, ``docs/architectural-principles.md`` § fail-soft).
+There is exactly ONE vocabulary for this criterion, and this is it:
+
+``pass``       — steps 1 and 2 both hold and the broker execution-timing check ran
+                 and passed. The ONLY state that satisfies the gate's LEAK
+                 criterion.
+``fail``       — a real violation, found by looking: an out-of-surface construct,
+                 an interpreter proven to read future bars, or a broker
+                 configured to cheat on close/open.
+``pending``    — the audit did not run against this strategy: no validated
+                 ``StrategySpec`` was supplied, or no broker execution-timing
+                 check was performed for the run. Nothing was examined, so
+                 nothing was found.
+``degenerate`` — the audit ran and could not decide: the verifier's own machinery
+                 produced no evidence either way (the interpreter source could
+                 not be read, or the AST pass matched zero bar-access sites, which
+                 means it proved nothing rather than proving cleanliness).
+
+``pending`` and ``degenerate`` are kept apart for the same reason
+``RigorGateVerdict`` keeps them apart: "we did not look at this strategy" and
+"we looked and our instrument gave no reading" have different fixes, and
+collapsing either into ``fail`` accuses the strategy of something.
 
 Deployability is fail-closed; rendering is honest
 -------------------------------------------------
-These two are separate questions and this module answers them separately, because
-collapsing them is how "we didn't check" turns into "we checked and it failed" on
-a user's screen.
+These are two different questions, and collapsing them is how "we didn't check"
+turns into "we checked and it failed" on a user's screen.
 
-* **Deploy** — :attr:`DslLookAheadAudit.passed` is ``True`` for
-  ``passed_structural`` and nothing else. ``passed_declared_only`` blocks the
-  gate exactly as hard as ``failed`` does. An unfinished audit is not evidence,
-  so a strategy resting on one must not reach live funds. There is no
-  "probably fine" tier.
+* **Deploy** — :attr:`DslLookAheadAudit.passed` is ``True`` for ``pass`` and
+  nothing else, and :attr:`DslLookAheadAudit.blocks_deploy` is its fail-closed
+  complement: ``pending`` and ``degenerate`` block a deploy exactly as hard as
+  ``fail``. An audit that did not run is not evidence, so a strategy resting on
+  one must not reach live funds. There is no "probably fine" tier.
 
-* **Render** — :attr:`DslLookAheadAudit.render_state` is a *different* value with
-  three cases: ``passed`` / ``not_checked`` / ``failed``. ``passed_declared_only``
-  renders ``not_checked``, never ``failed``. Telling a user their strategy
-  *failed* a look-ahead audit that never ran is a false accusation, and it is the
-  same defect as the reverse — it destroys the information the four-state
-  ``pass``/``fail``/``pending``/``degenerate`` convention exists to preserve
-  (``docs/architectural-principles.md`` § fail-soft). The label carried into the
-  UI says "NOT AUDITED … does not pass the gate", which is both halves of the
-  truth: no accusation, no free pass.
+* **Render** — a surface shows the four-state :attr:`DslLookAheadAudit.status`
+  and the matching :attr:`DslLookAheadAudit.label`. ``pending`` and
+  ``degenerate`` must NEVER be rendered as "FAIL": telling a user their strategy
+  failed a look-ahead audit that never reached a verdict is a false accusation,
+  and it erases exactly the information the four-state convention exists to
+  preserve. The labels say both halves of the truth — no accusation, and no free
+  pass ("… does not pass the gate").
 
-The pair is deliberate and must stay decoupled: ``blocks_deploy`` is what the
-gate reads, ``render_state`` is what a surface reads, and neither is derivable
-from a single boolean.
+An earlier revision of this module carried a *separate* ``render_state`` axis
+(``passed``/``not_checked``/``failed``) because its status vocabulary was
+three-state and its middle state was spelled ``passed_declared_only`` — a name
+with "passed" in it that a surface had to be told not to render as a pass, and
+not as a failure either. With the four-state names above, the status IS the
+render vocabulary; a second one would be a second thing to keep in sync and a
+second place to get it wrong. What survives is the axis that is genuinely not
+derivable from the status word alone: :attr:`~DslLookAheadAudit.blocks_deploy`.
 """
 
 from __future__ import annotations
@@ -105,36 +129,49 @@ from archimedes.services.strategy_dsl import StrategySpec
 
 logger = logging.getLogger(__name__)
 
-# ── Three-state audit status ──────────────────────────────────────────
+# ── Four-state audit status ───────────────────────────────────────────
+#
+# Deliberately the same four words as `live_rigor_gate`'s badge verdict. One
+# vocabulary for "a verdict that may not exist yet", used everywhere: the audit
+# object, `RigorVerdict.look_ahead_status`, the persisted rigor blob, the API,
+# the /gate detail line and the passport.
 
-PASSED_STRUCTURAL = "passed_structural"
-PASSED_DECLARED_ONLY = "passed_declared_only"
-FAILED = "failed"
+PASS = "pass"
+FAIL = "fail"
+PENDING = "pending"
+DEGENERATE = "degenerate"
 
 #: Every status this module can return, for callers that validate/serialize it.
-AUDIT_STATUSES = frozenset({PASSED_STRUCTURAL, PASSED_DECLARED_ONLY, FAILED})
+AUDIT_STATUSES = frozenset({PASS, FAIL, PENDING, DEGENERATE})
 
-# ── How a status RENDERS (deliberately not how it gates) ──────────────
-#
-# See the module docstring's "Deployability is fail-closed; rendering is honest".
-# `passed_declared_only` blocks deploy AND renders `not_checked`. Any surface
-# that maps it to `failed` is telling the user their strategy was caught leaking
-# when nothing looked.
-
-RENDER_PASSED = "passed"
-RENDER_NOT_CHECKED = "not_checked"
-RENDER_FAILED = "failed"
-
-_RENDER_STATE_BY_STATUS: dict[str, str] = {
-    PASSED_STRUCTURAL: RENDER_PASSED,
-    PASSED_DECLARED_ONLY: RENDER_NOT_CHECKED,
-    FAILED: RENDER_FAILED,
-}
+#: The states in which the audit reached a verdict ABOUT THE STRATEGY. The other
+#: two are statements about the audit itself, and a surface must never render
+#: either of them as "FAIL" — see the module docstring.
+CONCLUSIVE_STATUSES = frozenset({PASS, FAIL})
 
 #: Bumped whenever the audited surface below changes in a way that alters what
-#: ``passed_structural`` means. Persisted alongside the verdict so an old row is
+#: a ``pass`` means. Persisted alongside the verdict so an old row is
 #: distinguishable from one graded under the current surface.
 VERIFIED_SURFACE_VERSION = "dsl-la-1"
+
+# ── Persisted provenance (BacktestResult.look_ahead_audit_source) ─────
+#
+# The column records HOW a row's `look_ahead_audit_passed` boolean was
+# determined. The two DSL values live here rather than at the writer so the
+# reader (selection_bias_routes) and the writer (generation_pipeline) cannot
+# drift. Both fit the column's String(32).
+
+#: The DSL audit reached a verdict about the strategy — `pass` OR `fail`. A
+#: failure's provenance is the audit just as much as a pass's is.
+SOURCE_DSL_AUDIT = "dsl_structural_audit"
+#: The DSL audit reached NO verdict (`pending`/`degenerate`): the boolean beside
+#: it is False because nothing was proven, not because a leak was found.
+SOURCE_DSL_AUDIT_NOT_RUN = "dsl_audit_not_run"
+#: RETIRED, never written again. Rows from when the "source" of the boolean was
+#: the generating model's own `look_ahead_safe` declaration. A ``True`` on such a
+#: row is a claim, not a measurement, and must not be read as a passed audit —
+#: see :func:`verdict_from_persisted_row`.
+SOURCE_SELF_ATTESTED_RETIRED = "self_attested"
 
 # ── The audited surface ───────────────────────────────────────────────
 #
@@ -672,6 +709,23 @@ class InterpreterSurfaceAudit:
     def ok(self) -> bool:
         return self.bar_access_verified and self.sites_checked > 0
 
+    @property
+    def undecidable(self) -> bool:
+        """True when the pass examined nothing, so it proved and disproved nothing.
+
+        ``sites_checked == 0`` covers both ways that happens: the interpreter
+        source could not be read at all, and the AST walk matched no bar-indexed
+        read site. Either way the verifier is broken — but "our instrument gave
+        no reading" is NOT "this strategy reads the future", and the two must not
+        collapse into the same verdict. This is the discriminator
+        :func:`audit_dsl_strategy` uses to return ``degenerate`` (blocks deploy,
+        accuses nobody) instead of ``fail``.
+
+        A run with ``sites_checked > 0`` and a violation is the opposite case: the
+        instrument worked and found something. That stays a ``fail``.
+        """
+        return self.sites_checked == 0
+
 
 @lru_cache(maxsize=1)
 def verify_interpreter_surface() -> InterpreterSurfaceAudit:
@@ -785,18 +839,28 @@ def broker_cheat_check_passed(cerebro: Any) -> bool:
 # ── Spec-level structural audit ───────────────────────────────────────
 
 
+#: Fallback explanation when a non-conclusive verdict carries no reasons. Never
+#: reached from :func:`audit_dsl_strategy` (every non-conclusive return states a
+#: reason); it exists so a hand-built or deserialized verdict cannot render an
+#: empty parenthetical.
+_UNSTATED_REASON = "the look-ahead audit did not reach a verdict, and stated no reason"
+
+
 @dataclass(frozen=True)
 class DslLookAheadAudit:
     """The audited look-ahead verdict for one DSL strategy.
 
-    ``status`` is the persisted/gated value. ``declared_intent`` is the LLM's own
-    ``look_ahead_safe`` boolean, kept only as a record of what the generator
-    claimed — it never decides ``status``.
+    ``status`` is the four-state value everything else reads — the gate, the
+    persisted blob, the API, the passport. There is no companion field recording
+    what the generating model claimed about its own look-ahead safety, because
+    the DSL no longer has one to record: ``look_ahead_safe`` was deleted from the
+    schema, the prompt and :class:`~archimedes.services.strategy_dsl.StrategySpec`
+    (see ``strategy_dsl``'s module docstring). A verdict here is derived or it
+    does not exist.
     """
 
     status: str
     reasons: tuple[str, ...] = ()
-    declared_intent: bool | None = None
     interpreter_verified: bool = False
     broker_cheat_check: bool | None = None
     surface_version: str = VERIFIED_SURFACE_VERSION
@@ -805,74 +869,76 @@ class DslLookAheadAudit:
     def passed(self) -> bool:
         """The LEAK criterion. ONLY a completed structural audit passes.
 
-        ``passed_declared_only`` is deliberately falsy: an LLM's self-declaration
-        is not evidence, so a strategy backed by nothing else must not clear the
-        gate's look-ahead leg.
+        ``pending`` and ``degenerate`` are deliberately falsy: an audit that did
+        not reach a verdict is not evidence, so a strategy backed by nothing else
+        must not clear the gate's look-ahead leg.
         """
-        return self.status == PASSED_STRUCTURAL
+        return self.status == PASS
 
     @property
     def blocks_deploy(self) -> bool:
-        """Fail-closed deployability: anything short of a structural pass blocks.
+        """Fail-closed deployability: anything short of a ``pass`` blocks.
 
-        ``passed_declared_only`` blocks exactly as hard as ``failed``. This is
+        ``pending`` and ``degenerate`` block exactly as hard as ``fail``. This is
         the same fact as ``not self.passed``, named so the call sites that mean
         "may this reach live funds?" read as that question rather than as a
-        double negative — and so it stays visibly separate from
-        :attr:`render_state`, which answers a different one.
+        double negative — and so the deploy axis stays visibly separate from what
+        a surface renders, which is :attr:`status` and never this boolean.
         """
         return not self.passed
 
     @property
-    def render_state(self) -> str:
-        """What a user-facing surface should SHOW: passed / not_checked / failed.
+    def conclusive(self) -> bool:
+        """True when the audit reached a verdict ABOUT THE STRATEGY.
 
-        Not the same axis as :attr:`blocks_deploy`. ``passed_declared_only``
-        blocks the gate but renders ``not_checked``, because nothing about this
-        strategy failed a look-ahead audit — no audit finished. Rendering it as
-        ``failed`` would be an accusation the evidence does not support, and it
-        would erase the difference between "we found a leak" and "we could not
-        look", which is precisely the distinction the four-state rigor
-        convention exists to keep.
+        ``pass`` and ``fail`` are conclusive. ``pending`` and ``degenerate`` are
+        statements about the audit, not about the spec, and a surface that
+        renders either as "FAIL" is making an accusation nothing supports.
         """
-        return _RENDER_STATE_BY_STATUS.get(self.status, RENDER_NOT_CHECKED)
+        return self.status in CONCLUSIVE_STATUSES
+
+    @property
+    def reason(self) -> str:
+        """All reasons as one sentence, for the API's ``look_ahead_reason``."""
+        return "; ".join(self.reasons)
 
     @property
     def not_run_reason(self) -> str | None:
-        """Why the audit did not run, for a NOT_RUN-style detail line.
+        """Why the audit reached no verdict, for a NOT_RUN-style detail line.
 
         ``None`` when the audit reached a real verdict either way — a caller must
         not turn a genuine PASS or a genuine FAIL into a "not run" note.
         """
-        if self.status != PASSED_DECLARED_ONLY:
+        if self.conclusive:
             return None
-        return "; ".join(self.reasons) or "structural look-ahead audit not completed"
+        return self.reason or _UNSTATED_REASON
 
     @property
     def label(self) -> str:
         """Honest one-line summary for the passport / API."""
-        if self.status == PASSED_STRUCTURAL:
+        if self.status == PASS:
             return (
                 "PASS (structural): every indicator and condition in this spec is inside the "
                 f"audited DSL surface {self.surface_version}, whose interpreter provably reads "
                 "only bar t and earlier; broker cheat-on-close/open is off"
             )
-        if self.status == PASSED_DECLARED_ONLY:
-            detail = "; ".join(self.reasons) or "structural audit not completed"
-            return f"NOT AUDITED (LLM self-declared look_ahead_safe only — does not pass the gate): {detail}"
-        detail = "; ".join(self.reasons) or "look-ahead violation"
-        return f"FAIL: {detail}"
+        if self.status == PENDING:
+            return f"NOT AUDITED (no look-ahead audit ran for this strategy — does not pass the gate): {self.not_run_reason}"
+        if self.status == DEGENERATE:
+            return (
+                "UNDECIDABLE (the look-ahead audit ran and could not reach a verdict — "
+                f"does not pass the gate): {self.not_run_reason}"
+            )
+        return f"FAIL: {self.reason or 'look-ahead violation'}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
-            # Rendering axis, deliberately distinct from the gating one: a
-            # consumer that only has `status` must not have to know that
-            # `passed_declared_only` means "not checked", never "failed".
-            "render_state": self.render_state,
+            # The gating axis, which the four-state word alone does not carry:
+            # `pending` and `degenerate` are not failures and must not render as
+            # one, yet all three block a deploy.
             "blocks_deploy": self.blocks_deploy,
             "reasons": list(self.reasons),
-            "declared_intent": self.declared_intent,
             "interpreter_verified": self.interpreter_verified,
             "broker_cheat_check": self.broker_cheat_check,
             "surface_version": self.surface_version,
@@ -885,14 +951,57 @@ def not_run_reason_from_verdict(rigor_verdict: dict[str, Any]) -> str | None:
 
     The blob form of :attr:`DslLookAheadAudit.not_run_reason`, for the persistence
     path that carries a dict rather than the audit object. ``None`` for a real
-    pass, a real fail, and for a pre-change row with no ``look_ahead_audit`` key —
+    pass, a real fail, and for a pre-change row with no ``look_ahead_status`` key —
     an old row's ``False`` is not evidence that nothing ran, so it keeps the
     plain FAIL rendering rather than being retro-labelled "not checked".
     """
-    if rigor_verdict.get("look_ahead_audit") != PASSED_DECLARED_ONLY:
+    status = rigor_verdict.get("look_ahead_status")
+    if status is None or status in CONCLUSIVE_STATUSES:
         return None
-    reasons = rigor_verdict.get("look_ahead_reasons") or ()
-    return "; ".join(str(r) for r in reasons) or "structural look-ahead audit not completed"
+    reason = rigor_verdict.get("look_ahead_reason")
+    return str(reason) if reason else _UNSTATED_REASON
+
+
+def verdict_from_persisted_row(
+    look_ahead_audit_passed: Any,
+    look_ahead_audit_source: str | None,
+) -> tuple[bool, str | None, str | None]:
+    """Look-ahead verdict for a PERSISTED backtest row.
+
+    A route grading a stored row has no ``StrategySpec`` to re-audit, only the
+    two columns the pipeline wrote. This turns them into the triple the gate
+    wants: ``(passed, status, not_run_reason)`` — where ``status`` is ``None``
+    for any provenance that predates the four-state verdict, which keeps the
+    earlier rendering for rows that never had one.
+
+    Two provenances override the stored boolean, both in the fail-closed
+    direction:
+
+    * ``dsl_audit_not_run`` — the boolean is False because the audit reached no
+      verdict. The row still blocks (it was already False), but the detail line
+      must say NOT_RUN rather than accusing the strategy of a leak.
+    * ``self_attested`` — RETIRED. The boolean on these rows is the generating
+      model's own ``look_ahead_safe`` declaration, which is exactly the thing
+      that was removed for never having been an audit. A stored ``True`` here is
+      a claim, so it is NOT honoured: the row reads ``pending`` and stops being
+      deployable. That is a real behaviour change for pre-existing rows, and the
+      intended one — the alternative is a live surface showing "look_ahead: PASS"
+      on the strength of a sentence an LLM wrote about itself.
+    """
+    if look_ahead_audit_source == SOURCE_SELF_ATTESTED_RETIRED:
+        return (
+            False,
+            PENDING,
+            "this row's look-ahead boolean is the generating model's own retired look_ahead_safe "
+            "declaration, not an audit result — no look-ahead check ran for this backtest",
+        )
+    if look_ahead_audit_source == SOURCE_DSL_AUDIT_NOT_RUN:
+        return (
+            False,
+            PENDING,
+            "the DSL structural look-ahead audit reached no verdict for this backtest",
+        )
+    return bool(look_ahead_audit_passed), None, None
 
 
 def _parse_alias(alias: str) -> tuple[str, int] | None:
@@ -986,53 +1095,61 @@ def audit_dsl_strategy(
     Args:
         spec: The **validated** :class:`StrategySpec` that will be (or was)
             interpreted. ``None`` means there is nothing to verify structurally —
-            the verdict degrades to ``passed_declared_only``, which does not pass
-            the gate.
+            the verdict is ``pending``, which does not pass the gate.
         broker_cheat_check: Result of :func:`broker_cheat_check_passed` for the
             cerebro that ran this strategy. ``False`` FAILS outright. ``None``
-            means the check never ran, so the audit is incomplete and degrades to
-            ``passed_declared_only`` rather than claiming a structural pass.
+            means the check never ran, so the audit is incomplete and returns
+            ``pending`` rather than claiming a structural pass.
 
     Returns:
-        A :class:`DslLookAheadAudit`. Only ``passed_structural`` satisfies the
-        gate's LEAK criterion.
-    """
-    # ``getattr``, not ``spec.look_ahead_safe``. The declared flag is a RECORD of
-    # what the generator claimed; this audit does not depend on it and must not
-    # depend on its existence either. A follow-on change deletes the field from
-    # the DSL outright — when it goes, ``declared_intent`` becomes ``None`` and
-    # every verdict here is unchanged, because the flag never had a vote. Reading
-    # the attribute directly would have made that deletion a breaking change to
-    # the audit and coupled the two merges together for no reason.
-    declared_raw = getattr(spec, "look_ahead_safe", None) if spec is not None else None
-    declared = None if declared_raw is None else bool(declared_raw)
+        A :class:`DslLookAheadAudit`. Only ``pass`` satisfies the gate's LEAK
+        criterion.
 
+    This function reads nothing the generating model wrote about itself. The DSL
+    has no ``look_ahead_safe`` field to read: it was deleted from the schema, and
+    a ``StrategySpec`` has no such attribute, so a future edit that tried to
+    consult a declaration here would raise rather than quietly trust one.
+    """
     if broker_cheat_check is False:
         return DslLookAheadAudit(
-            status=FAILED,
+            status=FAIL,
             reasons=("broker is configured to cheat on close/open — orders fill on the signal's own bar",),
-            declared_intent=declared,
             interpreter_verified=False,
             broker_cheat_check=False,
         )
 
     if spec is None:
         return DslLookAheadAudit(
-            status=PASSED_DECLARED_ONLY,
+            status=PENDING,
             reasons=("no validated StrategySpec supplied — nothing to verify structurally",),
-            declared_intent=None,
             interpreter_verified=False,
             broker_cheat_check=broker_cheat_check,
         )
 
     surface = verify_interpreter_surface()
-    if not surface.ok:
+    if surface.undecidable:
+        # The verifier examined nothing: unreadable interpreter source, or an AST
+        # walk that matched zero bar-access sites. That is a broken instrument,
+        # not a leaking strategy — it blocks the deploy (`degenerate` is not a
+        # pass) without telling the user their spec was caught reading the
+        # future. See InterpreterSurfaceAudit.undecidable.
         return DslLookAheadAudit(
-            status=FAILED,
-            reasons=("DSL interpreter failed its own bar-access audit:", *surface.violations)
-            if surface.violations
-            else ("DSL interpreter bar-access audit matched no read sites — the verifier is broken",),
-            declared_intent=declared,
+            status=DEGENERATE,
+            reasons=(
+                "the DSL interpreter's bar-access audit examined no read sites, so it proved nothing "
+                "about this strategy either way — the verifier itself is broken",
+                *surface.violations,
+            ),
+            interpreter_verified=False,
+            broker_cheat_check=broker_cheat_check,
+        )
+    if not surface.ok:
+        # The instrument worked and found something: the interpreter every DSL
+        # strategy runs through reads a bar it cannot have. That is a real
+        # look-ahead failure for this strategy, not an undecidable one.
+        return DslLookAheadAudit(
+            status=FAIL,
+            reasons=("DSL interpreter failed its own bar-access audit:", *surface.violations),
             interpreter_verified=False,
             broker_cheat_check=broker_cheat_check,
         )
@@ -1073,29 +1190,26 @@ def audit_dsl_strategy(
 
     if reasons:
         return DslLookAheadAudit(
-            status=FAILED,
+            status=FAIL,
             reasons=tuple(reasons),
-            declared_intent=declared,
             interpreter_verified=True,
             broker_cheat_check=broker_cheat_check,
         )
 
     if broker_cheat_check is None:
         return DslLookAheadAudit(
-            status=PASSED_DECLARED_ONLY,
+            status=PENDING,
             reasons=(
                 "spec is inside the verified surface, but no broker execution-timing "
                 "(cheat-on-close/open) check was performed for this run",
             ),
-            declared_intent=declared,
             interpreter_verified=True,
             broker_cheat_check=None,
         )
 
     return DslLookAheadAudit(
-        status=PASSED_STRUCTURAL,
+        status=PASS,
         reasons=(),
-        declared_intent=declared,
         interpreter_verified=True,
         broker_cheat_check=True,
     )

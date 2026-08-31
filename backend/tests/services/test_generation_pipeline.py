@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from archimedes.agents.generation_pipeline import run_generation
 from archimedes.api.generate_schemas import GenerateBrief
+from archimedes.services.dsl_lookahead_audit import PASS as LOOK_AHEAD_PASS
+from archimedes.services.dsl_lookahead_audit import DslLookAheadAudit
 
 
 @pytest.fixture(autouse=True)
@@ -804,8 +806,14 @@ _DEBATE_SPEC = {
     "entry": {"gt": ["sma_50", 0]},
     "exit": {"lt": ["close", "sma_200"]},
     "position_sizing": {"type": "full_invested_when_in_market"},
-    "look_ahead_safe": True,
 }
+
+#: A real look-ahead audit in its clean state — see test_debate_engine.
+_CLEAN_LOOK_AHEAD = DslLookAheadAudit(
+    status=LOOK_AHEAD_PASS,
+    interpreter_verified=True,
+    broker_cheat_check=True,
+)
 
 
 def _make_fake_proposal(name: str, ids: list[str]) -> SimpleNamespace:
@@ -828,15 +836,13 @@ def _fake_eval_result(*, num_trials: int | None = None) -> SimpleNamespace:
         pbo_score=0.1,
         oos_sharpe=1.2,
         in_sample_sharpe=1.3,
-        look_ahead_clean=True,
         # See test_debate_engine._fake_ev: mirrors a verdict that cleared the
-        # real structural look-ahead audit.
-        look_ahead_audit="passed_structural",
-        # The rendering axis, distinct from the gating one on purpose.
-        look_ahead_render_state="passed",
-        look_ahead_declared=True,
-        look_ahead_reasons=(),
-        look_ahead_label="clean",
+        # real structural look-ahead audit, with the fields read off an actual
+        # DslLookAheadAudit so the double cannot drift from the real vocabulary.
+        look_ahead_clean=_CLEAN_LOOK_AHEAD.passed,
+        look_ahead_status=_CLEAN_LOOK_AHEAD.status,
+        look_ahead_label=_CLEAN_LOOK_AHEAD.label,
+        look_ahead_reason=_CLEAN_LOOK_AHEAD.reason,
         num_trials=num_trials,
         passing=True,
         data_source="synthetic",

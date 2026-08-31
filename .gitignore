@@ -60,6 +60,11 @@ infra/terraform.tfstate.backup
 # Build output, not source — the source is infra/lambda/**/*.py.
 infra/.build/
 
+# Lambda deployment packages built by `data "archive_file"` at plan time from
+# the (tracked) sources beside them — a build artifact, and a binary one, so
+# the source is what gets reviewed. See infra/cloudwatch.tf § deploy drift.
+infra/lambda/*.zip
+
 # Terraform variable files — operator-specific config (wallet addresses,
 # feature-flag values, and, transiently, the Aurora master password if ever
 # piped through a local file instead of TF_VAR_*). Most of it isn't secret,

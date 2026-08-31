@@ -78,6 +78,25 @@ const CONNECTED_ACCOUNT_LABELS = { credential: 'Email & password', google: 'Goog
 // just-committed row in practice.
 export async function notifyAccountChange(mailer, endpointContext, account, action) {
   try {
+    // #1367 (D4): deleting the whole account deletes its auth_accounts rows
+    // too (better-auth/dist/db/internal-adapter.mjs:148-161), which fires
+    // this same delete.after hook. Two things go wrong if it is allowed to
+    // run: the account owner gets "Email & password was unlinked from your
+    // Archimedes account... sign in and review Account Settings" as the
+    // last word about an account they just deleted and can no longer sign
+    // in to, and — because the after-hooks are queued and drained only once
+    // the whole request's write scope resolves (see the transaction.mjs
+    // note below), by then the auth_users row is gone as well, so the
+    // recipient lookup below fails and raises ACCOUNT_CHANGE_NOTIFY_FAILED
+    // on a completely expected event. An alarm marker that fires on the
+    // normal path stops being an alarm. Deletion is not a link/unlink, so
+    // it is filtered here at the source rather than papered over by
+    // loosening the failure branch (which round-4 review made loud on
+    // purpose). Verified by
+    // auth/test/auth.test.js's "deleting an account does not email the
+    // owner about 'unlinked' sign-in methods, and does not trip the
+    // notify-failure alarm".
+    if (endpointContext?.path === '/delete-user' || endpointContext?.path === '/delete-user/callback') return
     // Round-3 review finding (blocker): this used to special-case only
     // `providerId === 'credential'` — the row EMAIL/PASSWORD signup
     // creates — on the theory that signup already gets its own "verify
@@ -134,6 +153,44 @@ export async function notifyAccountChange(mailer, endpointContext, account, acti
     // request that triggered this must still succeed) but loud.
     console.error('ACCOUNT_CHANGE_NOTIFY_FAILED: mailer.send threw', { action, error: error instanceof Error ? error.name : 'UnknownError' })
   }
+}
+
+// #1367 (D2): the "confirm from your CURRENT address" half of the two-step
+// email change. Better Auth calls this only when the account's existing
+// address is already verified (update-user.mjs `canSendConfirmation` =
+// sendVerificationEmail configured && session.user.emailVerified &&
+// this option); the link it hands us carries a `change-email-confirmation`
+// token, and clicking it makes email-verification.mjs mint a SECOND,
+// `change-email-verification` token and mail it to the NEW address. The
+// address only actually switches over when that second link is opened
+// (email-verification.mjs:213-240 `updateUserByEmail({ email: updateTo,
+// emailVerified: true })`) — so the new address is always proven before
+// switchover, and the old address always gets a chance to notice.
+//
+// Fire-and-forget, NOT awaited — the same anti-enumeration reasoning as
+// sendResetPassword below, and load-bearing for the same reason. Better
+// Auth deliberately returns an identical `{ status: true }` when the
+// requested address already belongs to someone else, WITHOUT calling any
+// mail callback (update-user.mjs:456-460). If a mailer failure could
+// surface as a 500, "address is taken" (200) and "address is free but SES
+// is sandboxed" (500) would become distinguishable by status code, handing
+// any signed-in visitor an account-existence oracle. Swallowing the error
+// keeps both shapes identical; the greppable marker keeps the failure
+// visible to operators. The user-facing copy in AccountSettings.jsx never
+// claims delivery for exactly this reason.
+export function sendChangeEmailConfirmation(mailer, { user, newEmail, url }) {
+  mailer.send({
+    to: user.email,
+    subject: 'Confirm your Archimedes email change',
+    text:
+      `A change of this account's email address to ${newEmail} was requested.\n\n`
+      + `${url}\n\n`
+      + 'Opening this link sends a verification message to the new address. '
+      + 'Your email address does not change until that second link is opened.\n\n'
+      + "If this wasn't you, do not open the link — sign in and change your password.",
+  }).catch(error => {
+    console.error('CHANGE_EMAIL_CONFIRM_SEND_FAILED', { error: error instanceof Error ? error.name : 'UnknownError' })
+  })
 }
 
 export function createAuth({ database, env = process.env, mailer = createMailer(env) } = {}) {
@@ -248,7 +305,56 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       },
     },
     socialProviders: socialProviders(env),
-    user: { modelName: 'auth_users' },
+    // #1367 (D2 + D4). Both of these are opt-in in better-auth@1.6.25 —
+    // /change-email and /delete-user refuse outright without them
+    // (update-user.mjs:288 and :434) — so this block is what makes Account
+    // Settings' email-change and delete-account controls real rather than
+    // decorative.
+    user: {
+      modelName: 'auth_users',
+      changeEmail: {
+        enabled: true,
+        // Two-step for an already-verified address: confirm from the old
+        // one, then prove the new one. See sendChangeEmailConfirmation
+        // above for the exact library path. An account whose address is
+        // NOT yet verified skips straight to the second step (a link to
+        // the new address) — there is no proven old address to confirm
+        // from, so requiring one would just be theatre.
+        //
+        // updateEmailWithoutVerification is deliberately NOT set: with it
+        // on, an unverified account's address would switch over the moment
+        // the form is submitted, with no proof the new address exists or
+        // belongs to the person typing it.
+        sendChangeEmailConfirmation: async ({ user, newEmail, url }) =>
+          sendChangeEmailConfirmation(mailer, { user, newEmail, url }),
+      },
+      deleteUser: {
+        enabled: true,
+        // NO sendDeleteAccountVerification, on purpose. With it set, every
+        // /delete-user call takes the "mail a delete link" branch
+        // (update-user.mjs:311-327) and NEVER deletes in-request — which,
+        // while SES is still sandboxed (see sendVerificationEmail's
+        // fail-soft comment above), would ship a Delete-account button that
+        // silently does nothing for any address SES will not deliver to.
+        // Instead the endpoint's own re-authentication applies: a password
+        // account must submit its current password (:293-300, verified
+        // against the credential row), and an account with no password —
+        // Google/GitHub-only — falls to the session-freshness check
+        // (:328-332, the same freshAge pinned in session below), so a
+        // stale or hijacked session cannot delete an account on its own.
+        //
+        // The erasure itself is the DATABASE's, not this service's:
+        // internalAdapter.deleteUser ends in a bare `DELETE FROM
+        // auth_users WHERE id = ?` (better-auth/dist/db/internal-adapter.
+        // mjs:148-161), which is exactly the statement migration
+        // 85ca5310b7a1's per-table ON DELETE actions and its
+        // trg_auth_users_purge_unclaimed_owned_rows trigger are written to
+        // fire on — see backend/tests/test_account_deletion_cascade.py,
+        // which drives that same bare statement. Nothing about what gets
+        // erased vs detached is implemented here, so it cannot drift from
+        // what the Python backend's own deletes would do.
+      },
+    },
     session: {
       modelName: 'auth_sessions',
       expiresIn: 60 * 60 * 24 * 7,
@@ -403,24 +509,70 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     // state cookie and the allowDifferentEmails email match at
     // callback.mjs, which is why this is a documented bound, not a second
     // hole to close.
+    //
+    // ── /revoke-session (#1367, D2) ────────────────────────────────────
+    //
+    // The second branch below closes a CLAIM gap, not a security hole.
+    // better-auth's /revoke-session does check ownership — session.mjs:434
+    // deletes only when `findSession(token)?.session.userId ===
+    // ctx.context.session.user.id`, so another account's session is never
+    // actually revoked — but it then falls through to the SAME
+    // `return ctx.json({ status: true })` at :443 regardless. A token that
+    // belongs to someone else, or that does not exist at all, gets a 200
+    // saying the session was revoked when nothing was. A UI that renders
+    // "Session revoked." off that response states something its
+    // implementation does not back, which is the exact defect class
+    // CLAUDE.md § "A guard must be shown to reject something" is about, so
+    // the honest answer has to come from the server rather than from
+    // hopeful copy in AccountSettings.jsx.
+    //
+    // 404 for BOTH "not yours" and "no such token", deliberately: a
+    // distinct response for the two would tell any signed-in caller
+    // whether an arbitrary session token is live, which is strictly more
+    // than they knew before. The caller's own tokens are the only ones
+    // that produce a 200, and those are the only ones /list-sessions ever
+    // hands them.
+    //
+    // Guard, not decoration — auth/test/auth.test.js drives a real
+    // second account's token through auth.handler and asserts the 404, and
+    // the mutation transcript in the PR body shows that test going green
+    // (a lying 200) the moment the ownership comparison is removed.
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
-        if (ctx.path !== '/link-social') return
-        const session = await getSessionFromCtx(ctx)
-        // No session at all: fall through to the endpoint's own
-        // sessionMiddleware, which produces the correct 401 — freshness is
-        // moot when there is no session to be fresh or stale.
-        if (!session?.session) return
-        const freshAge = ctx.context.sessionConfig.freshAge
-        if (freshAge === 0) return
-        const createdAt = new Date(session.session.createdAt).getTime()
-        if (Date.now() - createdAt >= freshAge * 1000) {
-          // Identical {message, code} shape to better-auth's own
-          // BASE_ERROR_CODES.SESSION_NOT_FRESH (@better-auth/core/dist/
-          // error/codes.mjs) — spelled out literally rather than imported
-          // from @better-auth/core, which is a transitive dep of
-          // better-auth, not one of auth/package.json's own dependencies.
-          throw APIError.from('FORBIDDEN', { code: 'SESSION_NOT_FRESH', message: 'Session is not fresh' })
+        if (ctx.path === '/link-social') {
+          const session = await getSessionFromCtx(ctx)
+          // No session at all: fall through to the endpoint's own
+          // sessionMiddleware, which produces the correct 401 — freshness is
+          // moot when there is no session to be fresh or stale.
+          if (!session?.session) return
+          const freshAge = ctx.context.sessionConfig.freshAge
+          if (freshAge === 0) return
+          const createdAt = new Date(session.session.createdAt).getTime()
+          if (Date.now() - createdAt >= freshAge * 1000) {
+            // Identical {message, code} shape to better-auth's own
+            // BASE_ERROR_CODES.SESSION_NOT_FRESH (@better-auth/core/dist/
+            // error/codes.mjs) — spelled out literally rather than imported
+            // from @better-auth/core, which is a transitive dep of
+            // better-auth, not one of auth/package.json's own dependencies.
+            throw APIError.from('FORBIDDEN', { code: 'SESSION_NOT_FRESH', message: 'Session is not fresh' })
+          }
+          return
+        }
+
+        if (ctx.path === '/revoke-session') {
+          const session = await getSessionFromCtx(ctx)
+          // Same fall-through as above: no session is the endpoint's own
+          // 401 to give, not this hook's 404.
+          if (!session?.session) return
+          const token = ctx.body?.token
+          // A missing/ill-typed token is the endpoint's zod schema to
+          // reject (session.mjs:407) — answering 404 here would turn a
+          // malformed request into a misleading "no such session".
+          if (typeof token !== 'string' || token === '') return
+          const target = await ctx.context.internalAdapter.findSession(token)
+          if (target?.session?.userId !== session.user.id) {
+            throw APIError.from('NOT_FOUND', { code: 'SESSION_NOT_FOUND', message: 'Session not found' })
+          }
         }
       }),
     },

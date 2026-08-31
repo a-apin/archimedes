@@ -25,8 +25,13 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.0"
     }
-    # Zips the cost kill-switch Lambda source at plan time (cost_kill_switch.tf).
-    # Added 2026-08-31 — `terraform init` is required before the next plan.
+    # Zips Lambda sources into deployment packages at plan time — used by BOTH
+    # the deploy-drift function (issue #1596, infra/cloudwatch.tf) and the cost
+    # kill-switch (cost_kill_switch.tf). aws_lambda_function has no inline-source
+    # form — it needs a real zip on disk — and this first-party provider is the
+    # standard way to produce one without committing a binary. NOTE: adding a
+    # provider means the next `terraform apply` must be preceded by
+    # `terraform init` (it fails with "provider not installed" otherwise).
     archive = {
       source  = "hashicorp/archive"
       version = "~> 2.0"

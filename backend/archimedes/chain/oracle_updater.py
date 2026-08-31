@@ -110,6 +110,46 @@ DEFAULT_CROSSCHECK_BAND_BPS = 5000  # 50%
 # a 3-day holiday weekend too.
 DEFAULT_CROSSCHECK_MAX_STALENESS_SECONDS = 345_600  # 4 days
 
+# ─── Staleness-aware re-seed escape (#1341) ───
+# The deviation cap above is measured against the LAST ON-CHAIN PRICE, which
+# makes it self-deadlocking after an outage: once the runner has been down long
+# enough for the market to move past the band, every subsequent push is refused
+# for deviating from a baseline that only a push could refresh. Observed
+# 2026-08-20 after a 13-day runner outage — sSPY refused at 2983 bps and sBTC at
+# 3341 bps vs 2026-08-07 prices, forever, with no code path back.
+#
+# The escape is deliberately narrow. It fires ONLY when all of these hold:
+#   1. the normal band already rejected the push (nothing else changes),
+#   2. the on-chain baseline's own age (PriceOracle.lastUpdated) is CONFIRMED
+#      older than ORACLE_STALE_RESEED_AFTER_SECONDS — an unreadable age fails
+#      closed, exactly like an unobtainable reference price, and
+#   3. the move is still inside a hard absolute ceiling
+#      (ORACLE_MAX_RESEED_DEVIATION_BPS), so a decimal-shift glitch or a
+#      corrupted feed is refused even during an outage window.
+# It then pushes via forceSetPrice rather than setPrice, because PriceOracle.sol
+# enforces the SAME 2000 bps maxDeviationBps on-chain — a widened backend band
+# alone would just move the revert from the backend to the chain and burn a tx.
+# forceSetPrice is owner-only and bounded on-chain by FORCE_MAX_DEVIATION_BPS.
+#
+# Default staleness threshold: 24h, matching PriceOracle.MAX_STALENESS. Below
+# that the on-chain price still reads as fresh to every consumer, so there is no
+# emergency to recover from; at/beyond it the price is ALREADY degraded, so a
+# bounded re-seed can only improve the state. Set to 0 to disable the escape
+# entirely and restore the pre-#1341 (deadlocking) behavior.
+DEFAULT_STALE_RESEED_AFTER_SECONDS = 86_400  # 24h — mirrors PriceOracle.MAX_STALENESS
+# Hard absolute ceiling on a recovery push, in bps vs the stale baseline. 7500
+# (75%) comfortably clears any plausible multi-week move in the live push set
+# (the real 13-day gaps were 2983 and 3341 bps) while still refusing the classic
+# corruption shapes: a ÷10 decimal shift is 9000 bps and a ×10 is 90_000 bps,
+# both rejected. Override via ORACLE_MAX_RESEED_DEVIATION_BPS.
+DEFAULT_MAX_RESEED_DEVIATION_BPS = 7500
+
+# Contract entry points. The normal cadence uses setPrice (updater-or-owner,
+# band-limited on-chain); a #1341 re-seed uses forceSetPrice (owner-only escape
+# hatch, bounded by FORCE_MAX_DEVIATION_BPS). Both are in contracts/abis/PriceOracle.json.
+_SET_PRICE_FN = "setPrice(uint256)"
+_FORCE_SET_PRICE_FN = "forceSetPrice(uint256)"
+
 
 def _int_env(name: str, default: int) -> int:
     """Parse an integer env var, failing SAFE to ``default`` rather than raising at
@@ -172,6 +212,19 @@ class OracleUpdater:
         # Last price (6-dec int) we successfully submitted, per symbol —
         # fallback deviation reference when the on-chain read fails.
         self._last_pushed_price_int: dict[str, int] = {}
+
+        # Staleness-aware re-seed escape (#1341).
+        self._stale_reseed_after_s: int = _int_env(
+            "ORACLE_STALE_RESEED_AFTER_SECONDS", DEFAULT_STALE_RESEED_AFTER_SECONDS
+        )
+        self._max_reseed_deviation_bps: int = _int_env(
+            "ORACLE_MAX_RESEED_DEVIATION_BPS", DEFAULT_MAX_RESEED_DEVIATION_BPS
+        )
+        # Symbols whose CURRENT validation pass qualified for a re-seed and must
+        # therefore be pushed via forceSetPrice instead of setPrice. Rewritten on
+        # every _validate_for_push call (the symbol is discarded first), so a mark
+        # can never outlive the cycle that earned it.
+        self._pending_reseed: set[str] = set()
 
         # Secondary-source cross-check band (#775).
         self._crosscheck_band_bps: int = _int_env("PRICE_CROSSCHECK_BAND_BPS", DEFAULT_CROSSCHECK_BAND_BPS)
@@ -285,6 +338,11 @@ class OracleUpdater:
     async def push_prices_on_chain(self, prices: list[AssetPrice]) -> str | None:
         """Call PriceOracle.setPrice() for each asset via Circle Wallets API.
 
+        One exception (#1341): a symbol the validation pass marked as an outage
+        re-seed is sent via ``forceSetPrice`` instead — see
+        ``_stale_reseed_permitted``. Still exactly one submission per symbol per
+        cycle; the function selector is the only thing that differs.
+
         Two phases (#905): submit every price, then poll each Circle tx to a
         terminal state. ``_last_pushed_price_int`` — the deviation guard's
         fallback reference — is updated ONLY for txs that reach ``COMPLETE``.
@@ -335,6 +393,16 @@ class OracleUpdater:
                     logger.warning(f"Refusing to push {price.symbol} price {price.price_usd}: {rejection}")
                     continue
 
+                # Staleness-aware re-seed (#1341): the validation above marks a
+                # symbol here only when the normal band rejected it AND the
+                # on-chain baseline was confirmed stale past the threshold. Such
+                # a push must use the owner-only forceSetPrice escape hatch —
+                # setPrice would be rejected by the contract's own 2000 bps
+                # maxDeviationBps for the same reason the backend band rejected
+                # it, so the tx would revert and the oracle would stay frozen.
+                is_reseed = price.symbol in self._pending_reseed
+                fn_signature = _FORCE_SET_PRICE_FN if is_reseed else _SET_PRICE_FN
+
                 # Wedged-tx abandonment (#1525): if the LAST cycle's tx for this
                 # symbol has now been seen unresolved for `_tx_max_repolls`
                 # consecutive cycles, it is never going to resolve on its own —
@@ -368,11 +436,15 @@ class OracleUpdater:
                     # IdempotencyKey schema. `retrySalt` defaults to 0 (no
                     # behavior change) and only moves once wedge-abandonment
                     # above has fired for this symbol (#1525).
+                    # `abiFunctionSignature` is part of the key source, so a #1341
+                    # re-seed (forceSetPrice) can never dedup onto a previously
+                    # submitted setPrice for the same price — it is a genuinely
+                    # different call and gets a genuinely different key.
                     idempotency_source = json.dumps(
                         {
                             "walletId": self._wallet_id,
                             "contractAddress": oracle_addr,
-                            "abiFunctionSignature": "setPrice(uint256)",
+                            "abiFunctionSignature": fn_signature,
                             "abiParameters": [str(price_int)],
                             "retrySalt": self._tx_retry_salt.get(price.symbol, 0),
                         },
@@ -384,7 +456,7 @@ class OracleUpdater:
                         "idempotencyKey": idempotency_key,
                         "walletId": self._wallet_id,
                         "contractAddress": oracle_addr,
-                        "abiFunctionSignature": "setPrice(uint256)",
+                        "abiFunctionSignature": fn_signature,
                         "abiParameters": [str(price_int)],
                         "feeLevel": "MEDIUM",
                         "blockchain": CIRCLE_BLOCKCHAIN,
@@ -438,11 +510,28 @@ class OracleUpdater:
             # visible to operators, never masked.
             for symbol, price_usd, price_int, tx_id in submitted:
                 state = await self._poll_circle_tx(session, tx_id)
+                was_reseed = symbol in self._pending_reseed
                 if state in _TX_SUCCESS_STATES:
                     self._last_pushed_price_int[symbol] = price_int
                     confirmed_tx_ids.append(tx_id)
                     self._wedge_tracking.pop(symbol, None)
                     logger.info(f"Pushed {symbol} price {price_usd:.2f} on-chain (Circle tx {tx_id} {state})")
+                    if was_reseed:
+                        # Loud close-out of the #1341 recovery. The baseline is now
+                        # `now`, so the next cycle's staleness check fails and the
+                        # normal band is back in force — stated here so the log
+                        # itself shows the band re-tightening, not just the escape.
+                        self._pending_reseed.discard(symbol)
+                        logger.warning(
+                            "STALE-RESEED COMPLETE for %s: on-chain baseline re-seeded to %.2f via %s "
+                            "(Circle tx %s %s); the normal %d bps deviation band governs from the next cycle",
+                            symbol,
+                            price_usd,
+                            _FORCE_SET_PRICE_FN,
+                            tx_id,
+                            state,
+                            self._max_deviation_bps,
+                        )
                 else:
                     logger.error(
                         "Oracle push for %s (price %.2f, Circle tx %s) ended %s — "
@@ -452,6 +541,20 @@ class OracleUpdater:
                         tx_id,
                         state,
                     )
+                    if was_reseed:
+                        # forceSetPrice is onlyOwner. If the Circle wallet is wired as
+                        # `updater` but not `owner`, every recovery attempt reverts here
+                        # — name the manual escape rather than leaving an operator to
+                        # infer it from a bare terminal state.
+                        logger.error(
+                            "STALE-RESEED FAILED for %s: the %s recovery tx did not land, so the oracle is "
+                            "STILL FROZEN on its stale baseline. If this repeats, check that the Circle "
+                            "wallet is the PriceOracle owner (forceSetPrice is onlyOwner); the manual "
+                            "unblock is PriceOracle.forceSetPrice(%d) from the owner key.",
+                            symbol,
+                            _FORCE_SET_PRICE_FN,
+                            price_int,
+                        )
                     # Wedged-tx tracking (#1525): only a TIMEOUT — this exact
                     # tx never reaching ANY terminal state within the poll
                     # budget — is evidence of a wedge. A genuine terminal
@@ -556,6 +659,17 @@ class OracleUpdater:
            (genuine first push) is allowed; an *unobtainable* reference (the
            on-chain read failed and there is no cached fallback) fails CLOSED —
            we refuse the push rather than send it unchecked (issue #587).
+           A breach of this cap is NOT weakened by #1341: it is still a
+           rejection unless the narrow stale-re-seed escape below applies.
+        4. Stale re-seed escape (#1341) — consulted ONLY after step 3 has
+           already rejected. See ``_stale_reseed_permitted``: it requires a
+           *confirmed* on-chain baseline age past
+           ``ORACLE_STALE_RESEED_AFTER_SECONDS`` and a move still inside
+           ``ORACLE_MAX_RESEED_DEVIATION_BPS``. When both hold the push is
+           allowed and the symbol is marked in ``_pending_reseed`` so
+           ``push_prices_on_chain`` sends it via ``forceSetPrice`` (the
+           contract enforces the same 2000 bps band on ``setPrice``, so a
+           backend-only widening would revert on-chain and burn a tx).
 
         Single-source design (deferred multi-source to v2 per issue #508):
         Each symbol currently has exactly one upstream source (yfinance for
@@ -567,6 +681,10 @@ class OracleUpdater:
         intentional tradeoff: simplicity for v1 MVP, and the protocol is
         extensible should a second feed be added.
         """
+        # Any prior re-seed mark for this symbol is void the moment we re-validate:
+        # the mark is a property of THIS decision, never a sticky mode.
+        self._pending_reseed.discard(price.symbol)
+
         if price_int <= 0:
             return f"non-positive on-chain price ({price.price_usd} → {price_int})"
 
@@ -586,12 +704,132 @@ class OracleUpdater:
         else:
             deviation_bps = abs(price_int - reference_int) * 10_000 / reference_int
             if deviation_bps > self._max_deviation_bps:
+                if await self._stale_reseed_permitted(price.symbol, reference_int, price_int, deviation_bps):
+                    self._pending_reseed.add(price.symbol)
+                    return None
                 return (
                     f"deviation {deviation_bps:.0f} bps vs last known price "
                     f"{reference_int / 1e6:.2f} exceeds {self._max_deviation_bps} bps cap"
                 )
 
         return None
+
+    async def _stale_reseed_permitted(
+        self, symbol: str, reference_int: int, price_int: int, deviation_bps: float
+    ) -> bool:
+        """Decide whether an already-rejected deviation qualifies as an outage re-seed (#1341).
+
+        Called ONLY from the deviation branch of ``_validate_for_push``, after that
+        branch has decided to reject. Returning ``False`` therefore leaves the
+        normal rejection exactly as it was — this can widen nothing on its own.
+
+        Three conditions, all required, evaluated in this order:
+
+        1. The escape is enabled (``ORACLE_STALE_RESEED_AFTER_SECONDS > 0``).
+        2. The on-chain baseline's age is *confirmed* past that threshold.
+           ``_reference_age_seconds`` returns ``None`` for every unreadable case
+           (RPC failure, no address, never-set timestamp, a future timestamp), and
+           an unknown age is never treated as stale — the same
+           confirmed-absent-vs-unobtainable discipline the reference price itself
+           uses (#587 part 2).
+        3. The move is inside the hard absolute ceiling
+           (``ORACLE_MAX_RESEED_DEVIATION_BPS``). This is the guard that keeps an
+           outage from becoming a blank cheque: a corrupted feed during a stale
+           window is still refused, and refused LOUDLY (ERROR), because "the
+           baseline is stale AND the new price is implausible" is exactly the
+           state an operator must look at by hand.
+
+        A permitted re-seed logs at WARNING naming the old price, the new price,
+        the deviation, and the baseline's age, per the issue's "LOUD log"
+        requirement. It is inherently one-shot: a confirmed forceSetPrice moves
+        ``lastUpdated`` to now, so the very next cycle sees a fresh baseline,
+        condition 2 fails, and the normal 2000 bps band governs again. If the
+        recovery tx does NOT land, the baseline stays stale and the next cycle
+        retries — deliberately, since a silently-unrecovered oracle is the
+        failure mode this issue exists to end. Every attempt is logged.
+        """
+        if self._stale_reseed_after_s <= 0:
+            return False  # escape disabled → pre-#1341 behavior
+
+        age_s = await self._reference_age_seconds(symbol)
+        if age_s is None:
+            logger.warning(
+                "%s deviates %.0f bps (beyond the %d bps cap) but the on-chain baseline age is "
+                "UNREADABLE — refusing the push rather than re-seeding on an unknown baseline",
+                symbol,
+                deviation_bps,
+                self._max_deviation_bps,
+            )
+            return False
+        if age_s < self._stale_reseed_after_s:
+            return False  # baseline still fresh → an ordinary out-of-band price, reject it
+
+        if deviation_bps > self._max_reseed_deviation_bps:
+            logger.error(
+                "STALE-RESEED REFUSED for %s: on-chain baseline %.6f is %.1fh old (past the %ds "
+                "re-seed threshold) but the candidate %.6f moves %.0f bps, beyond the %d bps "
+                "recovery ceiling — this looks like a corrupted feed, not an outage gap. "
+                "On-chain price stays frozen; operator action required.",
+                symbol,
+                reference_int / 1e6,
+                age_s / 3600,
+                self._stale_reseed_after_s,
+                price_int / 1e6,
+                deviation_bps,
+                self._max_reseed_deviation_bps,
+            )
+            return False
+
+        logger.warning(
+            "STALE-RESEED for %s: on-chain baseline %.6f is %.1fh old (past the %ds re-seed "
+            "threshold), so the %.0f bps move to %.6f is an outage gap, not a feed glitch "
+            "(within the %d bps recovery ceiling). Pushing ONCE via %s to unfreeze the oracle; "
+            "the normal %d bps band applies again on the next cycle.",
+            symbol,
+            reference_int / 1e6,
+            age_s / 3600,
+            self._stale_reseed_after_s,
+            deviation_bps,
+            price_int / 1e6,
+            self._max_reseed_deviation_bps,
+            _FORCE_SET_PRICE_FN,
+            self._max_deviation_bps,
+        )
+        return True
+
+    async def _reference_age_seconds(self, symbol: str) -> float | None:
+        """Age in seconds of the on-chain deviation baseline, or ``None`` when unknown.
+
+        Reads ``PriceOracle.lastUpdated()`` through the same contract-loader call
+        shape ``_get_reference_price_int`` uses for ``price()`` (and
+        ``oracle_health`` uses for its freshness probe). ``lastUpdated`` — not
+        ``lastSetPriceTime`` — is the right clock here: it is seeded by the
+        constructor and moved by BOTH ``setPrice`` and ``forceSetPrice``, so a
+        freshly deployed oracle and a manually force-seeded one both read as
+        fresh, and it is the exact field the contract's own ``MAX_STALENESS``
+        check keys off. ``lastSetPriceTime`` is 0 until the first ``setPrice``,
+        which would read as infinitely stale on a healthy new deploy.
+
+        Returns ``None`` — never a guess — on any read failure, a zero/unset
+        timestamp, or a timestamp in the future (malformed chain state). The
+        caller treats ``None`` as "not confirmed stale" and refuses the re-seed.
+        """
+        try:
+            from archimedes.chain.contracts import get_contract_loader
+
+            last_updated = await get_contract_loader().oracle_for(symbol).functions.lastUpdated().call()
+        except Exception as e:
+            logger.warning("Could not read on-chain lastUpdated for %s: %s", symbol, e)
+            return None
+        if not last_updated or int(last_updated) <= 0:
+            return None
+        age_s = datetime.now(UTC).timestamp() - int(last_updated)
+        if age_s < 0:
+            logger.warning(
+                "On-chain lastUpdated for %s is in the future (%s) — treating age as unknown", symbol, last_updated
+            )
+            return None
+        return age_s
 
     async def _cross_check_secondary(self, price: AssetPrice) -> str | None:
         """Secondary-source cross-check (#775): compare a primary that is NOT
