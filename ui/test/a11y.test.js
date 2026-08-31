@@ -165,30 +165,71 @@ test("base and public palettes keep muted text above the 4.5:1 floor", () => {
 	assert.doesNotMatch(authPage, /text-\[var\(--text-4\)\]/);
 });
 
-// Files whose ENTIRE render is portalled to document.body, plus
-// RigorExplainer, which has no call site outside Strategies' portalled rigor
-// modal — everything they draw resolves the base palette. WalletConnect and
-// Strategies are deliberately NOT in this list: they render inside .app-site
-// and only open a portal, so they are checked by portalRegions() below.
-const PORTALLED_DIALOGS = [
-	"components/AssetGroupModal.jsx",
-	"components/AssetModal.jsx",
-	"components/CreateVaultModal.jsx",
-	"components/DepositFlow.jsx",
-	"components/RigorExplainer.jsx",
-	"components/WelcomeProfileModal.jsx",
+// RigorExplainer is the one file that is entirely portalled without calling
+// createPortal itself: it has no call site outside Strategies' portalled
+// rigor modal, so everything it draws resolves the base palette. It has to be
+// named. Every OTHER portalled subtree is DISCOVERED below rather than listed,
+// so a dialog added later is covered without anyone remembering to add it —
+// a hand-maintained list would have silently excluded CustomSelect and
+// OnboardingTour, which both portal to document.body and were outside the
+// first version of this guard.
+const ALWAYS_PORTALLED = ["components/RigorExplainer.jsx"];
+
+// Every .jsx under src/ that opens a portal, as repo-relative paths.
+function filesCallingCreatePortal() {
+	const files = [];
+	const walk = (dir) => {
+		for (const entry of readdirSync(dir)) {
+			const full = join(dir, entry);
+			if (statSync(full).isDirectory()) walk(full);
+			else if (/\.jsx$/.test(entry)) files.push(full);
+		}
+	};
+	const root = new URL("../src", import.meta.url).pathname;
+	walk(root);
+	return files
+		.filter((f) => readFileSync(f, "utf8").includes("createPortal("))
+		.map((f) => f.slice(root.length + 1));
+}
+
+// Inside a portalled subtree --text-4 is a 1.83:1 hairline, so the only
+// legitimate use of it there is DECORATION. This is deliberately an
+// allowlist of the decoration spellings rather than a denylist of the text
+// spellings: anchoring on `color:` would silently miss a colour reached
+// through a ternary or a fallback — `x ? 'var(--negative)' : 'var(--text-4)'`,
+// `TYPE_COLORS[t] || 'var(--text-4)'`, `const muted = 'var(--text-4)'` — and
+// this tree contains five such text colours today (CorpusKG, Strategies x2,
+// RigorStrictnessControl, RejectedCandidates). All five render inside
+// .app-site rather than in a portal, so none is a defect here, but a
+// denylist would not have caught one if it were.
+const TEXT_4_AS_DECORATION = [
+	// DepositFlow's CONFIRMING spinner track: a 2px ring, not text.
+	/border:\s*['"]2px solid var\(--text-4\)['"]/,
 ];
 
-// The two spellings a --text-4 TEXT colour can take in this tree: an inline
-// style object and an UnoCSS arbitrary colour. Decoration spellings
-// (`border: '2px solid var(--text-4)'` on DepositFlow's spinner track,
-// `fill={muted}` on OnboardingTour's aria-hidden illustrations) are
-// deliberately not matched — --text-4 is a decoration token on this palette
-// and those uses are the reason it must stay dark.
-const TEXT_4_AS_COLOUR = [
-	/color:\s*['"]var\(--text-4\)['"]/,
-	/text-\[var\(--text-4\)\]/,
-];
+// A --text-4 mention that is not one of the allowed decoration spellings.
+// Comment lines are skipped so a note explaining why the token is avoided
+// does not read as a use of it.
+function text4Offenders(label, source) {
+	const found = [];
+	for (const line of source.split("\n")) {
+		if (!line.includes("--text-4")) continue;
+		const trimmed = line.trim();
+		if (/^(\/\/|\/\*|\*)/.test(trimmed)) continue;
+		// Strip the allowed decoration spellings and re-check, rather than
+		// skipping the whole line when one matches. DepositFlow's spinner is a
+		// single long inline-style line, so a line-level skip would let a text
+		// colour ride along on it — verified: that input passed a skip-based
+		// version of this guard and fails this one.
+		let rest = line;
+		for (const pattern of TEXT_4_AS_DECORATION) {
+			rest = rest.split(pattern).join("");
+		}
+		if (!rest.includes("--text-4")) continue;
+		found.push(`${label} — ${trimmed.slice(0, 100)}`);
+	}
+	return found;
+}
 
 test("portalled dialogs never paint text with the base decoration token", () => {
 	// #1318 residual. A dialog opened from .app-site still resolves the BASE
@@ -230,24 +271,26 @@ test("portalled dialogs never paint text with the base decoration token", () => 
 	);
 
 	const offenders = [];
-	for (const file of PORTALLED_DIALOGS) {
-		const source = src(file);
-		for (const pattern of TEXT_4_AS_COLOUR) {
-			if (pattern.test(source)) offenders.push(`${file} — ${pattern}`);
-		}
+	for (const file of ALWAYS_PORTALLED) {
+		offenders.push(...text4Offenders(file, src(file)));
 	}
-	for (const [file, source] of [
-		["components/Strategies.jsx", strategies],
-		["components/WalletConnect.jsx", walletConnect],
-	]) {
-		const regions = portalRegions(source);
+
+	// Region-slice every file that opens a portal. A component can render
+	// inside .app-site AND open a portal (WalletConnect's topbar menu,
+	// Strategies' rigor modal), so only the portalled subtree is on the base
+	// palette — a whole-file check would be wrong in both directions, and
+	// Strategies legitimately keeps 9 --text-4 call sites outside its portal.
+	const portalFiles = filesCallingCreatePortal();
+	assert.ok(
+		portalFiles.includes("components/Strategies.jsx") &&
+			portalFiles.includes("components/CustomSelect.jsx"),
+		`portal discovery found ${portalFiles.length} files but missed a known one: ${portalFiles.join(", ")}`,
+	);
+	for (const file of portalFiles) {
+		const regions = portalRegions(src(file));
 		assert.ok(regions.length > 0, `${file}: no createPortal region found`);
 		for (const region of regions) {
-			for (const pattern of TEXT_4_AS_COLOUR) {
-				if (pattern.test(region)) {
-					offenders.push(`${file} (portalled subtree) — ${pattern}`);
-				}
-			}
+			offenders.push(...text4Offenders(`${file} (portalled subtree)`, region));
 		}
 	}
 	assert.deepEqual(

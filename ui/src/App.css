@@ -64,8 +64,9 @@
      .public-site — the same mechanism that forced the --chart-label fix
      below). Every portalled dialog that was painting text with --text-4 now
      resolves --text-3 instead (5.59:1 on --surface-1, 5.27:1 on --surface-2);
-     ui/test/a11y.test.js computes those ratios and re-checks the dialogs, so
-     a new one cannot reintroduce the pairing. */
+     ui/test/a11y.test.js computes those ratios and re-checks every portalled
+     subtree it can find by walking src/ for createPortal, so a dialog added
+     later is covered without anyone remembering to register it. */
 	--text-1: #fafafa;
 	--text-2: #a1a1aa;
 	--text-3: #8a8a93;
