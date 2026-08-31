@@ -310,12 +310,27 @@ services:
       FEATURE_QUANT: ${FEATURE_QUANT:-}
       EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:-}
       # Production secret loading: load_ssm_secrets() (main.py, at import time)
-      # reads /archimedes/prod/* from SSM via the EC2 instance role at startup
-      # and injects them into the env (e.g. EMAIL_ENCRYPTION_KEY, which prod mode
-      # fail-closes on). It is a NO-OP unless AWS_SSM_PATH_PREFIX is set, and the
-      # region must match where the params live (us-east-1). This keeps the
-      # secret out of .env and CI. Local dev has no AWS creds → it no-ops safely.
-      AWS_SSM_PATH_PREFIX: ${AWS_SSM_PATH_PREFIX:-/archimedes/prod/}
+      # reads AWS_SSM_PATH_PREFIX/* from SSM and injects the values into the
+      # env (e.g. EMAIL_ENCRYPTION_KEY, which prod mode fail-closes on). Two
+      # independent things must both be true for that fetch to happen:
+      #   1. PUBLIC_DOMAIN is set — main.py's "am I production" gate (#1044).
+      #      This is the one that actually stops the fetch, and it is why prod
+      #      sets PUBLIC_DOMAIN alongside the prefix in infra/ecs.tf:516-519.
+      #   2. AWS_SSM_PATH_PREFIX is non-empty — secrets_service returns 0 on a
+      #      blank prefix.
+      # The default below is BLANK, not /archimedes/prod/. It used to be the
+      # prod path, which silently un-did .env.example's blank default: compose
+      # `:-` substitutes on empty as well as unset, so the shipped
+      # `AWS_SSM_PATH_PREFIX=` resolved back to the real prod prefix inside the
+      # container and left the PUBLIC_DOMAIN gate as the only thing between a
+      # local `docker compose up` and production secrets. Defence in depth is
+      # the point: neither layer may quietly disarm the other.
+      # Production does NOT get this value from compose — post-Fargate, prod is
+      # an ECS task definition (infra/ecs.tf, infra/ecs_migrate.tf) that sets
+      # the prefix explicitly; compose is local-only. Exporting
+      # AWS_SSM_PATH_PREFIX (plus PUBLIC_DOMAIN) still opts a compose run in,
+      # for anyone deliberately mimicking prod.
+      AWS_SSM_PATH_PREFIX: ${AWS_SSM_PATH_PREFIX:-}
       AWS_REGION: ${AWS_REGION:-us-east-1}
     env_file:
       - .env
