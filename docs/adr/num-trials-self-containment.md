@@ -162,6 +162,14 @@ headline claim is "`num_trials` is self-contained," deliberately not "the gate i
   (Evidence: [Önder's prod pull](https://github.com/a-apin/archimedes/issues/1555#issuecomment-5471987448),
   #1555 thread; no pass count quoted, per the standing rule — the point stands on the
   adjusted p-values, a property of the correction rather than of the return data.)
+  **Placement half decided by the owner (2026-08-31, tracked in
+  [#1564](https://github.com/a-apin/archimedes/issues/1564)):** the passport carries only
+  per-strategy information; the Leaderboard is the one cross-strategy surface. The
+  `board_fdr_*` fields (and, pending #1564's call, `library_pbo`) move off the
+  per-strategy gate response onto the leaderboard, riding its existing cache semantics —
+  which brings the API shape into line with Decision #3 itself. The rendering half (what
+  the board says when the correction disqualifies every row the badge approves) remains
+  open.
 - **Two conventions exist in the historical record.** Verdicts computed before 2026-07-09
   used formula (A); `num_trials_convention` distinguishes them, but any longitudinal
   comparison of pass rates across that boundary is invalid.
