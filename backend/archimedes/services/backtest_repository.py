@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from archimedes.models.backtest import BacktestResult
 from archimedes.models.backtest_store import BacktestResultRecord
@@ -284,6 +284,40 @@ def latest_backtests_by_strategy(
     )
     latest_ids = select(ranked.c.id).where(ranked.c.rank == 1)
 
-    rows = session.query(BacktestResultRecord).filter(BacktestResultRecord.id.in_(latest_ids)).all()
+    # PROJECTION, not just row count (issue #1543). The inner query above already
+    # stopped this reader from hydrating N_refreshes x N_strategies ROWS; the
+    # outer query still selected every COLUMN of the winners, so each of the
+    # ~30-96 rows it does return dragged its `artifact_json` blob across the
+    # wire. Nothing downstream of this function reads that column:
+    # `BacktestResultRecord.to_backtest_result()` never touches it, and neither
+    # does any caller (strategy_provider._load_backtests, backtest_scheduler's
+    # staleness/backoff checks, the num_trials/returns/rigor route lookups, and
+    # audit_backtest_universe all read scalars or call to_backtest_result). The
+    # one reader that genuinely needs the blob, `get_daily_returns` above, issues
+    # its OWN single-row query and is unaffected by a per-query option here.
+    #
+    # Size, using this repo's own verified column averages (2026-08-19, quoted in
+    # scripts/archive_backtest_results.py): artifact_json ~349 KB/row against
+    # equity_curve_json ~63 KB/row, so the deferred column is ~85% of each
+    # returned row's payload bytes. equity_curve_json is deliberately NOT
+    # deferred: `to_backtest_result()` deserializes it and `api/risk_routes.py`
+    # consumes `BacktestResult.equity_curve` off the provider cache, so deferring
+    # it would either change what those surfaces return or trigger a lazy load
+    # against a session `strategy_provider._load_backtests` has already closed.
+    #
+    # `defer` (a per-query option) rather than `deferred=True` on the mapper: it
+    # keeps the change scoped to this hot read instead of silently re-shaping
+    # every other query against the table. Plain `defer`, not
+    # `defer(..., raiseload=True)`: a future caller that touches the attribute
+    # inside the session gets one extra small SELECT, whereas raiseload would
+    # raise into `_load_backtests`'s except-branch and silently degrade the whole
+    # library to "no backtests" — a fail-soft path turning a perf option into a
+    # correctness bug.
+    rows = (
+        session.query(BacktestResultRecord)
+        .options(defer(BacktestResultRecord.artifact_json))
+        .filter(BacktestResultRecord.id.in_(latest_ids))
+        .all()
+    )
 
     return {row.strategy_id: row for row in rows}
