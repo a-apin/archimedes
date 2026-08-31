@@ -796,10 +796,13 @@ daily returns, so 0.15 means 15% annualized vol — e.g. \
 {"lt": ["realized_vol_20", 0.15]} means "the last 20 bars were calm". \
 Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
 or logic ops (and, or, not). Position sizing types: full_invested_when_in_market \
-(all-in while the entry condition holds), equal_weight (1/N of the account per \
-name in asset_universe), inverse_vol (equal_weight scaled by \
-reference_vol_annual / realized vol; reference_vol_annual is optional and \
-defaults to 0.15), volatility_target (needs annual_pct). \
+(all-in while the entry condition holds; no other keys), equal_weight (1/N of \
+the account per name in asset_universe; no other keys), inverse_vol \
+(equal_weight scaled by reference_vol_annual / realized vol; the ONLY extra key \
+is reference_vol_annual, optional, must be > 0, defaults to 0.15), \
+volatility_target (the ONLY extra key is annual_pct, required, > 0). \
+position_sizing accepts NO other keys — a key outside that list is a hard \
+validation error, not an ignored field, so do not invent one. \
 look_ahead_safe MUST be true. \
 parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
 values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \

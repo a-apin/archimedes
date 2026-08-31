@@ -20,8 +20,10 @@ no DB, no ``.env``.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import pathlib
+import typing
 
 import backtrader as bt
 import numpy as np
@@ -33,6 +35,7 @@ from archimedes.services.dsl_to_backtrader import (
 )
 from archimedes.services.strategy_dsl import (
     INDICATOR_NAMES,
+    POSITION_SIZING_KEYS,
     POSITION_SIZING_TYPES,
     DSLError,
     validate_strategy_spec,
@@ -95,6 +98,34 @@ def _run(spec_dict: dict, frame: pd.DataFrame, *, cash: float = _CASH, **strateg
     cerebro.broker.setcash(cash)
     strat = cerebro.run()[0]
     return strat, cerebro
+
+
+def _targets_of_class(strategy_cls, frame: pd.DataFrame, *, cash: float = _CASH, **strategy_kwargs) -> list[float]:
+    """Every ``order_target_percent`` target an interpreted class asks for."""
+    recorded: list[float] = []
+
+    class _Spy(strategy_cls):  # type: ignore[misc,valid-type]
+        def order_target_percent(self, data=None, target=0.0, **kwargs):
+            recorded.append(float(target))
+            return super().order_target_percent(data=data, target=target, **kwargs)
+
+    cerebro = bt.Cerebro(stdstats=False)
+    cerebro.adddata(bt.feeds.PandasData(dataname=frame))
+    cerebro.addstrategy(_Spy, **strategy_kwargs)
+    cerebro.broker.setcash(cash)
+    cerebro.run()
+    return recorded
+
+
+def _requested_targets(spec_dict: dict, frame: pd.DataFrame, *, cash: float = _CASH, **strategy_kwargs) -> list[float]:
+    """Every ``order_target_percent`` target the strategy ASKS the broker for.
+
+    Measuring the request rather than the fill is load-bearing for the
+    slot-invariance assertion. A target above 1.0 is a leverage request the cash
+    broker refuses outright, so a fill-based comparison would read 0.0 on exactly
+    the inputs where the clamp bug lived and the guard would prove nothing.
+    """
+    return _targets_of_class(interpret_spec(validate_strategy_spec(spec_dict)), frame, cash=cash, **strategy_kwargs)
 
 
 def _entry_exposure(strat) -> float:
@@ -250,6 +281,57 @@ class TestInverseVolSizing:
         with pytest.raises(DSLError, match="reference_vol_annual"):
             validate_strategy_spec(bad)
 
+    def test_slot_invariance_of_the_requested_target(self):
+        """The same asset must get the same share of the account either way.
+
+        The interpreter reads one feed, and the 1/N universe split is expressed
+        in one of two places: INSIDE the strategy (``universe_slots=N``, the
+        single-feed runner hands it the whole account) or OUTSIDE it
+        (``universe_slots=1``, the sleeve runner hands it ``cash/N``). Those are
+        two spellings of one allocation, so the per-name share of the whole
+        account — ``target × (account share this run controls)`` — must be equal.
+
+        It was not. The scale cap was applied to the slot-multiplied product
+        (``min(slot * scale, 1.0)``), which is inert at ``slots=N`` for N ≥ 2 and
+        truncating at ``slots=1``: the calm path below asked for 0.99 of the
+        whole account through the single-feed runner and 0.99 of a HALF account
+        through the sleeve runner. Same spec, same prices, 2× the exposure.
+        """
+        frame = _vol_path(0.002)  # ~3% annualized → scale pinned at the 2.0 cap
+        n = len(self.UNIVERSE)
+
+        single_feed = _requested_targets(self._spec(), frame)  # slots defaults to N
+        sleeve = _requested_targets(self._spec(), frame, universe_slots=1)
+
+        assert single_feed and sleeve, "no sizing order was placed — the test measured nothing"
+        # Anti-vacuity: if the calm path never reached a scale above 1.0 the old
+        # clamp would not have bitten and this comparison would pass either way.
+        assert sleeve[0] > 1.0, f"sleeve requested {sleeve[0]:.4f} — the clamp under test never engages here"
+        assert sleeve[0] / n == pytest.approx(single_feed[0], rel=1e-12), (
+            f"single-feed run asked for {single_feed[0]:.4f} of the whole account; the sleeve run asked for "
+            f"{sleeve[0]:.4f} of a 1/{n} account = {sleeve[0] / n:.4f} — the cap is being applied after the "
+            "slot multiply again, so inverse_vol is not slot-invariant"
+        )
+
+    def test_the_slot_invariant_target_can_be_unfundable(self, caplog):
+        """The honest cost of clamping the scale instead of the product.
+
+        Slot-invariance means the sleeve path may ask for up to
+        ``_VOL_SCALE_CAP`` × its own account, which the backtest's cash broker
+        cannot fund — the same pre-existing defect ``volatility_target`` has (see
+        ``test_volatility_target_can_request_unfundable_leverage``). Truncating it
+        back to 1.0 is what made the two runners disagree, so it stays, and stays
+        AUDIBLE: rejected, logged, flat. Pinned here so the leverage request is
+        never mistaken for "the entry condition was false".
+        """
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            strat, _ = _run(self._spec(), _vol_path(0.002), universe_slots=1)
+
+        assert _entry_exposure(strat) == 0.0, "the 2x request became fundable — re-check this pin"
+        assert [r for r in caplog.records if r.name == _LOGGER_NAME and "Margin" in r.getMessage()], (
+            "an unfundable inverse_vol sleeve went flat for the whole run and said nothing about why"
+        )
+
 
 # ── Guard 2: realized_vol interprets and drives signals ───────────────────────
 
@@ -278,10 +360,21 @@ class TestRealizedVolIndicator:
         "look_ahead_safe": True,
     }
 
-    def test_spec_interprets(self):
-        """Previously raised DSLError('unsupported indicator: realized_vol')."""
-        cls = interpret_spec(validate_strategy_spec(self.SPEC))
-        assert issubclass(cls, bt.Strategy)
+    def test_spec_runs_without_a_dsl_error(self):
+        """The old defect was fatal at RUN time, so the guard must run the spec.
+
+        ``interpret_spec`` only closes over the spec and returns a class; it
+        never touches ``_make_indicator``, which is called from
+        ``DSLStrategy.__init__`` when Cerebro instantiates the strategy. An
+        earlier version of this test asserted ``issubclass(cls, bt.Strategy)``
+        and therefore passed against the very interpreter that raised
+        ``DSLError('unsupported indicator: realized_vol')`` on every run — it
+        guarded nothing. Feeding the class to a real Cerebro is what reaches the
+        line the defect lived on.
+        """
+        strat, _ = _run(self.SPEC, _regime_frame(n_calm=30, n_wild=30))
+        values = [float(strat._indicators["realized_vol_10"][-i]) for i in range(5)]
+        assert all(np.isfinite(v) and v >= 0 for v in values), f"realized_vol produced no usable values: {values}"
 
     def test_indicator_drives_entry_and_exit(self):
         strat, _ = _run(self.SPEC, _regime_frame())
@@ -399,6 +492,100 @@ class TestRejectedOrdersAreLogged:
             _run(self.SPEC, _frame([100.0] * 20))
 
         assert not [r for r in caplog.records if r.name == _LOGGER_NAME and "Margin" in r.getMessage()]
+
+
+# ── Guard 4: an unknown position_sizing key is refused, not ignored ───────────
+
+
+class TestPositionSizingRejectsUnknownKeys:
+    """A closed enum inside an open dict is not a closed vocabulary.
+
+    ``{"type": "inverse_vol", "reference_vol": 0.30}`` — the plausible
+    misspelling of ``reference_vol_annual`` — used to validate, interpret,
+    backtest and publish, sizing at the 0.15 DEFAULT with the author's 0.30
+    discarded and no log line anywhere. Same shape as the three defects this file
+    already guards: the DSL accepted something and quietly did something else.
+    """
+
+    UNIVERSE: typing.ClassVar[list[str]] = ["SPY", "QQQ"]
+
+    @pytest.mark.parametrize(
+        ("ps", "bad_key"),
+        [
+            ({"type": "inverse_vol", "reference_vol": 0.30}, "reference_vol"),
+            ({"type": "inverse_vol", "reference_vol_annual": 0.30, "annual_pct": 0.2}, "annual_pct"),
+            ({"type": "equal_weight", "weight": 0.25}, "weight"),
+            ({"type": "full_invested_when_in_market", "leverage": 2}, "leverage"),
+            ({"type": "volatility_target", "annual_pct": 0.15, "cap": 3.0}, "cap"),
+        ],
+    )
+    def test_unknown_key_is_rejected_by_name(self, ps, bad_key):
+        with pytest.raises(DSLError, match=bad_key):
+            validate_strategy_spec(_sizing_spec(ps, self.UNIVERSE))
+
+    @pytest.mark.parametrize(
+        "ps",
+        [
+            {"type": "full_invested_when_in_market"},
+            {"type": "equal_weight"},
+            {"type": "inverse_vol"},
+            {"type": "inverse_vol", "reference_vol_annual": 0.30},
+            {"type": "volatility_target", "annual_pct": 0.15},
+        ],
+    )
+    def test_every_documented_shape_still_validates(self, ps):
+        """The other half of a rejection guard: it must accept the legal set.
+
+        Without this, tightening the check into "reject everything" would pass
+        the tests above and break every real spec.
+        """
+        assert validate_strategy_spec(_sizing_spec(ps, self.UNIVERSE)).position_sizing["type"] == ps["type"]
+
+    def test_the_rejected_spelling_would_otherwise_have_been_silently_ignored(self):
+        """Names the exact damage: the misspelled key changes NOTHING at runtime.
+
+        ``reference_vol`` is not read by ``interpret_spec``, so a spec carrying it
+        sizes off ``DEFAULT_INVERSE_VOL_REFERENCE``. This asserts that the
+        interpreter ignores it — which is why the validator has to be the one to
+        object, and why "the interpreter would have caught it" is not an argument
+        for leaving the dict open.
+        """
+        from archimedes.services.dsl_to_backtrader import DEFAULT_INVERSE_VOL_REFERENCE
+
+        frame = _vol_path(0.02)
+        stated = _sizing_spec(
+            {"type": "inverse_vol", "reference_vol_annual": DEFAULT_INVERSE_VOL_REFERENCE},
+            self.UNIVERSE,
+            warmup_bars=25,
+        )
+        # The same spec with the correct key swapped for the misspelling. Built
+        # via dataclasses.replace because validate_strategy_spec now (correctly)
+        # refuses to produce it — which is the point of the guard.
+        misspelled = dataclasses.replace(
+            validate_strategy_spec(stated),
+            position_sizing={"type": "inverse_vol", "reference_vol": 0.30},
+        )
+
+        default_targets = _requested_targets(stated, frame)
+        # 0.30 is double the default reference; had the key been read, the
+        # requested target would have doubled with it.
+        misspelled_targets = _targets_of_class(interpret_spec(misspelled), frame)
+
+        assert default_targets, "no order placed — the comparison would be vacuous"
+        assert misspelled_targets[0] == pytest.approx(default_targets[0], rel=1e-12), (
+            "the misspelled key changed the sizing — rewrite this test, the premise moved"
+        )
+
+
+def test_position_sizing_key_table_covers_every_type():
+    """``POSITION_SIZING_KEYS`` and ``POSITION_SIZING_TYPES`` cannot drift.
+
+    A new sizing type without a key row would ``KeyError`` inside the validator;
+    a stale row would silently permit keys for a type that no longer exists.
+    """
+    assert set(POSITION_SIZING_KEYS) == set(POSITION_SIZING_TYPES)
+    for sizing_type, keys in POSITION_SIZING_KEYS.items():
+        assert "type" in keys, f"{sizing_type} must accept its own discriminator"
 
 
 # ── The enum surface itself ───────────────────────────────────────────────────

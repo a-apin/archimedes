@@ -31,8 +31,82 @@ _VOL_SCALE_CAP = 2.0
 
 # Reference annualized vol for ``inverse_vol`` when the spec does not name one.
 # 0.15 ≈ long-run US equity vol; a spec can override with
-# ``position_sizing.reference_vol_annual``.
-_DEFAULT_INVERSE_VOL_REFERENCE = 0.15
+# ``position_sizing.reference_vol_annual``. PUBLIC because the live evaluator
+# must default it to the same number — see ``inverse_vol_weight``.
+DEFAULT_INVERSE_VOL_REFERENCE = 0.15
+
+
+# ── Sizing primitives, shared with the live evaluator ─────────────────
+#
+# These three functions are the ENTIRE sizing arithmetic for ``equal_weight``
+# and ``inverse_vol``. They live at module scope, taking plain floats, so
+# ``strategy_signal_evaluator._spec_signal`` computes the live weight by calling
+# the very same code the backtest sizes with — the divergence class that produced
+# audit findings F1 (momentum) and F5 (RSI) cannot recur here by construction,
+# because there is only one implementation.
+
+
+def slot_weight(universe_slots: int) -> float:
+    """Target weight for ONE equal slot of the declared universe.
+
+    See the seam note in ``interpret_spec``'s docstring for what a "slot" is.
+    """
+    return 1.0 / max(1, int(universe_slots))
+
+
+def sizing_realized_vol(closes: list[float] | tuple[float, ...]) -> float | None:
+    """Annualized trailing vol used by the SIZING branches, or None.
+
+    ``closes`` is a chronological price history ending at the sizing bar. Returns
+    None when there are fewer than ``_SIZING_VOL_LOOKBACK + 1`` prices, i.e. not
+    enough for the lookback's worth of returns.
+
+    Estimator note (intentional, do not "reconcile"): this is the root-mean-square
+    of returns about ZERO over ``_SIZING_VOL_LOOKBACK`` bars — the exact
+    expression ``volatility_target`` has always used, kept byte-for-byte
+    (including the newest-first summation order) because every volatility_target
+    number this repo has published came out of it. The ``realized_vol_N``
+    *indicator* above is a sample std (ddof=1) because it has a live-evaluator
+    twin it must equal. The two differ by the mean term and the ddof, which is
+    immaterial for daily returns; they are separate because one is a sizing knob
+    and the other is a graded signal.
+    """
+    if len(closes) <= _SIZING_VOL_LOOKBACK:
+        return None
+    recent = [float(closes[-1 - i]) / float(closes[-2 - i]) - 1 for i in range(_SIZING_VOL_LOOKBACK)]
+    return (sum(r**2 for r in recent) / len(recent)) ** 0.5 * (_TRADING_DAYS**0.5)
+
+
+def inverse_vol_weight(
+    slot: float,
+    realized_vol: float | None,
+    reference_vol_annual: float,
+) -> float:
+    """One slot, scaled by ``reference_vol / realized_vol``. Slot-INVARIANT.
+
+    The cap is applied to the SCALE, before the slot multiply, and that ordering
+    is the whole point. Clamping the product (the shipped-and-reverted
+    ``min(slot * scale, 1.0)``) makes the result depend on how the universe split
+    was expressed: with ``universe_slots=N`` the account-level target
+    ``(1/N)·scale`` never reaches 1.0 for N ≥ 2 so the clamp is inert, while with
+    ``universe_slots=1`` — the graded sleeve path — it truncates every scale above
+    1.0. The same asset on the same prices then gets 2× more exposure through the
+    single-feed runner than through the sleeve runner, and ``inverse_vol``
+    degenerates into ``volatility_target`` on the sleeve path. Clamping the scale
+    makes the per-name exposure identical either way;
+    ``test_dsl_sizing_and_indicators.py::TestInverseVolSizing::
+    test_slot_invariance_of_the_requested_target`` pins it.
+
+    Consequence, stated rather than clamped away: the returned weight can exceed
+    1.0 (up to ``_VOL_SCALE_CAP × slot``). That is a leverage request the
+    backtest's cash broker refuses — audibly, via ``notify_order`` — exactly as
+    ``volatility_target``'s has always been. It is reachable only for
+    ``universe_slots=1`` (or a single-name universe) on an asset calmer than the
+    reference. See the DSL spec's Known-limitations list.
+    """
+    if realized_vol is None or realized_vol <= 0:
+        return slot
+    return slot * min(reference_vol_annual / realized_vol, _VOL_SCALE_CAP)
 
 
 # ── Condition evaluation ──────────────────────────────────────────────
@@ -212,8 +286,19 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
         ``paper_trading._sleeve_dated_returns``) already partition the cash N
         ways and run this same strategy once per ticker. There the equal split
         happens OUTSIDE, so those callers pass ``universe_slots=1`` and each
-        sleeve is fully invested in its own share. Aggregate exposure is 1.0
-        either way; applying 1/N on both sides would silently size at 1/N².
+        sleeve is fully invested in its own share. Applying 1/N on both sides
+        would silently size at 1/N².
+
+    The invariant both configurations must satisfy is a PER-NAME one: the share
+    of the whole account a given ticker ends up holding is ``slot × scale``
+    either way — ``(1/N)·scale`` of the full account on the single-feed path,
+    ``scale`` of a ``cash/N`` sleeve on the sleeve path. It is NOT "aggregate
+    exposure is 1.0": that is true only for ``equal_weight`` (N names × 1/N),
+    and even there only up to the 0.99 exposure buffer. ``inverse_vol``
+    aggregates to ``Σ scale_i / N``, which is deliberately not 1.0 — sizing by
+    inverse volatility means the book is smaller when the universe is stormier.
+    ``inverse_vol_weight`` is where that invariant is enforced (the cap is
+    applied to the scale, never to the product).
 
     ``full_invested_when_in_market`` and ``volatility_target`` ignore
     ``universe_slots`` by definition — "full invested" means all-in on the
@@ -224,7 +309,7 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
     exit_cond = spec.exit
     ps_type = spec.position_sizing.get("type", "full_invested_when_in_market")
     vol_target = spec.position_sizing.get("annual_pct")
-    inverse_vol_reference = float(spec.position_sizing.get("reference_vol_annual") or _DEFAULT_INVERSE_VOL_REFERENCE)
+    inverse_vol_reference = float(spec.position_sizing.get("reference_vol_annual") or DEFAULT_INVERSE_VOL_REFERENCE)
     default_slots = max(1, len(spec.asset_universe))
 
     indicator_map: dict[str, tuple[str, int]] = {}
@@ -350,28 +435,21 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
 
             See the seam note in ``interpret_spec``'s docstring.
             """
-            return 1.0 / max(1, int(self.params.universe_slots))
+            return slot_weight(self.params.universe_slots)
 
         def _sizing_realized_vol(self) -> float | None:
-            """Annualized trailing vol used by the SIZING branches, or None.
+            """Trailing sizing vol at this bar — delegates to the shared helper.
 
-            Estimator note (intentional, do not "reconcile"): this is the
-            root-mean-square of returns about ZERO over
-            ``_SIZING_VOL_LOOKBACK`` bars — the exact expression
-            ``volatility_target`` has always used, kept byte-for-byte because
-            every volatility_target number this repo has published came out of
-            it. The ``realized_vol_N`` *indicator* above is a sample std (ddof=1)
-            because it has a live-evaluator twin it must equal. The two differ
-            by the mean term and the ddof, which is immaterial for daily
-            returns; they are separate because one is a sizing knob and the
-            other is a graded signal.
+            The arithmetic lives at module scope (``sizing_realized_vol``) so the
+            live evaluator sizes ``inverse_vol`` off the identical estimator
+            instead of a second, drifting copy.
             """
             if len(self) <= _SIZING_VOL_LOOKBACK:
                 return None
-            recent = [
-                float(self.data.close[-i]) / float(self.data.close[-i - 1]) - 1 for i in range(_SIZING_VOL_LOOKBACK)
-            ]
-            return (sum(r**2 for r in recent) / len(recent)) ** 0.5 * (_TRADING_DAYS**0.5)
+            # Chronological window ending at the current bar: index -k is k bars
+            # back, so range(LOOKBACK, -1, -1) yields oldest → newest.
+            closes = [float(self.data.close[-i]) for i in range(_SIZING_VOL_LOOKBACK, -1, -1)]
+            return sizing_realized_vol(closes)
 
         def _order_full_invest(self, price: float) -> None:
             """All of the account's cash (less the exposure buffer) into this feed."""
@@ -409,22 +487,23 @@ def interpret_spec(spec: StrategySpec) -> type[bt.Strategy]:
                 # calmer the asset relative to the reference, the larger its
                 # share. Same scaling machinery (and same cap) as
                 # volatility_target, applied to a slot weight instead of the
-                # whole account.
-                weight = self._slot_weight()
+                # whole account. The cap is applied to the SCALE inside
+                # ``inverse_vol_weight`` — clamping the product here instead is
+                # the slot-invariance bug that read as a 2x exposure difference
+                # between the single-feed and sleeve runners.
+                slot = self._slot_weight()
                 realized_vol = self._sizing_realized_vol()
-                if realized_vol is not None and realized_vol > 0:
-                    weight *= min(inverse_vol_reference / realized_vol, _VOL_SCALE_CAP)
-                elif not self._vol_fallback_warned:
+                if (realized_vol is None or realized_vol <= 0) and not self._vol_fallback_warned:
                     self._vol_fallback_warned = True
                     logger.warning(
-                        "DSL strategy %s: inverse_vol has no realized-vol estimate yet "
-                        "(needs > %d bars) — sizing at the unscaled slot weight %.4f.",
+                        "DSL strategy %s: inverse_vol has no usable realized-vol estimate "
+                        "(needs > %d bars of non-flat prices) — sizing at the unscaled slot weight %.4f.",
                         spec.name,
                         _SIZING_VOL_LOOKBACK,
-                        weight,
+                        slot,
                     )
-                target = min(weight, 1.0) * float(self.params.exposure_fraction)
-                self.order_target_percent(target=target)
+                weight = inverse_vol_weight(slot, realized_vol, inverse_vol_reference)
+                self.order_target_percent(target=weight * float(self.params.exposure_fraction))
             else:
                 # Unreachable for a validated spec: POSITION_SIZING_TYPES is a
                 # closed enum and every member has a branch above. Kept as a

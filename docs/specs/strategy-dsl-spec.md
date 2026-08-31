@@ -102,8 +102,15 @@ entry once you account for the flat/held state.
 | --- | --- | --- |
 | `full_invested_when_in_market` | All available cash (× the 0.99 exposure buffer) into the instrument. | — |
 | `equal_weight` | One equal slot of the declared universe: `order_target_percent(1/N × 0.99)`, where N is `universe_slots` (default `len(asset_universe)`). | — |
-| `inverse_vol` | The `equal_weight` slot, scaled by `reference_vol_annual / realized vol`, capped at 2.0×, clamped to ≤ 1.0 of the account. | `reference_vol_annual` (optional, > 0, default `0.15`) |
+| `inverse_vol` | The `equal_weight` slot, scaled by `reference_vol_annual / realized vol`. The **scale** is capped at 2.0×, before the slot multiply — the product is not clamped, so the per-name weight is the same whichever side of the runner the 1/N split is applied on. | `reference_vol_annual` (optional, > 0, default `0.15`) |
 | `volatility_target` | Full-cash size scaled by `annual_pct / realized vol`, capped at 2.0×. | `annual_pct` (**required**, > 0) |
+
+**The "Extra keys" column is exhaustive and enforced.** `position_sizing` is a
+closed dict, not just a dict with a closed `type`: any key outside the row's set
+is rejected by name at validation time. `{"type": "inverse_vol",
+"reference_vol": 0.30}` — the plausible misspelling — is an error, not a spec
+that silently runs at the 0.15 default. The table lives in code as
+`strategy_dsl.POSITION_SIZING_KEYS`.
 
 Sizing happens **on entry only**. The interpreter enters when flat and the entry
 tree is true, and closes when held and the exit tree is true; it does not
@@ -126,12 +133,43 @@ strategy parameter:
   per ticker. The equal split happens OUTSIDE, so those callers pass
   `universe_slots=1` and each sleeve is fully invested in its own share.
 
-Aggregate exposure is 1.0 either way. Applying `1/N` on both sides would size at
-`1/N²`; that is why the parameter exists and why sleeve callers must set it.
+The invariant is **per-name**, not aggregate: one ticker ends up holding
+`slot × scale` of the whole account either way — `(1/N)·scale` of the full
+account on the single-feed path, `scale` of a `cash/N` sleeve on the sleeve path.
+Applying `1/N` on both sides would size at `1/N²`; that is why the parameter
+exists and why sleeve callers must set it.
+
+"Aggregate exposure is 1.0 either way" is **not** the invariant, and an earlier
+revision of this document said it was. It holds only for `equal_weight`
+(N names × 1/N, and even then only up to the 0.99 buffer). `inverse_vol`
+aggregates to `Σ scaleᵢ / N`, deliberately below 1.0 in a stormy universe and
+above it in a calm one — sizing by inverse volatility is precisely a claim about
+how big the book should be. `volatility_target` aggregates to its own scale.
+
+Because the cap is applied to the scale rather than to the product, an
+`inverse_vol` weight **can exceed 1.0** when the slot is 1.0 — a single-name
+universe, or a sleeve run. That is a leverage request; see Known limitations.
 
 `full_invested_when_in_market` and `volatility_target` ignore `universe_slots` by
 definition — "full invested" means all-in on the account it was given, and a vol
 target is an account-level target.
+
+#### The live twin
+
+The live evaluator (`strategy_signal_evaluator._spec_signal`) sizes
+`equal_weight` and `inverse_vol` by calling the *same* module-level functions the
+backtest sizes with — `dsl_to_backtrader.slot_weight`, `sizing_realized_vol`,
+`inverse_vol_weight` — over the same price window, with
+`slots = len(asset_universe)`. There is one implementation, so the graded weight
+and the live weight are equal by construction, not by review.
+`test_interpreter_parity.py` pins both types per-spec.
+
+`full_invested_when_in_market` reports 1.0 live (all-in on whatever the strategy
+is given, matching its backtest definition). `volatility_target`'s live sizing
+still uses a 22-bar ddof=1 estimator capped at 1.0× against the backtest's 20-bar
+RMS capped at 2.0× — the last unpinned sizing divergence, called out in
+`test_interpreter_parity.py`'s scope note and left alone here because changing
+that estimator moves published `volatility_target` numbers.
 
 ### Rebalance frequency
 
@@ -156,9 +194,11 @@ validator, not merely flagged.
    arguments; `and`/`or` take a list of ≥ 2; unknown operands and unknown
    operators are rejected.
 6. Indicator periods ∈ `[1, 10000]`.
-7. `position_sizing.type` ∈ the four types above. `volatility_target` requires
-   `annual_pct` > 0. `inverse_vol` rejects a `reference_vol_annual` that is
-   present but not a positive number.
+7. `position_sizing.type` ∈ the four types above, **and the dict carries no key
+   outside that type's row** in the table (`POSITION_SIZING_KEYS`); unknown keys
+   are rejected by name. `volatility_target` requires `annual_pct` > 0.
+   `inverse_vol` rejects a `reference_vol_annual` that is present but not a
+   positive number.
 8. `source_arxiv_ids` a list of non-empty strings.
 9. `look_ahead_safe` must be boolean **and** `true`.
 10. `parameter_variants` keys must reference an alias used in `entry`/`exit`;
@@ -275,8 +315,16 @@ Real, currently-true constraints — distinct from the roadmap below.
 - **One instrument per interpreted strategy.** Multi-asset specs are evaluated
   as independent equal-cash sleeves and summed. There is no cross-sectional
   ranking, no cross-sleeve rebalancing, and no pairs/spread construction.
-- **Sizing is entry-only.** A held position is not re-weighted as its target
-  weight drifts; only entry and exit are decided per rebalance bar.
+- **Sizing is entry-only in the backtest, per-decision-bar live.** The
+  interpreter sizes once, when it enters, and freezes the share count until it
+  exits; only entry and exit are re-decided per rebalance bar. The live
+  evaluator has no position to freeze, so it reports the weight computed at the
+  LAST decision bar. For `equal_weight` the two are identical (1/N does not
+  move). For the vol-scaled types — `volatility_target` and, since it grew a
+  live twin, `inverse_vol` — they agree at the entry bar and drift apart
+  afterwards as realized vol changes. That timing seam is the open "D4"
+  question in the interpreter-unification plan, is deliberately NOT decided
+  here, and is why the parity tests compare at the entry bar and say so.
 - **Long-only, no shorting.** `entry` opens a long; `exit` closes it.
 - **`volatility_target` can request unfundable leverage.** Its scale is capped at
   2.0×, and the backtest broker has no margin, so on a calm series every order is
@@ -284,12 +332,27 @@ Real, currently-true constraints — distinct from the roadmap below.
   2026-08-30 that is at least *logged* (`notify_order` emits a WARNING naming the
   strategy) instead of silently producing an all-cash equity curve. The sizing
   itself is unchanged — clamping it would move published numbers.
+- **So can `inverse_vol`, on a slot of 1.0 — and the live twin then disagrees.**
+  A single-name universe (or any sleeve run, which passes `universe_slots=1`) has
+  slot 1.0, so an asset calmer than `reference_vol_annual` produces a weight up
+  to 2.0. The backtest asks for it and the cash broker refuses (rejected,
+  logged, flat for the run); the live evaluator has no leverage either, so it
+  reports a clamped 1.0 and names the original request in its `reason` string.
+  That is the **only** remaining sizing divergence between the two interpreters
+  for `equal_weight` / `inverse_vol`, and it is unreachable for a universe of two
+  or more names (slot ≤ 0.5 × cap 2.0 ≤ 1.0). Pinned by name in
+  `test_interpreter_parity.py::test_single_name_inverse_vol_divergence_is_pinned_by_name`.
+  Clamping the product instead would remove the leverage request but reintroduce
+  the slot-dependence: the same spec on the same prices would take 2× more
+  exposure through the single-feed runner than through the sleeve runner.
 - **The two vol estimators differ by design.** The `realized_vol` *indicator* is
   a ddof=1 sample std, because it has a live twin it must equal. The *sizing*
-  estimator inside `volatility_target` / `inverse_vol` is a 20-bar RMS of returns
-  about zero, kept byte-for-byte because published `volatility_target` numbers
-  came out of it. Immaterial for daily returns; documented so neither gets
-  "reconciled" into the other by accident.
+  estimator (`dsl_to_backtrader.sizing_realized_vol`) is a 20-bar RMS of returns
+  about zero, kept byte-for-byte — summation order included — because published
+  `volatility_target` numbers came out of it. Immaterial for daily returns;
+  documented so neither gets "reconciled" into the other by accident. Both the
+  backtest and the live `inverse_vol` branch call the one sizing function, so
+  the *sharing* is what prevents drift, not the estimator's identity.
 
 ## Not implemented — roadmap
 

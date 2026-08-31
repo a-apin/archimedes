@@ -44,6 +44,21 @@ POSITION_SIZING_TYPES = frozenset(
     }
 )
 
+# Keys each sizing type accepts, INCLUDING "type". The closed-enum promise this
+# DSL makes is worthless if the dict carrying the enum member is open: a spec
+# saying {"type": "inverse_vol", "reference_vol": 0.30} — the plausible
+# misspelling of reference_vol_annual — used to validate, interpret, backtest and
+# publish at the 0.15 default, with the author's 0.30 silently discarded and
+# nothing anywhere saying so. Unknown keys are rejected by name instead. Adding a
+# key to a sizing type means adding it here in the same commit the interpreter
+# starts reading it.
+POSITION_SIZING_KEYS: dict[str, frozenset[str]] = {
+    "full_invested_when_in_market": frozenset({"type"}),
+    "equal_weight": frozenset({"type"}),
+    "inverse_vol": frozenset({"type", "reference_vol_annual"}),
+    "volatility_target": frozenset({"type", "annual_pct"}),
+}
+
 # ── Errors ────────────────────────────────────────────────────────────
 
 
@@ -173,6 +188,12 @@ def validate_strategy_spec(spec: dict[str, Any]) -> StrategySpec:
         raise DSLError("position_sizing must be a dict")
     if ps.get("type") not in POSITION_SIZING_TYPES:
         raise DSLError(f"position_sizing.type must be one of {sorted(POSITION_SIZING_TYPES)}")
+    allowed_keys = POSITION_SIZING_KEYS[ps["type"]]
+    unknown_keys = sorted(set(ps.keys()) - allowed_keys)
+    if unknown_keys:
+        raise DSLError(
+            f"position_sizing['{ps['type']}'] does not accept {unknown_keys}; allowed keys: {sorted(allowed_keys)}"
+        )
     if ps["type"] == "volatility_target":
         target = ps.get("annual_pct")
         if not isinstance(target, (int, float)) or target <= 0:
