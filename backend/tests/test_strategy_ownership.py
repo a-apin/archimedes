@@ -368,6 +368,105 @@ async def test_detail_published_is_public():
     assert resp.status_code == 200
 
 
+# ── GET /{strategy_id}/debate — auth consistent with the plain detail route ──
+
+
+def _mk_debate_transcript(sid: str, *, generation_id: str = "job-x", candidate_id: str = "cand_neutral"):
+    from archimedes.models.debate_transcript import record_debate_transcript
+
+    transcript = [
+        {"role": "bull", "round": 1, "verdict": "act", "claims": ["momentum persists"]},
+        {"role": "bear", "round": 1, "verdict": "decline", "claims": ["crowded factor"]},
+    ]
+    with db.get_session() as session:
+        record_debate_transcript(
+            session,
+            strategy_id=sid,
+            generation_id=generation_id,
+            candidate_id=candidate_id,
+            transcript=transcript,
+        )
+        session.commit()
+
+
+async def test_debate_unpublished_404_unless_owner():
+    sid = "dbt00000000000001"
+    _mk_strategy(sid, owner=_W_OWNER, published=False)
+    _mk_debate_transcript(sid)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        anon = await client.get(f"/api/strategies/{sid}/debate")
+        other = await client.get(f"/api/strategies/{sid}/debate", cookies=_siwe_cookies(_W_OTHER))
+        owner = await client.get(f"/api/strategies/{sid}/debate", cookies=_siwe_cookies(_W_OWNER))
+    assert anon.status_code == 404
+    assert other.status_code == 404  # 404, not 403 — existence stays hidden, same as GET /{id}
+    assert owner.status_code == 200
+    body = owner.json()
+    assert body["strategy_id"] == sid
+    assert body["candidate_id"] == "cand_neutral"
+    assert [t["role"] for t in body["transcript"]] == ["bull", "bear"]
+
+
+async def test_debate_published_is_still_owner_only():
+    """#1557 INVERTS the old ``test_debate_published_is_public`` contract.
+
+    Publishing a strategy shares the strategy, not the multi-agent argument
+    that produced it. The transcript is REASONING and gates on ownership, so
+    ``is_published`` grants nothing here — while the card (``GET
+    /api/strategies/{id}``) stays public for exactly the same row, which is
+    asserted alongside so this cannot pass by the row simply being invisible.
+    """
+    sid = "dbt00000000000002"
+    _mk_strategy(sid, owner=_W_OWNER, published=True)
+    _mk_passport(sid)
+    _mk_debate_transcript(sid)
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        anon = await client.get(f"/api/strategies/{sid}/debate")
+        other = await client.get(f"/api/strategies/{sid}/debate", cookies=_siwe_cookies(_W_OTHER))
+        owner = await client.get(f"/api/strategies/{sid}/debate", cookies=_siwe_cookies(_W_OWNER))
+        card = await client.get(f"/api/strategies/{sid}")
+
+    assert anon.status_code == 404
+    assert other.status_code == 404  # 404, not 403 — existence stays hidden
+    # Positive control: the transcript really is persisted and reachable, so
+    # the two 404s above are the GATE, not missing data.
+    assert owner.status_code == 200
+    assert owner.json()["strategy_id"] == sid
+    # The card of the very same published row stays public — this is a
+    # reasoning gate, not a re-privatisation of published strategies.
+    assert card.status_code == 200
+
+
+async def test_debate_404_when_strategy_exists_but_no_transcript_was_persisted():
+    """Distinct from the auth-hiding 404 above: the strategy IS visible to the
+    owner, but nothing was ever persisted for it (e.g. generated before this
+    table existed, or the debate step produced nothing) — the route must say
+    "no debate transcript", never fabricate an empty one."""
+    sid = "dbt00000000000003"
+    _mk_strategy(sid, owner=_W_OWNER, published=False)
+    # No _mk_debate_transcript(sid) call — nothing persisted.
+
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/strategies/{sid}/debate", cookies=_siwe_cookies(_W_OWNER))
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "no debate transcript"
+
+
+async def test_debate_nonexistent_strategy_404():
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/strategies/does-not-exist-at-all/debate")
+    assert resp.status_code == 404
+
+
 # ── Owner-gated rename ────────────────────────────────────────────────────
 
 

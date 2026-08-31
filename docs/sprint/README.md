@@ -27,9 +27,13 @@ PRs as still open. **Both were accurate when written** — the card was authored
 > wrong. Read #1442 for what is being worked; read this for what is true. Where they disagree,
 > re-run the command — and one disagreement is flagged in the table below (cluster-5).
 >
-> **This section decays in days, not weeks.** `main` took 170 commits between this doc's first
-> draft and its rebase, which closed three findings outright (Engine C's cost floor,
-> `cost_model_id`-NULL, fabricated `0.0` correlations). Re-verify before acting on any row.
+> **This section decays in days, not weeks — and it has, twice.** `main` took 170 commits
+> between this doc's first draft and its rebase, closing three findings outright (Engine C's
+> cost floor, `cost_model_id`-NULL, fabricated `0.0` correlations). In the five days after it
+> merged, four more closed: the `/api/rigor/verify` quorum (#1481 → #1484), cluster-2's A4 and
+> A8 together (#1485), and `metrics_source` (#1491). **Re-verify before acting on any row** —
+> and note the direction of travel: every correction so far has been a finding closing, not a
+> finding turning out to be wrong.
 
 ### Four things a session must know before picking up any card
 
@@ -50,23 +54,27 @@ PRs as still open. **Both were accurate when written** — the card was authored
    were graded before or after `4f60971`, and so whether they need a re-grade. Settle it by
    checking `backtest_results.cost_model_id` on prod against the post-`4f60971` fingerprint —
    it cannot be answered from this repo.
-2. **`POST /api/rigor/verify` can answer `passes: true` on four bars.** Shipped via #1305
-   (2026-08-19), ahead of and overlapping [cluster-8](cluster-8-returns-csv.md). `passes` is
-   `all(...)` over *evaluable* legs only, and PBO plus look-ahead are hard-coded
-   `not_evaluable` **always**, while DSR needs only ≥4 bars and OOS needs ~70. So a short series
-   whose DSR passes returns `passes: true` on one of four legs — and `archimedes verify` exits
-   `OK` on that boolean, which is what a script or CI branches on. The full body is honest
-   (every leg carries a status and reason) and the nothing-evaluable case is explicitly guarded
-   ("vacuous truth is not honesty", `test_rigor_verify_routes.py:174`). The scalar and the exit
-   code are not. **Tracked as [#1481](https://github.com/a-apin/archimedes/issues/1481)** with a
-   machine-checkable acceptance set and the `verdict_from_returns` reuse that cluster-8's U1 item
-   already wanted. Do not build on `passes` until it is qualified.
-3. **Do not trust this directory's anchors.** Follow session rule 1 without exception. Two are
-   not stale but fictional: cluster-0 records `ui/src/siwe.js:15` as a *verified* day-0 finding
-   and **that file has never existed** — `grep -rn VITE_ARC_CHAIN_ID .` matches only the card.
-   The chain id is hardcoded with no override seam in `ui/src/circle-wallet.js:36`,
-   `linked-wallets.js:13`, `api.js:16`, `AuthenticatedApp.jsx:71`, which is worse than the card
-   says. Four acceptance commands name files that do not exist (see Corrections).
+2. ~~**`POST /api/rigor/verify` can answer `passes: true` on four bars.**~~ **Fixed.**
+   `passes` was `all(...)` over *evaluable* legs only while PBO and look-ahead were hard-coded
+   `not_evaluable` always, so a short series could pass on one leg of four — and `archimedes
+   verify` exited `OK` on that boolean. Filed as
+   [#1481](https://github.com/a-apin/archimedes/issues/1481), fixed by
+   [#1484](https://github.com/a-apin/archimedes/pull/1484) (`e8a0644`, 2026-08-29): the verdict
+   is now a quorum over *runnable* legs — `passes = legs_evaluated == len(_RUNNABLE_LEGS) and
+   all(...)` — so a leg that could not run makes the verdict `false` rather than invisible.
+   Kept here rather than deleted because cluster-8's row still points at it.
+3. **Do not trust this directory's anchors.** Follow session rule 1 without exception, and
+   note that this rule's own first draft got a correction backwards. It said `ui/src/siwe.js`
+   **"has never existed"**, on the evidence that `grep -rn VITE_ARC_CHAIN_ID .` matched only
+   the card. That grep searches the working tree, where a deleted file and a fictional one look
+   identical. The file was real: `7415b245` (2026-06-13) gave it
+   `VITE_ARC_CHAIN_ID ?? '5042002'`, and `95c9faf7` (2026-07-28) deleted all 89 lines, taking
+   the seam with it. So cluster-0's anchor was accurate when written and the seam was **lost,
+   not never built** — a regression, which is a different thing to plan around than an
+   imaginary file. Verify a "never existed" claim with `git log --all --oneline -- <path>`
+   before recording it. The hardcoded ids it left behind (`config.js:10`, `circle-wallet.js:36`,
+   `linked-wallets.js:13`, `api.js:16`, `AuthenticatedApp.jsx:71`) are removed by #1240's UI
+   half. Four acceptance commands still name files that do not exist (see Corrections).
 4. **Two big items shipped by a different design than their card specifies.** #1194's quota
    rebuild closed cluster-5's headline bug without building the meter; #1266's
    `VITE_ROADMAP_SURFACES` flag closed cluster-7's nav work while *reversing* two of its
@@ -90,12 +98,12 @@ a row.
 | 1 | [cluster-0](cluster-0-unblock.md) | **code done, asks unmet** (23/37) | **Ask 1 did not just go unsent — it was overtaken.** #1129 and #1200 both changed `contracts/src/Vault.sol` (fee caps; NAV decimals + performance-fee share mint) and merged 2026-08-19/20 with **zero human reviews** — every review on #1129 is `copilot-pull-request-reviewer[bot]`, state `COMMENTED`, none `APPROVED`. `CLAUDE.md` makes Dan the sole required approver for contract changes. Raise this before any further contract merge. Also: PyPI `archimedes-cli` unreserved · `PAYMENTS_DRY_RUN` pinned in `ecs.tf` only, still unset in all three compose files and `infra/scripts/setup-ssm-secrets.sh`. A6 is **no longer blocked** — diagnosed 2026-08-18, do not re-run it |
 | 2 | [cluster-1](cluster-1-cost-ssot.md) | **done** | Code edits landed in `5c601fb`; `4f60971` closed the Engine C leg and the test gap. "Identical floor everywhere" is now true. Audited at 12/21 before that commit — re-read the row above, not the fraction |
 | 2 | [cluster-3](cluster-3-backtest-models.md) | **done at the DB, open at the surface** | A7 shipped in full — the sprint's cleanest win. `4f60971` closed the `cost_model_id`-NULL and fabricated-`0.0`-correlation gaps (both now `None`, with `portfolio_backtester.py:447` no longer defaulting `correlation_to_spy` to `0.0`). What remains is surfacing: provenance fields are declared on `StrategyResponse` but never assigned, and absent from `leaderboard_schemas.py` and all UI |
-| 3 | [cluster-2](cluster-2-fusion-engine.md) | **A1c done, rest open** | `4f60971` landed A1c. Still open: A4 (the dead `backtest_start` condition at `:277`, and `:430` fabricating `date(2004, 1, 2)`) and the whole A8 sleeve label — `dsl-fusion-sleeves` / `n_independent_sleeves_equal_weight` are still absent tree-wide, so an "inverse-vol 5-asset" generated strategy is still graded as N independent 100%-long sleeves with no disclosure on the row |
-| 4 | [cluster-4](cluster-4-strategies-route.md) | **partial** (9/19) | Both A3 items landed 2026-08-20 (`757341a`, `14db21d`) by a different design — there is no `metrics_source` field anywhere. §3 TODO markers and §4 the unmetered generate endpoint untouched |
+| 3 | [cluster-2](cluster-2-fusion-engine.md) | **done** | `4f60971` landed A1c; [#1485](https://github.com/a-apin/archimedes/pull/1485) (`2f1517e`, "Make the DSL row describe the run that happened") closed A4 and A8 together — the fabricated `date(2004, 1, 2)` is gone and the sleeve label now reaches the row, so an N-asset generated strategy no longer reads as one portfolio backtest without saying otherwise |
+| 4 | [cluster-4](cluster-4-strategies-route.md) | **A3 done, §3/§4 open** | Both A3 items landed 2026-08-20 (`757341a`, `14db21d`). `metrics_source` — absent when this was written — arrived in [#1491](https://github.com/a-apin/archimedes/pull/1491) (`b49609a`), which went further than the card asked and also names the display-metric chain's `stub_placeholder` link. Still open: §3's TODO markers and §4's unmetered generate endpoint |
 | 5 | [a6-rerun](a6-rerun.md) | **executed, prerequisites skipped** (12/26) | The A4 read-path fix was not taken and its stated window ("the one moment in the year") has closed; the A5 fetch memo was never threaded (`run_backtests.py` passes no `fetcher`); **the before/after table — the card's named deliverable — does not exist**; rejection-rate copy never written |
 | 6–8 | [cluster-5](cluster-5-meter.md) | **retired, with one live tail** (9/48) | #1442 retires this card (#1194 + #1296/#1300 rebuilt the space; refund/release is now #1441) and that reading is right about the metering design. **One item it does not cover: B5's silent model downgrade is still live** at `generate_routes.py:335` — an entitled premium request is still downgraded to the env default, and #1441 is about refund/release, not this. Either fix it or track it before the card is closed |
-| 6–8 | [cluster-6](cluster-6-boot-paywall.md) | **barely started** (7/31) | An x402 generation paywall **shipped** 2026-08-19 (`ab712a1`), flag-off in prod — so the card's premise that no route emits a satisfiable 402 is false. **Neither boot assertion exists**, and `GATEWAY_CHAIN` still silently falls back to `arcTestnet` in three places. A live paywall with no mainnet-chain guard is the dangerous half of this card. No `/api/v1/`, no manifest-honesty edits |
-| 9 | [cluster-8](cluster-8-returns-csv.md) | **barely started** (11/53) | None of the specified deliverable: no `returns_import.py`, no `/api/v1/rigor/verdict`, no CSV transport, none of the eight validations, no test file. #1305's overlapping endpoint breaches two prohibitions: the `passes` scalar (now [#1481](https://github.com/a-apin/archimedes/issues/1481)) and A1 — gate compute runs on the event loop, not `asyncio.to_thread`. Rescope this card against what #1305 shipped rather than writing beside it |
+| 6–8 | [cluster-6](cluster-6-boot-paywall.md) | **barely started** (7/31) | An x402 generation paywall **shipped** 2026-08-19 (`ab712a1`), flag-off in prod — so the card's premise that no route emits a satisfiable 402 is false. **Neither boot assertion exists**, and `GATEWAY_CHAIN` still silently falls back to `arcTestnet` in three places — plus a fourth, `revenue_sweep.py:88`, which passes the default as a bare kwarg and never reads the env var at all, so the sweep stays on testnet after cutover ([#1495](https://github.com/a-apin/archimedes/issues/1495)). A live paywall with no mainnet-chain guard is the dangerous half of this card. No `/api/v1/`, no manifest-honesty edits |
+| 9 | [cluster-8](cluster-8-returns-csv.md) | **barely started** (11/53) | None of the specified deliverable: no `returns_import.py`, no `/api/v1/rigor/verdict`, no CSV transport, none of the eight validations, no test file. Of the two prohibitions #1305's overlapping endpoint breached, the `passes` scalar is now fixed (#1481 → #1484); **A1 is not** — gate compute still runs on the event loop rather than `asyncio.to_thread`. Rescope this card against what #1305 and #1484 shipped rather than writing beside it |
 | 10 | [cluster-7](cluster-7-ui-surface.md) | **barely started** (14/38) | `sitemap.xml` is the one clean win. A9/A10 are **product reversals**: the card says keep /portfolio and /marketplace live with a banner; #1266 hid them instead. All five orphan deletions untouched — `FusionResult.jsx` (198L) is being *actively maintained while orphaned*, `PortfolioAdvisor.jsx` (477L) leaves `/api/strategies/advisor` with no consumer. No `WorkInProgress.jsx`, so A4/A8/A10 have no banner to render. All three check scripts missing |
 
 ## Session rules — apply to every card
@@ -104,7 +112,8 @@ a row.
    window. Never `Read` a file whole to get oriented. **This rule overrides every line number in
    this directory.** The Aug-16 note claiming the anchors were "re-verified 6/6 fresh — trust
    them" was retired 2026-08-21: every rule-2 count had drifted and two anchors named a file
-   that has never existed.
+   no longer in the tree. (Those two named `ui/src/siwe.js`, which was deleted rather than
+   fictional — see item 3 below. The anchors were stale, which is what this rule is for.)
 2. **Never read whole** — counts at `f3d4103` (2026-08-21): `strategies_routes.py` (2621) ·
    `Architecture.jsx` (1329) · `rigor_evaluator.py` (1246) · `_rigor_helpers.py` (1176, under
    `services/`, not `api/`) · `main.py` (928) · `fusion_evaluator.py` (884).
@@ -140,7 +149,7 @@ Substantive errors only. Line drift is pervasive and rule 1 handles it.
 
 | Card | Claim | Correction |
 |---|---|---|
-| cluster-0 | `ui/src/siwe.js:15` hardcodes `5042002` / is `VITE_ARC_CHAIN_ID ?? '5042002'`, recorded as an executed result | **The file has never existed** and no override seam exists anywhere. Check 2's conclusion stands; its evidence does not |
+| cluster-0 | `ui/src/siwe.js:15` hardcodes `5042002` / is `VITE_ARC_CHAIN_ID ?? '5042002'`, recorded as an executed result | The card was right; **this table's first answer was wrong**. The file existed with that exact seam (`7415b245`) until `95c9faf7` deleted it on 2026-07-28. The working-tree grep behind "never existed" cannot see a deleted file. Seam lost, not absent — restored in `ui/src/chain-config.js` (#1240) |
 | cluster-0 | "Zero code. Bash and `gh` only." | Contradicted by the card's own two-bug-fix section, which shipped +14/−1 in PR #1239 |
 | cluster-1 | `cd analytics-engine && uv run pytest tests/test_cost_parity.py` | Never created; the analytics half went into `tests/test_costs.py:287-378`. The command cannot pass |
 | cluster-2 | `pytest backend/tests/test_fusion_evaluator.py` | Path is `backend/tests/services/test_fusion_evaluator.py` |

@@ -2,7 +2,7 @@
 
 This surface covers the strategy library (curated seed strategies plus
 fusion/architect-generated ones, unified through the `strategy_passports`
-table), the portfolio advisor, stress testing, and the rigor/selection-bias
+table), stress testing, and the rigor/selection-bias
 gate that grades every strategy on DSR (Deflated Sharpe Ratio), PBO
 (Probability of Backtest Overfitting), and chronological out-of-sample Sharpe
 before it is allowed to be promoted from `candidate` to `validated` or bound
@@ -12,8 +12,8 @@ into a vault's `strategy_ids`. The badge (`passes_rigor_gate` /
 gate run** `GET /api/selection-bias/gate` uses — none of these surfaces can
 disagree with another for the same strategy at the same strictness level.
 
-**Auth model.** Reads are anonymous by default — the library, passports, the
-advisor, stress testing, and every `/api/selection-bias/*` route are public.
+**Auth model.** Reads are anonymous by default — the library, passports,
+stress testing, and every `/api/selection-bias/*` route are public.
 Ownership-scoped reads (`GET /api/strategies/generated`) and mutations
 (`PATCH /api/strategies/{id}`, the legacy `POST /api/strategies/generate`)
 require a Better Auth account session (the `better-auth.session_token`
@@ -66,18 +66,6 @@ Errors: none explicit.
 curl -s https://archimedes-arc.com/api/strategies/signals
 ```
 Note: `regime` is the `flat_pct`-derived ensemble-consensus bucket, not a true market-regime detector output.
-
-### GET /api/strategies/advisor
-Portfolio allocation recommendation based on Kelly + risk-parity math
-(LLM-agent-assisted, with a rule-based fallback). | **Auth**: anonymous
-
-Request: query `risk_profile: "fixed_income"|"conservative"|"moderate"|"aggressive"|"hyper_risky"="moderate"`.
-Response: untyped dict (no `response_model`) — `regime, regime_confidence, regime_narrative, risk_profile, usdc_weight, synth_weight, allocations: [{symbol, sharpe, cagr, max_drawdown, vol_ann, kelly_fraction, weight, passes_rigor_gate, rigor_gate_status, deflated_sharpe_ratio, dsr_p_value, pbo_score, out_of_sample_sharpe, paper_claimed_*/paper_delta_*, ...}], expected_portfolio{sharpe,cagr,max_drawdown,vol_ann,diversification_ratio,risk_aversion_gamma,optimizer_converged}, risk_decomposition, correlation_pairs, rigor_summary{total_picks,passes_rigor_gate,dsr_significant,pbo_acceptable,oos_positive,...}, stress_tests, market_scan{universe_size,fetched,top_opportunities}, agent{used,thesis,model_id,served_model,num_picks,iterations,tool_calls}, reasoning_trace{trace_id,trace_hash,canonical_preview,anchored_on_chain,anchor_tx_hash,registry_address,decision_type,trigger}`. Degrades to `{"error": "No strategies with real backtest data available", "allocations": []}` when nothing qualifies.
-Errors: no `HTTPException` raised directly — every internal step (LLM agent call, price fetch, optimizer) fails soft into a fallback path.
-
-```bash
-curl -s "https://archimedes-arc.com/api/strategies/advisor?risk_profile=moderate"
-```
 
 ### GET /api/strategies/stress/scenarios
 List the available stress scenarios with descriptions. | **Auth**: anonymous
@@ -139,6 +127,24 @@ Errors: 404 `Strategy not found` (nonexistent, or private and caller is not the 
 
 ```bash
 curl -s https://archimedes-arc.com/api/strategies/<strategy_id>/returns
+```
+
+### GET /api/strategies/{strategy_id}/debate
+Return the persisted bull/bear debate transcript the society produced while
+generating this strategy (4 turns: bull-r1, bear-r1, then a visible round-2
+rebuttal of each other's round-1 claims). Debate-path strategies only — a
+curated strategy, or a generated one from before this table existed, genuinely
+has none; never fabricates a transcript. | **Auth**: anonymous
+(mirrors `GET /api/strategies/{strategy_id}` exactly — curated strategies are
+always public, a generated strategy's transcript is 404 unless the caller owns
+the row)
+
+Request: path `strategy_id`.
+Response: `{strategy_id: str|null, generation_id: str, candidate_id: str, created_at: str, transcript: [{role: "bull"|"bear", round: int, verdict: str, claims: [str]}]}` — `strategy_id` is `null` for a Considered-Alternative row (K=1: only the society's winner is ever persisted to `strategy_store`).
+Errors: 404 `Strategy not found` (nonexistent, or private and caller is not the owner — existence stays hidden, same as the plain detail route); 404 `no debate transcript` (strategy exists and is visible, but nothing was persisted for it); 500 `Failed to load debate transcript` (DB read failure).
+
+```bash
+curl -s https://archimedes-arc.com/api/strategies/<strategy_id>/debate
 ```
 
 ### GET /api/strategies/{strategy_id}
@@ -206,7 +212,7 @@ chronological OOS Sharpe, plus the look-ahead static audit per strategy. |
 **Auth**: anonymous
 
 Request: query `strictness: int(1..5)=1` (1 = strictest/badge level).
-Response (`RigorGateResponse`): `{strategies: [StrategyRigorResult{strategy_id, strategy_name, passes_all: bool, gate_details: RigorGateDetail{dsr,pbo,oos_sharpe,look_ahead,cpcv,dsr_convention,iid,regime_robustness}, deflated_sharpe, dsr_p_value, pbo_score, oos_sharpe, in_sample_sharpe, library_pbo: LibraryPbo{value,data_vintage,selection_set_size,source}, strictness_level, min_passing_level, blocked_by_floor, num_trials_scope}], total, passing, failing, library_pbo, strictness_level}`.
+Response (`RigorGateResponse`): `{strategies: [StrategyRigorResult{strategy_id, strategy_name, passes_all: bool, gate_details: RigorGateDetail{dsr,pbo,oos_sharpe,look_ahead,cpcv,dsr_convention,rf_convention,iid,regime_robustness}, deflated_sharpe, dsr_p_value, pbo_score, oos_sharpe, in_sample_sharpe, library_pbo: LibraryPbo{value,data_vintage,selection_set_size,source,rf_convention}, strictness_level, min_passing_level, blocked_by_floor, num_trials_scope}], total, passing, failing, library_pbo, strictness_level}`. `rf_convention` (`excess_tbill_series` | `excess_flat_fallback` | `MISSING`, #1409) rides both `RigorGateDetail` and `LibraryPbo` — `MISSING` means no excess-return metric (or, for `LibraryPbo`, no PBO value) was computed at all, distinct from `excess_flat_fallback`'s "a flat-rate computation genuinely ran" — see [`rigor-methods.md` §1a](../rigor-methods.md) for what it discloses.
 Errors: none explicit — strategies with fewer than 10 persisted daily returns report every `gate_details` field as an explicit `"MISSING (no backtest data)"` string rather than erroring. `cpcv` is always an explicit `NOT_RUN` status (the combinatorial-split OOS matrix isn't wired yet), never a bare `MISSING`.
 
 ```bash

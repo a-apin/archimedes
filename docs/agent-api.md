@@ -231,7 +231,11 @@ strategy-passport verdict uses. A bare series can only support two of the four c
 `passes` is `true` **iff** no evaluable check failed *and* at least one check was
 evaluable: an all-`not_evaluable` request (e.g. a too-short series) must never report
 `passes: true` by vacuous truth. `self_attested: true` is returned to keep the caller's
-declared `trials` count visible as the unverified input it is.
+declared `trials` count visible as the unverified input it is. The response also carries
+`rf_convention` (`excess_tbill_series` | `excess_flat_fallback`, #1409) — the `date`s
+above already resolve against the historical 3-month T-bill series when they fall inside
+its vendored coverage, and DSR/OOS are computed against whichever rate that resolution
+used; see [`rigor-methods.md` §1a](rigor-methods.md#1a-the-risk-free-rate-behind-excess-issue-1409).
 
 ## Account authentication and optional wallet proof
 
@@ -358,12 +362,15 @@ request sent — unless the winning candidate's LIVE GATE read above is
 `deployable: true`. **Never weaken or skip that check to force a deploy.**
 
 `--deploy` defaults to a **DRY RUN**: the harness prints the exact payload
-and sends nothing. Pass `--deploy` to actually call the endpoint. Default OFF
-because, as of this writing, the contract suite was just redeployed (T3.2,
-2026-07-09) and issue [#588](https://github.com/a-apin/archimedes/issues/588)
-(whether the repo's cached ABI matches the live deployed bytecode) is still
-open — no vault, agent or human, had been created against the new deployment
-at the time this shipped.
+and sends nothing. Pass `--deploy` to actually call the endpoint. The default
+stays OFF, but the original reason no longer holds: the T3.2 redeploy landed
+2026-07-09 and issue
+[#588](https://github.com/a-apin/archimedes/issues/588) (whether the repo's
+cached ABI matches the live deployed bytecode) closed 2026-07-14. The
+`deploy` group has been `live` in the served manifest since
+[#1447](https://github.com/a-apin/archimedes/pull/1447). It stays OFF now for
+the ordinary reason: this call spends gas and creates a real on-chain vault,
+so it should be an explicit act, not a default.
 
 ### MONITOR — read vault health back
 

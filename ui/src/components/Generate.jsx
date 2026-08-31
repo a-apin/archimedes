@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
@@ -170,6 +170,30 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// the response carried one (only true payments settled — live mode).
 	const [receipt, setReceipt] = useState(null);
 
+	// ── The caller's own generation-credit ledger (v8 Lane 1.3a) ──
+	// Surfaces what `_paywall_with_credit` already does silently server-side:
+	// an unspent ("available") credit from an earlier paid-but-undelivered
+	// run pays for the NEXT generation, no new charge (#1441). The FETCH runs
+	// independently of GENERATION_QUOTE_ENABLED — a credit is a real balance
+	// regardless of whether the upfront quote card renders. The NOTICE below
+	// additionally needs the quote's payment_required, so with the quote flag
+	// explicitly off (it defaults on, featureFlags.js) the balance is still
+	// read but nothing is claimed about it — the honest degraded state here is
+	// silence, not an unverified "no new charge".
+	const [credits, setCredits] = useState([]);
+	const [creditNoticeDismissed, setCreditNoticeDismissed] = useState(false);
+
+	const fetchCredits = useCallback(() => {
+		apiGet("/api/generate/credits")
+			.then((data) => setCredits(Array.isArray(data) ? data : []))
+			.catch(() => {
+				// Quiet on failure (e.g. not signed in yet) — this is a
+				// nice-to-have notice, not a gate; nothing here may block or
+				// error the page.
+				setCredits([]);
+			});
+	}, []);
+
 	const fetchQuote = useCallback(() => {
 		if (!GENERATION_QUOTE_ENABLED) return;
 		setQuoteStatus("loading");
@@ -189,6 +213,10 @@ export default function Generate({ onNavigate, onStageChange }) {
 	useEffect(() => {
 		fetchQuote();
 	}, [fetchQuote]);
+
+	useEffect(() => {
+		fetchCredits();
+	}, [fetchCredits]);
 
 	// Wallet connect/disconnect is a global event (config.js), not React
 	// state — re-derive our copy on change so the payer-mismatch note and
@@ -225,6 +253,14 @@ export default function Generate({ onNavigate, onStageChange }) {
 			cancelled = true;
 		};
 	}, [paymentActive, quote?.payment_required]);
+
+	// A still-spendable credit, if any. Note the route lists NEWEST-first
+	// (models/generation_credit.list_credits orders created_at DESC) while the
+	// ledger drains OLDEST-first (take_available_credit orders created_at
+	// ASC) — so this is NOT necessarily the credit the next submit spends.
+	// That's fine: only its PRESENCE drives the notice, never its identity,
+	// and the notice must not name or price a specific credit for that reason.
+	const unspentCredit = useMemo(() => credits.find((c) => c.status === "available") ?? null, [credits]);
 
 	const quoteView = useMemo(() => deriveQuoteView(quote), [quote]);
 	// The price/asset/chain/dry_run to show in the payment step: the upfront
@@ -307,21 +343,46 @@ export default function Generate({ onNavigate, onStageChange }) {
 		...(selectedModel ? { model: selectedModel } : {}),
 	});
 
+	// One idempotency key per payment ATTEMPT, reused across every /start call
+	// inside that attempt (the bare 402 probe, the signed retry, and any user
+	// re-click after an ambiguous failure) and regenerated only after a job is
+	// actually accepted. The backend's generation-credit ledger (#1498) dedups
+	// duplicate charges ONLY when this header is present — the 2026-08-30
+	// external review paid twice precisely because the frontend never sent it:
+	// each re-click signed a fresh EIP-3009 nonce, which settles as a brand-new
+	// payment (generation_credit.py's own docstring calls this out).
+	const paymentAttemptKeyRef = useRef(null);
+	const paymentAttemptKey = () => {
+		if (!paymentAttemptKeyRef.current) {
+			paymentAttemptKeyRef.current = crypto.randomUUID();
+		}
+		return paymentAttemptKeyRef.current;
+	};
+
 	// POST /start, optionally with a Payment-Signature header, and surface
 	// whatever the response carries (job id + PAYMENT-RESPONSE if present).
 	// Returns the receipt too (not just via the `receipt` state setter) so a
 	// caller mid-async-flow (handlePay) can branch on it immediately rather
 	// than reading stale state before the next render.
 	const submitStart = async (extraHeaders) => {
-		const { data, headers } = await apiPostWithMeta(
-			"/api/generate/start",
-			buildBrief(),
-			extraHeaders,
-		);
+		const { data, headers } = await apiPostWithMeta("/api/generate/start", buildBrief(), {
+			"Idempotency-Key": paymentAttemptKey(),
+			...extraHeaders,
+		});
 		setLastJobId(data.job_id);
 		const settledReceipt = extractReceipt(headers);
 		setReceipt(settledReceipt);
 		return { data, receipt: settledReceipt };
+	};
+
+	// A job was ACCEPTED (202): consume the attempt key so the next generation
+	// is a genuinely new attempt, and take the user straight into the running
+	// job's stream. Before this, a successful payment quietly re-armed the
+	// "Approve & Generate" button beside a small receipt line — which reads
+	// exactly like a failed payment, and is how the double-pay happened.
+	const enterStartedJob = (data) => {
+		paymentAttemptKeyRef.current = null;
+		if (data?.job_id) setDrillInJobId(data.job_id);
 	};
 
 	// Reset every payment-step-local piece of state — shared by a fresh
@@ -353,11 +414,17 @@ export default function Generate({ onNavigate, onStageChange }) {
 		resetPaymentStepState();
 		setReceipt(null);
 		try {
-			await submitStart();
+			const { data } = await submitStart();
 			// Re-quote for the next generation — flat pricing has nothing to
 			// consume, but the flag/dry_run/recipient could change underneath.
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
-			// Stay on the page — the job table will show the new row.
+			// A just-spent credit (or a fresh one this run settled but didn't
+			// spend) changes the ledger — refresh regardless of the quote flag.
+			fetchCredits();
+			// Straight into the running job's stream — "stay on the page and
+			// find the new table row" read as a failed start (2026-08-30
+			// external review), and the stream IS the product moment.
+			enterStartedJob(data);
 		} catch (e) {
 			const dryRun = e?.detail?.quote?.dry_run ?? quote?.dry_run;
 			const state = derivePaymentState(e, dryRun);
@@ -404,6 +471,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 			resetPaymentStepState();
 			setNoSettlementNotice(!settledReceipt);
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
+			fetchCredits();
 			return null;
 		} catch (e) {
 			const fresh = derivePaymentRequirements(extractPaymentRequiredHeader(e.headers));
@@ -444,10 +512,12 @@ export default function Generate({ onNavigate, onStageChange }) {
 
 	const finishStart = async (header) => {
 		setPayStep("starting");
-		const { receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
+		const { data, receipt: settledReceipt } = await submitStart({ "Payment-Signature": header });
 		resetPaymentStepState();
 		setNoSettlementNotice(!settledReceipt);
 		if (GENERATION_QUOTE_ENABLED) fetchQuote();
+		fetchCredits();
+		enterStartedJob(data);
 	};
 
 	// ── One tap when funded: the signing ceremony runs FIRST, inside the
@@ -495,7 +565,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 					payerAddress: session.address,
 				});
 				setPayStep("starting");
-				const { receipt: settledReceipt } = await submitStart({
+				const { data, receipt: settledReceipt } = await submitStart({
 					"Payment-Signature": header,
 					// The paywall binds authorization.from to a LINKED wallet
 					// resolved from this header — it must name the payment
@@ -505,6 +575,8 @@ export default function Generate({ onNavigate, onStageChange }) {
 				resetPaymentStepState();
 				setNoSettlementNotice(!settledReceipt);
 				if (GENERATION_QUOTE_ENABLED) fetchQuote();
+				fetchCredits();
+				enterStartedJob(data);
 				return;
 			}
 
@@ -960,6 +1032,47 @@ export default function Generate({ onNavigate, onStageChange }) {
 									)}
 								</div>
 							)}
+						</div>
+					)}
+
+					{/* ── Paid generation credit notice (v8 Lane 1.3a) ──
+					    _paywall_with_credit already spends an unspent credit
+					    silently, BEFORE the paywall even runs — this just makes
+					    that real behavior visible instead of leaving the payer
+					    to discover it only from the receipt list.
+
+					    Gated on quote.payment_required as well as the credit:
+					    "no new charge" only says something true when there is a
+					    charge to avoid. With the paywall flag off there is no
+					    charge either way, and the sentence would imply the payer
+					    is being spared one — so the notice stays out of the way
+					    entirely rather than being softened into vagueness. */}
+					{unspentCredit && quote?.payment_required && !creditNoticeDismissed && (
+						<div
+							className="info-box mb-3 flex items-center justify-between gap-2"
+							role="status"
+							aria-live="polite"
+						>
+							<span>
+								You have a paid generation credit — this run will use
+								it, no new charge.
+							</span>
+							<button
+								type="button"
+								onClick={() => setCreditNoticeDismissed(true)}
+								className="caption"
+								aria-label="Dismiss credit notice"
+								style={{
+									background: "none",
+									border: "none",
+									cursor: "pointer",
+									color: "var(--text-3)",
+									padding: 0,
+									flexShrink: 0,
+								}}
+							>
+								Dismiss
+							</button>
 						</div>
 					)}
 

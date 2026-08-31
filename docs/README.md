@@ -27,6 +27,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`reference/file-tree.md`](reference/file-tree.md) | reference | Dan Browne | 2026-07-14 | Repository map generated alongside the architecture map. |
 | [`reference/flow-diagram.mmd`](reference/flow-diagram.mmd) | reference | Dan Browne | 2026-07-14 | Request/generation flow, Mermaid source (`flow-diagram.svg`, `file-tree.svg` render it). |
 | [`database-architecture.md`](database-architecture.md) | current | Dan Browne | 2026-06-28 | Data stores, schemas, migration posture. |
+| [`database-relations.md`](database-relations.md) | draft | Dan Browne | 2026-08-30 | Identity/ownership/money-table relational structure: the schema-relations audit (corrections + gap found), the Phase 1 indices + gated FKs [PR #1438](https://github.com/a-apin/archimedes/pull/1438) introduces (unmerged draft, not yet live), the target ERD, and the Phase 2 proposal (G1 since shipped on main; the rest not built). |
 | [`deployment.md`](deployment.md) | current | Dan Browne | 2026-07-28 | Local vs production topology from one compose file. |
 | [`architectural-principles.md`](architectural-principles.md) | current | Dan Browne | 2026-07-28 | The four primitives the product is built to defend. |
 | [`anti-features.md`](anti-features.md) | current | Dan Browne | 2026-07-28 | What Archimedes deliberately does not build. |
@@ -53,6 +54,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 |---|---|---|---|---|
 | [`user-stories.md`](user-stories.md) | current | Dan Browne | 2026-05-20 | The locked product spine. Canonical statement of what the product is. |
 | [`agent-api.md`](agent-api.md) | current | Dan Browne | — | Driving the full journey programmatically; the agent-native surface. |
+| [`agent-quickstart.md`](agent-quickstart.md) | current | Dan Browne | 2026-08-30 | Zero to paper-traded for an external agent: eleven steps, exact response shapes, and an error table (401/402/409/422/429). Includes the live x402 paywall — production charges $2.00 USDC per generation, so steps 6a–6b link a wallet and pay. Narrower than `agent-api.md` on purpose: no vault, no capital deployed. Route strings and worked commands are drift-guarded by `backend/tests/test_agent_quickstart_drift.py`. |
 | [`asset-universe.md`](asset-universe.md) | current | Dan Browne | — | Tradable universe and how it is assembled. |
 | [`demo-script-lepton.md`](demo-script-lepton.md) | current | Dan Browne | 2026-07-06 | Current demo video script. |
 
@@ -126,12 +128,13 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`runbooks/spec-1-walkthrough.md`](runbooks/spec-1-walkthrough.md) | runbook | Dan Browne | — | SPEC-1 user-journey walkthrough. |
 | [`runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) | runbook | Dan Browne | — | Contract redeploy procedure and secret handling. |
 | [`runbooks/docs-site-setup.md`](runbooks/docs-site-setup.md) | runbook | Dan Browne | 2026-08-20 | GitHub Pages docs site (#1381, option B): Dan's two manual steps (Pages source + Route 53 CNAME), local `mkdocs serve` preview, and why `mkdocs build --strict` isn't used. |
+| [`runbooks/backtest-results-retention.md`](runbooks/backtest-results-retention.md) | runbook | Dan Browne | 2026-08-30 | `backtest_results` archive-then-prune procedure (v8 Lane 3.1): keep policy, `archive_backtest_results.py`'s `--plan`/`--archive`/`--prune` flags, the manifest-verification guard, and the post-prune VACUUM step. |
 
 ## Decisions (ADRs)
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-07-28 | ADR index and status vocabulary. All eighteen records are listed there. |
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-08-30 | ADR index and status vocabulary. All twenty records are listed there. |
 | [`adr/unlicense-public-domain.md`](adr/unlicense-public-domain.md) | accepted | Dan Browne | initial commit | The Unlicense as a public-domain dedication, and its ownership/contributor consequences. |
 | [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
 | [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
@@ -140,6 +143,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/portfolio-constructor-decision-tree.md`](adr/portfolio-constructor-decision-tree.md) | accepted | Önder Akkaya | 2026-05-22 | Which constructor runs when. |
 | [`adr/k1-generation-external-rigor-gate.md`](adr/k1-generation-external-rigor-gate.md) | accepted | Dan Browne | 2026-05-23 | K=1 generation with an externalised rigor gate. |
 | [`adr/aws-account-migration.md`](adr/aws-account-migration.md) | accepted | Dan Browne | 2026-06-24 | Production moved to account 037613907429 / us-east-1. |
+| [`adr/generation-payment-credit-not-refund.md`](adr/generation-payment-credit-not-refund.md) | accepted | Önder Akkaya | 2026-08-29 | An undelivered generation is repaid as a durable credit, never a refund; the claim is taken before the money moves. |
 | [`adr/glm-to-bedrock-llm-migration.md`](adr/glm-to-bedrock-llm-migration.md) | accepted | Dan Browne | 2026-06-24 | GLM → Bedrock. |
 | [`adr/non-custodial-vault-owner-agent.md`](adr/non-custodial-vault-owner-agent.md) | accepted | Dan Browne | 2026-06-26 | Owner ≠ agent; non-custodial vaults. |
 | [`adr/portfolio-constructor-consolidation.md`](adr/portfolio-constructor-consolidation.md) | accepted | Önder Akkaya | 2026-06-26 | Legacy constructor paths retired; dual-signal sizer activated. |
@@ -150,6 +154,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/debate-society-sole-generation-pipeline.md`](adr/debate-society-sole-generation-pipeline.md) | accepted | Dan Browne | 2026-07-09 | The debate society is the only generation path; no fallback. |
 | [`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md) | accepted, **pending quant sign-off** | Dan Browne | 2026-07-09 | DSR trial count depends only on the strategy's own search; curated strategies grade at num_trials = 1. |
 | [`adr/aurora-postgres-alembic-datastore.md`](adr/aurora-postgres-alembic-datastore.md) | accepted | Dan Browne | 2026-07-28 | Aurora Serverless v2 (18.3) + Alembic; Redis 7.1 ephemeral-only. |
+| [`adr/strategy-dsl-hardening-over-lean4.md`](adr/strategy-dsl-hardening-over-lean4.md) | accepted | Dan Browne | 2026-08-30 | No Lean 4 on the emission path; harden the existing closed-enum DSL instead. Sandbox reserved for inexpressible shapes; languages re-evaluated only on a trigger. |
 
 ## Plans and roadmaps (intent, not state)
 
@@ -158,10 +163,12 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off). |
 | [`plans/2026-07-28-account-auth-app-boundary.md`](plans/2026-07-28-account-auth-app-boundary.md) | plan | Daniel Reis | 2026-07-28 | The #1194 account-auth boundary plan. |
 | [`plans/2026-08-15-core-app-visual-refresh.md`](plans/2026-08-15-core-app-visual-refresh.md) | plan | Daniel Reis | 2026-08-15 | Core-app visual refresh plan. |
+| [`plans/2026-08-30-intraday-paper-trading.md`](plans/2026-08-30-intraday-paper-trading.md) | draft | Dan Browne | 2026-08-30 | Intraday paper trading (v8 Lane 3.5). Recommends 15-min mark-to-market on open positions (`paper_marks` + retention + a runner-box loop) and defers intraday *signal* evaluation to v2 behind an ADR — bar-counted rebalance cadence and indicator warmup would silently change strategy semantics. |
 | [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |
 | [`plans/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | plan | Dan Browne | — | Spine+ v2 phase plan. |
 | [`plans/second-wave-multi-asset-strategies.md`](plans/second-wave-multi-asset-strategies.md) | plan | Önder Akkaya | 2026-06-11 | Second-wave multi-asset strategies. |
 | [`plans/paper-replication-spec.md`](plans/paper-replication-spec.md) | plan | Önder Akkaya | — | Replication and original-extension workflow. |
+| [`plans/future-strategy-language-reeval-issue.md`](plans/future-strategy-language-reeval-issue.md) | draft issue | Dan Browne | 2026-08-30 | Unfiled Future Plans issue body: the trigger conditions under which the emission-language decision re-opens. Dormant by design — do not close for inactivity. |
 
 ## Sprint session cards (current)
 
