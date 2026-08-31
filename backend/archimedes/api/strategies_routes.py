@@ -2036,6 +2036,17 @@ async def _run_fusion_job(job_id: str) -> None:
                     {
                         "id": str(uuid.uuid4()),
                         "vault_address": "",
+                        # #1556: this trace has NO vault, so the vault-owner
+                        # lookup in save_trace cannot resolve it — and its
+                        # `reasoning` is the user's private strategy thesis,
+                        # which was world-readable through GET /api/traces/.
+                        # Stamp the generating account here, the only place
+                        # that knows it. Present-but-None is deliberate for a
+                        # legacy job payload with no owner: it suppresses the
+                        # vault guess and leaves the row visible to nobody,
+                        # which is the correct way to fail on private content.
+                        "owner_user_id": payload.get("owner_user_id"),
+                        "owner_wallet": payload.get("owner_wallet"),
                         "decision_type": "construction",
                         "trigger": "fusion_generation",
                         "timestamp": datetime.now(UTC).isoformat(),

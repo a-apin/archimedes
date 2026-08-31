@@ -359,6 +359,21 @@ class AgentStateStore:
         """Store off-chain reasoning trace data keyed by trace_hash.
 
         Also maintains secondary index by trace UUID for lookup.
+
+        Stamps ownership on the way in (#1556). This is the single write choke
+        point for traces — ``publish_trace``, the agent runner's three persist
+        sites and the generation-trace writer all land here — so stamping HERE
+        is what makes "every persisted trace knows who owns it" true by
+        construction rather than by five call sites remembering. The read gate
+        (``services.trace_visibility``) then needs no database round-trip for
+        anything published after this change, which is why a Postgres outage
+        cannot downgrade a private trace to a public one.
+
+        A caller that already knows the owner (the generation path, whose trace
+        has no vault at all) sets ``owner_user_id``/``owner_wallet`` itself;
+        the presence of either key suppresses the lookup, including when the
+        value is ``None`` — "this writer resolved the owner and there isn't
+        one" must not be overwritten by a vault guess.
         """
         r = await self._get_redis()
         trace_hash = trace_data.get("trace_hash", "")
@@ -366,6 +381,9 @@ class AgentStateStore:
         if not trace_hash:
             logger.warning("Cannot save trace without trace_hash")
             return
+
+        if "owner_user_id" not in trace_data and "owner_wallet" not in trace_data:
+            trace_data = {**trace_data, **self._resolve_trace_owner(trace_data.get("vault_address", ""))}
 
         # Store full trace data by hash
         key = f"{KEY_TRACE_PREFIX}{trace_hash}"
@@ -389,6 +407,26 @@ class AgentStateStore:
 
         await r.zadd(KEY_TRACE_INDEX, {trace_hash: score})
         logger.debug("Saved trace %s to Redis", trace_hash[:16])
+
+    @staticmethod
+    def _resolve_trace_owner(vault_address: str) -> dict:
+        """``{"owner_user_id": …, "owner_wallet": …}`` for a vault (#1556).
+
+        Fail-soft by design — a trace must still persist when the identity
+        database is unreachable, and an unstamped row is not a leak: the read
+        gate falls back to looking the vault owner up itself, and to the
+        house-vault allowlist below that.
+        """
+        try:
+            from archimedes.services.trace_visibility import resolve_vault_owners
+
+            owner_user_id, owner_wallet = resolve_vault_owners({str(vault_address or "")}).get(
+                str(vault_address or "").strip().lower(), (None, None)
+            )
+        except Exception:
+            logger.warning("save_trace: owner stamp lookup failed — persisting unstamped", exc_info=True)
+            return {}
+        return {"owner_user_id": owner_user_id, "owner_wallet": owner_wallet}
 
     async def get_trace(self, trace_id_or_hash: str) -> dict | None:
         """Get off-chain trace data by hash or UUID."""
