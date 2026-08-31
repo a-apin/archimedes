@@ -476,7 +476,8 @@ export default function StrategyPassport({
 	// the "not Verified" / "not passed" wording, because nothing was measurable
 	// to fail — but its own sentence, since a degenerate row HAS persisted
 	// returns and pending's "not yet evaluated" would be a fresh false claim.
-	// Copy follows chat_service.py:395, which already tells the LLM exactly this.
+	// Copy follows agents/portfolio_agent.py `_format_strategies`, which already
+	// tells the LLM exactly this.
 	const rigorDegenerate = s.rigor_gate_status === "degenerate";
 	// ── Deploy gating at the user's chosen strictness ──
 	const badgePass = s.passes_rigor_gate === true;
