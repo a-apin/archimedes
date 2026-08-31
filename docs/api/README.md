@@ -61,7 +61,6 @@ Each level nests into the one above it (`linked-wallet` implies
 |---|---|
 | [`paper-trading.md`](paper-trading.md) | `/api/paper/*` — deploy a strategy to an append-only, never-rewritten forward-return ledger. |
 | [`vaults-and-chain.md`](vaults-and-chain.md) | `/api/vaults/*`, `/api/traces/*`, `/api/swap/*`, `/api/config/contracts`, and the health/root endpoints — vault creation and metadata, reasoning-trace publish/verify, the AMM swap preview, contract addresses. |
-| [`chat.md`](chat.md) | `/api/vaults/{address}/chat*` — per-vault chat, public reads, linked-wallet writes, internal-only system events. |
 
 ### Platform metrics
 

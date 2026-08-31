@@ -6,7 +6,7 @@ tagged with canonical user ownership; legacy wallet-owned jobs remain readable
 only through a verified link. Every cancellation now requires an account.
 
 Hermetic: the Redis-backed job store is mocked at the boundary; SIWE sessions
-are real signed cookies (test_chat_routes / test_user_routes precedent).
+are real signed cookies (test_user_routes precedent).
 """
 
 from __future__ import annotations
