@@ -226,15 +226,16 @@ def test_flat_5pct_vs_live_rate_delta_matches_decision_record_direction() -> Non
     history, the rate has spent 35.8% of all 180-day windows moving by more
     than the 64bp of headroom that band had left) — a market move, not a
     code regression, would turn CI red. The load-bearing claim is just "still
-    materially below the flat fallback"; the wider sanity bound below
-    (already used in `test_rf_series.py::test_vendored_csv_loads_and_is_nonempty`)
-    is the right-sized guard for "this is a plausible T-bill rate, not a
-    parsing bug"."""
+    materially below the flat fallback"; a non-negativity floor is the only
+    other half of the wide sanity bound
+    (`test_rf_series.py::test_vendored_csv_loads_and_is_nonempty`) that can
+    still bind here, since `< 5.0` already subsumes that bound's upper end —
+    asserting `<= 25.0` alongside it would be dead code, not a second guard."""
     series = rf_series._load_csv()
     latest_date = max(series)
     latest_rate_pct = series[latest_date]
     assert latest_rate_pct < 5.0
-    assert 0.0 <= latest_rate_pct <= 25.0  # sane annualized-percent bound (historical range ~0-17%)
+    assert latest_rate_pct >= 0.0  # a negative published T-bill rate would mean a parsing bug
 
 
 def test_hac_dsr_uses_the_same_excess_series_for_influence_variance() -> None:

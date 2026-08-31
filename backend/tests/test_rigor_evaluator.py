@@ -967,7 +967,7 @@ class TestDegenerateSeriesCategory:
     """
 
     def test_is_zero_variance_series_matches_the_dsr_guard(self) -> None:
-        """Same predicate as _rigor_helpers.py:130 — by construction, not by luck."""
+        """Same predicate as _rigor_helpers.py:186 — by construction, not by luck."""
         assert is_zero_variance_series([0.0] * 100) is True
         assert is_zero_variance_series([0.001] * 5659) is True  # constant non-zero too
         assert is_zero_variance_series([]) is False  # nothing to judge yet

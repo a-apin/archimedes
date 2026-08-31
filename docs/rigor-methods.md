@@ -72,7 +72,7 @@ correcting for multiple testing; on that path it does not.
 **Disclosure is not correction, on the curated per-strategy gate.** The product *discloses*
 the board-level selection bias a user incurs by choosing the best of N displayed strategies;
 it does not *correct* the individual strategy's DSR for it. Benjamini–Hochberg helpers exist
-in [`_rigor_helpers.py:1261`](../backend/archimedes/services/_rigor_helpers.py) (`benjamini_hochberg_fdr`)
+in [`_rigor_helpers.py:1271`](../backend/archimedes/services/_rigor_helpers.py) (`benjamini_hochberg_fdr`)
 and, as of #1185, DO have a live non-test caller —
 [`compute_board_level_fdr`](../backend/archimedes/services/rigor_evaluator.py) — but it is
 deliberately **ADVISORY/annotation only**, not wired into `RigorGateResult.passes_all` or
