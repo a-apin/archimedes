@@ -53,7 +53,7 @@ canvas `#09090B`).
 | Generate surface | [`ui/src/components/Generate.jsx`](../ui/src/components/Generate.jsx), `GenerationStream.jsx`, `FusionResult.jsx`, `RejectedCandidates.jsx`, `RigorStrictnessControl.jsx`, `ModelCostPanel.jsx` | Brief input → SSE stream of debate progress → K=1 winner + considered-rejects + rigor verdict + model cost picker |
 | Strategy passport | [`ui/src/components/StrategyPassport.jsx`](../ui/src/components/StrategyPassport.jsx) | Paper anchors, rigor verdict cards, backtest vs paper-claim deltas, trace verify |
 | Vault deploy | [`ui/src/components/CreateVaultModal.jsx`](../ui/src/components/CreateVaultModal.jsx) (lines 155–195, 386–388), `DepositFlow.jsx` | **Client-side, user signs everything**: `createVault()` → `setAgent()` (2 sigs), then the 3-step approve → deposit → allocate flow |
-| Portfolio / vaults | [`ui/src/components/Portfolio.jsx`](../ui/src/components/Portfolio.jsx), `VaultDetail.jsx`, `VaultChat.jsx` | On-chain reads via viem against `NEW_CONTRACTS.vaultFactory` |
+| Portfolio / vaults | [`ui/src/components/Portfolio.jsx`](../ui/src/components/Portfolio.jsx), `VaultDetail.jsx` | On-chain reads via viem against `NEW_CONTRACTS.vaultFactory` |
 | Trace viewer / verify | [`ui/src/components/Reasoning.jsx`](../ui/src/components/Reasoning.jsx) | Recompute keccak hash, check against `traceRegistry` on-chain |
 | Marketplace | [`ui/src/components/MarketplacePage.jsx`](../ui/src/components/MarketplacePage.jsx), `PublishPage.jsx`, `SubscriptionsPage.jsx`, `StrategyDetailPage.jsx` | Publish / subscribe / earnings withdraw surfaces |
 | Corpus | [`ui/src/components/CorpusExplorer.jsx`](../ui/src/components/CorpusExplorer.jsx), `CorpusGraph.jsx`, `CorpusKG.jsx` | Renders real KB artifacts; explicit empty state on 503 (pipeline not yet run) |
@@ -74,7 +74,7 @@ canvas `#09090B`).
 | Corpus | [`api/corpus_routes.py`](../backend/archimedes/api/corpus_routes.py) | Honest 503 ("pipeline not yet run") until real KB artifacts exist — no metadata-synthesized graphs |
 | Config | [`api/config_routes.py`](../backend/archimedes/api/config_routes.py) | `GET /api/config/contracts` — serves the contract addresses from the ECS task env ([`infra/ecs.tf`](../infra/ecs.tf)) |
 | Agent manifest | [`api/agent_manifest_routes.py`](../backend/archimedes/api/agent_manifest_routes.py) | Agent-discoverability surface (`/api/agent/manifest`) per [`docs/agent-api.md`](agent-api.md) |
-| Others | `explore_routes.py` (281-synth universe), `leaderboard_routes.py`, `portfolio_routes.py`, `traces_routes.py`, `regime_routes.py`, `proposals_routes.py` (owner-scoped), `user_routes.py`, `metrics_routes.py`, `risk_routes.py`, `swap_routes.py`, `papers_routes.py`, `chat_routes.py` | Product surfaces for the spine |
+| Others | `explore_routes.py` (281-synth universe), `leaderboard_routes.py`, `portfolio_routes.py`, `traces_routes.py`, `regime_routes.py`, `proposals_routes.py` (owner-scoped), `user_routes.py`, `metrics_routes.py`, `risk_routes.py`, `swap_routes.py`, `papers_routes.py` | Product surfaces for the spine |
 | Middleware | [`api/telemetry_middleware.py`](../backend/archimedes/api/telemetry_middleware.py), [`api/funnel_middleware.py`](../backend/archimedes/api/funnel_middleware.py), [`api/limiter.py`](../backend/archimedes/api/limiter.py), [`api/auth_guard.py`](../backend/archimedes/api/auth_guard.py) | Telemetry, visitor funnel, rate limits, auth |
 
 `/health` + `/api/health` (`main.py:495-706`) expose honesty flags including `corpus_kg_built`

@@ -41,7 +41,6 @@ if os.getenv("PUBLIC_DOMAIN"):
 from archimedes.api.account_auth import better_auth_session_middleware, require_current_user
 from archimedes.api.account_usage_routes import account_usage_router
 from archimedes.api.agent_manifest_routes import agent_manifest_router
-from archimedes.api.chat_routes import chat_router
 from archimedes.api.corpus_routes import corpus_router
 from archimedes.api.explore_routes import explore_router
 from archimedes.api.features_routes import features_router
@@ -506,7 +505,8 @@ app.middleware("http")(ensure_visitor_id_middleware)
 app.middleware("http")(better_auth_session_middleware)
 
 
-# Initialize database (creates chat tables if needed)
+# Initialize database (creates any tables the ORM declares but migrations have
+# not yet created — `vault_metadata`, `chat_messages`, …)
 init_db()
 
 
@@ -526,7 +526,6 @@ app.include_router(regime_router)
 app.include_router(swap_router)
 app.include_router(config_router)
 app.include_router(agent_router)
-app.include_router(chat_router)
 app.include_router(corpus_router)
 app.include_router(paper_router)
 app.include_router(explore_router)

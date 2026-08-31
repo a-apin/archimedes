@@ -562,49 +562,6 @@ class PoolListResponse(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Chat (per-vault)
-# ═══════════════════════════════════════════════════════════════
-
-
-class ChatMessageResponse(BaseModel):
-    """A single chat message in a vault's chat room."""
-
-    id: int
-    vault_address: str
-    wallet_address: str
-    message: str
-    is_ai: bool = False
-    verified: bool = False  # True when wallet was proof-linked to posting account
-    created_at: str  # ISO 8601
-
-
-class ChatMessageListResponse(BaseModel):
-    """Paginated list of chat messages for a vault."""
-
-    messages: list[ChatMessageResponse]
-    total: int
-    has_more: bool = False
-
-
-class ChatPostRequest(BaseModel):
-    """Post a new message to a vault's chat.
-
-    wallet_address is optional; server uses current account's selected verified
-    linked wallet. Body value may only match that server-resolved wallet.
-    """
-
-    wallet_address: str | None = None
-    message: str
-
-
-class ChatPostResponse(BaseModel):
-    """Response after posting a message. Includes AI response if triggered."""
-
-    message: ChatMessageResponse
-    ai_response: ChatMessageResponse | None = None
-
-
-# ═══════════════════════════════════════════════════════════════
 # Contract Addresses
 # ═══════════════════════════════════════════════════════════════
 
