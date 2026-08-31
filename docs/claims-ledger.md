@@ -54,7 +54,7 @@ checks that recur:
 | "Four independent checks run outside the generator, on persisted returns, so the thing being graded cannot influence its own grade" | `TRUE` | `backend/archimedes/services/live_rigor_gate.py:151` — `verdict_from_returns` grades a persisted series outside the generator. The four checks are named at `ui/src/components/Landing.jsx:39`. The second grading scale (`BacktestResult.passes_rigor_gate`) that made this false was deleted in #1242 (`d7073f13`). |
 | "Four verdicts, not two" — `pass` / `fail` / `pending` / `degenerate`, and a pass never rounds up | `TRUE` | `backend/archimedes/services/live_rigor_gate.py:54` defines `DEGENERATE`; `:92` makes `passes` a plain bool set `True` only by the `pass` constructor, so `pending` and `degenerate` are fail-closed. |
 | Each rigor card states its own limit (DSR at the 0.90 level, PBO is a selection-set property, OOS is one chronological hold-out with no purge gap) | `TRUE` | `ui/src/components/Landing.jsx:26` documents each `limit` string against the module that computes it; the thresholds live in `backend/archimedes/services/rigor_profiles.py`. |
-| "Board-level correction — ranking N strategies is counted as N tests", Benjamini–Hochberg at α = 0.05, advisory, never flips a verdict | `TRUE` | `backend/archimedes/services/rigor_evaluator.py:475` (`DEFAULT_BOARD_FDR_LEVEL = 0.05`) and `:486` (`compute_board_level_fdr`, advisory by its own docstring). Served publicly on `GET /api/leaderboard` — `backend/archimedes/api/leaderboard_schemas.py:80`, and `backend/archimedes/api/leaderboard_routes.py:175` never 401s (anonymous callers are served the curated scope). |
+| "Board-level correction — ranking N strategies is counted as N tests", Benjamini–Hochberg at α = 0.05, advisory, never flips a verdict | `TRUE` | `backend/archimedes/services/rigor_evaluator.py:475` (`DEFAULT_BOARD_FDR_LEVEL = 0.05`) and `:486` (`compute_board_level_fdr`, advisory by its own docstring). Served publicly on `GET /api/leaderboard` — `backend/archimedes/api/leaderboard_schemas.py:82`, and `backend/archimedes/api/leaderboard_routes.py:175` never 401s (anonymous callers are served the curated scope — the endpoint's own `scope` docstring says so in as many words). |
 | "Inspect — nothing is discarded ... a fail as durably as a pass" | `CHANGED` | Was "every run leaves a reasoning trace bound to the chain". Retracted 2026-08-30; the retracted wording is pinned in `ui/test/public-visuals.test.js`. A generation run computes a keccak provenance hash (`backend/archimedes/agents/generation_pipeline.py:1635`) whose own comment says it is "mirrored on-chain in v1.5" (`:1614`) — i.e. not today. The only writers to the registry are the agent rebalance tick's `_commit_trace` (`backend/archimedes/chain/agent_runner.py:1441`) and `_reveal_trace` (`:1596`), which no generation run reaches. |
 | "Does Archimedes trade for me? No." | `TRUE` | The reachable act-on step is `POST /api/paper/deployments` (`backend/archimedes/api/paper_routes.py:92`), which is simulated. `POST /api/vaults/create` exists (`backend/archimedes/api/vaults_routes.py:330`) but its UI journey is off the shipped build — `ui/src/featureFlags.js:57` lists `portfolio` / `vault-detail` in `ROADMAP_PAGES`, and `:28` defaults `ROADMAP_SURFACES_ENABLED` to false. |
 | "A failing strategy stays a failing strategy. Paper-trading one is allowed. Relabelling one is not." | `TRUE` | `backend/archimedes/api/paper_routes.py:92` checks ownership and that the stored spec still validates — and nothing else, so there is no rigor precondition to claim. The verdict itself is computed server-side (`live_rigor_gate.py:151`), so it cannot be relabelled from the browser. |
@@ -85,7 +85,7 @@ checks that recur:
 | "Arc has no mainnet yet; mainnet launch, real-funds custody, and the regulatory architecture are roadmap" | `TRUE` | `README.md:28`, true on 2026-08-31. **Date-gated:** #1241 records this as false from Sept 16. Re-check on that date; nothing in CI will tell you. |
 | "Payments are real (USDC on Arc); settlement is stubbed pending mainnet" | `TRUE` | Two switches, and the line is right about both. Generation settles for real where deployed (`backend/archimedes/services/generation_payment.py:56`, `:72`); marketplace settlement rides the separate `PAYMENTS_DRY_RUN`, which defaults to dry-run (`backend/archimedes/services/generation_payment.py:74`). |
 | "Not every reasoning trace is anchored on-chain ... check `arc_tx_hash` before treating a trace as anchored" | `TRUE` | `README.md:168`. This is the general form the `ui/index.html` meta tags are missing. |
-| CLI exit codes are a stable contract — `0` passed, `1` gate ran and failed, `2` bad input or no session, `3` not implemented | `TRUE` | `cli/src/archimedes_cli/exits.py` names all four and explains why `AUTH` deliberately reuses `2`; `cli/src/archimedes_cli/manifest.py:19` publishes the same table machine-readably. |
+| CLI exit codes are a stable contract, published machine-readably — `0` passed, `1` gate ran and failed, `2` bad input or no session, `3` not implemented | `OVER-CLAIMED` | **The published table is missing a code the CLI actually exits with.** `cli/src/archimedes_cli/exits.py:33` defines `INCOMPLETE = 4` (added for #1481: the gate was reached but not every runnable leg could be evaluated), and `cli/src/archimedes_cli/cli.py:542` exits with it on the real `verify` path. `cli/src/archimedes_cli/manifest.py:19` publishes only `0`/`1`/`2`/`3`. So the machine-readable contract omits a value the tool emits, and `exits.py`'s own header — "someone will write `archimedes verify` into a CI job and branch on the result" — names exactly the reader this harms: an agent branching on the published table hits an undocumented `4`. The four *documented* codes are accurate, and the `AUTH`-reuses-`2` rationale is sound (`exits.py:25`); the defect is completeness, not correctness. |
 
 ## Agent surfaces — `ui/public/llms.txt`, `ui/public/.well-known/agent.json`
 
@@ -100,7 +100,7 @@ checks that recur:
 | `agent.json` `erc8004` — "NO ERC-8004 identity, reputation, or validation claim is made" | `TRUE` | `ui/public/.well-known/agent.json` — self-disclosing, with `agentId` and `tokenURI` null, `status: "registration_pending"`, and the reason spelled out in the `note`. No `register()` transaction has been sent. |
 | `agent.json` `endpoints.marketplace.note` — "does not assert that a subscription's recurring USDC charge settles for real" | `TRUE` | `ui/public/.well-known/agent.json`. Correctly separates the two dry-run switches — `backend/archimedes/services/generation_payment.py:64` documents the split that let the generation rail go live without un-drying marketplace settlement — and declines to claim the one no public endpoint publishes. |
 | `agent.json` / llms.txt `POST /api/rigor/verify` — PBO and look-ahead "always report `not_evaluable`", `passes` is a capped quorum | `TRUE` | `backend/archimedes/api/rigor_verify_routes.py:47` states the capping contract; `:273` hard-codes both legs to `not_evaluable`; `:289` makes `passes` require every runnable leg to have run and passed. |
-| `ui/public/sitemap.xml` lists only routes that render real content for an anonymous visitor | `TRUE` | Six URLs, all anonymous-OK; `ui/src/routes.js:43` is the matching allow-set, and `ui/test/sitemap.test.js` pins the property. |
+| `ui/public/sitemap.xml` lists only routes that render real content for an anonymous visitor | `TRUE` | Six `<loc>` entries, checked one by one against the two allow-sets that between them cover all six: `ui/src/routes.js:3` (`PUBLIC_PATHS` — `/`, `/architecture`, `/security`) and `:43` (`ANON_APP_PAGES` — `explore`, `leaderboard`, `corpus`). **Verified by reading, not by a guard, and the row says so:** `ui/scripts/check-sitemap.mjs` enforces only the *forward* direction (every public route appears in the sitemap) and its own header documents the reverse — "every sitemap `<loc>` is actually anonymous-accessible" — as **NOT enforced**; `ui/test/sitemap.test.js` pins one specific exclusion (the admin-only `/insights` never appears anywhere in the served bytes), not this property. Claiming a test pins this would be the defect this ledger exists to catch. |
 
 ## `ui/index.html` — meta, OpenGraph, Twitter card, JSON-LD
 
@@ -147,8 +147,13 @@ checks that recur:
 
 The owner's framing, recorded here because the ledger is where the public position lives.
 The decision record is `docs/adr/market-data-sourcing.md`, being added by the parallel
-[#1218](https://github.com/a-apin/archimedes/issues/1218) PR; the rows below are marked
-`PENDING ADR MERGE` until it lands, and they should be re-pointed at the ADR then.
+[#1218](https://github.com/a-apin/archimedes/issues/1218) work — open as
+[PR #1627](https://github.com/a-apin/archimedes/pull/1627), not merged as of 2026-08-31.
+The rows below are marked `PENDING ADR MERGE` until it lands, and they should be re-pointed
+at the ADR then; the guard in `backend/tests/test_claims_ledger.py` fails the moment the
+file appears, so that re-pointing cannot be forgotten. Checked against that PR's diff:
+it keeps `yfinance` as the default on both seams and adds Tiingo as the paid-analysis
+provider, which is what the rows below say.
 
 | Claim | Status | What backs it |
 |---|---|---|
@@ -161,7 +166,16 @@ The decision record is `docs/adr/market-data-sourcing.md`, being added by the pa
 
 ## Defects this audit found
 
-Two, both small, both left for a separate change rather than smuggled into a docs PR.
+Three, all left for a separate change rather than smuggled into a docs PR. The first is the
+one worth acting on: it is a live machine-readable contract that under-publishes itself.
+
+0. **`cli/src/archimedes_cli/manifest.py:19` omits exit code `4`.** `exits.py:33` defines
+   `INCOMPLETE = 4` and `cli.py:542` exits with it, but the published `EXIT_CODES` table
+   stops at `3`. The CLI's whole stated reason for pinning exit codes is that a CI job will
+   branch on them, so the one surface a script actually reads is the one that is
+   incomplete. Adding the row to `EXIT_CODES` is a two-line fix; it is a `cli/` change, not
+   a docs change, so it is not in this PR. `TestPublishedExitCodesStillOmitIncomplete`
+   fails the moment it is fixed, which forces this row to move with it.
 
 1. **`ui/src/components/Landing.jsx:78`** — the comment block above `BOARD_FDR` says the
    figure is "served publicly — `GET /api/selection-bias/gate` returns `board_level_fdr`

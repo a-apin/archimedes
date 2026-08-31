@@ -17,10 +17,20 @@ hole; this one closes itself.
 
 **Open over-claims are pinned to the tree, not just described.** The ledger's
 ``OVER-CLAIMED`` rows assert that a specific sentence is still live on a specific surface.
-``test_open_overclaims_are_still_present`` pins each one. Fixing the copy therefore turns
-this test red — deliberately: the same change that scrubs the sentence has to move the row
-from ``OVER-CLAIMED`` to ``CHANGED``, which is the whole point of keeping a ledger rather
-than a memo.
+``test_open_overclaims_are_still_present`` pins each one, and
+``test_published_exit_codes_still_omit_incomplete`` pins the one over-claim that is an
+*absence* rather than a sentence (the CLI manifest's missing exit code ``4``). Fixing
+either therefore turns this test red — deliberately: the same change that scrubs the
+sentence has to move the row from ``OVER-CLAIMED`` to ``CHANGED``, which is the whole point
+of keeping a ledger rather than a memo.
+
+**Both citation forms are checked, including the shorthand.** The ledger cites a path in
+full once and then writes bare ``:NN`` for later lines in the same file. Those shorthands
+are ~20% of its evidence, and an earlier revision of this file did not match them at all
+while its docstring advertised that line numbers are verified — a guard with a silent hole,
+which is the exact defect the ledger exists to record. They are now resolved against their
+anchor and range-checked, and a shorthand with no anchor is a failure rather than a
+silent skip.
 
 Hermetic: reads committed files off disk. No DB, no Redis, no RPC, no network, no
 ``.env``, and no import of ``archimedes``.
@@ -55,6 +65,15 @@ _CITATION_RE = re.compile(
     r"(?::(\d+)(?:-\d+)?)?`"
 )
 
+# The ledger's second citation form: a bare `:NN` that inherits the path from the last full
+# citation earlier in the same line ("`live_rigor_gate.py:54` defines DEGENERATE; `:92`
+# makes `passes` a plain bool"). 28 of the ledger's citations are written this way, and an
+# earlier revision of this file did not match them at all — so a fifth of the evidence was
+# unchecked while the module docstring advertised that line numbers are verified. A guard
+# with a silent 20% hole is the failure mode this whole file exists to catch, so the
+# shorthands are resolved against their anchor and range-checked like any other citation.
+_SHORTHAND_RE = re.compile(r"`:(\d+)(?:-\d+)?`")
+
 _PENDING_BLOCK_RE = re.compile(r"<!--\s*claims-ledger:pending-paths(.*?)-->", re.DOTALL)
 _PENDING_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+\.[a-z]+$")
 
@@ -74,7 +93,9 @@ _SYMBOL_PINS: tuple[tuple[str, str], ...] = (
     ("backend/archimedes/chain/agent_runner.py", "_commit_trace"),
     ("backend/archimedes/chain/agent_runner.py", "_reveal_trace"),
     ("ui/src/routes.js", "ANON_APP_PAGES"),
+    ("ui/src/routes.js", "PUBLIC_PATHS"),
     ("ui/src/featureFlags.js", "ROADMAP_SURFACES_ENABLED"),
+    ("cli/src/archimedes_cli/exits.py", "INCOMPLETE = 4"),
 )
 
 # The ledger records that board-level FDR MOVED to the leaderboard (#1564/#1580), so the
@@ -101,6 +122,33 @@ def _ledger_text() -> str:
 
 def _citations() -> list[tuple[str, int | None]]:
     return [(m.group(1), int(m.group(2)) if m.group(2) else None) for m in _CITATION_RE.finditer(_ledger_text())]
+
+
+def _shorthand_citations() -> list[tuple[str, int]]:
+    """Resolve every bare ``:NN`` to the full path citation that anchors it.
+
+    Anchor = the nearest full citation earlier in the SAME line. A shorthand with no anchor
+    on its line is unresolvable prose and is reported by its own test rather than silently
+    dropped — dropping it is precisely how the hole this closes came to exist.
+    """
+    resolved: list[tuple[str, int]] = []
+    for line in _ledger_text().splitlines():
+        anchors = list(_CITATION_RE.finditer(line))
+        for short in _SHORTHAND_RE.finditer(line):
+            prior = [a for a in anchors if a.start() < short.start()]
+            if prior:
+                resolved.append((prior[-1].group(1), int(short.group(1))))
+    return resolved
+
+
+def _unanchored_shorthands() -> list[str]:
+    orphans: list[str] = []
+    for line in _ledger_text().splitlines():
+        anchors = list(_CITATION_RE.finditer(line))
+        for short in _SHORTHAND_RE.finditer(line):
+            if not [a for a in anchors if a.start() < short.start()]:
+                orphans.append(f"{short.group(0)} in: {line.strip()[:90]}")
+    return orphans
 
 
 def _pending_paths() -> list[str]:
@@ -155,9 +203,38 @@ class TestLedgerCitationsResolve:
                 out_of_range.append(f"{path}:{line} (file has {length} lines)")
         assert not out_of_range, "claims-ledger.md cites lines past end of file: " + ", ".join(out_of_range)
 
+    def test_every_shorthand_line_is_inside_its_anchor_file(self):
+        """The ``:NN`` shorthands are citations too, and were the guard's blind spot."""
+        pending = set(_pending_paths())
+        out_of_range: list[str] = []
+        for path, line in _shorthand_citations():
+            if path in pending:
+                continue
+            target = REPO_ROOT / path
+            if not target.is_file():
+                continue  # reported by test_every_cited_path_exists
+            length = len(target.read_text(encoding="utf-8", errors="replace").splitlines())
+            if line > length:
+                out_of_range.append(f"{path}:{line} (file has {length} lines)")
+        assert not out_of_range, "claims-ledger.md shorthand citations point past end of file: " + ", ".join(
+            out_of_range
+        )
+
+    def test_no_shorthand_is_left_without_an_anchor(self):
+        orphans = _unanchored_shorthands()
+        assert not orphans, (
+            "claims-ledger.md has `:NN` shorthands with no full path citation earlier on the "
+            "same line, so there is nothing to resolve them against: " + "; ".join(orphans)
+        )
+
     def test_the_citation_parser_is_not_vacuous(self):
         """A ledger that cites nothing would pass every check above."""
         assert len(_citations()) >= 40, f"only {len(_citations())} citations parsed — the parser or the ledger broke"
+
+    def test_the_shorthand_parser_is_not_vacuous(self):
+        """Anti-vacuity for the two checks above: they must actually be resolving rows."""
+        found = len(_shorthand_citations())
+        assert found >= 20, f"only {found} shorthand citations resolved — the parser or the ledger broke"
 
 
 class TestPendingExemptionsRetireThemselves:
@@ -229,6 +306,23 @@ class TestLedgerClaimsMatchTheTree:
         assert needle not in text, (
             f"{needle} is defined in {path} again — the ledger says #1564 moved it to the "
             "leaderboard. Either the move was reverted or the ledger row is wrong."
+        )
+
+    def test_published_exit_codes_still_omit_incomplete(self):
+        """The ledger's CLI row says the published manifest under-publishes its own contract.
+
+        `exits.py` defines `INCOMPLETE = 4` and `cli.py` exits with it, but `manifest.py`'s
+        `EXIT_CODES` — the machine-readable table an agent branches on — stops at `3`. This
+        is the same self-retiring shape as the OVER-CLAIMED pins: fixing the manifest turns
+        this red, which forces the ledger row to move in the same change.
+        """
+        manifest = (REPO_ROOT / "cli/src/archimedes_cli/manifest.py").read_text(encoding="utf-8")
+        block = re.search(r"EXIT_CODES\s*=\s*\{(.*?)\}", manifest, re.DOTALL)
+        assert block is not None, "EXIT_CODES table not found in manifest.py — the ledger row cites it"
+        assert '"4"' not in block.group(1), (
+            "manifest.py's EXIT_CODES now publishes exit code 4. Good — that was the defect "
+            "the ledger's CLI row recorded. Move that row from OVER-CLAIMED to CHANGED, cite "
+            "the PR that fixed it, and delete this test."
         )
 
     def test_open_overclaims_are_still_present(self):
