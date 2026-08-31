@@ -96,7 +96,6 @@ def _services_claimed_by_option_d(block: str) -> set[str]:
             "Option (D) no longer contains a 'mapped for the … via extra_hosts' claim. If the claim "
             "was removed on purpose, remove this guard too; if it was reworded, update the scanner."
         )
-        # (unreachable — kept explicit so the failure explains itself)
     return set(re.findall(r"`([a-z][a-z0-9-]*)`", span.group(1)))
 
 

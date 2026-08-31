@@ -250,9 +250,10 @@ class TestTheLlmProbeIsBounded:
             await ticker
 
         # The probe's own budget is 1.0s, so a turning loop gets ~100 ticks at
-        # 10ms. A blocked loop gets 0-1 (whatever slipped in before the block).
-        # 10 is the floor: far above a blocked loop, far below a healthy one,
-        # and loose enough for a loaded CI box.
+        # 10ms. Measured against the pre-fix handler it drops to 3-4 — the only
+        # turns that slip in around the blocking call, not during it. 10 is the
+        # floor: comfortably above what a blocked loop can produce, far below a
+        # healthy one, and loose enough for a loaded CI box.
         assert ticks >= 10, (
             f"the event loop turned only {ticks} times during a {elapsed:.2f}s /health — "
             f"the LLM probe is blocking the loop, not just its own request"
