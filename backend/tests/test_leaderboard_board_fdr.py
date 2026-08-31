@@ -243,11 +243,56 @@ def test_board_fdr_is_not_an_input_to_conviction_or_the_gate_badge():
 # ── 5. The wire ─────────────────────────────────────────────────────────────
 
 
-async def test_leaderboard_route_serves_the_board_fdr_block():
+def _strong_series(seed: int, n: int = 756) -> list[float]:
+    """Long, low-vol, solidly positive drift → a DSR confidence near 1.0."""
+    import numpy as np
+
+    return np.random.default_rng(seed).normal(0.002, 0.008, n).tolist()
+
+
+def _weak_series(seed: int, n: int = 300) -> list[float]:
+    """Near-zero drift → weak DSR evidence, individually insignificant."""
+    import numpy as np
+
+    return np.random.default_rng(seed).normal(0.0001, 0.01, n).tolist()
+
+
+async def test_leaderboard_route_serves_the_board_fdr_block(monkeypatch):
     """Live route over the real corpus: the block is on the wire, its α is
-    explicit, and every row's verdict is consistent with the block's counts."""
+    explicit, and every row's verdict is consistent with the block's counts.
+
+    THE RETURNS ARE PATCHED ON PURPOSE — the same seam the per-strategy gate's
+    wiring test used before this correction moved off it
+    (``TestBoardLevelFdrWiring._patch_returns``). Without it, a test box with an
+    empty ``backtest_results`` store gives every row ``dsr_p_value is None``,
+    ``n_tested == 0``, and the two count assertions below reduce to ``0 == 0``
+    — the block would be served entirely unexercised and this test would pass
+    against a route that computed nothing. ``n_tested > 0`` is asserted
+    explicitly so the vacuum can never come back quietly.
+
+    Patching at ``backtest_repository.get_all_daily_returns`` is the honest
+    boundary (CLAUDE.md § "Mock at boundaries, not internals"): it substitutes
+    the DB read only. The real ``run_rigor_gate`` computes every DSR, and the
+    real ``compute_board_level_fdr`` runs the real BH over them.
+    """
+    from archimedes.api.strategies_routes import strategy_provider
     from archimedes.main import app
     from httpx import ASGITransport, AsyncClient
+
+    strategies = strategy_provider().list_strategies()
+    assert len(strategies) >= 6, "need >=6 curated strategies for a cohort with a real m"
+    ids = [s.id for s in strategies]
+
+    # One strong series and the rest weak, plus one series too short to grade
+    # (<10 points → MISSING). That mix guarantees BOTH populations exist on the
+    # wire: rows that got a verdict and a row that must not have one.
+    returns = {ids[0]: _strong_series(0)}
+    returns.update({sid: _weak_series(i + 1) for i, sid in enumerate(ids[1:-1])})
+    returns[ids[-1]] = [0.001] * 5
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, sids: {sid: list(returns[sid]) for sid in sids if sid in returns},
+    )
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/leaderboard?scope=curated&limit=200")
@@ -261,11 +306,24 @@ async def test_leaderboard_route_serves_the_board_fdr_block():
     assert body["entries"], "the corpus must be non-empty for this to bite"
 
     corrected = [e for e in body["entries"] if e["board_fdr_significant"] is not None]
+    # THE ANTI-VACUITY ASSERTION. Everything below it is a tautology at zero.
+    assert block["n_tested"] > 0, (
+        "the route served a board_level_fdr block over an empty cohort — the count assertions "
+        "below would be 0 == 0 and would pass against a route that corrected nothing"
+    )
+    assert corrected, "at least one row must carry a real verdict for this test to measure anything"
     assert len(corrected) == block["n_tested"], (
         "n_tested must equal the number of rows that actually got a verdict — the served limit is "
         "200 and the corpus is smaller, so no row is paged out of this comparison"
     )
     assert sum(1 for e in corrected if e["board_fdr_significant"]) == block["n_significant"]
+
+    # The too-short series must reach the wire as an honest absence, so the
+    # "no verdict ⇒ no numbers" loop below is exercised too, not just skipped.
+    by_id = {e["id"]: e for e in body["entries"]}
+    if ids[-1] in by_id:
+        assert by_id[ids[-1]]["board_fdr_significant"] is None
+        assert by_id[ids[-1]]["dsr_p_value"] is None
 
     for e in body["entries"]:
         if e["board_fdr_significant"] is None:
