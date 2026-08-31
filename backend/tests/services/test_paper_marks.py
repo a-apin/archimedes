@@ -612,8 +612,10 @@ def test_ts_is_the_oldest_fresh_leg_not_the_newest():
     only shape where the two differ.
 
     Demonstrated to reject: changing ``min(fresh_bar_times)`` to
-    ``max(fresh_bar_times)`` makes this test fail (ts becomes 15:10) while the
-    whole rest of this file still passes.
+    ``max(fresh_bar_times)`` makes this test fail (ts becomes 15:10). Measured
+    under that mutation: 23 passed, 2 failed — this test and its sibling cadence
+    pin below, both added here. Every PRE-EXISTING test in the file passed, which
+    is the point: nothing that shipped before could catch the mutation.
     """
     with _session() as s:
         dep = _deploy(
