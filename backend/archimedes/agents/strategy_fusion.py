@@ -802,8 +802,11 @@ the account per name in asset_universe; no other keys), inverse_vol \
 is reference_vol_annual, optional, must be > 0, defaults to 0.15), \
 volatility_target (the ONLY extra key is annual_pct, required, > 0). \
 position_sizing accepts NO other keys — a key outside that list is a hard \
-validation error, not an ignored field, so do not invent one. \
-look_ahead_safe MUST be true. \
+validation error, not an ignored field, so do not invent one. Do NOT emit any \
+field asserting the strategy's own correctness or look-ahead safety; the \
+platform derives that structurally from the spec and ignores anything you \
+claim about it. \
+>>>>>>> origin/main
 parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
 values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \
 Keys must reference indicators used in entry/exit conditions."""
@@ -848,7 +851,6 @@ literature>",
     "exit": {"lt": ["close", "sma_200"]},
     "position_sizing": {"type": "full_invested_when_in_market"},
     "source_arxiv_ids": ["<from source_arxiv_ids above>"],
-    "look_ahead_safe": true,
     "indicators": ["sma_200"],
     "parameter_variants": {"sma_200": [150, 175, 200, 225, 250]}
   }

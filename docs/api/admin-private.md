@@ -2,10 +2,11 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-20 (round 4 rewrite — see the four corrections below)
+> **updated:** 2026-08-31 (measured $/generation on `/cost`, #1217)
 
 `/api/metrics/private/*` — the internal cost/ops dashboard: Bedrock/infra spend (currently
-draft placeholders), the current-schema engagement/adoption dashboard-v2 tiles, the
+draft placeholders), the measured per-generation cost (#1217), the current-schema
+engagement/adoption dashboard-v2 tiles, the
 admin-gate probe the frontend uses, and the per-wallet identity roster that the public,
 PII-free `GET /api/metrics` deliberately does not expose. Landed in #1373 (closing #1366)
 after a full-tree audit found `GET /api/metrics/wallets` and `GET
@@ -201,15 +202,31 @@ Account + admin cost/ops dashboard. | **Auth**: platform-admin | **Flags**:
 Request: none.
 Response: `{source: "draft", real_users: int, bedrock_monthly_usd: null,
 bedrock_daily_usd: null, infra_monthly_usd: null, cost_per_user_usd: null,
-cost_per_generation_usd: null, note: str, authenticated_wallet: str, timestamp: str}`.
+cost_per_generation_usd: str|null, generation_cost: {...}, note: str,
+authenticated_wallet: str, timestamp: str}`.
 Errors: `401` — no session. `403` — session without a linked wallet, or a linked wallet
 not on the admin allowlist (see the two-flavor 403 note above).
 
-Every cost field is an explicit `null` placeholder — **not live-metered spend**. The live
-AWS Cost Explorer + Bedrock token-metering wiring is roadmap work, not yet built; only
+**Two provenances on one payload, labelled separately.** The AWS-billing fields
+(`bedrock_*`, `infra_monthly_usd`, `cost_per_user_usd`) are explicit `null` placeholders —
+**not live-metered spend**; the AWS Cost Explorer + Bedrock token-metering wiring is
+roadmap work. That is what the top-level `source: "draft"` describes.
+
+`cost_per_generation_usd` is **not** one of them (#1217). It is the mean of the
+`generation_costs` measurements this platform actually recorded, priced against the
+`GENERATION_COST_RATE_CARD` environment rate card, with the full distribution, the
+LLM-vs-compute split, the per-`n_candidates` scaling breakdown and the unpriceable tally
+under `generation_cost`. It is `null` — never `0` — when no rate card is configured or no
+run was priceable, and `generation_cost.rate_card_configured` /
+`.unpriceable_reasons` / `.unavailable` say which. Shape and refusals:
+[`generation-cost-instrumentation.md`](../generation-cost-instrumentation.md) §
+Pricing the measurement.
+
 `real_users` (canonical Better Auth account count) is read live, so any per-user math a
 consumer does downstream is anchored to an honest denominator rather than the cumulative
-request tallies on the public `GET /api/metrics` (issue #830).
+request tallies on the public `GET /api/metrics` (issue #830). This endpoint is the only
+surface carrying the priced per-generation figure; the public metrics family stays
+aggregate and unpriced.
 
 ```bash
 curl -sS -b /tmp/session.jar http://localhost:8080/api/metrics/private/cost

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider as _provider
 from archimedes.api.limiter import limiter
+from archimedes.services.dsl_lookahead_audit import verdict_from_persisted_row
 from archimedes.services.rigor_evaluator import (
     assert_self_contained_cohort_correlation,
     compute_average_pairwise_correlation,
@@ -797,7 +798,18 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
             latest.num_trials_in_selection if latest else None,
         )
         persisted_pbo = latest.pbo_score if latest else None
-        persisted_look_ahead = bool(latest.look_ahead_audit_passed) if latest else False
+        # The stored boolean is not read on its own: `look_ahead_audit_source`
+        # says what produced it, and two provenances mean it is NOT an audit pass
+        # — a DSL audit that reached no verdict, and the retired "self_attested"
+        # rows whose boolean was the generating model's own look_ahead_safe
+        # declaration. Both come back False with a `pending` status, so the
+        # detail line says NOT_RUN instead of accusing the strategy of a leak,
+        # and neither can deploy on a claim nothing measured. See
+        # dsl_lookahead_audit.verdict_from_persisted_row.
+        persisted_look_ahead, persisted_la_status, persisted_la_reason = verdict_from_persisted_row(
+            latest.look_ahead_audit_passed if latest else False,
+            latest.look_ahead_audit_source if latest else None,
+        )
 
     gate_result = run_rigor_gate(
         strategy_id=strategy_id,
@@ -805,6 +817,8 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         num_trials=num_trials,
         library_pbo=persisted_pbo,
         look_ahead_audit_passed=persisted_look_ahead,
+        look_ahead_status=persisted_la_status,
+        look_ahead_not_run_reason=persisted_la_reason,
         in_sample_sharpe=None,
         average_correlation=0.0,
         strictness_level=strictness,

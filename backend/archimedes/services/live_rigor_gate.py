@@ -157,6 +157,7 @@ def verdict_from_returns(
     paper_claimed_sharpe: float | None = None,
     average_correlation: float = 0.0,
     look_ahead_audit_passed: bool | None = None,
+    look_ahead_status: str | None = None,
     look_ahead_not_run_reason: str | None = None,
 ) -> RigorGateVerdict:
     """Compute the live four-state verdict from a strategy's persisted returns.
@@ -184,23 +185,23 @@ def verdict_from_returns(
     look-ahead floor (``blocked_by_floor=True``) at every strictness level
     regardless of DSR/PBO/OOS.
 
-    What that path passes here is now a REAL audit result, not a declaration.
+    What that path passes here is a REAL audit result, not a declaration.
     ``services.dsl_lookahead_audit`` proves (by AST over the interpreter, plus a
     structural walk of the validated spec, plus the broker cheat-on-close/open
-    check) that the strategy reads only bar ``t`` and earlier; only its
-    ``passed_structural`` state arrives here as ``True``. Its
-    ``passed_declared_only`` state — the LLM's ``look_ahead_safe`` boolean with
-    nothing behind it — arrives as ``False`` and fails this floor, which is the
-    point: a self-declaration is not evidence. Never pass a raw
-    ``spec.look_ahead_safe`` into this parameter.
+    check) that the strategy reads only bar ``t`` and earlier; only its ``pass``
+    state arrives here as ``True``. Its ``pending`` and ``degenerate`` states
+    arrive as ``False`` and fail this floor, which is the point: an audit that
+    reached no verdict is not evidence. There is no ``spec.look_ahead_safe`` to
+    pass into this parameter by mistake — that field was deleted from the DSL
+    precisely because "the spec says it is safe" is not evidence.
 
-    ``look_ahead_not_run_reason`` is the honest-rendering half of that. A caller
-    whose ``False`` means "the structural audit could not be completed" — not "a
-    leak was found" — passes the reason here (see
-    ``dsl_lookahead_audit.DslLookAheadAudit.not_run_reason``). It changes nothing
-    about admission: the floor still fails, the strategy still cannot deploy. It
-    only stops ``gate_details["look_ahead"]`` from telling the user their
-    strategy FAILED an audit that never ran.
+    ``look_ahead_status`` and ``look_ahead_not_run_reason`` are the
+    honest-rendering half of that, and they change NOTHING about admission: the
+    floor still fails, the strategy still cannot deploy. They only stop
+    ``gate_details["look_ahead"]`` from telling the user their strategy FAILED an
+    audit that never reached a verdict — the status says which non-verdict it was
+    (``pending`` / ``degenerate``), the reason says why (see
+    ``dsl_lookahead_audit.DslLookAheadAudit.not_run_reason``).
     """
     if not daily_returns or len(daily_returns) < _MIN_RETURNS_FOR_GATE:
         return RigorGateVerdict.pending()
@@ -226,6 +227,7 @@ def verdict_from_returns(
             paper_claimed_sharpe=paper_claimed_sharpe,
             average_correlation=average_correlation,
             look_ahead_audit_passed=look_ahead_audit_passed,
+            look_ahead_status=look_ahead_status,
             look_ahead_not_run_reason=look_ahead_not_run_reason,
         )
     except Exception as exc:  # never let the badge crash the library list
