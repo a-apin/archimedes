@@ -140,3 +140,22 @@ def _clear_rigor_cache():
     rigor_cache.clear()
     yield
     rigor_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_vault_owner_cache():
+    """Reset the trace-ownership memo (services/trace_visibility.py) — #1573.
+
+    Same hazard as ``_clear_rigor_cache`` above, one layer down: the vault →
+    owner memo is a module-global dict keyed on the vault address, and several
+    test files reuse the SAME vault addresses against DIFFERENT per-test
+    SQLite databases. Without this reset, "vault X is owned by user Y" (or,
+    worse, "vault X is unowned") learned in one test would be served to a
+    later test whose database says otherwise, making an ownership *verdict*
+    depend on suite order. Cleared before and after, like its sibling.
+    """
+    from archimedes.services.trace_visibility import clear_vault_owner_cache
+
+    clear_vault_owner_cache()
+    yield
+    clear_vault_owner_cache()
