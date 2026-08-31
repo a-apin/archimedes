@@ -515,17 +515,57 @@ class ChainExecutor:
         await self._apply_non_custodial_ownership(vault_address, owner_wallet)
         return vault_address
 
-    def _backend_signer_address(self) -> str | None:
-        """The EVM address the backend uses to sign vault txs (the agent/creator).
+    def backend_signer_address(self) -> str | None:
+        """The EVM address the backend uses to sign vault/registry txs (the agent).
 
         Circle path: the managed wallet's EVM address, surfaced via WALLET_ADDRESS
         (same env var the bootstrap script already reads for setAgent). Raw-key
         path: the address derived from ARC_AGENT_PRIVATE_KEY. Returns None if it
         can't be determined (Circle configured but WALLET_ADDRESS unset).
+
+        Public (promoted from ``_backend_signer_address`` for #1353): the reveal
+        reconciliation signer pre-check in ``agent_runner.py`` needs the same
+        "what address does this backend sign with" answer this vault-creation
+        path already computed — one source of truth rather than a second,
+        possibly-drifting derivation.
+
+        CAUTION (#1403 review): on the Circle path this is WALLET_ADDRESS, an
+        env var kept in sync with the wallet's true address BY HAND (see
+        .env.example) — signing itself goes through WALLET_ID, a completely
+        separate env var (circle_signer.py). A stale WALLET_ADDRESS is
+        harmless here (only ever used defensively, for an owner≠agent
+        `==` check). A caller that needs the address to actually be correct —
+        not just configured — must use ``backend_signer_address_confirmed``
+        instead.
         """
         if circle_signer.is_configured:
             addr = os.getenv("WALLET_ADDRESS", "").strip()
             return addr or None
+        account = chain_client.settings.agent_account
+        return account.address if account else None
+
+    def backend_signer_address_confirmed(self) -> str | None:
+        """Like ``backend_signer_address``, but ONLY when the answer is
+        cryptographically certain — never an operator-maintained mirror that
+        can silently drift out of sync with what actually signs (#1403
+        review of #1353's signer pre-check).
+
+        Raw-key path: the address IS the signer, derived straight from
+        ``ARC_AGENT_PRIVATE_KEY`` — always confirmed.
+
+        Circle path: signing is keyed on WALLET_ID (circle_signer.py); the
+        EVM address is surfaced separately via a hand-maintained WALLET_ADDRESS
+        env var (.env.example: "WALLET_ID is the Circle wallet UUID,
+        WALLET_ADDRESS is its EVM address") that nothing re-derives from the
+        Circle wallet itself. Returns None here — "can't be confirmed," not
+        "confirmed absent" — because a caller that goes straight to an
+        IRREVERSIBLE terminal state on a mismatch (the reveal reconciliation
+        signer pre-check) must never act on this value: a stale WALLET_ADDRESS
+        while the true signer is unchanged would read as a rotation and
+        permanently terminal a perfectly recoverable dangling reveal.
+        """
+        if circle_signer.is_configured:
+            return None
         account = chain_client.settings.agent_account
         return account.address if account else None
 
@@ -575,7 +615,7 @@ class ChainExecutor:
         reason to 500 the create call (and never a reason to leave funds at risk —
         no user funds are in the vault yet at creation time).
         """
-        agent_addr = self._backend_signer_address()
+        agent_addr = self.backend_signer_address()
         resolved_owner = self._resolve_vault_owner(owner_wallet)
 
         if not resolved_owner:
