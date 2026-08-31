@@ -135,7 +135,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-08-30 | ADR index and status vocabulary. All twenty records are listed there. |
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-08-30 | ADR index and status vocabulary. All twenty-one records are listed there. |
 | [`adr/unlicense-public-domain.md`](adr/unlicense-public-domain.md) | accepted | Dan Browne | initial commit | The Unlicense as a public-domain dedication, and its ownership/contributor consequences. |
 | [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
 | [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
@@ -156,6 +156,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md) | accepted, **pending quant sign-off** | Dan Browne | 2026-07-09 | DSR trial count depends only on the strategy's own search; curated strategies grade at num_trials = 1. |
 | [`adr/aurora-postgres-alembic-datastore.md`](adr/aurora-postgres-alembic-datastore.md) | accepted | Dan Browne | 2026-07-28 | Aurora Serverless v2 (18.3) + Alembic; Redis 7.1 ephemeral-only. |
 | [`adr/strategy-dsl-hardening-over-lean4.md`](adr/strategy-dsl-hardening-over-lean4.md) | accepted | Dan Browne | 2026-08-30 | No Lean 4 on the emission path; harden the existing closed-enum DSL instead. Sandbox reserved for inexpressible shapes; languages re-evaluated only on a trigger. |
+| [`adr/lambda-generation-offload.md`](adr/lambda-generation-offload.md) | proposed (verdict: defer) | Dan Browne | 2026-08-30 | Measured spike (#1411): a real Lambda container built from the production backend image reaches Redis/Aurora/Bedrock/MiniLM from inside the VPC, but cold start is 13.6 s steady-state and 51 s after a deploy. Defers the lane; adopts the lane-agnostic worker entrypoint and the measured-cost model, and records why the quote seam is `_price()` rather than `quote()`. |
 
 ## Plans and roadmaps (intent, not state)
 
@@ -167,8 +168,10 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`plans/2026-08-22-calm-precision-rebrand.md`](plans/2026-08-22-calm-precision-rebrand.md) | plan | Daniel Reis | 2026-08-22 | Calm-precision rebrand plan (PR #1469). |
 | [`plans/2026-08-23-phantom-inspired-public-landing.md`](plans/2026-08-23-phantom-inspired-public-landing.md) | plan | Daniel Reis | 2026-08-23 | Public landing redesign plan (PR #1469). |
 | [`plans/2026-08-23-security-posture-page.md`](plans/2026-08-23-security-posture-page.md) | plan | Daniel Reis | 2026-08-23 | Static /security posture page plan (PR #1469). |
+| [`plans/2026-08-30-relations-phase2.md`](plans/2026-08-30-relations-phase2.md) | plan | Dan Browne | 2026-08-30 | Relations Phase 2 (builds on PR #1438): passport ↔ proposal ↔ user entity graph, FK/index plan with orphan-audit SQL, dead-column drops, `brief_intent` promotion, sizing and ordering. |
 | [`plans/2026-08-30-intraday-paper-trading.md`](plans/2026-08-30-intraday-paper-trading.md) | draft | Dan Browne | 2026-08-30 | Intraday paper trading (v8 Lane 3.5). Recommends 15-min mark-to-market on open positions (`paper_marks` + retention + a runner-box loop) and defers intraday *signal* evaluation to v2 behind an ADR — bar-counted rebalance cadence and indicator warmup would silently change strategy semantics. |
 | [`plans/2026-08-30-interpreter-unification.md`](plans/2026-08-30-interpreter-unification.md) | draft | Dan Browne | 2026-08-30 | Collapsing the two DSL interpreters (backtrader backtest vs live signal FSM) into one shared decision core: divergence inventory, architecture options, and a migration ratcheted on the parity suite. Cross-references the intraday-paper-trading plan (§4.1). |
+| [`plans/2026-08-30-paper-trading-reasoning-traces.md`](plans/2026-08-30-paper-trading-reasoning-traces.md) | draft | Dan Browne | 2026-08-30 | Wiring paper-trading decisions into the commit-reveal trace pipeline (#1575). Where a paper decision is born (the settle-path rebalance boundary — marks never decide), the trace body next to the house agent's, owner stamping via #1556 (and why the zero-address sentinel would leak), passport reachability via #1569's `trace_references_strategy`, why on-chain anchoring is default OFF (consent + cost), the loud-failure design for an unpublished decision, and a numbered build plan. |
 | [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |
 | [`plans/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | plan | Dan Browne | — | Spine+ v2 phase plan. |
 | [`plans/second-wave-multi-asset-strategies.md`](plans/second-wave-multi-asset-strategies.md) | plan | Önder Akkaya | 2026-06-11 | Second-wave multi-asset strategies. |

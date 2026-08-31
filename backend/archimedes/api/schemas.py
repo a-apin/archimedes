@@ -299,8 +299,10 @@ class StrategyResponse(BaseModel):
     backtest_engine: str | None = None
     cost_model_id: str | None = None
     # Where look_ahead_audit_passed came from: "broker_config_only" (an
-    # execution-timing check that never fails) | "ast_audit" | "self_attested".
-    # Without it a constant True reads as a passed audit.
+    # execution-timing check that never fails) | "ast_audit" |
+    # "dsl_structural_audit" (the DSL spec was proven inside the audited
+    # interpreter surface) | "self_attested" (no completed audit — the boolean
+    # beside it is False). Without it a constant True reads as a passed audit.
     look_ahead_audit_source: str | None = None
 
     # Equity curve for charting

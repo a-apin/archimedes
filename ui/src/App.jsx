@@ -1,11 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
+import { fetchAdminProbe } from "./adminProbe.js";
+import { isInsightsPageBlocked, resolveInsightsAdminState } from "./insightsGate.js";
 import { useAuth } from "./AuthContext";
 import { defaultFeatures, fetchFeatures } from "./features";
 import { pageToPath, resolveRoute } from "./routes";
 import Architecture from "./components/Architecture";
 import AuthPage from "./components/AuthPage";
 import Landing from "./components/Landing";
+import NotFound from "./components/NotFound";
 import PublicLayout from "./components/PublicLayout";
 import Security from "./components/Security";
 import "./App.css";
@@ -25,6 +28,31 @@ export default function App() {
 	const { user, loading: authLoading } = useAuth();
 	const [features, setFeatures] = useState(defaultFeatures);
 	const [route, setRoute] = useState(() => currentRoute(defaultFeatures));
+	// Admin-gate probe result for /app/insights (owner directive 2026-08-20,
+	// supersedes #1028 D8): null while checking, true/false once the server
+	// has answered. Server truth only — never derived from `user`/wallet
+	// local state, which cannot know PLATFORM_ADMIN_WALLETS membership.
+	const [insightsAdmin, setInsightsAdmin] = useState(null);
+	// Bumped on every 'wallet-changed' event (config.js — fired on a raw
+	// account swap in the injected/EIP-6963 wallet, independent of sign-in
+	// state) so the insights-admin-probe effect below re-runs even while
+	// already sitting on /app/insights. A [route.page]-only dependency left
+	// a stale `insightsAdmin === true` (and the live dashboard it gates)
+	// rendering after switching from an admin-linked wallet to a
+	// non-admin one on the same account, because route.page never changes on
+	// an in-place wallet swap (round-2 finding: the cache-reset in
+	// AuthenticatedApp's wallet-changed handler only helps a FUTURE probe
+	// caller — this effect is the one that has to actually become that
+	// caller). App.jsx has no other reason to track the connected wallet
+	// (that's AuthenticatedApp's walletAddr, the LINKED-and-verified
+	// subset), so a plain counter is used rather than duplicating that state.
+	const [walletChangeSeq, setWalletChangeSeq] = useState(0);
+
+	useEffect(() => {
+		const onWalletChanged = () => setWalletChangeSeq((n) => n + 1);
+		window.addEventListener("wallet-changed", onWalletChanged);
+		return () => window.removeEventListener("wallet-changed", onWalletChanged);
+	}, []);
 
 	useEffect(() => {
 		fetchFeatures()
@@ -65,10 +93,42 @@ export default function App() {
 	useEffect(() => {
 		// Anonymous-OK app pages never bounce to sign-in; auth is required only
 		// to generate, pay, or paper-deploy. Keep aligned with nginx carve-outs.
-		if (route.kind !== "app" || route.anonymousOk || authLoading || user) return;
+		//
+		// `insights` is EXCLUDED here too (owner directive 2026-08-20): a
+		// client-side navigation onto /app/insights must land on the identical
+		// not-found treatment a truly unknown path gets, never a sign-in
+		// prompt — bouncing to /sign-in?next=/app/insights would itself
+		// advertise that the page exists and is worth signing in for. (nginx
+		// gates the FIRST-LOAD request for that path exactly like every other
+		// /app path, so a direct anonymous GET is indistinguishable from a GET
+		// for any unknown /app URL; this branch covers the in-app navigation
+		// case, which never reaches nginx at all.)
+		if (route.kind !== "app" || route.anonymousOk || route.page === "insights" || authLoading || user)
+			return;
 		const next = `${window.location.pathname}${window.location.search}`;
 		window.location.replace(`/sign-in?next=${encodeURIComponent(next)}`);
-	}, [route.kind, route.anonymousOk, authLoading, user]);
+	}, [route.kind, route.anonymousOk, route.page, authLoading, user]);
+
+	useEffect(() => {
+		// Re-probe every time navigation LANDS on insights (not on every
+		// render while already there) — reset to "checking" first so a stale
+		// true/false from a previous visit this session can't flash before the
+		// fresh answer arrives. Also re-probes on a wallet swap that happens
+		// WHILE already sitting on insights (walletChangeSeq dep, see above) —
+		// route.page alone would miss that transition entirely.
+		if (route.page !== "insights") {
+			setInsightsAdmin(null);
+			return;
+		}
+		let cancelled = false;
+		setInsightsAdmin(null);
+		fetchAdminProbe().then((result) => {
+			if (!cancelled) setInsightsAdmin(resolveInsightsAdminState(result));
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [route.page, walletChangeSeq]);
 
 	useEffect(() => {
 		const titles = {
@@ -92,11 +152,24 @@ export default function App() {
 			"sign-in": "Sign in · Archimedes",
 			"sign-up": "Create account · Archimedes",
 			"reset-password": "Reset password · Archimedes",
+			// resolveRoute() returns page === null for not-found, so this branch used
+			// to fall through to the bare 'Archimedes' title — byte-identical to the
+			// landing page, leaving a screen-reader or many-tabs user unable to tell
+			// a failed deep link from home (2.4.2 Page Titled).
 			"not-found": "Page not found · Archimedes",
 		};
-		const key = route.kind === "not-found" ? "not-found" : route.page;
+		// A denied OR still-resolving insights probe titles the tab identically
+		// to a real 404 — "do not advertise existence" applies to the tab title
+		// too, not just the rendered page (a many-tabs user should not be able
+		// to tell "unknown route" from "gated route I'm not allowed on" — or
+		// from "gate still resolving" — apart). isInsightsPageBlocked treats
+		// `null` (unresolved) the same as `false` (denied) here (round 3 fix):
+		// titling the tab "Insights · Archimedes" while the probe is still in
+		// flight was itself a disclosure a genuinely unknown route never makes.
+		const deniedInsights = isInsightsPageBlocked(route.page, insightsAdmin);
+		const key = route.kind === "not-found" || deniedInsights ? "not-found" : route.page;
 		document.title = titles[key] ?? "Archimedes";
-	}, [route.kind, route.page]);
+	}, [route.kind, route.page, insightsAdmin]);
 
 	useEffect(() => {
 		const currentCanonical = document.querySelector('link[rel="canonical"]');
@@ -153,17 +226,29 @@ export default function App() {
 		return <PublicLayout user={user}>{content}</PublicLayout>;
 	}
 
+	// The not-found body lives in ./components/NotFound so the admin gate
+	// below renders the byte-identical treatment (see that file). The rebrand
+	// restyled this branch's markup in place; the markup moved wholesale into
+	// NotFound.jsx rather than being duplicated back here — two copies is
+	// exactly the drift this extraction exists to prevent.
 	if (route.kind === "not-found") {
-		return (
-			<PublicLayout user={user}>
-				<main className="min-h-[70vh] flex flex-col items-center justify-center gap-4 px-4 text-center">
-					<h1 className="serif text-[2rem]">Page not found</h1>
-					<a className="btn-primary" href={user ? "/app" : "/"}>
-						{user ? "Open app" : "Go home"}
-					</a>
-				</main>
-			</PublicLayout>
-		);
+		return <NotFound user={user} />;
+	}
+
+	if (route.kind === "app" && route.page === "insights") {
+		// Server-truth admin gate (owner directive 2026-08-20, supersedes
+		// #1028 D8): a denied OR still-resolving probe renders EXACTLY the
+		// not-found page — same component the true 404 above uses — never a
+		// "you need admin access" message (would itself confirm the page
+		// exists) and never an intermediate "Loading…" screen either (round 3
+		// fix: a genuinely unknown route never shows a loading state on first
+		// paint, so a chrome-free loader while the probe resolves was itself a
+		// vector for telling "gated route" apart from "unknown route" — the
+		// exact thing this gate exists to prevent). isInsightsPageBlocked
+		// treats `null` (unresolved) the same as `false` (denied): both render
+		// NotFound immediately.
+		if (isInsightsPageBlocked(route.page, insightsAdmin)) return <NotFound user={user} />;
+		// admin === true falls through to the normal authenticated render below.
 	}
 
 	// Anonymous-OK pages render immediately with user === null rather than
