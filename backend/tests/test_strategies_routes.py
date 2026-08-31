@@ -1081,9 +1081,21 @@ async def test_single_strategy_endpoint_numeric_fields_equal_live_gate(monkeypat
     target = strategies[0]
     series = _passing_series(5)
 
+    # Patch BOTH persisted-returns readers. This route grades through
+    # `_live_rigor_result_for_one` -> `_live_rigor_results_for_strategies`,
+    # whose DB boundary is `get_all_daily_returns` (the same boundary the
+    # sibling tests above stub) — it is NOT a loop over `get_daily_returns`
+    # since #1662 batched it into one query, so stubbing only the single-row
+    # reader leaves the cohort read live and the assertions below fall through
+    # to `None`. Both stubs express the identical fixture: `target` has a
+    # passing series, every other strategy has none.
     monkeypatch.setattr(
         "archimedes.services.backtest_repository.get_daily_returns",
         lambda session, sid: series if sid == target.id else [],
+    )
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target.id: series} if target.id in ids else {},
     )
     monkeypatch.setattr(
         "archimedes.api.selection_bias_routes._load_strategy_code",
@@ -1225,3 +1237,116 @@ async def test_single_strategy_endpoint_200s_with_no_linked_paper():
     assert served["paper_arxiv_id"] is None
     assert served["paper_title"] is None
     assert served["papers"] == []
+
+
+# ── Publish rights: same responses, O(1) queries (#1663) ────────────────────
+#
+# `GET /api/strategies/` called `wallet_can_publish` once per response row — one
+# round trip per row, each paying a `pool_pre_ping` SELECT 1 first, and paid
+# ONLY by signed-in callers (the per-row call short-circuits on anonymous), which
+# is backwards for a demo. `_publishable_strategy_ids` replaces the loop with one
+# IN query. The query-count guards and their adversarial control live in
+# `test_publishable_strategy_ids.py`; what these two tests pin is that the
+# SERVED RESPONSE did not move — anonymous and wallet-linked alike.
+
+_PUBLISH_CALLER = "0x" + "d4" * 20
+
+
+def _per_row_publishable_ids(session, strategy_ids, wallet_address, *, is_example):
+    """The pre-#1663 per-row gate, drop-in-shaped for _publishable_strategy_ids.
+
+    `bool(caller) and wallet_can_publish(...)` per row is verbatim what both
+    Library loops evaluated, so swapping this in serves the OLD answers through
+    the CURRENT route.
+    """
+    from archimedes.models.strategy_generators import wallet_can_publish
+
+    return {
+        sid
+        for sid in strategy_ids
+        if bool(wallet_address)
+        and wallet_can_publish(session, strategy_id=sid, wallet_address=wallet_address, is_example=is_example)
+    }
+
+
+async def _library_json(monkeypatch, caller, publishable_impl=None):
+    """GET /api/strategies/?limit=10, optionally with the per-row gate swapped in."""
+    import archimedes.api.strategies_routes as sr
+    from archimedes.main import app
+
+    # Hermeticity: an ambient PLATFORM_ADMIN_WALLETS would make the caller an
+    # admin, flip every can_publish to True, and silently defeat the
+    # "not all(flags)" non-vacuity check below.
+    monkeypatch.delenv("PLATFORM_ADMIN_WALLETS", raising=False)
+    monkeypatch.setattr(sr, "get_linked_wallet_address", lambda request: caller)
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {},
+    )
+    if publishable_impl is not None:
+        monkeypatch.setattr(sr, "_publishable_strategy_ids", publishable_impl)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/strategies/?limit=10")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _seed_one_generator_row(strategy_id: str, wallet: str) -> None:
+    """Give `wallet` publish rights over exactly ONE curated id.
+
+    Exactly one, deliberately: an all-True or all-False page would make the
+    byte-identity assertion below pass for an implementation that ignored the
+    DB entirely.
+    """
+    from archimedes.db import get_session
+    from archimedes.models.identity import WalletIdentity
+    from archimedes.models.strategy_generators import record_generator
+
+    with get_session() as session:
+        session.merge(WalletIdentity(wallet_address=wallet, actor_class="human"))
+        # The production writer, which is insert-if-not-exists — `archimedes.db`'s
+        # engine is a module-level singleton, so the per-test DATABASE_URL does
+        # not actually give each test a fresh file and a raw INSERT would trip
+        # the (strategy_id, wallet_address) unique constraint on the second test.
+        record_generator(session, strategy_id=strategy_id, wallet_address=wallet)
+        session.commit()
+
+
+@pytest.mark.asyncio
+async def test_library_response_identical_to_per_row_gate_for_a_linked_wallet(monkeypatch):
+    """A signed-in caller's page is byte-identical to what the per-row gate served."""
+    import archimedes.api.strategies_routes as sr
+
+    strategies = sr.strategy_provider().list_strategies()
+    assert strategies, "need at least one curated strategy"
+    _seed_one_generator_row(strategies[0].id, _PUBLISH_CALLER)
+
+    batched = await _library_json(monkeypatch, _PUBLISH_CALLER)
+    legacy = await _library_json(monkeypatch, _PUBLISH_CALLER, publishable_impl=_per_row_publishable_ids)
+
+    # Non-vacuity: the fixture must produce a genuine MIX, or "identical" would
+    # hold for an implementation that hardcoded one answer.
+    flags = [s["can_publish"] for s in batched["strategies"]]
+    assert any(flags), "seed did not reach the route — every row is can_publish=False"
+    assert not all(flags), "every row is can_publish=True — the fixture grants too much to discriminate"
+
+    assert batched == legacy
+
+
+@pytest.mark.asyncio
+async def test_library_response_identical_to_per_row_gate_for_an_anonymous_visitor(monkeypatch):
+    """The anonymous short-circuit is not relaxed: a visitor still sees
+    can_publish=False everywhere, exactly as before."""
+    import archimedes.api.strategies_routes as sr
+
+    strategies = sr.strategy_provider().list_strategies()
+    assert strategies, "need at least one curated strategy"
+    # Seeded for a DIFFERENT wallet — a visitor must not inherit its rights.
+    _seed_one_generator_row(strategies[0].id, _PUBLISH_CALLER)
+
+    batched = await _library_json(monkeypatch, None)
+    legacy = await _library_json(monkeypatch, None, publishable_impl=_per_row_publishable_ids)
+
+    assert batched == legacy
+    assert not any(s["can_publish"] for s in batched["strategies"])
