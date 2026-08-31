@@ -24,7 +24,7 @@ from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
 from web3.providers.rpc.utils import ExceptionRetryConfiguration
 
-from archimedes.deadline import run_with_deadline
+from archimedes.deadline import drain_abandoned, run_with_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -404,9 +404,85 @@ class BoundedAsyncHTTPProvider(AsyncHTTPProvider):
     would have; it just learns one in bounded time.
     """
 
+    # How long ``disconnect`` waits for deadline-abandoned calls to unwind before
+    # it gives up and quarantines the session instead of closing it (#1632). Sized
+    # off the same clock the strays are on: a stray is at worst one full
+    # ``total_budget_seconds`` behind, and a shutdown that waits a couple of
+    # seconds is invisible next to ECS's 30s SIGTERM grace.
+    TEARDOWN_DRAIN_SECONDS: float = 2.0
+
     def __init__(self, *args: Any, total_budget_seconds: float, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._total_budget_seconds = total_budget_seconds
+
+    async def disconnect(self) -> None:
+        """Close the provider's sessions — but NEVER out from under a stray (#1632).
+
+        ``AsyncHTTPProvider.disconnect`` walks the session cache and closes every
+        session. That is unconditional, and this provider is precisely the object
+        that also *abandons* calls, so before this override the abandonment path
+        satisfied the one condition #1632 says must never hold: **an abandoned
+        call sharing a session object whose lifecycle the abandoner controls.**
+
+        Measured, not assumed (transcript in the PR): with one deadline-abandoned
+        ``eth_chainId`` in flight against a loopback RPC, the provider's connector
+        held exactly one acquired protocol, and ``disconnect()`` took it to::
+
+            BEFORE  session.closed=False  connector.closed=False  acquired=1
+            AFTER   session.closed=True   connector.closed=True   acquired=0
+
+        ``BaseConnector._close`` does that by calling ``proto.close()`` on every
+        entry of ``_acquired`` — the stray's live transport included — and then
+        clearing the set.
+
+        Scope of what is proven, because #1632 is explicit that its cause is a
+        *hypothesis*: the teardown-under-a-live-reader above is measured. The step
+        from there to SIGSEGV is not — no crash was reproduced here or anywhere,
+        on plain HTTP the stray unwound without incident, and this override does
+        not make the segfault reproducible. What it does is remove the ordering
+        that would make one possible, which is worth doing on its own terms: an
+        in-flight request whose transport is closed under it is a bug whether or
+        not it is *the* bug, and it is cheap to stop doing.
+
+        So the order is inverted: **drain first, close second, and if the drain
+        does not reach zero, do not close at all.** Declining is the safe branch —
+        a quarantined session leaks a socket in a process that is on its way out,
+        which costs nothing next to freeing a buffer a native reader still holds.
+        Quarantine is also stable rather than merely deferred: returning early
+        leaves the session in web3's cache, so it keeps a strong reference and
+        cannot become garbage while the stray is alive (``Connection.__del__``
+        would otherwise close the transport from a GC pass — the same free, minus
+        the stack frame that would tell you where it happened).
+
+        Not chosen, and why — the other two options #1632 lists:
+
+        * *Per-call sessions.* Sound in principle, but it pays a TCP+TLS handshake
+          on every JSON-RPC, and web3 7.16 caches by ``(loop id, endpoint)`` inside
+          ``HTTPSessionManager``, so getting there means fighting the library on
+          the hot path to fix a shutdown-ordering bug.
+        * *A dedicated never-closed session for strays.* Unsound as stated: you
+          cannot migrate an in-flight request onto a different session after the
+          fact, and #1593's stall is in ``async_lock`` — BEFORE the session is in
+          hand — so at abandonment time there is frequently no particular session
+          the stray owns yet. Quarantining "the current one" would sometimes
+          quarantine a session the stray never touches while it later picks up the
+          replacement.
+
+        Draining has neither problem: it makes no claim about *which* session a
+        stray holds, only that no stray is holding anything when we start freeing.
+        """
+        remaining = await drain_abandoned(self.TEARDOWN_DRAIN_SECONDS)
+        if remaining:
+            logger.error(
+                "SESSION_QUARANTINED: %d abandoned RPC call(s) still in flight after a "
+                "%.1fs drain — NOT closing %s's sessions. Freeing a connection a stray "
+                "still holds is the #1632 segfault; leaking one is not.",
+                remaining,
+                self.TEARDOWN_DRAIN_SECONDS,
+                self.endpoint_uri,
+            )
+            return
+        await super().disconnect()
 
     async def make_request(self, method: Any, params: Any) -> Any:
         return await run_with_deadline(
