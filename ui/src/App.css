@@ -3428,6 +3428,15 @@ button:where(.tag) {
 	width: 180px;
 	flex-shrink: 0;
 }
+/* The search-scope sentence sits between the controls and the result count;
+   it is the input's accessible description (aria-describedby), so it must stay
+   rendered rather than being hidden on small viewports. */
+.catalog-search-scope {
+	font-size: 0.76rem;
+	color: var(--text-3);
+	margin: -8px 0 10px;
+	max-width: 62ch;
+}
 .catalog-results-info {
 	font-size: 0.8rem;
 	color: var(--text-2);
