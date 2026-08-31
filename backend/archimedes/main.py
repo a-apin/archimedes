@@ -90,6 +90,124 @@ from archimedes.db import init_db
 
 logger = logging.getLogger(__name__)
 
+
+def _assert_marketplace_live_or_dry(marketplace_router_obj: object, payments_dry_run: bool) -> None:
+    """FATAL when circlekit failed to import while PAYMENTS_DRY_RUN=false (#1240).
+
+    The import above degrades on purpose (PR #958 prod incident) so a broken
+    circlekit install can never crash-loop the whole backend — correct when
+    PAYMENTS_DRY_RUN=true, since no real money is at stake and "marketplace
+    absent" (routes 404) is an honest, visible degraded state. It stops being
+    correct the moment an operator sets PAYMENTS_DRY_RUN=false: that is a
+    deliberate signal real charging is wanted, and "the process boots fine,
+    most routes 200, marketplace quietly 404s" is a silent trap for exactly
+    that operator, not a safe degrade — see architectural-principles.md's
+    fail-soft-is-wrong-for-anything-a-claim-depends-on rule. Pulled into its
+    own function so the assertion is unit-testable without importing the
+    whole app.
+
+    KNOWN LIMITATION (#1240 follow-up, not fixed here): this gates on the
+    GLOBAL PAYMENTS_DRY_RUN, which infra/ecs.tf pins to "true" in prod. The
+    rail actually settling real money today is the generation paywall, which
+    is live via the generation-scoped GENERATION_PAYMENTS_DRY_RUN="false"
+    (the 2026-08-20 split, #1428) — a switch this assertion does not read. So
+    in prod as configured this guard is INERT: it will not refuse to boot even
+    though real value is moving. Widening it to "any rail is live" is a
+    behavior change to the boot path and wants its own PR; recorded here so
+    the guard is not mistaken for protection it does not currently give.
+    """
+    if marketplace_router_obj is None and not payments_dry_run:
+        raise RuntimeError(
+            "FATAL: circlekit failed to import (marketplace router unavailable, see "
+            "the error logged above) while PAYMENTS_DRY_RUN=false. Refusing to boot "
+            "with real-money charging intended but no charging capability available. "
+            "Fix the circlekit install, or set PAYMENTS_DRY_RUN=true if dry-run is "
+            "actually what's intended."
+        )
+
+
+_assert_marketplace_live_or_dry(
+    marketplace_router,
+    os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes"),
+)
+
+
+class GatewayChainMismatch(RuntimeError):
+    """Raised ONLY by _assert_gateway_chain_matches_rpc, and only on a
+    confirmed GATEWAY_CHAIN/RPC mismatch or an unresolvable GATEWAY_CHAIN
+    name under PAYMENTS_DRY_RUN=false — never on a connectivity failure.
+
+    A dedicated type (rather than a bare RuntimeError) so the lifespan
+    startup wrapper can re-raise exactly this failure mode as fatal without
+    also catching an unrelated RuntimeError from elsewhere in the same try
+    block (e.g. get_chain_id() raising on a closed aiohttp session/event
+    loop) — a review finding on #1240: a type-based `except RuntimeError`
+    at the call site made ANY RuntimeError fatal, including ones that must
+    fall through to the non-fatal "connectivity issue?" warning branch.
+    Subclasses RuntimeError so existing `pytest.raises(RuntimeError, ...)`
+    tests against this function keep working unchanged.
+    """
+
+
+async def _assert_gateway_chain_matches_rpc(
+    chain_client_obj: object, gateway_chain: str, payments_dry_run: bool
+) -> None:
+    """FATAL when GATEWAY_CHAIN resolves to a chain_id the RPC we actually
+    talk to doesn't report — but only when PAYMENTS_DRY_RUN=false (#1240).
+
+    circlekit's ``CHAIN_ALIASES`` maps ``"mainnet"`` -> ``"ethereum"``, so a
+    fat-fingered ``GATEWAY_CHAIN`` can silently resolve to a real, DIFFERENT
+    chain than the one Arc RPC (and the vault reads/writes) actually target
+    — Gateway payments would settle on a chain trades don't execute on, and
+    ``GET /api/config/contracts``' "chain" field would be lying about which
+    chain we're on. Fatal only under PAYMENTS_DRY_RUN=false (same
+    conditioning as ``_assert_marketplace_live_or_dry`` above): a dry-run/
+    testnet boot with a stale or experimental GATEWAY_CHAIN value must not
+    crash-loop over it, just log loudly.
+
+    A connectivity failure (``chain_client_obj.get_chain_id()`` raising) is
+    the CALLER's problem, not this function's — chain_client owns its own
+    retry/backoff, and "the RPC was briefly unreachable at boot" is a
+    different failure mode than "we are pointed at the wrong chain". This
+    function only ever raises ``GatewayChainMismatch`` (never a bare
+    ``RuntimeError``) on a confirmed mismatch, or an unresolvable
+    GATEWAY_CHAIN name (also a real config bug worth being loud about) — any
+    OTHER exception (e.g. get_chain_id() raising for connectivity reasons)
+    propagates as whatever type it naturally is, unmodified, precisely so
+    the caller can tell the two failure modes apart by type.
+
+    KNOWN LIMITATION (#1240 follow-up, not fixed here): see the same note on
+    _assert_marketplace_live_or_dry — the ``payments_dry_run`` this receives
+    is the GLOBAL switch, "true" in prod, so the fatal branch never fires
+    there. It bites hardest on this assertion specifically: the live
+    generation paywall quotes ``chain: gateway_chain()`` to real payers, so a
+    fat-fingered GATEWAY_CHAIN is exactly the failure this function exists to
+    catch, and today it would only be logged as a warning.
+    """
+    from circlekit.constants import get_chain_config
+
+    try:
+        expected_chain_id = get_chain_config(gateway_chain).chain_id
+    except ValueError as exc:
+        message = f"GATEWAY_CHAIN={gateway_chain!r} is not a chain circlekit recognizes: {exc}"
+        if payments_dry_run:
+            logger.warning("%s (PAYMENTS_DRY_RUN=true — not fatal, but fix before flipping it)", message)
+            return
+        raise GatewayChainMismatch(f"FATAL: {message} Refusing to boot with PAYMENTS_DRY_RUN=false.") from exc
+
+    actual_chain_id = await chain_client_obj.get_chain_id()
+    if expected_chain_id != actual_chain_id:
+        message = (
+            f"GATEWAY_CHAIN={gateway_chain!r} resolves to chain_id={expected_chain_id}, but the "
+            f"configured RPC reports chain_id={actual_chain_id}. Gateway payments would settle "
+            "on a different chain than trades execute on."
+        )
+        if payments_dry_run:
+            logger.warning("%s (PAYMENTS_DRY_RUN=true — not fatal, but fix before flipping it)", message)
+            return
+        raise GatewayChainMismatch(f"FATAL: {message} Refusing to boot with PAYMENTS_DRY_RUN=false.")
+
+
 # ── Docs gate: disable /docs and /openapi.json in production ──────────
 # Default OFF when PUBLIC_DOMAIN is set (production). Override with
 # ENABLE_API_DOCS=1 to re-enable in any environment.
@@ -194,6 +312,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: example strategy seed failed (non-fatal): %s", exc)
 
+    # Both money-affecting switches FAIL SAFE (default to dry) and must be
+    # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
+    # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
+    # out-of-the-box deploy mirrored no real trades yet charged real USDC —
+    # the worst possible asymmetry. Charging real money now requires an
+    # explicit PAYMENTS_DRY_RUN=false.
+    #
+    # Read BEFORE step 3's try block (not inside it) so it is unconditionally
+    # bound going into step 3y below, regardless of whether step 3 itself
+    # raises. It used to be assigned inside that try, after the MarketService
+    # import and the AGENT_INTERVAL_SECONDS int() parse — either one raising
+    # first (e.g. a non-numeric AGENT_INTERVAL_SECONDS) left this name
+    # unbound, and step 3y's reference to it then raised a bare NameError
+    # that its own `except Exception` swallowed as "connectivity issue?",
+    # silently disabling the GATEWAY_CHAIN/RPC mismatch guard (#1240 review).
+    payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
+
     # 3. Start the in-process marketplace engine (MarketService).
     # FAIL-SOFT: constructing the engine (or importing its deps, e.g. circlekit)
     # must NEVER take down the whole backend — a new subsystem crashing at
@@ -205,13 +340,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         from archimedes.marketplace.service import MarketService
 
         interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
-        # Both money-affecting switches FAIL SAFE (default to dry) and must be
-        # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
-        # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
-        # out-of-the-box deploy mirrored no real trades yet charged real USDC —
-        # the worst possible asymmetry. Charging real money now requires an
-        # explicit PAYMENTS_DRY_RUN=false.
-        payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
         paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
         market = MarketService(
             interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading
@@ -226,6 +354,42 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _app.state.market = None
         _logger.error("startup: marketplace engine failed to start — running WITHOUT it (non-fatal): %s", exc)
+
+    # 3y. Verify GATEWAY_CHAIN against the RPC we actually talk to (#1240).
+    # Gated on marketplace_router (circlekit importable), not `market`
+    # (MarketService construction) — generation_payment.py's paywall also
+    # resolves GATEWAY_CHAIN independently of the ticking engine, so this
+    # matters even when MarketService itself failed to start for some other
+    # reason. A connectivity failure (RPC briefly unreachable at boot) is
+    # logged and swallowed here — chain_client owns its own retry/backoff,
+    # and that is a different failure mode than "pointed at the wrong
+    # chain", which is the only thing _assert_gateway_chain_matches_rpc
+    # itself treats as fatal (and only when PAYMENTS_DRY_RUN=false).
+    if marketplace_router is not None:
+        try:
+            from archimedes.chain.client import chain_client
+            from archimedes.marketplace.config import gateway_chain
+
+            # Read through config.gateway_chain(), never a hand-rolled
+            # os.getenv("GATEWAY_CHAIN", <the module default>): #1495 landed
+            # that single accessor (and a structural test that forbids any
+            # other reference to the default constant) precisely because a
+            # hand-rolled getenv is how the revenue sweep silently stayed on
+            # testnet. This boot check must resolve the chain the exact same
+            # way the money paths do, or it verifies the wrong name.
+            configured_chain = gateway_chain()
+            await _assert_gateway_chain_matches_rpc(chain_client, configured_chain, payments_dry_run)
+            _logger.info("startup: GATEWAY_CHAIN=%s verified against RPC", configured_chain)
+        except GatewayChainMismatch:
+            # Re-raise ONLY the dedicated mismatch type, by identity — not
+            # "any RuntimeError". A plain RuntimeError from get_chain_id()
+            # itself (e.g. a closed aiohttp session/event loop) must fall
+            # through to the generic warning branch below instead of aborting
+            # boot; catching RuntimeError broadly here used to make it fatal
+            # regardless of PAYMENTS_DRY_RUN (#1240 review finding).
+            raise
+        except Exception as exc:
+            _logger.warning("startup: GATEWAY_CHAIN/RPC verification skipped (connectivity issue?): %s", exc)
 
     # 3z. Register the system/agent addresses in controlled_wallets (issue
     # #1028, D1a/D3). Idempotent upsert — safe to run on every boot.

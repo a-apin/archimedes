@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import CreateVaultModal from "./CreateVaultModal";
 import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
+import { passportBackPage, passportBackLabel } from "../routes.js";
 import RigorStrictnessControl, { levelLabel } from "./RigorStrictnessControl";
 import { apiGet, apiPostWithMeta } from "../api";
 import { useRigorStrictness, BADGE_LEVEL } from "../hooks/useRigorStrictness";
@@ -16,6 +17,12 @@ import {
 	tokensLabel,
 	usageNote,
 } from "../generationCost.js";
+import {
+	isUnknownRigorGateStatus,
+	warnUnknownRigorGateStatus,
+	UNKNOWN_RIGOR_LABEL,
+	UNKNOWN_RIGOR_TITLE,
+} from "../rigorGateStatus.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -179,6 +186,19 @@ export default function StrategyPassport({
 		};
 	}, [strategyId]);
 
+	// Exhaustiveness alarm for rigor_gate_status, shared with Strategies.jsx so
+	// both surfaces answer a fifth state identically (#1358). Declared up here,
+	// above the `loading` / `error` early returns below, because a hook after a
+	// conditional return is a hook that sometimes does not run.
+	const unknownRigor = isUnknownRigorGateStatus(strategy?.rigor_gate_status);
+	useEffect(() => {
+		if (unknownRigor)
+			warnUnknownRigorGateStatus(
+				strategy?.rigor_gate_status,
+				"StrategyPassport",
+			);
+	}, [unknownRigor, strategy?.rigor_gate_status]);
+
 	if (loading) return <div className="caption">Loading strategy passport…</div>;
 
 	if (error || !strategy) {
@@ -186,9 +206,9 @@ export default function StrategyPassport({
 			<div className="max-w-[640px]">
 				<button
 					className="btn btn-outline btn-sm mb-3"
-					onClick={() => onNavigate("library")}
+					onClick={() => onNavigate(passportBackPage(user))}
 				>
-					← Back to Library
+					{passportBackLabel(user)}
 				</button>
 				<div className="info-box warning">
 					Could not load strategy: {error || "unknown error"}
@@ -199,6 +219,22 @@ export default function StrategyPassport({
 
 	const s = strategy;
 	const passingRigor = s.passes_rigor_gate === true;
+	// #1358: rigor_gate_status carries the honest four-state badge
+	// ("pass"|"fail"|"pending"|"degenerate") the API has served since #1184 —
+	// nothing under ui/src/ read it before this fix, so every strategy with
+	// zero statistics computed (rigor_gate_status === "pending") rendered as
+	// though it had FAILED the gate (passes_rigor_gate is false for pending
+	// too, by fail-closed design). Checked before any passes_rigor_gate
+	// branch below so "never evaluated" can't be mistaken for "evaluated and
+	// lost".
+	const rigorPending = s.rigor_gate_status === "pending";
+	// #1358 round-3: the fourth state. Same NEUTRAL treatment as pending — never
+	// the "not Verified" / "not passed" wording, because nothing was measurable
+	// to fail — but its own sentence, since a degenerate row HAS persisted
+	// returns and pending's "not yet evaluated" would be a fresh false claim.
+	// Copy follows agents/portfolio_agent.py `_format_strategies`, which already
+	// tells the LLM exactly this.
+	const rigorDegenerate = s.rigor_gate_status === "degenerate";
 	// ── Deploy gating at the user's chosen strictness ──
 	const badgePass = s.passes_rigor_gate === true;
 	// Lowest level (1..5) at which this strategy is deployable — from the live
@@ -212,7 +248,21 @@ export default function StrategyPassport({
 			: s.passes_rigor_gate === false
 				? null
 				: undefined;
-	const blockedByFloor = gate ? gate.blocked_by_floor === true : false;
+	// #1358 round-3: a zero-variance series leaves dsr_p_value and oos_sharpe at
+	// None, and RigorGateResult.blocked_by_floor treats a None on either as a
+	// floor failure — so the gate returns blocked_by_floor=true for a strategy
+	// no floor ever measured. Every consumer of blockedByFloor below says "fails
+	// an always-on correctness floor", which is an assertion about a measurement
+	// that did not happen. Suppress that claim here (once, so all five sites
+	// agree) and let the degenerate sentence beside it carry the honest reason.
+	//
+	// This loosens no permission: `deployable` additionally requires
+	// `minLevel != null`, and min_passing_level is null for a degenerate row, so
+	// the deploy button stays disabled either way. Only the EXPLANATION changes.
+	const gateDegenerate = gate ? gate.degenerate === true : false;
+	const blockedByFloor = gate
+		? gate.blocked_by_floor === true && !gateDegenerate
+		: false;
 	const deployable = minLevel != null && minLevel <= level && !blockedByFloor;
 	const needsHigherLevel =
 		minLevel != null && minLevel > level && !blockedByFloor;
@@ -237,9 +287,9 @@ export default function StrategyPassport({
 		<div className="passport-page">
 			<button
 				className="btn btn-outline btn-sm app-back-link"
-				onClick={() => onNavigate("library")}
+				onClick={() => onNavigate(passportBackPage(user))}
 			>
-				← Back to Library
+				{passportBackLabel(user)}
 			</button>
 
 			{/* Header */}
@@ -262,13 +312,27 @@ export default function StrategyPassport({
 					<span className={`tag ${statusTag(s.status, s.passes_rigor_gate)}`}>
 						{statusLabel(s.status, s.passes_rigor_gate)}
 					</span>
-					{s.passes_rigor_gate === true && (
+					{unknownRigor ? (
+						<span className="tag tag-muted" title={UNKNOWN_RIGOR_TITLE}>
+							rigor gate {UNKNOWN_RIGOR_LABEL}
+						</span>
+					) : rigorDegenerate ? (
+						<span
+							className="tag tag-muted"
+							title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation"
+						>
+							rigor gate unevaluable
+						</span>
+					) : rigorPending ? (
+						<span className="tag tag-muted">rigor gate pending</span>
+					) : s.passes_rigor_gate === true ? (
 						<span className="tag tag-positive inline-flex items-center gap-1">
 							<span className="i-lucide-check w-3.5 h-3.5" /> rigor gate passed
 						</span>
-					)}
-					{s.passes_rigor_gate === false && (
-						<span className="tag tag-muted">rigor gate not passed</span>
+					) : (
+						s.passes_rigor_gate === false && (
+							<span className="tag tag-muted">rigor gate not passed</span>
+						)
 					)}
 					{(s.papers || []).length > 1 ? (
 						<span className="tag tag-accent inline-flex items-center gap-1">
@@ -317,6 +381,16 @@ export default function StrategyPassport({
 										deployed at any strictness level.
 									</>
 								)}
+								{gateDegenerate && (
+									<>
+										{" "}
+										This strategy's persisted return series is zero-variance
+										(broken data or a zero-trade backtest), so the rigor gate had
+										nothing to measure — it was not graded and lost, it was never
+										gradeable. It cannot be deployed until a real backtest
+										replaces that series.
+									</>
+								)}
 								{needsHigherLevel && (
 									<>
 										{" "}
@@ -351,11 +425,13 @@ export default function StrategyPassport({
 								title={
 									!walletAddr
 										? "Connect wallet to deploy"
-										: blockedByFloor
-											? "Fails an always-on rigor floor — cannot deploy at any level"
-											: needsHigherLevel
-												? `Raise strictness to level ${minLevel} to deploy`
-												: "Open deploy modal"
+										: gateDegenerate
+											? "Zero-variance persisted return series — nothing for the rigor gate to measure; not a graded failure"
+											: blockedByFloor
+												? "Fails an always-on rigor floor — cannot deploy at any level"
+												: needsHigherLevel
+													? `Raise strictness to level ${minLevel} to deploy`
+													: "Open deploy modal"
 								}
 							>
 								Deploy as Vault →
@@ -638,18 +714,40 @@ export default function StrategyPassport({
 							<div className="flex items-center gap-2 flex-wrap">
 								<span
 									className={`tag inline-flex items-center gap-1 ${passingRigor ? "tag-positive" : "tag-muted"}`}
+									title={
+										unknownRigor
+											? UNKNOWN_RIGOR_TITLE
+											: rigorDegenerate
+												? "DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation"
+												: undefined
+									}
 								>
-									{passingRigor ? (
+									{/* Unevaluable states are tested FIRST, ahead of passingRigor:
+									    a verdict nothing could compute must never be able to reach
+									    a "Verified" or a "not Verified" claim through a stale
+									    boolean. (Both are already false for these rows today —
+									    this ordering is what keeps that true if the boolean ever
+									    drifts.) */}
+									{unknownRigor ? (
+										UNKNOWN_RIGOR_LABEL
+									) : rigorDegenerate ? (
+										"unevaluable — zero-variance return series"
+									) : passingRigor ? (
 										<>
 											<span className="i-lucide-check w-3.5 h-3.5" /> Verified
 											(Conservative)
 										</>
+									) : rigorPending ? (
+										"pending — not yet evaluated"
 									) : (
 										"not Verified"
 									)}
 								</span>
 								{blockedByFloor ? (
-									<span className="tag tag-negative">
+									<span
+										className="tag tag-negative"
+										title="Fails an always-on correctness floor — look-ahead audit, positive OOS Sharpe, and DSR ≥ 0.50 — independent of strictness level; cannot be deployed at any level"
+									>
 										blocked — correctness floor
 									</span>
 								) : minLevel != null && minLevel > BADGE_LEVEL ? (
@@ -664,7 +762,14 @@ export default function StrategyPassport({
 								label="DSR"
 								value={fmt(s.deflated_sharpe_ratio)}
 								hint={
-									s.dsr_p_value != null ? `p = ${fmt(s.dsr_p_value, 3)}` : null
+									// Despite the wire field's legacy name (dsr_p_value), higher
+									// is better here — a confidence, not a classical significance
+									// statistic where lower is better (leaderboard_schemas.py).
+									// "p = 0.93" reads as catastrophic to a reader expecting the
+									// classical convention; it is in fact the passing case (#1358).
+									s.dsr_p_value != null
+										? `confidence = ${fmt(s.dsr_p_value, 3)}`
+										: null
 								}
 							/>
 							{/* PBO of exactly 0 paired with missing DSR/OOS is almost always a
@@ -690,8 +795,32 @@ export default function StrategyPassport({
 							/>
 						</div>
 						<p className="caption mt-3 leading-relaxed text-[var(--text-3)]">
-							{s.num_trials_in_selection != null &&
-							s.num_trials_in_selection > 1 ? (
+							{/* #1358 round-2 review: a strategy the live gate hasn't graded
+							    yet (no num_trials_in_selection / an "unspecified" provenance
+							    — see schemas.py, which covers BOTH "no persisted returns" and
+							    a batch/DB-failure pending case, so this sentence must not
+							    assert a specific data fact) must not claim EITHER a
+							    self-contained N=1 grading OR a real multi-candidate
+							    correction; both would assert a statistic nothing computed.
+							    "generated_untracked_default" (schemas.py) is a DISTINCT
+							    third case: the strategy WAS graded, but its generation
+							    pipeline never proved it tracks its own selection-pool size,
+							    so num_trials was forced to 1 and the scope says so
+							    explicitly — that is not "ungraded" and must not reuse either
+							    the "not graded yet" sentence or the true-self-contained N=1
+							    sentence below. Four branches total, not a fallback chain. */}
+							{s.num_trials_in_selection == null ||
+							s.num_trials_scope === "unspecified" ? (
+								<>This strategy has not been graded by the rigor gate yet.</>
+							) : s.num_trials_scope === "generated_untracked_default" ? (
+								<>
+									This strategy's generation pipeline did not record its own
+									selection-pool size, so it is graded at num_trials = 1 (no
+									multiple-testing correction applied) — the same treatment as
+									a self-contained strategy, but here because the pool size is
+									unknown, not because there was only one candidate.
+								</>
+							) : s.num_trials_in_selection > 1 ? (
 								<>
 									The Deflated Sharpe Ratio corrects the realized Sharpe for
 									multiple-testing inflation across the{" "}
@@ -709,8 +838,8 @@ export default function StrategyPassport({
 							)}{" "}
 							PBO estimates how much of the in-sample Sharpe is overfit (Bailey
 							et al. 2014). OOS Sharpe is the chronological out-of-sample
-							number. A strategy passes the rigor gate only when all three
-							signals align.
+							number. A strategy passes the rigor gate only when all four
+							signals — DSR, PBO, OOS Sharpe, and the look-ahead audit — align.
 						</p>
 
 						{/* Return source (T2.5) — the rigor gate says whether the edge survives;
