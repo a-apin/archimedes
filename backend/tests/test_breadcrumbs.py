@@ -15,7 +15,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BREADCRUMBS = REPO_ROOT / "ui" / "src" / "components" / "Breadcrumbs.jsx"
 ROUTES = REPO_ROOT / "ui" / "src" / "routes.js"
-LAYOUT = REPO_ROOT / "ui" / "src" / "components" / "Layout.jsx"
+# NAV moved out of Layout.jsx to navConfig.js (#1437) so its own JS test can
+# import the real array; this test follows it there.
+NAV_CONFIG = REPO_ROOT / "ui" / "src" / "navConfig.js"
 
 
 def _extract_crumb_keys(text: str) -> set[str]:
@@ -254,7 +256,7 @@ def _extract_app_paths_pages(routes_text: str) -> set[str]:
 
 def _extract_layout_nav_ids(layout_text: str) -> list[str]:
     m = re.search(r"const\s+NAV\s*=\s*\[(.*?)\n\];", layout_text, re.DOTALL)
-    assert m, "NAV block not found in Layout.jsx"
+    assert m, "NAV block not found in navConfig.js"
     return re.findall(r'id:\s*"([a-z0-9_-]+)"', m.group(1))
 
 
@@ -345,8 +347,8 @@ def test_shell_nav_items_stay_inside_the_shell() -> None:
     unmounted the whole authenticated shell, sidebar included, with no way
     back to where the user was. Every non-Home NAV id must resolve inside /app.
     """
-    layout_text = LAYOUT.read_text(encoding="utf-8")
+    nav_text = NAV_CONFIG.read_text(encoding="utf-8")
     app_pages = _extract_app_paths_pages(ROUTES.read_text(encoding="utf-8"))
-    nav_ids = [i for i in _extract_layout_nav_ids(layout_text) if i != "landing"]
+    nav_ids = [i for i in _extract_layout_nav_ids(nav_text) if i != "landing"]
     bad = sorted(set(nav_ids) - app_pages)
     assert not bad, f"sidebar nav items that route outside /app (shell disappears): {bad}"
