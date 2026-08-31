@@ -129,6 +129,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`runbooks/spec-1-walkthrough.md`](runbooks/spec-1-walkthrough.md) | runbook | Dan Browne | — | SPEC-1 user-journey walkthrough. |
 | [`runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) | runbook | Dan Browne | — | Contract redeploy procedure and secret handling. |
 | [`runbooks/docs-site-setup.md`](runbooks/docs-site-setup.md) | runbook | Dan Browne | 2026-08-20 | GitHub Pages docs site (#1381, option B): Dan's two manual steps (Pages source + Route 53 CNAME), local `mkdocs serve` preview, and why `mkdocs build --strict` isn't used. |
+| [`operations/feature-flag-fliplist.md`](operations/feature-flag-fliplist.md) | current | Dan Browne | 2026-08-31 | The go-live checklist (#834): every feature flag in the tree, classified LIVE / FLIP-AT-LAUNCH / DEAD, with its deployed value, its reader, and the precondition for flipping it. Enforced — `backend/tests/test_feature_flag_fliplist_drift.py` re-derives the inventory and fails CI on any flag with no row. |
 | [`runbooks/backtest-results-retention.md`](runbooks/backtest-results-retention.md) | runbook | Dan Browne | 2026-08-30 | `backtest_results` archive-then-prune procedure (v8 Lane 3.1): keep policy, `archive_backtest_results.py`'s `--plan`/`--archive`/`--prune` flags, the manifest-verification guard, and the post-prune VACUUM step. |
 
 ## Decisions (ADRs)
