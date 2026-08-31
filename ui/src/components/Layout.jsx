@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import WalletConnect from "./WalletConnect";
+import BrandMark from "./BrandMark";
 import Breadcrumbs from "./Breadcrumbs";
 import { getStoredWalletName } from "../config";
 import { deriveChainStatus } from "../chainStatus";
@@ -9,28 +10,43 @@ import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
 import { getProofStages } from "../proofStages.js";
 
-// Sidebar groups separate Home (anchor / landing) from the three product-state
-// bands. Empty group label is intentional for the Home entry — it renders as a
-// header-less section so Home reads as the top-of-shell anchor, not a peer of
-// the other groups. The three labelled groups split the remaining surfaces
+// Sidebar groups separate the marketing-site anchor (labelled "Marketing
+// site", NOT "Home" — the breadcrumb's Home crumb already owns that label for
+// the in-app anchor at Explore; two controls both reading "Home" ~40px apart
+// with different destinations was #1370 item 3) from the product-state
+// bands. Empty group label is intentional for that entry — it renders as a
+// header-less section so it reads as the top-of-shell anchor, not a peer of
+// the other groups. The five labelled groups split the remaining surfaces
 // along the gating boundary:
 //   DISCOVER — open to anonymous visitors (no wallet needed)
 //   STRATEGY — wallet-gated: generate + your saved strategies
-//   POSITION — wallet-gated: deployed vaults, on-chain audit, post-hoc review
-// Item order inside DISCOVER (Explore → Corpus → Architecture) follows the
-// natural user-onboarding read: browse the seed strategies first, see the
-// substrate they're drawn from second, see the system that fuses them third.
+//   POSITION — wallet-gated: on-chain audit, post-hoc review (Portfolio and
+//     Learnings are ROADMAP_PAGES, hidden by default (#1266); Quant Lab
+//     defaults off separately via the backend `quant` feature flag — in the
+//     shipped build this group renders as a single item, Reasoning)
+//   MARKET — the strategy marketplace (ROADMAP_PAGES, hidden by default)
+//   OPS — insights + account
+// Item order inside DISCOVER (Explore → Corpus) follows the natural
+// user-onboarding read: browse the seed strategies first, see the substrate
+// they're drawn from second. Architecture is deliberately NOT a shell nav
+// item (#1370) — `pageToPath('architecture')` resolves to the public
+// `/architecture` route (routes.js PUBLIC_PATHS), so a click here rendered it
+// inside PublicLayout instead: no sidebar, no breadcrumbs, sidebar destroyed.
+// Reachable from PublicLayout's own nav (public marketing pages only) and by
+// direct URL; see the anti-goal in #1370 against giving it a second, /app-side
+// route as a fix.
 const NAV = [
 	{
 		group: null,
-		items: [{ id: "landing", label: "Home", icon: "i-lucide-home" }],
+		items: [
+			{ id: "landing", label: "Marketing site", icon: "i-lucide-home" },
+		],
 	},
 	{
 		group: "Discover",
 		items: [
 			{ id: "explore", label: "Explore", icon: "i-lucide-compass" },
 			{ id: "corpus", label: "Corpus", icon: "i-lucide-library" },
-			{ id: "architecture", label: "Architecture", icon: "i-lucide-network" },
 		],
 	},
 	{
@@ -87,7 +103,7 @@ const NAV = [
 ];
 
 export const PAGE_LABELS = {
-	landing: "Home",
+	landing: "Marketing site",
 	explore: "Explore",
 	leaderboard: "Leaderboard",
 	generate: "Generate",
@@ -139,6 +155,8 @@ export default function Layout({
 	const [health, setHealth] = useState(null);
 	const [healthError, setHealthError] = useState(false);
 	const hamburgerRef = useRef(null);
+	const sidebarRef = useRef(null);
+	const closeButtonRef = useRef(null);
 	const chainStatus = deriveChainStatus(health, healthError);
 	const proofStage =
 		(page === "generate" ? journeyStage : null) ?? CORE_PAGE_STAGE[page];
@@ -200,18 +218,51 @@ export default function Layout({
 	// only clears overflow once every locker has released it. AssetModal.jsx
 	// isn't touched here — it keeps its own independent lock for now — but
 	// this same helper is available for it to adopt.
-	useEffect(() => {
-		if (!menuOpen) return;
-		lockBodyScroll();
-		return () => unlockBodyScroll();
-	}, [menuOpen]);
-
-	const closeMenu = () => {
+	const closeMenu = useCallback(() => {
 		setMenuOpen(false);
-		// Return focus to the hamburger button on close for keyboard/screen-reader
-		// parity — otherwise focus is dropped when the drawer unmounts/hides.
+		// Restore the trigger after the drawer closes.
 		hamburgerRef.current?.focus();
-	};
+	}, []);
+
+	// Mobile drawer behaves like a modal: lock background scroll, move focus
+	// inside, contain Tab navigation, close on Escape, then restore the trigger.
+	useEffect(() => {
+		if (!menuOpen) return undefined;
+		lockBodyScroll();
+		closeButtonRef.current?.focus();
+
+		const onKeyDown = (event) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				closeMenu();
+				return;
+			}
+			if (event.key !== "Tab" || !sidebarRef.current) return;
+
+			const focusable = Array.from(
+				sidebarRef.current.querySelectorAll(
+					'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+				),
+			).filter((element) => element.getClientRects().length > 0);
+			if (focusable.length === 0) return;
+
+			const first = focusable[0];
+			const last = focusable[focusable.length - 1];
+			if (event.shiftKey && document.activeElement === first) {
+				event.preventDefault();
+				last.focus();
+			} else if (!event.shiftKey && document.activeElement === last) {
+				event.preventDefault();
+				first.focus();
+			}
+		};
+
+		document.addEventListener("keydown", onKeyDown);
+		return () => {
+			document.removeEventListener("keydown", onKeyDown);
+			unlockBodyScroll();
+		};
+	}, [closeMenu, menuOpen]);
 
 	const toggleTheme = () => {
 		const next = theme === "light" ? "dark" : "light";
@@ -249,20 +300,18 @@ export default function Layout({
 			)}
 
 			<aside
+				ref={sidebarRef}
 				className={`sidebar${menuOpen ? " sidebar-open" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
 			>
 				<div className="sidebar-brand">
 					<div className="sidebar-brand-main">
-						<div className="logo-mark">
-							<svg viewBox="0 0 36 36" aria-hidden="true">
-								<path d="M18 18c-1.8 1.4-4.5.1-4.1-2.3.5-3.2 5.3-4.5 7.8-2.1 3.8 3.8.2 10.4-6 11.5-8.1 1.4-14.4-7.6-11.1-15.4 4-9.5 17-12.5 25.5-6" />
-							</svg>
-						</div>
+						<BrandMark className="logo-mark" />
 						<div className="logo-copy flex-1 min-w-0">
 							<div className="logo-text">Archimedes</div>
 							<div className="logo-sub">Evidence workspace</div>
 						</div>
 						<button
+							ref={closeButtonRef}
 							className="sidebar-close-btn"
 							onClick={closeMenu}
 							aria-label="Close menu"
