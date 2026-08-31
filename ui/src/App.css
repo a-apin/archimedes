@@ -3872,11 +3872,12 @@ button:where(.tag) {
 	letter-spacing: -0.02em;
 }
 
+/* Legacy duplicate — see the .public-footer note further down. 0.57rem is
+   9.1px; the rebrand rule that owns this selector sets --fs-micro. */
 .public-brand__copy small {
 	margin-top: 7px;
 	color: var(--text-3);
 	font-family: var(--mono);
-	font-size: 0.57rem;
 	letter-spacing: 0.12em;
 	text-transform: uppercase;
 }
@@ -3950,12 +3951,15 @@ button:where(.tag) {
 	z-index: 2;
 }
 
+/* 0.68rem = 10.9px of letter-spaced uppercase mono — the smallest text left on
+   the sign-in screen, and the label that frames the whole page. 13px is the
+   floor the rest of the public surfaces now hold to. */
 .public-kicker {
 	color: var(--public-verdigris);
 	font-family: var(--mono);
-	font-size: 0.68rem;
+	font-size: 0.8125rem;
 	font-weight: 500;
-	letter-spacing: 0.14em;
+	letter-spacing: 0.12em;
 	text-transform: uppercase;
 }
 
@@ -4040,14 +4044,6 @@ button:where(.tag) {
 	color: var(--public-verdigris);
 }
 
-.public-hero__note {
-	max-width: 570px;
-	margin-top: 18px;
-	color: var(--text-3);
-	font-family: var(--mono);
-	font-size: 0.68rem;
-	line-height: 1.65;
-}
 
 .proof-spiral {
 	position: relative;
@@ -4456,51 +4452,13 @@ button:where(.tag) {
 	text-align: center;
 }
 
-.public-stack {
-	padding-block: clamp(62px, 7vw, 94px);
-}
 
-.public-stack__layout {
-	display: grid;
-	grid-template-columns: minmax(230px, 0.65fr) minmax(0, 1.35fr);
-	gap: clamp(40px, 8vw, 128px);
-	align-items: start;
-}
 
-.public-stack h2 {
-	font-size: clamp(2.3rem, 4vw, 3.8rem);
-}
 
-.public-stack ul {
-	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	list-style: none;
-	border-top: 1px solid var(--glass-border);
-}
 
-.public-stack li {
-	display: grid;
-	gap: 4px;
-	padding: 18px 16px 18px 0;
-	border-bottom: 1px solid var(--glass-border);
-}
 
-.public-stack li:nth-child(even) {
-	padding-left: 16px;
-	border-left: 1px solid var(--glass-border);
-}
 
-.public-stack strong {
-	color: var(--public-paper);
-	font-size: 0.82rem;
-	font-weight: 500;
-}
 
-.public-stack li span {
-	color: var(--text-3);
-	font-family: var(--mono);
-	font-size: 0.62rem;
-}
 
 .public-final {
 	padding: clamp(86px, 11vw, 164px) 0;
@@ -4520,19 +4478,24 @@ button:where(.tag) {
 	gap: 20px;
 }
 
+/* Legacy duplicate — see the .public-footer note below. */
 .public-final__layout > div:last-child p {
 	max-width: 42ch;
 	color: var(--text-3);
-	font-size: 0.72rem;
 	line-height: 1.65;
 }
 
+/* Legacy duplicate of a selector the rebrand layer below now owns. Its
+   `font-size: 0.6rem` is removed rather than left to be overridden: the
+   rebrand rule originally declared no font-size, so THIS declaration is what
+   actually rendered the footer at 9.6px. Leaving a sub-floor literal on a
+   live public selector is the trap, not the symptom. font-family stays — the
+   mono footer is the intended look and the rebrand rule does not set it. */
 .public-footer {
 	padding: 24px 0;
 	border-top: 1px solid var(--glass-border);
 	color: var(--text-3);
 	font-family: var(--mono);
-	font-size: 0.6rem;
 	letter-spacing: 0.04em;
 }
 
@@ -4593,13 +4556,12 @@ button:where(.tag) {
 		gap: 14px;
 	}
 
-	.public-nav__link,
+	/* This pair used to shrink to 0.75rem here — 12px for the header's primary
+	   call to action, on the narrow screens where it is hardest to read and
+	   hardest to hit. The controls keep their token size; only the horizontal
+	   padding gives ground, which is what was actually short on width. */
 	.public-auth-link {
-		font-size: 0.75rem;
-	}
-
-	.public-auth-link {
-		padding: 0 13px;
+		padding: 0 16px;
 	}
 
 	.public-hero {
@@ -4640,7 +4602,6 @@ button:where(.tag) {
 	}
 
 	.public-section__intro,
-	.public-stack__layout,
 	.public-final__layout {
 		grid-template-columns: 1fr;
 	}
@@ -4740,14 +4701,7 @@ button:where(.tag) {
 		min-height: auto;
 	}
 
-	.public-stack ul {
-		grid-template-columns: 1fr;
-	}
 
-	.public-stack li:nth-child(even) {
-		padding-left: 0;
-		border-left: 0;
-	}
 }
 
 @media (max-width: 360px) {
@@ -5855,7 +5809,7 @@ button:active,
 	place-items: center;
 	border: 1.5px solid currentColor;
 	border-radius: 5px;
-	color: var(--accent);
+	color: var(--accent-text, var(--accent));
 }
 
 .brand-mark::before,
@@ -5925,6 +5879,13 @@ body:has(.public-site) {
 	--accent: #a79eff;
 	--accent-hover: #bdb6ff;
 	--accent-muted: rgba(167, 158, 255, 0.16);
+	/* --accent is chosen to work as a FILL. On the dark canvas it also happens
+     to be readable as text, so this token is the same value here; the light
+     theme is where the two roles have to part company (see below). Any accent
+     COLOURED TEXT — a label, a step number, an inline link — resolves this
+     rather than --accent, so darkening it for readability can never darken a
+     button. */
+	--accent-text: var(--accent);
 	--accent-on: #17151f;
 	--accent-on-muted: rgba(23, 21, 31, 0.82);
 	--positive: #6ed4bd;
@@ -5932,6 +5893,38 @@ body:has(.public-site) {
 	--sans: "Gabarito", sans-serif;
 	--serif: var(--sans);
 	--mono: "IBM Plex Mono", monospace;
+
+	/* — Type scale —
+     One ratio, applied end to end. The display sizes used to top out at 6rem
+     while the reading sizes sat at 0.74–0.94rem and the footer at 0.6rem
+     (9.6px), so the page read as enormous headlines over text nobody could
+     comfortably read — a ~10x spread between the largest and smallest type on
+     the same screen. This scale closes that gap from both ends: the display
+     ceiling comes down about 15%, every reading size comes up, and
+     --fs-micro (13px) is the floor that nothing on a public page goes under.
+     Sizes are tokens rather than literals so the ratio stays intact the next
+     time one surface needs adjusting. */
+	--fs-display: clamp(2.9rem, 5.4vw, 5rem);
+	--fs-title: clamp(2rem, 3.3vw, 3.1rem);
+	--fs-subtitle: clamp(1.45rem, 2.1vw, 1.9rem);
+	--fs-lede: clamp(1.08rem, 1.1vw, 1.22rem);
+	--fs-body: 1.0625rem;
+	--fs-body-sm: 1rem;
+	--fs-ui: 0.9375rem;
+	--fs-meta: 0.875rem;
+	--fs-micro: 0.8125rem;
+	--lh-tight: 1.4;
+	--lh-body: 1.62;
+
+	/* — Controls —
+     Every public button and button-shaped link resolves its height, padding,
+     radius and label size from these four, so a CTA in the hero and one in
+     the header cannot drift apart. */
+	--control-h: 46px;
+	--control-h-lg: 52px;
+	--control-pad: 24px;
+	--control-radius: 8px;
+
 	--max-w: 1280px;
 	min-height: 100vh;
 	background: var(--canvas);
@@ -5975,9 +5968,24 @@ body:has(.public-site) {
 	--accent: var(--public-signal);
 	--accent-hover: #514add;
 	--accent-muted: rgba(98, 92, 246, 0.1);
+	/* #625cf6 is a fill colour that cannot also be a text colour on this canvas:
+     its ceiling against white is 4.79:1 and it lands at 3.91–3.97:1 on the
+     pale cards, so accent labels and the pipeline's step numbers were failing
+     1.4.3. #4a43d0 clears the floor on all three light surfaces — 6.82:1 on
+     --surface-1, 5.38:1 on --surface-2, 4.77:1 on --surface-3 — and reads as
+     the same cobalt. --surface-3 is the binding constraint: #514add was fine
+     on the first two (6.08 / 4.79) and 4.25:1 on the third, so the value is
+     set for the darkest surface it could ever be drawn on rather than for the
+     ones it happens to be drawn on today. */
+	--accent-text: #4a43d0;
 	--accent-on: #ffffff;
-	--accent-on-muted: rgba(255, 255, 255, 0.9);
-	--positive: var(--public-proof);
+	/* 0.9 alpha put this at 4.21:1 on #625cf6, whose ceiling with pure white is
+	   only 4.79:1 — there is no headroom to mute against this accent. */
+	--accent-on-muted: #ffffff;
+	/* --public-proof (#147a69) is 4.02:1 on --surface-2, so the "Live" markers
+     drawn in it were under the floor. #116c5e — already the value this
+     theme uses for --public-theatre-positive — is 4.85:1 there. */
+	--positive: #116c5e;
 	--negative: #b42318;
 	background: var(--public-haze);
 	color-scheme: light;
@@ -5992,6 +6000,66 @@ body:has(.public-site) {
 .public-site summary:focus-visible {
 	outline: 3px solid var(--accent);
 	outline-offset: 3px;
+}
+
+/* --- Link affordance ---
+   A link has to look like one before it is hovered: pointer hover is not
+   available to keyboard or touch users, so an underline that only appears on
+   :hover is not an affordance, it is a reveal. Every public link that is not
+   already shaped like a button (a CTA, the header's auth pill, the brand
+   lockup, the skip link) therefore carries a resting underline, drawn from
+   currentColor so it inherits whatever colour the link already has and stays
+   correct on the light canvas, the dark canvas and the near-black theatre
+   panels alike. The rest state is a 55% mix so the rule reads as texture
+   rather than a ruled line; hover and focus take it to full strength. */
+.public-site
+	a:where(
+		:not(.public-cta):not(.public-auth-link):not(.public-brand):not(
+				.public-skip-link
+			):not(.public-nav__link):not(.public-sign-in):not(.public-theme-toggle)
+	) {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
+	text-underline-offset: 0.2em;
+	transition:
+		text-decoration-color 140ms ease,
+		color 140ms ease;
+}
+
+.public-site
+	a:where(
+		:not(.public-cta):not(.public-auth-link):not(.public-brand):not(
+				.public-skip-link
+			):not(.public-nav__link):not(.public-sign-in):not(.public-theme-toggle)
+	):hover,
+.public-site
+	a:where(
+		:not(.public-cta):not(.public-auth-link):not(.public-brand):not(
+				.public-skip-link
+			):not(.public-nav__link):not(.public-sign-in):not(.public-theme-toggle)
+	):focus-visible {
+	text-decoration-color: currentColor;
+}
+
+/* The header's own links are the exception: five underlines in a row would
+   fight the wordmark next to them. They get their affordance from size,
+   weight and a full-strength text colour instead, plus an underline that
+   arrives on hover AND on keyboard focus. */
+.public-nav__link,
+.public-sign-in {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-decoration-color: transparent;
+	text-underline-offset: 0.32em;
+	transition: text-decoration-color 140ms ease, color 140ms ease;
+}
+
+.public-nav__link:hover,
+.public-nav__link:focus-visible,
+.public-sign-in:hover,
+.public-sign-in:focus-visible {
+	text-decoration-color: currentColor;
 }
 
 .public-skip-link,
@@ -6028,15 +6096,15 @@ body:has(.public-site) {
 
 .public-announcement {
 	display: flex;
-	min-height: 32px;
+	min-height: 36px;
 	align-items: center;
 	justify-content: center;
 	gap: 12px;
-	padding: 6px 20px;
+	padding: 8px 20px;
 	border-bottom: 1px solid var(--glass-border);
 	background: var(--surface-2);
 	color: var(--text-3);
-	font-size: 0.72rem;
+	font-size: var(--fs-meta);
 	letter-spacing: 0.01em;
 }
 
@@ -6099,7 +6167,7 @@ body:has(.public-site) {
 }
 
 .public-brand__copy strong {
-	font-size: 0.98rem;
+	font-size: var(--fs-body);
 	font-weight: 700;
 	letter-spacing: -0.025em;
 }
@@ -6107,67 +6175,72 @@ body:has(.public-site) {
 .public-brand__copy small {
 	margin-top: 6px;
 	color: var(--text-3);
-	font-size: 0.58rem;
+	font-size: var(--fs-micro);
 	font-weight: 600;
-	letter-spacing: 0.09em;
+	letter-spacing: 0.08em;
 	text-transform: uppercase;
 }
 
 .public-nav {
 	display: flex;
 	align-items: center;
-	gap: 20px;
+	gap: 26px;
 }
 
 .public-nav__link,
 .public-sign-in {
 	display: inline-flex;
-	min-height: 44px;
+	min-height: var(--control-h);
 	align-items: center;
-	color: var(--text-2);
-	font-size: 0.82rem;
-	font-weight: 550;
+	color: var(--text-1);
+	font-size: var(--fs-ui);
+	font-weight: 560;
 }
 
 .public-nav__link:hover,
 .public-sign-in:hover {
-	color: var(--text-1);
+	color: var(--accent-hover);
 }
 
 .public-theme-toggle {
 	display: inline-grid;
-	width: 44px;
-	height: 44px;
+	width: var(--control-h);
+	height: var(--control-h);
 	place-items: center;
 	border: 1px solid var(--glass-border);
-	border-radius: 6px;
+	border-radius: var(--control-radius);
 	background: transparent;
-	color: var(--text-2);
+	color: var(--text-1);
 	cursor: pointer;
+	transition:
+		border-color 140ms ease,
+		background-color 140ms ease,
+		color 140ms ease;
 }
 
 .public-theme-toggle span {
-	width: 17px;
-	height: 17px;
+	width: 18px;
+	height: 18px;
 }
 
 .public-theme-toggle:hover {
-	border-color: var(--accent);
-	color: var(--accent);
+	border-color: var(--accent-text, var(--accent));
+	background: var(--accent-muted);
+	color: var(--accent-text, var(--accent));
 }
 
 .public-auth-link {
 	display: inline-flex;
-	min-height: 44px;
+	min-height: var(--control-h);
 	align-items: center;
 	justify-content: center;
-	padding: 0 18px;
+	padding: 0 var(--control-pad);
 	border: 1px solid var(--accent);
-	border-radius: 6px;
+	border-radius: var(--control-radius);
 	background: var(--accent);
 	color: var(--accent-on);
-	font-size: 0.82rem;
-	font-weight: 650;
+	font-size: var(--fs-ui);
+	font-weight: 640;
 	white-space: nowrap;
 	transition:
 		background-color 160ms ease,
@@ -6214,18 +6287,18 @@ body:has(.public-site) {
 
 .public-hero__eyebrow {
 	color: var(--public-theatre-accent);
-	font-size: clamp(0.85rem, 1.2vw, 1rem);
-	font-weight: 520;
+	font-size: var(--fs-lede);
+	font-weight: 540;
 	letter-spacing: -0.01em;
 }
 
 .public-hero h1 {
-	margin-top: 20px;
+	margin-top: 22px;
 	font-family: var(--sans);
-	font-size: clamp(3.6rem, 7vw, 6.9rem);
+	font-size: clamp(3.2rem, 6.1vw, 5.9rem);
 	font-weight: 560;
-	letter-spacing: -0.072em;
-	line-height: 0.9;
+	letter-spacing: -0.07em;
+	line-height: 0.92;
 }
 
 .public-hero h1 span {
@@ -6233,31 +6306,35 @@ body:has(.public-site) {
 }
 
 .public-hero__lede {
-	max-width: 54ch;
-	margin-top: 24px;
+	max-width: 56ch;
+	margin-top: 26px;
 	color: var(--public-theatre-muted);
-	font-size: clamp(1rem, 1.35vw, 1.18rem);
-	line-height: 1.58;
+	font-size: clamp(1.12rem, 1.3vw, 1.32rem);
+	line-height: 1.55;
 }
 
 .public-actions {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: center;
-	gap: 10px;
-	margin-top: 28px;
+	gap: 14px;
+	margin-top: 34px;
 }
 
+/* Every button-shaped thing on a public page resolves from the control
+   tokens. .public-cta is the large, page-level action; the header's
+   .public-auth-link is the same shape one step down. */
 .public-cta {
 	display: inline-flex;
-	min-height: 48px;
+	min-height: var(--control-h-lg);
 	align-items: center;
 	justify-content: center;
 	gap: 12px;
-	padding: 0 20px;
-	border-radius: 7px;
-	font-size: 0.88rem;
-	font-weight: 650;
+	padding: 0 var(--control-pad);
+	border: 1px solid transparent;
+	border-radius: var(--control-radius);
+	font-size: var(--fs-ui);
+	font-weight: 640;
 	white-space: nowrap;
 	transition:
 		background-color 160ms ease,
@@ -6282,14 +6359,21 @@ body:has(.public-site) {
 	color: var(--accent-on);
 }
 
+/* The quiet CTA is the secondary half of the pair, but "quiet" cannot mean
+   "invisible": --public-theatre-border (#34303d) against the theatre canvas
+   (#0c0c11) is 1.6:1, well under the 3:1 that 1.4.11 asks of a control
+   boundary, and it read as floating text rather than a button. Mixing the
+   border out of currentColor puts it at ~3.4:1 on the dark stage and keeps it
+   correct when the light theme flips the text colour to near-black. */
 .public-hero .public-cta--quiet {
-	border: 1px solid var(--public-theatre-border);
+	border: 1px solid color-mix(in srgb, currentColor 42%, transparent);
 	background: transparent;
 	color: var(--public-theatre-text);
 }
 
 .public-hero .public-cta--quiet:hover {
-	border-color: var(--public-theatre-accent);
+	border-color: currentColor;
+	background: color-mix(in srgb, currentColor 8%, transparent);
 	color: var(--public-theatre-accent);
 }
 
@@ -6316,7 +6400,7 @@ body:has(.public-site) {
 	border-bottom: 1px solid #d9d5cf;
 	color: #625d6a;
 	font-family: var(--mono);
-	font-size: 0.6rem;
+	font-size: var(--fs-micro);
 	letter-spacing: 0.03em;
 }
 
@@ -6331,22 +6415,22 @@ body:has(.public-site) {
 
 .public-product-frame figcaption {
 	display: grid;
-	gap: 3px;
-	min-height: 62px;
-	padding: 12px 15px;
+	gap: 4px;
+	min-height: 66px;
+	padding: 14px 16px;
 	border-top: 1px solid #d9d5cf;
 	background: #fffdf8;
 }
 
 .public-product-frame figcaption strong {
 	color: var(--public-ink);
-	font-size: 0.76rem;
+	font-size: var(--fs-body-sm);
 	font-weight: 650;
 }
 
 .public-product-frame figcaption span {
 	color: #625d6a;
-	font-size: 0.7rem;
+	font-size: var(--fs-meta);
 }
 
 .public-proof-strip {
@@ -6380,37 +6464,33 @@ body:has(.public-site) {
 }
 
 .public-proof-strip strong {
-	font-size: 0.92rem;
+	font-size: var(--fs-body-sm);
 	font-weight: 620;
 }
 
 .public-proof-strip li span {
 	color: var(--text-3);
-	font-size: 0.76rem;
-	line-height: 1.45;
+	font-size: var(--fs-meta);
+	line-height: 1.5;
 }
 
 .public-proof-strip__links {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 24px;
+	gap: 28px;
 	padding: 8px 0;
 }
 
 .public-proof-strip__links a {
 	display: inline-flex;
-	min-height: 44px;
+	min-height: var(--control-h);
 	align-items: center;
 	color: var(--text-2);
-	font-size: 0.72rem;
-	text-decoration: underline;
-	text-decoration-color: transparent;
-	text-underline-offset: 4px;
+	font-size: var(--fs-ui);
 }
 
 .public-proof-strip__links a:hover {
-	color: var(--accent);
-	text-decoration-color: currentColor;
+	color: var(--accent-text, var(--accent));
 }
 
 @keyframes public-arrive {
@@ -6439,8 +6519,14 @@ body:has(.public-site) {
 	}
 }
 
+/* Section rhythm.
+   128px top + 128px bottom put 256px of nothing between one section's last
+   line and the next section's first — enough that on a 900px-tall window an
+   entire screen could be blank. Sections still need to read as separate
+   movements, so the padding stays generous; it just stops being the largest
+   element on the page. */
 .public-section {
-	padding: clamp(88px, 8vw, 128px) 0;
+	padding: clamp(72px, 5.6vw, 100px) 0;
 	border-bottom: 1px solid var(--glass-border);
 	scroll-margin-top: 84px;
 }
@@ -6457,30 +6543,30 @@ body:has(.public-site) {
 
 .authority-boundary .public-section__intro {
 	max-width: 840px;
-	margin-bottom: 64px;
+	margin-bottom: 56px;
 }
 
 .public-section h2,
 .public-final h2 {
 	max-width: 940px;
 	font-family: var(--sans);
-	font-size: clamp(3rem, 6vw, 6rem);
+	font-size: var(--fs-display);
 	font-weight: 540;
-	letter-spacing: -0.067em;
-	line-height: 0.94;
+	letter-spacing: -0.062em;
+	line-height: 0.96;
 }
 
 .public-section__intro > p:last-child {
 	max-width: 58ch;
 	color: var(--text-2);
-	font-size: 1.05rem;
-	line-height: 1.65;
+	font-size: var(--fs-lede);
+	line-height: var(--lh-body);
 }
 
 .public-overline {
 	color: var(--accent-hover);
-	font-size: 0.9rem;
-	font-weight: 560;
+	font-size: var(--fs-ui);
+	font-weight: 570;
 }
 
 .public-rigor-story {
@@ -6490,9 +6576,9 @@ body:has(.public-site) {
 .public-rigor-story__intro {
 	display: grid;
 	grid-template-columns: minmax(0, 0.95fr) minmax(360px, 0.68fr);
-	gap: clamp(52px, 9vw, 142px);
+	gap: clamp(48px, 7vw, 104px);
 	align-items: end;
-	margin-bottom: clamp(80px, 9vw, 120px);
+	margin-bottom: clamp(56px, 5.5vw, 84px);
 }
 
 .public-rigor-story__intro h2 {
@@ -6501,8 +6587,8 @@ body:has(.public-site) {
 
 .public-rigor-story__intro > div > p {
 	color: var(--text-2);
-	font-size: 1.08rem;
-	line-height: 1.68;
+	font-size: var(--fs-lede);
+	line-height: var(--lh-body);
 }
 
 .public-rigor-story__intro ul {
@@ -6513,15 +6599,17 @@ body:has(.public-site) {
 }
 
 .public-rigor-story__intro li {
-	padding: 14px 0;
+	padding: 15px 0;
 	border-bottom: 1px solid var(--glass-border);
-	font-size: 0.9rem;
+	font-size: var(--fs-body-sm);
 }
 
+/* The deck is a two-column grid now rather than one full-width card at a time,
+   so the sticky copy column gives back some width to keep each panel readable. */
 .public-rigor-story__proof {
 	display: grid;
-	grid-template-columns: minmax(250px, 0.54fr) minmax(0, 1fr);
-	gap: clamp(48px, 8vw, 112px);
+	grid-template-columns: minmax(230px, 0.4fr) minmax(0, 1fr);
+	gap: clamp(40px, 5vw, 72px);
 	align-items: start;
 }
 
@@ -6534,41 +6622,45 @@ body:has(.public-site) {
 
 .public-rigor-story__proof-copy h3 {
 	max-width: 10ch;
-	font-size: clamp(2.2rem, 4vw, 4rem);
+	font-size: var(--fs-title);
 	font-weight: 540;
-	letter-spacing: -0.055em;
-	line-height: 0.98;
+	letter-spacing: -0.05em;
+	line-height: 1;
 }
 
 .public-rigor-story__proof-copy p {
 	max-width: 38ch;
 	color: var(--text-2);
-	font-size: 0.94rem;
-	line-height: 1.65;
+	font-size: var(--fs-body);
+	line-height: var(--lh-body);
 }
 
 .public-rigor-story__proof-copy strong {
 	max-width: 32ch;
 	color: var(--accent-hover);
-	font-size: 0.88rem;
+	font-size: var(--fs-body-sm);
 	font-weight: 620;
 	line-height: 1.5;
 }
 
+/* Four panels, side by side. This deck used to be a sticky card stack — each
+   article pinned at a staggered `top` so scrolling buried the previous one —
+   which meant the four checks could never be compared, only flipped through.
+   The four-panel comparison IS the differentiator, so the layout has to show
+   all four at rest. Two columns on desktop, one on narrow; the board-level
+   card and the verdict rule each span the full width beneath them. */
 .public-proof-deck {
 	display: grid;
-	gap: 28px;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 20px;
+	align-items: stretch;
 }
 
 .public-proof-deck article {
-	position: sticky;
-	top: 120px;
 	display: grid;
-	height: 340px;
-	min-height: 290px;
-	align-content: space-between;
-	gap: 20px;
-	padding: clamp(28px, 3.5vw, 40px);
+	align-content: start;
+	gap: 14px;
+	padding: clamp(24px, 2.6vw, 32px);
 	border: 1px solid var(--glass-border);
 	border-radius: 10px;
 	background: var(--surface-1);
@@ -6576,68 +6668,198 @@ body:has(.public-site) {
 }
 
 .public-proof-deck article:nth-child(2) {
-	top: 138px;
-	z-index: 2;
-	border-color: var(--accent);
+	border-color: var(--accent-text, var(--accent));
 	background: var(--accent);
 	color: var(--accent-on);
 }
 
 .public-proof-deck article:nth-child(3) {
-	top: 156px;
-	z-index: 3;
 	border-color: var(--public-theatre-border);
 	background: var(--public-theatre-bg);
 	color: var(--public-theatre-text);
 }
 
 .public-proof-deck article:nth-child(4) {
-	top: 174px;
-	z-index: 4;
 	background: var(--surface-2);
+}
+
+/* --- Muted ink on coloured panels ---
+   The deck's four cards sit on four different backgrounds, and its secondary
+   text was muted with a bare `opacity`. That is safe over the dark cards and
+   unsafe over the accent one: the light theme's accent is #625cf6, whose
+   maximum possible contrast is 4.79:1 with pure white and 4.38:1 with pure
+   black — so ANY alpha reduction on that card drops the text under the 4.5:1
+   floor, and the four values here were landing at 3.93–4.09:1. Routing the
+   reduction through a token lets the accent-backed surfaces opt out of it
+   entirely and take their hierarchy from size and weight instead, which is
+   the more robust signal anyway. */
+.public-proof-deck article {
+	--ink-muted: 0.88;
+}
+
+.public-proof-deck article:nth-child(2) {
+	--ink-muted: 1;
 }
 
 .public-proof-deck article header {
 	display: flex;
 	justify-content: space-between;
-	gap: 20px;
+	gap: 16px;
 	font-family: var(--mono);
-	font-size: 0.65rem;
+	font-size: var(--fs-micro);
 	font-weight: 600;
-	letter-spacing: 0.035em;
+	letter-spacing: 0.03em;
 }
 
+.public-proof-deck article header span:first-child {
+	flex: none;
+}
+
+/* 0.72 alpha took this mono label under 4.5:1 on three of the four card
+   backgrounds. It is a real label, not decoration, so it clears the floor. */
 .public-proof-deck article header span:last-child {
-	opacity: 0.72;
+	text-align: right;
+	opacity: var(--ink-muted, 0.85);
 }
 
 .public-proof-deck h4 {
 	color: inherit;
-	font-size: 1rem;
+	font-size: var(--fs-meta);
 	font-weight: 620;
-	line-height: 1.35;
+	letter-spacing: 0.01em;
+	line-height: 1.4;
+	opacity: var(--ink-muted, 0.86);
 }
 
+/* The plain-language question is the panel's headline — it is what a reader
+   who knows no statistics is meant to take away. */
 .public-proof-deck article > p {
-	max-width: 19ch;
-	font-size: clamp(1.7rem, 3.2vw, 3rem);
+	max-width: 26ch;
+	margin-top: -4px;
+	font-size: clamp(1.34rem, 1.9vw, 1.76rem);
 	font-weight: 520;
-	letter-spacing: -0.045em;
-	line-height: 1.02;
+	letter-spacing: -0.03em;
+	line-height: 1.16;
 }
 
 .public-proof-deck small {
+	display: block;
 	max-width: 58ch;
-	font-size: 0.76rem;
-	line-height: 1.55;
-	opacity: 0.76;
+	font-size: var(--fs-body-sm);
+	line-height: var(--lh-body);
+	opacity: var(--ink-muted, 0.88);
+}
+
+/* The honest limit of each check, held at the same weight as the method it
+   qualifies rather than shrunk into a disclaimer.
+   Selector note: `.public-proof-deck small` above is (0,1,1) — one class plus
+   an element — so a bare `.public-proof-deck__limit` (0,1,0) loses to it and
+   its `display: block` silently wins, collapsing the label and the text into
+   one run ("LIMITThe Verified bar…"). Qualifying with the element takes this
+   to (0,2,1) so the grid actually applies. */
+.public-proof-deck small.public-proof-deck__limit {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 10px;
+	align-items: baseline;
+	margin-top: auto;
+	padding-top: 16px;
+	border-top: 1px solid currentcolor;
+	/* The limit is the most load-bearing sentence on the card — it is what the
+	   check does NOT prove. 0.66 alpha rendered it below 4.5:1 on the theatre
+	   and slate cards, i.e. the honest caveat was the least readable text in
+	   the section. It now sits at the same 0.88 as the method it qualifies,
+	   and earns its lower prominence from size and the rule above it. */
+	opacity: var(--ink-muted, 0.88);
+}
+
+.public-proof-deck__limit > span:first-child {
+	font-family: var(--mono);
+	font-size: var(--fs-micro);
+	font-weight: 600;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+}
+
+.public-proof-deck__board {
+	grid-column: 1 / -1;
+	border-color: var(--public-theatre-border);
+	background: var(--surface-2);
+}
+
+/* The board card spans both columns, so stacking its content in one narrow
+   measure leaves the right half empty and reads as an accident. Above the
+   one-column breakpoint it gets its own internal split: the question on the
+   left, the method and its limit on the right. Complements the max-width:760px
+   rule below, which returns the whole deck — this card included — to a stack. */
+@media (min-width: 761px) {
+	.public-proof-deck__board {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		grid-template-areas:
+			"head head"
+			"name name"
+			"ask method"
+			"ask limit";
+		column-gap: clamp(28px, 3vw, 56px);
+		align-content: start;
+	}
+
+	.public-proof-deck__board header {
+		grid-area: head;
+	}
+
+	.public-proof-deck__board h4 {
+		grid-area: name;
+	}
+
+	.public-proof-deck__board > p {
+		grid-area: ask;
+		max-width: 22ch;
+	}
+
+	.public-proof-deck__board > small:not(.public-proof-deck__limit) {
+		grid-area: method;
+	}
+
+	.public-proof-deck__board .public-proof-deck__limit {
+		grid-area: limit;
+	}
 }
 
 .public-proof-deck__rule {
-	padding: 22px 0 0;
+	grid-column: 1 / -1;
+	display: grid;
+	gap: 18px;
+	padding: 24px 0 0;
 	border-top: 1px solid var(--glass-border);
 	color: var(--text-2);
 	font-size: 0.84rem;
+}
+
+.public-proof-deck__rule strong {
+	color: var(--text-1);
+	font-size: var(--fs-body);
+	font-weight: 620;
+}
+
+.public-proof-deck__rule dl {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	gap: 16px 28px;
+}
+
+.public-proof-deck__rule dt {
+	margin-bottom: 5px;
+	color: var(--accent-hover);
+	font-family: var(--mono);
+	font-size: var(--fs-micro);
+	font-weight: 600;
+	letter-spacing: 0.035em;
+}
+
+.public-proof-deck__rule dd {
+	font-size: var(--fs-body-sm);
+	line-height: var(--lh-body);
 }
 
 .public-path {
@@ -6661,12 +6883,12 @@ body:has(.public-site) {
 	max-width: 58ch;
 	margin-top: 24px;
 	color: var(--text-2);
-	font-size: 1.02rem;
-	line-height: 1.65;
+	font-size: var(--fs-lede);
+	line-height: var(--lh-body);
 }
 
 .public-path__sequence {
-	margin-top: clamp(64px, 8vw, 104px);
+	margin-top: clamp(44px, 4.4vw, 72px);
 	border: 1px solid var(--public-theatre-border);
 	border-radius: 10px;
 	background: var(--public-theatre-bg);
@@ -6681,21 +6903,25 @@ body:has(.public-site) {
 	padding: clamp(30px, 4vw, 48px);
 }
 
+/* At 13ch this heading broke to three lines and stood in a column roughly a
+   third of the card wide, leaving the rest of the header band empty with the
+   architecture link stranded in the far corner. Widening the measure puts it
+   on two lines and closes most of that gap. */
 .public-path__sequence-header h3 {
-	max-width: 13ch;
-	font-size: clamp(2.2rem, 4vw, 4rem);
+	max-width: 19ch;
+	font-size: var(--fs-title);
 	font-weight: 540;
-	letter-spacing: -0.058em;
-	line-height: 0.98;
+	letter-spacing: -0.045em;
+	line-height: 1.02;
 }
 
 .public-path__sequence-header a {
 	display: inline-flex;
-	min-height: 44px;
+	min-height: var(--control-h);
 	align-items: center;
 	gap: 10px;
 	color: var(--public-theatre-accent);
-	font-size: 0.8rem;
+	font-size: var(--fs-ui);
 	font-weight: 620;
 	white-space: nowrap;
 }
@@ -6710,10 +6936,10 @@ body:has(.public-site) {
 .public-path__sequence li {
 	display: grid;
 	min-width: 0;
-	min-height: 230px;
+	min-height: 216px;
 	align-content: start;
-	gap: 22px;
-	padding: 25px 21px 28px;
+	gap: 20px;
+	padding: 26px 22px 30px;
 	border-right: 1px solid var(--public-theatre-border);
 }
 
@@ -6724,25 +6950,27 @@ body:has(.public-site) {
 .public-path__sequence li > span {
 	color: var(--public-theatre-accent);
 	font-family: var(--mono);
-	font-size: 0.65rem;
+	font-size: var(--fs-micro);
 	font-variant-numeric: tabular-nums;
 }
 
 .public-path__sequence li > div {
 	display: grid;
-	gap: 13px;
+	gap: 12px;
 }
 
 .public-path__sequence h4 {
 	color: var(--public-theatre-text);
-	font-size: 0.92rem;
+	font-size: var(--fs-body);
 	font-weight: 620;
 }
 
+/* Was 0.74rem — 11.8px of running prose, the smallest body text on the page
+   and the step-by-step explanation of what the product actually does. */
 .public-path__sequence li p {
 	color: var(--public-theatre-muted);
-	font-size: 0.74rem;
-	line-height: 1.58;
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
 }
 
 .public-context {
@@ -6773,29 +7001,55 @@ body:has(.public-site) {
 	display: flex;
 	align-items: flex-start;
 	flex-direction: column;
-	gap: 28px;
-	margin-top: clamp(64px, 7vw, 92px);
+	gap: 24px;
+	margin-top: clamp(44px, 4.4vw, 72px);
 }
 
 .public-use-case-scenes article {
 	display: grid;
-	width: 64%;
-	min-height: 250px;
+	width: 68%;
+	min-height: 210px;
 	align-content: space-between;
-	gap: 30px;
-	padding: clamp(30px, 5vw, 54px);
+	gap: 26px;
+	padding: clamp(28px, 4vw, 46px);
 	border: 1px solid var(--glass-border);
 	border-radius: 10px;
 }
 
-.public-use-case-scenes .is-custody {
-	border-color: var(--accent);
+/* These cards were a single narrow column: a 4rem headline capped at 18ch, a
+   46ch paragraph under it, and a 250px floor — which left roughly the right
+   half and the bottom third of every card empty while the type inside stayed
+   at 0.88rem. Splitting them above the stacking breakpoint puts the headline
+   and its consequence side by side, so the card is filled by its content
+   rather than by a min-height, and the whole block gets shorter as it gets
+   more readable. */
+@media (min-width: 901px) {
+	.public-use-case-scenes article {
+		grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+		column-gap: clamp(32px, 4vw, 64px);
+		align-content: start;
+		row-gap: 22px;
+	}
+
+	.public-use-case-scenes article > span {
+		grid-column: 1 / -1;
+	}
+
+	.public-use-case-scenes article > p {
+		align-self: end;
+		padding-bottom: 6px;
+	}
+}
+
+.public-use-case-scenes .is-rigor {
+	--ink-muted: 1;
+	border-color: var(--accent-text, var(--accent));
 	background: var(--accent);
 	color: var(--accent-on);
 }
 
 .public-use-case-scenes .is-research {
-	width: 60%;
+	width: 64%;
 	margin-left: auto;
 	border-color: var(--public-theatre-border);
 	background: var(--public-theatre-bg);
@@ -6803,58 +7057,64 @@ body:has(.public-site) {
 }
 
 .public-use-case-scenes .is-audit {
-	width: 70%;
+	width: 74%;
 	margin-left: 11%;
 	background: var(--surface-1);
 	color: var(--text-1);
 }
 
 .public-use-case-scenes article > span {
-	font-size: 0.86rem;
+	font-size: var(--fs-ui);
 	font-weight: 620;
 }
 
 .public-use-case-scenes h3 {
 	max-width: 18ch;
-	font-size: clamp(2rem, 4.2vw, 4.1rem);
+	font-size: clamp(1.95rem, 3.5vw, 3.3rem);
 	font-weight: 540;
-	letter-spacing: -0.055em;
-	line-height: 0.98;
+	letter-spacing: -0.05em;
+	line-height: 1.02;
 }
 
+/* opacity: 0.78 on near-black over the lavender admission card was 4.0:1 —
+   under the floor, on the one sentence that says what the card means. Size up,
+   and let the muted reading come from a smaller alpha reduction. */
 .public-use-case-scenes article > p {
 	max-width: 46ch;
-	font-size: 0.88rem;
-	line-height: 1.6;
-	opacity: 0.78;
+	font-size: var(--fs-body);
+	line-height: var(--lh-body);
+	opacity: var(--ink-muted, 0.88);
 }
 
 .public-rail-stack {
-	margin-top: clamp(68px, 8vw, 104px);
+	margin-top: clamp(48px, 5vw, 80px);
 	border-top: 1px solid var(--glass-border);
 	border-bottom: 1px solid var(--glass-border);
 }
 
+/* The overline sat in its own left column while the heading it introduces was
+   centred in the next one, so the two read as unrelated fragments with a gap
+   between them. Stacking them makes the label do its job — and the heading now
+   starts at the same left edge as the rail row underneath it. */
 .public-rail-stack__header {
 	display: grid;
-	grid-template-columns: minmax(190px, 0.72fr) minmax(0, 1.28fr);
-	gap: 28px;
-	align-items: end;
-	padding: 32px 0;
+	gap: 12px;
+	justify-items: start;
+	padding: 36px 0 30px;
 }
 
 .public-rail-stack__header > p {
 	color: var(--text-3);
-	font-size: 0.84rem;
-	font-weight: 560;
+	font-size: var(--fs-ui);
+	font-weight: 570;
 }
 
 .public-rail-stack h3 {
-	max-width: 14ch;
-	font-size: clamp(2rem, 3.2vw, 3.2rem);
+	max-width: 16ch;
+	font-size: var(--fs-title);
 	font-weight: 540;
-	letter-spacing: -0.05em;
-	line-height: 1;
+	letter-spacing: -0.045em;
+	line-height: 1.02;
 }
 
 .public-rail-stack ul {
@@ -6866,8 +7126,8 @@ body:has(.public-site) {
 
 .public-rail-stack li {
 	display: grid;
-	gap: 6px;
-	padding: 20px 18px;
+	gap: 7px;
+	padding: 24px 20px;
 	border-right: 1px solid var(--glass-border);
 }
 
@@ -6881,14 +7141,14 @@ body:has(.public-site) {
 }
 
 .public-rail-stack strong {
-	font-size: 0.8rem;
+	font-size: var(--fs-body-sm);
 	font-weight: 620;
 }
 
 .public-rail-stack span {
 	color: var(--text-3);
-	font-size: 0.7rem;
-	line-height: 1.45;
+	font-size: var(--fs-meta);
+	line-height: 1.5;
 }
 
 .authority-boundary {
@@ -6911,7 +7171,7 @@ body:has(.public-site) {
 }
 
 .authority-boundary__side {
-	padding: 34px clamp(24px, 4vw, 48px);
+	padding: 32px clamp(24px, 4vw, 44px);
 	border: 1px solid var(--public-theatre-border);
 	background: var(--public-theatre-surface);
 }
@@ -6927,7 +7187,7 @@ body:has(.public-site) {
 }
 
 .authority-boundary__owner {
-	font-size: 0.82rem;
+	font-size: var(--fs-ui);
 	font-weight: 620;
 }
 
@@ -6941,17 +7201,17 @@ body:has(.public-site) {
 
 .authority-boundary__side ul {
 	display: grid;
-	gap: 14px;
+	gap: 16px;
 	margin-top: 24px;
 	list-style: none;
 }
 
 .authority-boundary__side li {
 	position: relative;
-	padding-left: 18px;
+	padding-left: 20px;
 	color: var(--public-theatre-muted);
-	font-size: 0.86rem;
-	line-height: 1.55;
+	font-size: var(--fs-body);
+	line-height: var(--lh-body);
 }
 
 .authority-boundary__side li::before {
@@ -6974,7 +7234,7 @@ body:has(.public-site) {
 .authority-boundary__line span {
 	color: var(--accent-on);
 	font-family: var(--mono);
-	font-size: 0.58rem;
+	font-size: var(--fs-micro);
 	font-weight: 600;
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
@@ -6984,10 +7244,10 @@ body:has(.public-site) {
 
 .authority-boundary__verdict {
 	display: grid;
-	grid-template-columns: minmax(140px, 0.45fr) minmax(0, 1fr) auto;
-	gap: 24px;
+	grid-template-columns: minmax(140px, 0.4fr) minmax(0, 1fr) auto;
+	gap: 28px;
 	align-items: center;
-	padding: 20px 24px;
+	padding: 24px clamp(24px, 4vw, 44px);
 	border-radius: 0 0 10px 10px;
 	background: var(--public-theatre-contrast);
 	color: var(--public-theatre-contrast-text);
@@ -6995,7 +7255,7 @@ body:has(.public-site) {
 
 .authority-boundary__verdict span {
 	color: var(--public-theatre-contrast-muted);
-	font-size: 0.72rem;
+	font-size: var(--fs-meta);
 }
 
 .authority-boundary__verdict strong {
@@ -7010,8 +7270,8 @@ body:has(.public-site) {
 
 .public-faq__grid {
 	display: grid;
-	grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr);
-	gap: clamp(52px, 9vw, 136px);
+	grid-template-columns: minmax(280px, 0.68fr) minmax(0, 1.32fr);
+	gap: clamp(48px, 6vw, 96px);
 	align-items: start;
 }
 
@@ -7027,7 +7287,8 @@ body:has(.public-site) {
 .public-faq__intro p {
 	margin-top: 20px;
 	color: var(--text-3);
-	font-size: 0.92rem;
+	font-size: var(--fs-body);
+	line-height: var(--lh-body);
 }
 
 .public-faq__list {
@@ -7040,8 +7301,8 @@ body:has(.public-site) {
 
 .public-faq summary {
 	position: relative;
-	padding: 24px 44px 24px 0;
-	font-size: 1rem;
+	padding: 24px 48px 24px 0;
+	font-size: var(--fs-body);
 	font-weight: 620;
 	cursor: pointer;
 	list-style: none;
@@ -7053,12 +7314,13 @@ body:has(.public-site) {
 
 .public-faq summary::after {
 	position: absolute;
-	top: 23px;
+	top: 20px;
 	right: 4px;
-	color: var(--accent);
+	color: var(--accent-text, var(--accent));
 	content: "+";
-	font-size: 1.2rem;
+	font-size: 1.5rem;
 	font-weight: 400;
+	line-height: 1.2;
 }
 
 .public-faq details[open] summary::after {
@@ -7066,30 +7328,32 @@ body:has(.public-site) {
 }
 
 .public-faq details p {
-	max-width: 62ch;
-	padding: 0 36px 24px 0;
+	max-width: 66ch;
+	padding: 0 40px 26px 0;
 	color: var(--text-2);
-	font-size: 0.9rem;
-	line-height: 1.65;
+	font-size: var(--fs-body);
+	line-height: var(--lh-body);
 }
 
+/* 154px of accent-coloured padding above and below a two-line headline left
+   the closing panel more empty than full. */
 .public-final {
-	padding: clamp(92px, 11vw, 154px) 0;
+	padding: clamp(76px, 6.5vw, 108px) 0;
 	border-bottom: 1px solid var(--glass-border);
 	background: var(--accent);
 	color: var(--accent-on);
 }
 
 .public-final__eyebrow {
-	margin-bottom: 18px;
-	font-size: 0.9rem;
+	margin-bottom: 20px;
+	font-size: var(--fs-ui);
 	font-weight: 620;
 }
 
 .public-final__layout {
 	display: grid;
-	grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.58fr);
-	gap: clamp(44px, 9vw, 132px);
+	grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.62fr);
+	gap: clamp(44px, 6vw, 92px);
 	align-items: end;
 }
 
@@ -7114,75 +7378,141 @@ body:has(.public-site) {
 .public-final__layout > div:last-child p {
 	max-width: 44ch;
 	color: var(--accent-on-muted);
-	font-size: 0.76rem;
-	line-height: 1.65;
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
 }
 
+/* The footer was the worst surface on the site for exactly the two things the
+   owner called out. Small text: a legacy `.public-footer` rule further up this
+   file sets `font-size: 0.6rem` (9.6px) and the rebrand block never overrode
+   it, so the whole footer inherited 9.6px and its links resolved to 11.5px.
+   Blank space: every link carried `min-height: 44px` on top of a 10px grid
+   gap, which spread four 16px-tall labels over ~220px of column while the
+   brand column beside them sat empty. The size is now set here rather than
+   inherited, and the touch target comes from padding inside a 40px row — still
+   comfortably over the 24px that 2.5.8 asks for, without stretching the
+   column. */
 .public-footer {
-	padding: 56px 0 24px;
+	padding: 64px 0 28px;
 	background: var(--canvas);
 	color: var(--text-2);
+	font-size: var(--fs-meta);
+	letter-spacing: 0.01em;
 }
 
 .public-footer__grid {
 	display: grid;
-	grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(130px, 0.6fr));
+	grid-template-columns: minmax(260px, 1.3fr) repeat(3, minmax(140px, 0.62fr));
 	gap: 40px;
 }
 
 .public-footer__brand strong {
 	color: var(--text-1);
-	font-size: 1rem;
+	font-size: var(--fs-body);
 	font-weight: 700;
 }
 
 .public-footer__brand p {
-	max-width: 34ch;
-	margin-top: 10px;
+	max-width: 36ch;
+	margin-top: 12px;
 	color: var(--text-3);
-	font-size: 0.76rem;
-	line-height: 1.6;
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
 }
 
 .public-footer nav {
 	display: grid;
 	align-content: start;
-	gap: 10px;
+	gap: 2px;
 }
 
 .public-footer nav strong {
-	margin-bottom: 4px;
+	margin-bottom: 10px;
 	color: var(--text-1);
-	font-size: 0.72rem;
+	font-size: var(--fs-meta);
 	font-weight: 650;
 }
 
 .public-footer nav a,
 .public-footer nav span {
-	color: var(--text-3);
-	font-size: 0.72rem;
-	line-height: 1.4;
+	color: var(--text-2);
+	font-size: var(--fs-meta);
+	line-height: 1.45;
 }
 
 .public-footer nav a {
 	display: inline-flex;
-	min-height: 44px;
+	min-height: 40px;
 	align-items: center;
 }
 
 .public-footer nav a:hover {
-	color: var(--accent);
+	color: var(--accent-text, var(--accent));
 }
 
 .public-footer__base {
 	display: flex;
 	justify-content: space-between;
 	gap: 20px;
-	margin-top: 44px;
-	padding-top: 18px;
+	margin-top: 40px;
+	padding-top: 20px;
 	border-top: 1px solid var(--glass-border);
-	color: var(--text-4);
-	font-size: 0.66rem;
+	color: var(--text-3);
+	font-size: var(--fs-micro);
+}
+
+/* --- Public article pages (Architecture, Security) ---
+   These render inside .public-site but are built from the legacy .body /
+   .caption / .label utilities rather than the .public-* components, so the
+   type scale above never reached them. They failed the same brief from the
+   opposite direction: not too small in a narrow column, but a readable size
+   stretched across the full 1280px shell — 21 blocks of prose running
+   1116–1216px, which is 100 to 145 characters a line where 45–75 is
+   comfortable. .caption was the worst of it at 13.4px across 145 characters.
+
+   The measure is capped in `ch`, so it tracks whatever font-size the element
+   resolves to and does nothing at all inside a narrow grid cell — it can only
+   ever constrain, never stretch. The utilities themselves are shared with the
+   authenticated app and are deliberately not touched. */
+/* Capping the measure alone would just move the problem: a 74ch column parked
+   at the left edge of a 1280px shell is a reading column with 500px of void
+   beside it. These are single-column article pages, so the shell comes in to
+   meet the column and the cards and tables narrow with it. */
+.public-site .page-content {
+	max-width: 1040px;
+}
+
+.public-site .page-content :is(p, .body, .caption, li) {
+	max-width: 74ch;
+}
+
+.public-site .page-content .body {
+	font-size: var(--fs-body);
+	line-height: var(--lh-body);
+}
+
+.public-site .page-content .caption {
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+}
+
+.public-site .page-content .label {
+	font-size: var(--fs-micro);
+}
+
+/* .table-container thead th is 0.7rem (11.2px) — fine as a dense header inside
+   the authenticated app, too small for a public reference page. The utility
+   itself is shared, so only the public side is raised. */
+.public-site .page-content .table-container thead th {
+	font-size: var(--fs-micro);
+}
+
+/* .btn-primary paints --accent and writes on it in --canvas — the tinted page
+   ground, not the ink paired with the accent. On the light public theme that
+   is #efedff on #625cf6 = 4.16:1. --accent-on is the token that exists for
+   exactly this pairing (#ffffff light / #17151f dark) and clears the floor. */
+.public-site .btn-primary {
+	color: var(--accent-on);
 }
 
 /* Public security posture */
@@ -7190,8 +7520,10 @@ body:has(.public-site) {
 	background: var(--canvas);
 }
 
+/* Same pass as the landing: this page paired a 7.8rem headline with 0.64rem
+   labels — a 10.5x spread — inside 148px of padding. */
 .security-hero {
-	padding: clamp(76px, 10vw, 148px) 0 clamp(72px, 9vw, 124px);
+	padding: clamp(64px, 6.5vw, 104px) 0 clamp(60px, 6vw, 92px);
 	border-bottom: 1px solid var(--glass-border);
 }
 
@@ -7205,7 +7537,7 @@ body:has(.public-site) {
 .security-hero h1 {
 	max-width: 12ch;
 	margin-top: 20px;
-	font-size: clamp(3.6rem, 7.5vw, 7.8rem);
+	font-size: clamp(3.2rem, 6.1vw, 5.9rem);
 	font-weight: 540;
 	letter-spacing: -0.07em;
 	line-height: 0.92;
@@ -7215,7 +7547,7 @@ body:has(.public-site) {
 	max-width: 62ch;
 	margin-top: 30px;
 	color: var(--text-2);
-	font-size: clamp(1rem, 1.5vw, 1.2rem);
+	font-size: var(--fs-lede);
 	line-height: 1.68;
 }
 
@@ -7235,12 +7567,12 @@ body:has(.public-site) {
 
 .security-status span {
 	color: var(--text-3);
-	font-size: 0.76rem;
+	font-size: var(--fs-meta);
 }
 
 .security-status strong {
 	font-family: var(--mono);
-	font-size: 0.68rem;
+	font-size: var(--fs-micro);
 	font-weight: 600;
 	text-align: right;
 }
@@ -7257,7 +7589,7 @@ body:has(.public-site) {
 .security-section-heading > p:last-child {
 	max-width: 55ch;
 	color: var(--text-2);
-	font-size: 1rem;
+	font-size: var(--fs-body);
 	line-height: 1.65;
 }
 
@@ -7281,14 +7613,14 @@ body:has(.public-site) {
 .security-role-ledger dt {
 	display: flex;
 	gap: 18px;
-	font-size: 1rem;
+	font-size: var(--fs-body);
 	font-weight: 620;
 }
 
 .security-role-ledger dt span {
 	color: var(--accent-hover);
 	font-family: var(--mono);
-	font-size: 0.66rem;
+	font-size: var(--fs-micro);
 }
 
 .security-role-ledger dd {
@@ -7329,7 +7661,7 @@ body:has(.public-site) {
 .security-controls__list li > span {
 	color: var(--accent-hover);
 	font-family: var(--mono);
-	font-size: 0.64rem;
+	font-size: var(--fs-micro);
 	font-weight: 600;
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
@@ -7345,7 +7677,7 @@ body:has(.public-site) {
 	max-width: 64ch;
 	margin-top: 10px;
 	color: var(--text-2);
-	font-size: 0.9rem;
+	font-size: var(--fs-body);
 	line-height: 1.66;
 }
 
@@ -7380,7 +7712,7 @@ body:has(.public-site) {
 	padding: 22px 0;
 	border-bottom: 1px solid var(--public-theatre-border);
 	color: var(--public-theatre-muted);
-	font-size: 0.9rem;
+	font-size: var(--fs-body);
 	line-height: 1.62;
 }
 
@@ -7417,11 +7749,11 @@ body:has(.public-site) {
 .security-evidence a,
 .authority-boundary__link {
 	display: inline-flex;
-	min-height: 44px;
+	min-height: var(--control-h);
 	align-items: center;
 	gap: 9px;
 	color: var(--accent-hover);
-	font-size: 0.86rem;
+	font-size: var(--fs-ui);
 	font-weight: 620;
 }
 
@@ -7432,7 +7764,7 @@ body:has(.public-site) {
 
 .security-evidence li > span {
 	color: var(--text-3);
-	font-size: 0.78rem;
+	font-size: var(--fs-meta);
 	line-height: 1.5;
 }
 
@@ -8021,10 +8353,16 @@ body:has(.public-site) {
 	overflow: hidden;
 }
 
+/* `space-between` on a panel forced to the full viewport height distributed
+   ~420px of slack into two gaps, so the brand lockup, the headline and the
+   proof list sat in three separate places with ~270px of nothing between
+   them. The right-hand form panel was already `align-content: center`; making
+   this one agree turns that slack into symmetric margin above and below one
+   composed group instead of two voids inside it. */
 .auth-context {
 	display: grid;
-	align-content: space-between;
-	gap: 48px;
+	align-content: center;
+	gap: clamp(34px, 4.5vh, 52px);
 	padding: clamp(32px, 6vw, 72px);
 	background: var(--canvas);
 }
@@ -8038,8 +8376,8 @@ body:has(.public-site) {
 }
 
 .auth-context h2 {
-	max-width: 10ch;
-	font-size: clamp(2.4rem, 5vw, 4.7rem);
+	max-width: 11ch;
+	font-size: clamp(2.3rem, 4.2vw, 4rem);
 	font-weight: 650;
 	letter-spacing: -0.055em;
 	line-height: 1;
@@ -8063,10 +8401,11 @@ body:has(.public-site) {
 	display: grid;
 	grid-template-columns: 18px 1fr;
 	gap: 12px;
-	padding: 14px 0;
+	padding: 15px 0;
 	border-bottom: 1px solid var(--glass-border);
 	color: var(--text-2);
-	font-size: 0.82rem;
+	font-size: 0.9375rem;
+	line-height: 1.55;
 }
 
 .auth-proof-list li::before {
@@ -8089,7 +8428,7 @@ body:has(.public-site) {
 
 .auth-form-panel form label > span {
 	color: var(--text-2);
-	font-size: 0.78rem;
+	font-size: 0.9375rem;
 	font-weight: 600;
 }
 
@@ -8099,6 +8438,119 @@ body:has(.public-site) {
 
 .auth-form-panel .btn-primary {
 	width: 100%;
+}
+
+/* The auth screen renders outside both .app-site and .public-site, so neither
+   of their :focus-visible rules reaches it and it was left on the UA default
+   ring — which the surrounding `outline` shorthands can and did erase (see the
+   NOTE by the input block above). Give it its own indicator: --accent resolves
+   to the rebrand palette here (#8290ff dark canvas, #4658e8 light — the later
+   :root wins), both well clear of the 3:1 non-text floor (1.4.11), and 3px/2px matches the app shell's
+   weight. */
+.auth-site :focus-visible {
+	outline: 3px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* Quiet but visible: reads as a link, not as a disabled control. The row
+   exists so the button does not stretch to the form column's full width and
+   so the 44px target has somewhere to go without adding vertical rhythm. */
+.auth-forgot-row {
+	display: flex;
+	justify-content: flex-start;
+	margin-top: -6px;
+}
+
+.auth-quiet-link {
+	display: inline-flex;
+	align-items: center;
+	min-height: 44px;
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--accent);
+	font-family: var(--sans);
+	font-size: 0.82rem;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	cursor: pointer;
+	text-decoration: underline;
+	text-decoration-color: rgba(var(--accent-rgb), 0.4);
+	text-underline-offset: 4px;
+	transition:
+		color 150ms ease,
+		text-decoration-color 150ms ease;
+}
+
+/* Hover strengthens the underline and never lightens the text: --accent-hover
+   resolves via the rebrand :root to 7.52:1 on --surface-1 (light), and 1.4.3
+   applies to every state a text colour can be in, not just the resting one. */
+.auth-quiet-link:hover {
+	text-decoration-color: currentColor;
+}
+
+/* Cross-link to the other auth screen. Sits immediately under the submit
+   button with a boundary of its own, so it is findable without competing with
+   the primary action for weight. */
+.auth-alt-action {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 18px;
+	padding: 14px 16px;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-md);
+	background: var(--surface-2);
+	color: var(--text-2);
+	font-size: 0.85rem;
+}
+
+.auth-alt-action__link {
+	color: var(--accent);
+	font-weight: 700;
+	text-decoration: underline;
+	text-underline-offset: 4px;
+	white-space: nowrap;
+}
+
+.auth-social-group {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-top: 22px;
+	padding-top: 22px;
+	border-top: 1px solid var(--glass-border);
+}
+
+/* Brand-button geometry. Both marks are reproduced unmodified, so the rules
+   that matter here are the ones outside the artwork: a fixed 18px square box
+   (never a percentage, so neither mark can be stretched), a 12px gap plus
+   20px inline padding for clear space well beyond half the mark's height, and
+   a 44px minimum height for the target size. */
+.auth-social {
+	width: 100%;
+	min-height: 44px;
+	gap: 12px;
+	padding: 12px 20px;
+	font-size: 0.9rem;
+	font-weight: 600;
+}
+
+/* .btn-secondary has no :disabled rule of its own, so these went dead-looking
+   only by losing their pointer. `social()` disables them for the whole
+   redirect, which is exactly when the state has to read. */
+.auth-social:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.auth-social__icon {
+	display: block;
+	flex: none;
+	width: 18px;
+	height: 18px;
 }
 
 .auth-fine-print {
@@ -8167,10 +8619,13 @@ body:has(.public-site) {
 		height: 44px;
 	}
 
+	/* The label used to drop to 0.76rem (12.2px) here. On a 414px phone this is
+	   the only action in the header — the nav links are hidden two rules above
+	   — so it is the last thing that should be shrinking. Only the padding and
+	   the height give ground; 44px is still the comfortable touch target. */
 	.public-auth-link {
 		min-height: 44px;
-		padding-inline: 14px;
-		font-size: 0.76rem;
+		padding-inline: 15px;
 	}
 
 	.public-hero {
@@ -8211,16 +8666,13 @@ body:has(.public-site) {
 	}
 
 	.public-proof-deck {
-		gap: 18px;
+		gap: 16px;
 	}
 
 	.public-proof-deck article,
 	.public-proof-deck article:nth-child(2),
 	.public-proof-deck article:nth-child(3),
 	.public-proof-deck article:nth-child(4) {
-		position: static;
-		height: auto;
-		min-height: 220px;
 		padding: 26px;
 	}
 
@@ -8375,11 +8827,17 @@ body:has(.public-site) {
 		gap: 0;
 	}
 
+	/* One column below 760px — two columns of a 26ch headline is unreadable on
+	   a phone. The four panels stay in source order, so the comparison survives
+	   as a scroll instead of a side-by-side. */
+	.public-proof-deck {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
 	.public-proof-deck article,
 	.public-proof-deck article:nth-child(2),
 	.public-proof-deck article:nth-child(3),
 	.public-proof-deck article:nth-child(4) {
-		min-height: 210px;
 		padding: 24px;
 	}
 

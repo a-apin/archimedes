@@ -247,50 +247,48 @@ export default function Leaderboard() {
         <header className="app-page-heading">
           <p className="app-eyebrow">Transparent ranking</p>
           <h1>{isOwn ? 'Your strategy leaderboard' : 'Strategy leaderboard'}</h1>
-
-          {/* Board switch. Two surfaces, two bases, never averaged — the labels
-              say which is which before a single number is read. It sits above
-              the board copy, not below it, so the tab is chosen before the
-              sentence describing that board is read. */}
-          <div role="tablist" aria-label="Leaderboard board" style={{ display: 'flex', gap: 6, margin: '10px 0 12px' }}>
-            {BOARDS.map(b => (
-              <button
-                key={b.id}
-                type="button"
-                role="tab"
-                aria-selected={board === b.id}
-                onClick={() => setBoard(b.id)}
-                className={`tag-tab ${board === b.id ? 'tag-accent' : 'tag-muted'}`}
-                style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}
-              >
-                {b.label}
-              </button>
-            ))}
-          </div>
-
-          {isResearch && (
-            <p>
-              {isOwn
-                ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
-                    from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
-                    it carries to mainnet.</>
-                : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
-                    rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
-              {' '}
-              <strong>Every figure on this tab is backtest-era</strong> — measured on history the strategy was fitted
-              and graded against, over the window stamped on each row. Nothing here is forward performance.
-            </p>
-          )}
-
-          {isLive && (
-            <p>
-              Strategies you have <strong>actually deployed to paper trading</strong>, ranked by the return each one has
-              realised since it went live — compounded from its append-only forward ledger, never annualised and never
-              mixed with a backtest number. A deployment that has not produced an observation yet is withheld rather
-              than shown at zero.
-            </p>
-          )}
         </header>
+
+        {/* Board switch. Two surfaces, two bases, never averaged — the labels
+            say which is which before a single number is read. */}
+        <div role="tablist" aria-label="Leaderboard board" style={{ display: 'flex', gap: 6, margin: '10px 0 12px' }}>
+          {BOARDS.map(b => (
+            <button
+              key={b.id}
+              type="button"
+              role="tab"
+              aria-selected={board === b.id}
+              onClick={() => setBoard(b.id)}
+              className={`tag-tab ${board === b.id ? 'tag-accent' : 'tag-muted'}`}
+              style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+
+        {isResearch && (
+          <p className="body" style={{ maxWidth: 760 }}>
+            {isOwn
+              ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
+                  from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
+                  it carries to mainnet.</>
+              : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
+                  rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
+            {' '}
+            <strong>Every figure on this tab is backtest-era</strong> — measured on history the strategy was fitted
+            and graded against, over the window stamped on each row. Nothing here is forward performance.
+          </p>
+        )}
+
+        {isLive && (
+          <p className="body" style={{ maxWidth: 760 }}>
+            Strategies you have <strong>actually deployed to paper trading</strong>, ranked by the return each one has
+            realised since it went live — compounded from its append-only forward ledger, never annualised and never
+            mixed with a backtest number. A deployment that has not produced an observation yet is withheld rather
+            than shown at zero.
+          </p>
+        )}
 
         {/* Headline selectivity aggregate — see the derivation comment above
             (evaluatedCount / passingCount). Guarded identically to the
