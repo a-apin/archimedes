@@ -574,6 +574,55 @@ class TestShapeParity:
         assert warm.index.tolist() == cold.index.tolist()
 
 
+# ─── Known divergences from the ABC contract, pinned rather than described ──
+
+
+class TestKnownContractDivergences:
+    """Behaviours where ``TiingoProvider`` does NOT yet match the contract
+    ``MarketDataProvider`` documents. Pinned as tests so they are greppable
+    and so closing one is a visible red-to-green diff, rather than living
+    only as prose in a PR body that nobody re-reads. Each is on the PR's
+    cutover-follow-up list and must be closed before
+    ``MARKET_DATA_PROVIDER=tiingo`` is flipped in prod."""
+
+    def test_end_date_is_inclusive_unlike_the_abc_s_half_open_range(self):
+        """DIVERGENCE (follow-up): the ABC documents ``get_daily_ohlcv`` over
+        ``[start, end)`` — half-open, end EXCLUSIVE — because that is what
+        ``yf.download(start=, end=)`` does. Tiingo's ``endDate`` query
+        parameter is INCLUSIVE, and ``_fetch_equity_rows`` passes ``end``
+        straight through, so Tiingo returns one extra trailing bar for the
+        same arguments.
+
+        Concretely: for ``end="2024-01-03"`` the yfinance path yields only
+        the 2024-01-02 bar; Tiingo yields 2024-01-02 AND 2024-01-03. Left
+        as-is in this PR (the flag is off by default and no call site is on
+        Tiingo yet); the fix is to send ``endDate = end - 1 day``, which
+        needs its own test for the ``end=""`` and month/year-boundary cases.
+        """
+        client = _mock_client({"/tiingo/daily/SPY/prices": EQUITY_FIXTURE})
+        result = TiingoProvider(client=client).get_daily_ohlcv("SPY", "2024-01-02", "2024-01-03")
+
+        assert result.index[-1] == pd.Timestamp("2024-01-03"), (
+            "if this now fails, endDate was made exclusive — good; update the "
+            "ABC-parity note and drop this test from the follow-up list"
+        )
+
+    def test_crypto_shape_error_is_reported_as_an_empty_response(self):
+        """DIVERGENCE (follow-up): equity and FX raise
+        ``TiingoProviderError('Unexpected ... response shape')`` when Tiingo
+        returns a non-list body, but ``_fetch_crypto_rows`` folds that case
+        into ``return []``, which surfaces downstream as
+        ``TiingoEmptyResponseError`` — "zero rows for BTC-USD" instead of
+        "Tiingo changed its crypto response shape". Same loudness, wrong
+        cause: an operator reading the log would go looking for a delisting
+        rather than a vendor API change."""
+        client = _mock_client({"/tiingo/crypto/prices": {"detail": "not a list"}})
+        provider = TiingoProvider(client=client)
+
+        with pytest.raises(TiingoEmptyResponseError):  # today; should be TiingoProviderError
+            provider.get_daily_ohlcv("BTC-USD", "2024-01-02", "2024-01-03")
+
+
 # ─── Out-of-scope ABC methods: loud NotImplementedError, not silent wrong data ──
 
 
