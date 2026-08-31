@@ -247,10 +247,11 @@ def safe_json_loads(raw, *, context: str):
 #: reads as "this strategy has no construction trace" when the truth is "this
 #: filter cannot see construction traces at all".
 #:
-#: If a construction writer that records real strategy ids is ever wired
-#: (``services/construction_trace.py`` builds one, but nothing persists it
-#: today), add ``"construction"`` here AND fix the two writers above — do not
-#: special-case it at a call site.
+#: If a construction writer that records real strategy ids is ever wired, add
+#: ``"construction"`` here AND fix the two writers above — do not special-case
+#: it at a call site. (``services/construction_trace.py`` used to build such a
+#: trace without persisting it; it was deleted as a zero-caller surface, so
+#: today nothing writes a construction trace at all.)
 STRATEGY_REFERENCE_DECISION_TYPES = frozenset({"rebalance", "rotation", "regime_change", "skip"})
 
 

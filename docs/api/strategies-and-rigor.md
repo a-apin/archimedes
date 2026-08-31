@@ -15,7 +15,7 @@ disagree with another for the same strategy at the same strictness level.
 **Auth model.** Reads are anonymous by default — the library, passports,
 stress testing, and every `/api/selection-bias/*` route are public.
 Ownership-scoped reads (`GET /api/strategies/generated`) and mutations
-(`PATCH /api/strategies/{id}`, the legacy `POST /api/strategies/generate`)
+(`PATCH /api/strategies/{id}`)
 require a Better Auth account session (the `better-auth.session_token`
 cookie). Several anonymous reads additionally consult an *optional* linked- or
 SIWE-verified-wallet header/cookie purely to decide whether an unpublished row
@@ -173,36 +173,19 @@ curl -s -X PATCH https://archimedes-arc.com/api/strategies/<strategy_id> \
   -b /tmp/session.jar -H "Content-Type: application/json" -d '{"name": "Momentum v2"}'
 ```
 
-### POST /api/strategies/generate
-**(roadmap-superseded — legacy direct-fusion path; `POST /api/generate/start`
-is the sole live interactive generation pipeline, per the
-[debate-society-sole-generation-pipeline ADR](../adr/debate-society-sole-generation-pipeline.md).
-The route's own docstring notes the `mode=fast` Strategy Architect branch was
-removed in #1064.)** Queue a strategy generation job via the direct-fusion
-path; returns 202 + `job_id` immediately. | **Auth**: account-session |
-**Flags**: `ARCHIMEDES_FUSION_ENABLED=1` (fusion disabled without it), rate
-limit `20/minute` (disabled under `TESTING`)
+## Generation is not served here
 
-Request: query `asset_classes: str="" (comma-separated), risk_appetite: str="moderate", strategic_direction: str="", max_papers: int=4`.
-Response (202): `{status: "queued", job_id: str}`.
-Errors: 503 `"Fusion is disabled. Set ARCHIMEDES_FUSION_ENABLED=1."` (fusion not enabled); 503 `"Insufficient corpus ({n} papers). Need ≥2 for fusion."` (corpus under 2 papers).
+`POST /api/strategies/generate` and its poll partner
+`GET /api/strategies/generate/{job_id}` — the flag-gated direct-fusion bypass —
+were **removed on 2026-08-31**. They were a second live, account-gated,
+LLM-spending generation path that survived the Phase-3 cutover, contradicting
+the [debate-society-sole-generation-pipeline
+ADR](../adr/debate-society-sole-generation-pipeline.md).
 
-```bash
-curl -s -X POST -b /tmp/session.jar \
-  "https://archimedes-arc.com/api/strategies/generate?asset_classes=equities&risk_appetite=moderate&max_papers=4"
-```
-
-### GET /api/strategies/generate/{job_id}
-Poll a strategy generation (fusion) job. Returns status + result when done. |
-**Auth**: account-session
-
-Request: path `job_id`.
-Response: raw job dict from `JobStore` (`job_type="fusion"`) — status + result.
-Errors: 404 `Job not found` (missing, or `owner_user_id` set and not the caller).
-
-```bash
-curl -s -b /tmp/session.jar https://archimedes-arc.com/api/strategies/generate/<job_id>
-```
+Generation lives entirely on `POST /api/generate/start` — see
+[`generation.md`](generation.md) — with job status at
+`GET /api/generate/jobs/{job_id}`. `backend/tests/test_sole_generation_route_guard.py`
+fails if a generation route reappears under `/api/strategies`.
 
 ## Rigor gate (selection-bias) endpoints
 
