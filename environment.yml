@@ -76,7 +76,7 @@ dependencies:
       # the documented #1 cause of "works locally, breaks in CI". eth-utils 5→6
       # was an API-breaking bump, so the floors must agree.
       - web3>=7.16.0                  # Python EVM client; works with Arc (EVM-compatible)
-      - eth-account>=0.13.7           # Local key management for testnet wallets
+      - eth-account>=0.14.0           # Local key management for testnet wallets (dependabot PR #1581)
       - eth-abi>=5.2.0,<6             # ABI codec (direct import in marketplace/encoding.py). Cap <6: eth-account's pre-release specifier (`eth-abi>=4.0.0-b.2`) otherwise lets pip resolve the 6.0.0b1 beta — no betas on the funds path. Aligned with backend/requirements.txt.
       - eth-utils>=6.0.0
       - cryptography>=50.0.0          # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
