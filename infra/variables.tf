@@ -74,9 +74,13 @@ variable "ecs_service_desired_count" {
 }
 
 variable "ecs_service_min_count" {
+  # 2, not 1 (owner decision 2026-08-31): a one-task fleet turns every deploy
+  # into a brief 502 window (rollout gap) and every backend crash into a
+  # user-facing outage — both bitten twice on 2026-08-31 (#1594, #1632).
+  # At 2, rollouts overlap and a single crash is invisible. ~$15-18/mo.
   description = "Application Auto Scaling floor for the archimedes-backend service."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "ecs_service_max_count" {
