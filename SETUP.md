@@ -59,27 +59,6 @@ Verify the whole local-mode contract before you start the stack:
 make check-local     # or: python3 scripts/check-local-mode.py
 ```
 
-### Fully local intelligence (ollama — no cloud credential)
-
-The default `.env.example` points at AWS Bedrock, which needs credentials. To run the
-intelligence layer entirely on your own machine, pull a model on the **host** and set three
-variables in `.env`:
-
-```bash
-ollama pull llama3.1        # on the HOST, not inside a container
-```
-
-```
-LLM_PROVIDER=ollama
-LLM_MODEL=llama3.1
-LLM_BASE_URL=http://host.docker.internal:11434
-```
-
-From inside the compose network `localhost` is the container, not your machine — hence
-`host.docker.internal`. If ollama is unreachable or the model is not pulled, the backend
-falls back to canned output and `/health` reports `llm_available: false`; it never claims a
-live backend it does not have.
-
 Local `.env.example` selects `docker-compose.local.yml` and publishes nginx on unprivileged port 8080, so both rootful and rootless Docker work without host sysctl changes. Production omits the local override and `ARCHIMEDES_HTTP_PORT`, retaining its separate migration task and port 80.
 
 Existing `.env` from an older checkout: merge `COMPOSE_PATH_SEPARATOR`, `COMPOSE_FILE`, `ARCHIMEDES_HTTP_PORT`, `BETTER_AUTH_URL`, and `BETTER_AUTH_TRUSTED_ORIGINS` from `.env.example`; do not replace the file or its secrets wholesale.
@@ -96,6 +75,27 @@ The stack runs one migration job, then starts **5 long-running services**:
 | `redis`     | —         | internal Docker network          | Regime state cache and runtime scratch |
 
 Watch health checks succeed with `docker compose ps`; inspect the completed migration with `docker compose ps -a migrate`. Funds-adjacent `agent`, `oracle`, and `kb-runner` processes stay off locally unless explicitly enabled with `COMPOSE_PROFILES=localdb,runners`.
+
+### Fully local intelligence (ollama — no cloud credential)
+
+The default `.env.example` points at AWS Bedrock, which needs credentials. To run the
+intelligence layer entirely on your own machine, pull a model on the **host** and set three
+variables in `.env` before bringing the stack up:
+
+```bash
+ollama pull llama3.1        # on the HOST, not inside a container
+```
+
+```
+LLM_PROVIDER=ollama
+LLM_MODEL=llama3.1
+LLM_BASE_URL=http://host.docker.internal:11434
+```
+
+From inside the compose network `localhost` is the container, not your machine — hence
+`host.docker.internal`. If ollama is unreachable or the model is not pulled, the backend
+falls back to canned output and `/health` reports `llm_available: false`; it never claims a
+live backend it does not have.
 
 ## Step 3 — Verify it works
 
