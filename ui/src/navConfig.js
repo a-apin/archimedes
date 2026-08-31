@@ -10,81 +10,78 @@
 // adminProbeCache.js / insightsGate.js's "stays unit-testable under bare
 // `node --test`" discipline.
 //
-// Sidebar groups separate the marketing-site anchor (labelled "Marketing
-// site", NOT "Home" — the breadcrumb's Home crumb already owns that label for
-// the in-app anchor at Explore; two controls both reading "Home" ~40px apart
-// with different destinations was #1370 item 3) from the product-state
-// bands. Empty group label is intentional for that entry — it renders as a
-// header-less section so it reads as the top-of-shell anchor, not a peer of
-// the other groups. The five labelled groups split the remaining surfaces
-// along the gating boundary:
-//   DISCOVER — open to anonymous visitors (no wallet needed)
-//   STRATEGY — wallet-gated: generate + your saved strategies
-//   POSITION — wallet-gated: on-chain audit, post-hoc review (Portfolio and
-//     Learnings are ROADMAP_PAGES, hidden by default (#1266); Quant Lab
-//     defaults off separately via the backend `quant` feature flag — in the
-//     shipped build this group renders as a single item, Reasoning)
+// EVERY entry belongs to a labelled group (#1641). The array used to open
+// with an unlabelled section (its `group` key set to `null`) holding a single
+// marketing-site link. Layout.jsx renders that section without a
+// `.nav-group-label`, so it was a bare, header-less button sitting above the
+// labelled bands with no section context — the owner's "looks terrible"
+// finding in the 2026-08-31 product review. The marketing site itself is
+// untouched by its removal: `/` still maps
+// to the `landing` page (routes.js PUBLIC_PATHS) and is still reached from
+// PublicLayout's own nav and by URL — only the in-shell link to it was
+// removed, and with it the sole reason this file ever had an unlabelled
+// group. Adding one back re-creates the defect; the guards in
+// ui/test/nav-groups.test.js reject it.
+//
+// The four labelled groups split the /app surfaces by where the user is in
+// the spine (owner's grouping call, 2026-08-31 — this supersedes the earlier
+// DISCOVER/STRATEGY/POSITION split, which banded by wallet-gating instead):
+//   STRATEGY — finding and building one: browse the seed strategies
+//     (Explore), see the paper substrate they are drawn from (Corpus),
+//     generate your own, keep them (Library). That order is the onboarding
+//     read; Explore and Corpus came from the dissolved DISCOVER group.
+//   POSITION — acting on one and reviewing the result: Paper Trading (the
+//     act-on step of the MVP spine — simulated, account-owned, free),
+//     Reasoning (the trace behind a verdict), Leaderboard (how the library
+//     ranks). Portfolio and Learnings are ROADMAP_PAGES, hidden by default
+//     (#1266); Quant Lab defaults off separately via the backend `quant`
+//     feature flag. Those three trail the shipped three so the rendered
+//     order is the owner's spec whatever the flags say — their VISIBILITY is
+//     unchanged and stays owned by routes.js featureEnabled(), not by their
+//     position here.
 //   MARKET — the strategy marketplace (ROADMAP_PAGES, hidden by default)
 //   OPS — insights + account
-// Item order inside DISCOVER (Explore → Corpus) follows the natural
-// user-onboarding read: browse the seed strategies first, see the substrate
-// they're drawn from second.
 //
-// Architecture is deliberately NOT a shell nav item (#1370, PR #1400):
-// `pageToPath('architecture')` resolves to the PUBLIC `/architecture` route
+// Grouping is no longer a gating signal. Which items an anonymous visitor
+// sees is ANON_NAV_IDS' job (routes.js) and always was; DISCOVER's "open to
+// anonymous visitors" label merely happened to agree with it, and reading a
+// group name as a permission boundary is the drift this note exists to stop.
+//
+// Architecture is deliberately NOT a shell nav item (#1370, PR #1400): the
+// `architecture` page id resolves to the PUBLIC `/architecture` route
 // (routes.js PUBLIC_PATHS, not APP_PATHS), so clicking it from inside the
 // shell rendered the page in PublicLayout — no sidebar, no breadcrumbs. It
 // stays reachable from PublicLayout's own nav and by direct URL; #1370's
-// anti-goal forbids fixing it by minting a second, /app-side route.
-//
-// MERGE-ORDER NOTE: #1400 removes that item from the NAV array while it still
-// lives inline in Layout.jsx; this PR moves NAV out to this file. Those two
-// edits do not textually conflict, so leaving the item here would have let a
-// clean merge silently resurrect the entry #1400 deleted. Removed here so the
-// merge in either order lands on the same shell nav.
+// anti-goal forbids fixing it by minting a second, /app-side route. Two
+// tests reject a re-add: nav-groups.test.js by id, and
+// backend/tests/test_breadcrumbs.py::test_shell_nav_items_stay_inside_the_shell
+// by "every nav id must be an APP_PATHS page".
 export const NAV = [
-	{
-		group: null,
-		items: [
-			{ id: "landing", label: "Marketing site", icon: "i-lucide-home" },
-		],
-	},
-	{
-		group: "Discover",
-		items: [
-			{ id: "explore", label: "Explore", icon: "i-lucide-compass" },
-			{ id: "corpus", label: "Corpus", icon: "i-lucide-library" },
-		],
-	},
 	{
 		group: "Strategy",
 		items: [
+			{ id: "explore", label: "Explore", icon: "i-lucide-compass" },
+			{ id: "corpus", label: "Corpus", icon: "i-lucide-library" },
 			{ id: "generate", label: "Generate", icon: "i-lucide-sparkles" },
 			{ id: "library", label: "Library", icon: "i-lucide-line-chart" },
-			// Paper Trading lives in STRATEGY: it is the act-on step of the MVP
-			// spine (generate → verdict → paper) — simulated, account-owned, free.
-			{ id: "paper", label: "Paper Trading", icon: "i-lucide-trending-up" },
-			// Leaderboard lives in STRATEGY (#1077): it ranks the strategy library —
-			// discovery-friendly but strategy-native. (Quant Lab moved to Position.)
-			{ id: "leaderboard", label: "Leaderboard", icon: "i-lucide-trophy" },
 		],
 	},
 	{
 		group: "Position",
 		items: [
+			{ id: "paper", label: "Paper Trading", icon: "i-lucide-trending-up" },
+			{ id: "reasoning", label: "Reasoning", icon: "i-lucide-brain" },
+			// Leaderboard moved out of STRATEGY (#1641, superseding #1077's
+			// placement): it ranks strategies by realised outcome, which is a
+			// review-the-result surface, not a build-one surface.
+			{ id: "leaderboard", label: "Leaderboard", icon: "i-lucide-trophy" },
+			// Flag-gated, hidden in the shipped build — see the header note.
 			{
 				id: "portfolio",
 				label: "Portfolio",
 				icon: "i-lucide-layout-dashboard",
 			},
-			// Re-added (#1060 AC#3, Dan's call 2026-07-14): the livestream-era hiding
-			// (#1061) was for the synthetic-sample-data version; this PR wires the
-			// panels to live library/vault/trace data with per-section disclaimers.
-			// Lives in POSITION (Dan, 2026-07-14): its panels read the user's live
-			// vault/trace data, so it belongs with the deployed-state surfaces and is
-			// wallet-gated like them (see App.jsx).
 			{ id: "quant", label: "Quant Lab", icon: "i-lucide-flask-conical" },
-			{ id: "reasoning", label: "Reasoning", icon: "i-lucide-brain" },
 			{ id: "learnings", label: "Learnings", icon: "i-lucide-graduation-cap" },
 		],
 	},

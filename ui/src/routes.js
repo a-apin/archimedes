@@ -215,7 +215,12 @@ export function postAuthPath(search = '') {
 // was dropped (#1370 item 4): Architecture is no longer a shell NAV item (see
 // Layout.jsx), so this entry has been unreachable dead config the same way the
 // CRUMB_MAP 'architecture' key was before this PR removed that one too.
-const ANON_NAV_IDS = new Set(['landing', 'explore', 'corpus', 'leaderboard', 'generate'])
+// 'landing' was dropped the same way (#1641): the marketing-site sidebar entry
+// is gone from navConfig.js, so no nav item carries that id any more. It stays
+// a real page id — PUBLIC_PATHS['/'] and pageToPath('landing') are untouched —
+// it just isn't a NAV id, and this set is only ever consulted with NAV ids
+// (visibleNavigation, called from Layout.jsx over NAV's groups).
+const ANON_NAV_IDS = new Set(['explore', 'corpus', 'leaderboard', 'generate'])
 
 export function visibleNavigation(items, features, user = null) {
   return items.filter(
