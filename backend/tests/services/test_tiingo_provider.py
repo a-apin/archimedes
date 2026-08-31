@@ -146,6 +146,21 @@ def _tiingo_key(monkeypatch):
     monkeypatch.setenv("TIINGO_API_KEY", "test-key-do-not-log-me")
 
 
+@pytest.fixture
+def session_factory(tmp_path):
+    """An isolated SQLite engine/session factory with ``asset_daily_bars``
+    created — same construction as ``test_market_data_provider.py``'s
+    fixture of the same name, independent of the app's module-level engine.
+    Used only by the cold/warm cache round-trip in ``TestShapeParity``."""
+    from archimedes.db import Base
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'tiingo_market_data.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    return sessionmaker(bind=engine)
+
+
 # ─── Symbol classification (ticker-shape heuristic) ─────────────────────
 
 
@@ -380,6 +395,12 @@ class TestAdjustmentSemantics:
 
 class TestEmptyResponseIsLoud:
     def test_equity_empty_list_raises(self):
+        """Also the "never returns an empty DataFrame" regression guard:
+        ``pytest.raises`` fails the test if the call returns instead of
+        raising, so a regression to an empty-but-truthy-shaped sentinel is
+        caught right here. (A separate try/except-shaped test asserting the
+        same thing was removed as a duplicate — it exercised the identical
+        route, call, and exception type.)"""
         client = _mock_client({"/tiingo/daily/NOPE/prices": []})
         provider = TiingoProvider(client=client)
         with pytest.raises(TiingoEmptyResponseError, match="NOPE"):
@@ -408,18 +429,6 @@ class TestEmptyResponseIsLoud:
         provider = TiingoProvider(client=client)
         with pytest.raises(TiingoEmptyResponseError):
             provider.get_daily_ohlcv("NOPEUSD=X", "2024-01-02", "2024-01-03")
-
-    def test_empty_response_never_returns_a_frame(self):
-        """Guards against a regression to 'return an empty DataFrame' —
-        callers (fusion_market_data, portfolio_backtester) rely on the
-        exception, not an empty-but-truthy-shaped sentinel."""
-        client = _mock_client({"/tiingo/daily/NOPE/prices": []})
-        provider = TiingoProvider(client=client)
-        try:
-            provider.get_daily_ohlcv("NOPE", "2024-01-02", "2024-01-03")
-            pytest.fail("expected TiingoEmptyResponseError, got a return value instead")
-        except TiingoEmptyResponseError:
-            pass
 
     def test_batch_skips_empty_response_symbol_and_logs(self, caplog):
         import logging
@@ -459,11 +468,28 @@ class TestHttpErrorSurface:
 
 
 def _assert_ohlcv_shape_contract(frame: pd.DataFrame) -> None:
-    """The shape contract every MarketDataProvider.get_daily_ohlcv
-    implementation must satisfy — same columns, same index type, same
-    dtypes — regardless of vendor. Mirrors the frame shape
-    ``_ohlcv_frame()`` in test_market_data_provider.py builds to stand in
-    for YFinanceProvider's real output."""
+    """The shape ``TiingoProvider.get_daily_ohlcv`` output must satisfy.
+
+    **Scope of this helper, stated precisely because an earlier revision
+    overclaimed it.** This is a LOCAL contract for this file — it is NOT
+    shared with, imported by, or applied to ``YFinanceProvider`` anywhere.
+    ``test_market_data_provider.py``'s ``_ohlcv_frame`` is a different
+    fixture that is deliberately not reused here: it builds a **tz-AWARE**
+    (UTC) index (``pd.date_range(end=pd.Timestamp.now("UTC")...)``), so it
+    would FAIL the tz-naive assertion below. Reusing it would mean either a
+    false parity claim or silently weakening the contract.
+
+    The tz-naive requirement is not arbitrary and not a guess about what
+    yfinance returns over the network (which these hermetic tests cannot
+    observe). It comes from production code on ``main``:
+    ``_read_cached_ohlcv`` rebuilds a warm-cache frame as
+    ``pd.to_datetime([r.trade_date ...])`` over ``date`` objects — always
+    tz-naive. So a tz-aware vendor frame would make the SAME
+    ``CachingMarketDataProvider.get_daily_ohlcv(...)`` call return a
+    tz-aware index cold and a tz-naive one warm. That invariant is pinned
+    directly by ``test_cold_and_warm_cache_frames_agree_on_shape`` below,
+    against the real cache, not against a hand-built reference frame.
+    """
     assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert isinstance(frame.index, pd.DatetimeIndex)
     assert frame.index.tz is None
@@ -472,29 +498,19 @@ def _assert_ohlcv_shape_contract(frame: pd.DataFrame) -> None:
 
 
 class TestShapeParity:
-    """Byte-compatible output shape with YFinanceProvider: same columns,
-    same index type, same dtypes — verified against the identical
-    shape-contract helper used for YFinanceProvider's own OHLCV frame
-    (test_market_data_provider.py's ``_ohlcv_frame``) so a change to either
-    contract shows up as a diff in exactly one place."""
+    """``TiingoProvider``'s own frames satisfy the ``get_daily_ohlcv`` shape
+    contract for all three endpoint families, and — the part that is
+    genuinely cross-component rather than self-referential — a Tiingo frame
+    round-trips through the real ``CachingMarketDataProvider`` without
+    changing shape.
 
-    def test_yfinance_reference_frame_satisfies_the_contract(self):
-        """Sanity: the contract helper itself agrees with the reference
-        frame shape YFinanceProvider callers already depend on (same
-        construction as test_market_data_provider.py's _ohlcv_frame)."""
-        idx = pd.date_range("2024-01-02", periods=3, freq="D")
-        close = pd.Series([100.0, 101.0, 102.0], index=idx)
-        reference = pd.DataFrame(
-            {
-                "Open": close.to_numpy() - 0.5,
-                "High": close.to_numpy() + 1.0,
-                "Low": close.to_numpy() - 1.0,
-                "Close": close.to_numpy(),
-                "Volume": [1_000_000.0] * 3,
-            },
-            index=idx,
-        )
-        _assert_ohlcv_shape_contract(reference)
+    Deliberately NOT claimed here: byte-compatibility with
+    ``YFinanceProvider``'s live output. That would need a real yfinance
+    response, which these hermetic tests do not have; mocking ``yf.download``
+    would only assert the tz of our own fixture back to us. See the
+    cutover-follow-up list in the PR body — a recorded-response parity check
+    against both vendors is the honest way to close that gap, and it is not
+    in this PR."""
 
     def test_tiingo_equity_output_satisfies_the_contract(self):
         client = _mock_client({"/tiingo/daily/SPY/prices": EQUITY_FIXTURE})
@@ -519,6 +535,43 @@ class TestShapeParity:
         assert series.name == "sSPY"
         assert series.dtype == "float64"
         assert isinstance(series.index, pd.DatetimeIndex)
+
+    def test_cold_and_warm_cache_frames_agree_on_shape(self, session_factory):
+        """The real cross-component check: the SAME
+        ``CachingMarketDataProvider.get_daily_ohlcv`` call must return the
+        same-shaped frame on a cold cache (Tiingo vendor fetch) and on a warm
+        one (``_read_cached_ohlcv`` rebuilding it from ``asset_daily_bars``).
+
+        This is where the tz-naive requirement in
+        ``_assert_ohlcv_shape_contract`` actually comes from: the warm path
+        is production code on ``main`` and builds its index from ``date``
+        objects, so it is unconditionally tz-naive. A tz-aware Tiingo frame
+        would pass every Tiingo-only test above and still make this call
+        return two differently-typed indexes depending on cache state —
+        exactly the kind of state-dependent shape drift a downstream
+        backtrader feed would hit intermittently.
+        """
+        from archimedes.services.market_data_provider import CachingMarketDataProvider
+
+        seen: list[httpx.Request] = []
+        client = _mock_client({"/tiingo/daily/SPY/prices": EQUITY_FIXTURE}, capture=seen)
+        provider = CachingMarketDataProvider(
+            TiingoProvider(client=client), source_name="tiingo", session_factory=session_factory
+        )
+
+        cold = provider.get_daily_ohlcv("SPY", "2024-01-02", "2024-01-03")
+        assert len(seen) == 1, "cold call must reach the vendor"
+        warm = provider.get_daily_ohlcv("SPY", "2024-01-02", "2024-01-03")
+        assert len(seen) == 1, "warm call must be served by asset_daily_bars, not a second vendor fetch"
+
+        _assert_ohlcv_shape_contract(cold)
+        _assert_ohlcv_shape_contract(warm)
+        assert list(cold.columns) == list(warm.columns)
+        assert cold.index.tz == warm.index.tz
+        # ...and the adjusted values survived the asset_daily_bars round-trip
+        # intact (same adjClose-derived numbers TestAdjustmentSemantics pins).
+        assert warm["Close"].tolist() == cold["Close"].tolist() == [468.20, 464.37]
+        assert warm.index.tolist() == cold.index.tolist()
 
 
 # ─── Out-of-scope ABC methods: loud NotImplementedError, not silent wrong data ──
