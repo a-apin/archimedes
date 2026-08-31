@@ -148,6 +148,7 @@ _VERIFY_PASS_BODY = {
         "status": "not_evaluable",
         "reason": "The look-ahead audit is AST-based static analysis of strategy source code.",
     },
+    "rf_convention": "excess_tbill_series",
 }
 
 _VERIFY_FAIL_BODY = {
@@ -174,6 +175,7 @@ _VERIFY_FAIL_BODY = {
         "in_sample_sharpe": -0.4,
     },
     "look_ahead": {"status": "not_evaluable", "reason": "The look-ahead audit needs strategy source."},
+    "rf_convention": "excess_flat_fallback",
 }
 
 _VERIFY_NOT_EVALUABLE_BODY = {
@@ -190,6 +192,7 @@ _VERIFY_NOT_EVALUABLE_BODY = {
     "pbo": {"status": "not_evaluable", "reason": "PBO requires a trial matrix."},
     "oos_consistency": {"status": "not_evaluable", "reason": "insufficient data for a walk-forward OOS split"},
     "look_ahead": {"status": "not_evaluable", "reason": "The look-ahead audit needs strategy source."},
+    "rf_convention": "excess_flat_fallback",
 }
 
 
@@ -498,6 +501,10 @@ class TestVerify:
         assert "[PASS] OOS consistency" in result.stdout
         assert "[N/A] PBO" in result.stdout
         assert "[N/A] Look-ahead" in result.stdout
+        # #1409 round-4 review fix: the human-readable output must disclose
+        # WHICH risk-free-rate convention produced the DSR/OOS numbers above —
+        # not just the raw `--json` body, which always carried it silently.
+        assert "rf_convention=excess_tbill_series" in result.stdout
         # Never an unqualified "PASSES" (#1481): two of the four gate legs cannot
         # run on a bare returns series, so the verdict is reported as capped.
         assert "PASSES (capped" in result.stdout
@@ -547,6 +554,9 @@ class TestVerify:
         assert result.stdout.count("[N/A]") == 4
         assert "[PASS]" not in result.stdout
         assert "[FAIL]" not in result.stdout
+        # #1409: the rf convention is disclosed on every verdict path, including
+        # the ones that produce no verdict at all.
+        assert "rf_convention=excess_flat_fallback" in result.stdout
         assert "INCOMPLETE" in result.stdout
         assert "PASSES" not in result.stdout
 
