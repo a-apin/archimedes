@@ -159,6 +159,7 @@ nav:
       - runbooks/spec-1-walkthrough.md
       - runbooks/t3.2-contract-redeploy.md
       - runbooks/docs-site-setup.md
+      - runbooks/email-verification-validation.md
 
   - Decisions (ADRs):
       - adr/README.md
