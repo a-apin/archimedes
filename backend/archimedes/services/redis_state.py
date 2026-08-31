@@ -37,6 +37,18 @@ KEY_TRACE_PREFIX = "archimedes:trace:"
 KEY_TRACE_INDEX = "archimedes:trace:index"
 KEY_SIWE_NONCE_PREFIX = "archimedes:auth:nonce:"
 
+# How many trace blobs ``list_traces`` fetches per MGET (#1577).
+#
+# The read it batches is deliberately unbounded at the index (the caller's
+# window is applied only after filtering, so the store cannot know how far to
+# read), which rules out a single MGET over everything: Redis executes MGET as
+# one blocking command on its single thread, so an index-sized key list would
+# turn one client's listing into a latency spike for every other client, and
+# the entire reply would land in this process at once. A fixed batch keeps
+# both the per-command cost and the peak buffer flat while still collapsing
+# the round-trip count from O(index) to O(index / 500).
+TRACE_MGET_BATCH = 500
+
 # Reveal-reconciliation durable index (#1353, hardening the #1276 pass).
 #
 # ``list_recent_traces(N)`` bounds its scan at the newest N entries of
@@ -657,25 +669,46 @@ class AgentStateStore:
         # Get all trace hashes sorted by timestamp (newest first)
         all_hashes = await r.zrevrange(KEY_TRACE_INDEX, 0, -1)
 
-        # Load and filter
+        # Load in MGET batches, then filter (#1577). This used to be one
+        # awaited GET per member of the WHOLE index — on a TLS ElastiCache
+        # connection that is one full round trip each, so a 2000-trace index
+        # cost 2001 round trips before the first row was filtered. Batching
+        # makes it ``1 + ceil(len(index) / TRACE_MGET_BATCH)``.
+        #
+        # Chunked rather than one MGET over the whole index because this read
+        # is deliberately unbounded (the window is applied AFTER filtering —
+        # see the docstring), so a single MGET would grow without limit: Redis
+        # is single-threaded and serves a 100k-key MGET as one blocking
+        # command that stalls every other client, and the whole reply would be
+        # materialised in this process at once. The batch bounds both.
         traces: list[dict] = []
-        for h in all_hashes:
-            raw = await r.get(f"{KEY_TRACE_PREFIX}{h}")
-            if not raw:
-                continue
-            data = _safe_json_loads(raw, context="trace:index")
-            if data is None:
-                continue
+        for start in range(0, len(all_hashes), TRACE_MGET_BATCH):
+            batch = all_hashes[start : start + TRACE_MGET_BATCH]
+            # MGET preserves request order, and the batches are walked in
+            # index order, so the newest-first ordering `zrevrange` returned
+            # survives unchanged.
+            raws = await r.mget([f"{KEY_TRACE_PREFIX}{h}" for h in batch])
+            for raw in raws:
+                # Same malformed-row tolerance as the per-key loop: a hash in
+                # the index whose blob is gone (`None`) and a blob that no
+                # longer parses are both skipped, never raised. MGET returns
+                # `None` in the slot of a missing key, which is exactly what
+                # the old `GET` returned for one.
+                if not raw:
+                    continue
+                data = _safe_json_loads(raw, context="trace:index")
+                if data is None:
+                    continue
 
-            # Apply filters
-            if vault_address and data.get("vault_address", "").lower() != vault_address.lower():
-                continue
-            if decision_type and data.get("decision_type") != decision_type:
-                continue
-            if strategy_id and not trace_references_strategy(data, strategy_id):
-                continue
+                # Apply filters
+                if vault_address and data.get("vault_address", "").lower() != vault_address.lower():
+                    continue
+                if decision_type and data.get("decision_type") != decision_type:
+                    continue
+                if strategy_id and not trace_references_strategy(data, strategy_id):
+                    continue
 
-            traces.append(data)
+                traces.append(data)
 
         total = len(traces)
         window = traces[offset : offset + limit]
