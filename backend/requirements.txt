@@ -73,6 +73,26 @@ backtrader>=1.9.78.123
 # before assuming this is stale (investigated 2026-07-14).
 circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355
 
+# pip-audit also flags pymdown-extensions 10.21.3 (PYSEC-2026-3609, fix
+# 11.0.0; PYSEC-2026-3654, fix 11.0.1) via the same titanoboa pull-in.
+# Not a live exposure: titanoboa 0.2.8 declares mkdocs-material==9.5.41 as a
+# hard runtime Requires-Dist (its own docs toolchain, mis-declared upstream —
+# none of titanoboa's 51 source files import mkdocs or pymdownx). We looked
+# at directly pinning pymdown-extensions>=11.0.1 here (the starlette
+# pattern) and it is unsatisfiable: mkdocs-material 9.5.41 itself caps
+# pymdown-extensions to `~=10.2` (<11), confirmed by a real resolver
+# conflict in a throwaway venv ("mkdocs-material 9.5.41 depends on
+# pymdown-extensions~=10.2"). Bumping mkdocs-material doesn't help either —
+# titanoboa 0.2.8 pins it to that exact version, not a floor, so it can't
+# move without moving titanoboa's pinned commit (a forked git dep, upstream
+# call). mkdocs-material 9.7.7 has since relaxed the cap to
+# `pymdown-extensions>=10.2` with no ceiling, so the real fix is upstream:
+# titanoboa dropping the exact 9.5.41 pin, or moving mkdocs-material into a
+# docs extra instead of install_requires. Ignored in quality-gate.yml
+# alongside the vyper pair above until one of those lands (investigated
+# 2026-08-30; re-verify with `pip-audit -r backend/requirements.txt` before
+# assuming this is stale).
+
 # LLM
 anthropic>=0.120.2
 

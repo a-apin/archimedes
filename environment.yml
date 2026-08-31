@@ -67,6 +67,14 @@ dependencies:
       # comment above the same pin (investigated 2026-07-14).
       - "circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355"
 
+      # pip-audit also flags pymdown-extensions 10.21.3 (PYSEC-2026-3609 /
+      # PYSEC-2026-3654) via the same titanoboa pull-in: titanoboa 0.2.8 hard-pins
+      # mkdocs-material==9.5.41 (a mis-declared docs dep, never imported by
+      # titanoboa), which itself caps pymdown-extensions to ~=10.2 (<11) — so a
+      # direct pin here is unsatisfiable (resolver-confirmed), unlike starlette.
+      # Full analysis: backend/requirements.txt comment above the same pin
+      # (investigated 2026-08-30).
+
       # --- LLM ---
       - anthropic>=0.120.2            # Claude / GLM-compatible client for strategy extraction + reasoning trace generation + chat. Floor aligned with backend/requirements.txt via dependabot PR #1166; this closes a large pre-existing drift (was still pinned at 0.104.1, 13 releases behind requirements.txt's 0.117.0).
 
