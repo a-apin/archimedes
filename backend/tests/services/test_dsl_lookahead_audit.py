@@ -24,9 +24,10 @@ import pytest
 from archimedes.services import dsl_lookahead_audit as la
 from archimedes.services import dsl_to_backtrader, strategy_dsl
 from archimedes.services.dsl_lookahead_audit import (
-    FAILED,
-    PASSED_DECLARED_ONLY,
-    PASSED_STRUCTURAL,
+    DEGENERATE,
+    FAIL,
+    PASS,
+    PENDING,
     audit_dsl_strategy,
     broker_cheat_check_passed,
     reset_interpreter_surface_cache,
@@ -316,7 +317,7 @@ class TestInterpreterAuditFailureFailsTheStrategy:
 
     def test_spec_fails_when_the_interpreter_audit_fails(self, monkeypatch):
         spec = validate_strategy_spec(FABER_2007_SPEC)
-        assert audit_dsl_strategy(spec, broker_cheat_check=True).status == PASSED_STRUCTURAL
+        assert audit_dsl_strategy(spec, broker_cheat_check=True).status == PASS
 
         broken = la.InterpreterSurfaceAudit(
             bar_access_verified=False,
@@ -326,7 +327,7 @@ class TestInterpreterAuditFailureFailsTheStrategy:
         monkeypatch.setattr(la, "verify_interpreter_surface", lambda: broken)
 
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert audit.passed is False
         assert any("FUTURE bar" in r for r in audit.reasons)
 
@@ -338,7 +339,7 @@ class TestVerifiedSurfaceSpecPasses:
     def test_faber_spec_passes_structural(self):
         spec = validate_strategy_spec(FABER_2007_SPEC)
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == PASSED_STRUCTURAL
+        assert audit.status == PASS
         assert audit.passed is True
         assert audit.reasons == ()
         assert audit.interpreter_verified is True
@@ -366,7 +367,7 @@ class TestVerifiedSurfaceSpecPasses:
             }
         )
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == PASSED_STRUCTURAL, audit.reasons
+        assert audit.status == PASS, audit.reasons
 
 
 class TestOutOfSurfaceSpecsFail:
@@ -389,7 +390,6 @@ class TestOutOfSurfaceSpecsFail:
             "exit": {"lt": ["close", "sma_200"]},
             "position_sizing": {"type": "full_invested_when_in_market"},
             "source_arxiv_ids": ["0706.1497"],
-            "look_ahead_safe": True,
             "indicators": ["sma_200"],
         }
         base.update(overrides)
@@ -403,40 +403,38 @@ class TestOutOfSurfaceSpecsFail:
             indicators=["oracle_5"],
         )
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert audit.passed is False
         assert any("'oracle'" in r and "outside the audited surface" in r for r in audit.reasons), audit.reasons
 
-    def test_declared_look_ahead_safe_does_not_rescue_an_unknown_indicator(self):
-        """The LLM's boolean has no vote — this is the whole point of the change."""
-        spec = self._spec(
-            entry={"gt": ["close", "oracle_5"]},
-            exit={"lt": ["close", "oracle_5"]},
-            indicators=["oracle_5"],
-            look_ahead_safe=True,
-        )
-        audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.declared_intent is True, "the declaration is still recorded"
-        assert audit.status == FAILED, "but it does not decide the verdict"
+    def test_a_spec_cannot_carry_a_declaration_to_rescue_itself(self):
+        """The whole point of the change: there is no field left to declare in.
+
+        The old schema let a spec assert ``look_ahead_safe: true`` and be
+        admitted on the assertion. ``StrategySpec`` has no such field now, so the
+        rescue is not merely ignored — it does not typecheck.
+        """
+        with pytest.raises(TypeError):
+            self._spec(look_ahead_safe=True)
 
     def test_unknown_operator_fails(self):
         spec = self._spec(entry={"crosses_above": ["close", "sma_200"]})
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("crosses_above" in r for r in audit.reasons), audit.reasons
 
     def test_unknown_price_operand_fails(self):
         """``next_close`` is not a series the interpreter binds at bar t."""
         spec = self._spec(entry={"gt": ["next_close", "sma_200"]})
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("next_close" in r for r in audit.reasons), audit.reasons
 
     def test_indicator_alias_not_declared_by_the_spec_fails(self):
         """An alias the interpreter never binds into ``_bar_values``."""
         spec = self._spec(entry={"gt": ["close", "sma_50"]}, indicators=["sma_200"])
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("sma_50" in r for r in audit.reasons), audit.reasons
 
     def test_non_positive_indicator_period_fails(self):
@@ -447,7 +445,7 @@ class TestOutOfSurfaceSpecsFail:
             indicators=["momentum_0"],
         )
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("strictly past bar" in r for r in audit.reasons), audit.reasons
 
     def test_negative_variant_period_fails(self):
@@ -459,19 +457,19 @@ class TestOutOfSurfaceSpecsFail:
             parameter_variants={"momentum_20": [10, -5]},
         )
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("strictly past bar" in r for r in audit.reasons), audit.reasons
 
     def test_unknown_position_sizing_fails(self):
         spec = self._spec(position_sizing={"type": "kelly_optimal"})
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("kelly_optimal" in r for r in audit.reasons), audit.reasons
 
     def test_unknown_rebalance_frequency_fails(self):
         spec = self._spec(rebalance_frequency="intraday")
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("intraday" in r for r in audit.reasons), audit.reasons
 
     def test_unimplemented_indicator_fails(self):
@@ -482,7 +480,7 @@ class TestOutOfSurfaceSpecsFail:
             indicators=["realized_vol_20"],
         )
         audit = audit_dsl_strategy(spec, broker_cheat_check=True)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("no audited interpreter implementation" in r for r in audit.reasons), audit.reasons
 
 
@@ -505,7 +503,7 @@ class TestEnumDriftIsNotInheritedAsAPass:
             exit={"lt": ["close", "oracle_5"]},
             indicators=["oracle_5"],
         )
-        assert audit_dsl_strategy(spec, broker_cheat_check=True).status == FAILED
+        assert audit_dsl_strategy(spec, broker_cheat_check=True).status == FAIL
 
     def test_a_spec_avoiding_the_new_construct_still_passes(self, monkeypatch):
         """Drift fails the constructs that use it, not everything else."""
@@ -516,7 +514,7 @@ class TestEnumDriftIsNotInheritedAsAPass:
         )
         reset_interpreter_surface_cache()
         spec = validate_strategy_spec(FABER_2007_SPEC)
-        assert audit_dsl_strategy(spec, broker_cheat_check=True).status == PASSED_STRUCTURAL
+        assert audit_dsl_strategy(spec, broker_cheat_check=True).status == PASS
 
 
 # ── 3. The broker execution-timing check ──────────────────────────────
@@ -549,7 +547,7 @@ class TestBrokerCheatCheck:
     def test_a_cheating_broker_fails_the_whole_audit(self):
         spec = validate_strategy_spec(FABER_2007_SPEC)
         audit = audit_dsl_strategy(spec, broker_cheat_check=False)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert any("cheat on close/open" in r for r in audit.reasons)
 
 
@@ -588,7 +586,7 @@ class TestBrokerCheckIsWiredIntoTheDslBacktestPath:
         assert metrics.broker_cheat_check_passed is False
 
         verdict = apply_rigor_gate(metrics, spec=spec)
-        assert verdict.look_ahead_audit == FAILED
+        assert verdict.look_ahead_status == FAIL
         assert verdict.look_ahead_clean is False
         assert verdict.passing is False
 
@@ -598,7 +596,7 @@ class TestBrokerCheckIsWiredIntoTheDslBacktestPath:
         A strategy's ``__init__``/``next`` can call ``self.broker.set_coc(True)``
         and backtrader honours it for the fills that follow. The check used to be
         charged BEFORE ``cerebro.run()``, so a broker that cheated for the entire
-        run was recorded clean and the verdict came out ``passed_structural``.
+        run was recorded clean and the verdict came out ``pass``.
 
         The Cerebro subclass here flips the flag inside ``run()`` — the same
         observable state a mid-run ``set_coc`` produces — patched at the boundary
@@ -617,8 +615,7 @@ class TestBrokerCheckIsWiredIntoTheDslBacktestPath:
         assert metrics.broker_cheat_check_passed is False, "a mid-run cheat-on-close recorded as clean"
 
         verdict = apply_rigor_gate(metrics, spec=spec)
-        assert verdict.look_ahead_audit == FAILED
-        assert verdict.look_ahead_render_state == "failed"
+        assert verdict.look_ahead_status == FAIL
         assert verdict.passing is False
 
     def test_sleeve_aggregation_is_fail_closed_on_an_unchecked_sleeve(self):
@@ -631,74 +628,140 @@ class TestBrokerCheckIsWiredIntoTheDslBacktestPath:
         assert _combine_broker_checks([]) is None
 
 
-# ── 4. Demotion of the self-declared boolean ──────────────────────────
+# ── 4. An audit that reached no verdict is not a pass ─────────────────
 
 
-class TestDeclaredOnlyIsNotAPass:
-    def test_no_spec_degrades_to_declared_only_and_does_not_pass(self):
+class TestANonConclusiveAuditIsNotAPass:
+    def test_no_spec_is_pending_and_does_not_pass(self):
         audit = audit_dsl_strategy(None, broker_cheat_check=True)
-        assert audit.status == PASSED_DECLARED_ONLY
+        assert audit.status == PENDING
         assert audit.passed is False
         assert "NOT AUDITED" in audit.label
 
-    def test_no_broker_check_degrades_to_declared_only(self):
+    def test_no_broker_check_is_pending(self):
         """An incomplete audit does not get to claim a structural pass."""
         spec = validate_strategy_spec(FABER_2007_SPEC)
         audit = audit_dsl_strategy(spec, broker_cheat_check=None)
-        assert audit.status == PASSED_DECLARED_ONLY
+        assert audit.status == PENDING
         assert audit.passed is False
         assert audit.interpreter_verified is True
 
-    def test_gate_treats_declared_only_as_a_leak_failure(self):
-        """The LEAK criterion: only ``passed_structural`` clears it.
+    def test_gate_treats_pending_as_a_leak_failure(self):
+        """The LEAK criterion: only ``pass`` clears it.
 
-        This is the regression guard for the demotion itself. Before this
-        change ``look_ahead_clean`` was the literal ``True`` on the next line of
-        ``apply_rigor_gate``, so this verdict passed.
+        This is the regression guard for the whole change. Before it,
+        ``look_ahead_clean`` was the literal ``True`` on the next line of
+        ``apply_rigor_gate`` — mirroring the LLM's own ``look_ahead_safe``
+        declaration — so this verdict passed.
         """
         from tests.services.test_fusion_evaluator import _make_high_sharpe_metrics, _two_variant_set
 
         metrics = _make_high_sharpe_metrics(data_source="csv:spy.csv")
         variants = _two_variant_set(metrics.equity_curve, data_source="csv:spy.csv")
 
-        declared_only = apply_rigor_gate(metrics, variants_metrics=variants, spec=None)
-        assert declared_only.look_ahead_audit == PASSED_DECLARED_ONLY
-        assert declared_only.look_ahead_clean is False
-        assert declared_only.passing is False, "a self-declared boolean must not clear the LEAK criterion"
+        unaudited = apply_rigor_gate(metrics, variants_metrics=variants, spec=None)
+        assert unaudited.look_ahead_status == PENDING
+        assert unaudited.look_ahead_clean is False
+        assert unaudited.passing is False, "an audit that never ran must not clear the LEAK criterion"
 
         # Same numbers, same everything — the ONLY delta is a real audit subject.
         audited = apply_rigor_gate(metrics, variants_metrics=variants, spec=validate_strategy_spec(FABER_2007_SPEC))
-        assert audited.look_ahead_audit == PASSED_STRUCTURAL
+        assert audited.look_ahead_status == PASS
         assert audited.passing is True, "the other gate legs must be unchanged"
 
-    def test_declared_intent_is_recorded_but_never_gates(self):
-        spec = validate_strategy_spec(FABER_2007_SPEC)
-        verdict = apply_rigor_gate(
-            _stub_metrics_for(spec),
-            spec=spec,
+
+class TestTheUndecidableCaseIsDegenerateNotFailed:
+    """``degenerate``: the audit ran and its own instrument gave no reading.
+
+    ``sites_checked == 0`` means the AST pass matched nothing, so it proved
+    nothing AND disproved nothing. Fail-closed on deploy, but the strategy is
+    accused of nothing — the same distinction ``RigorGateVerdict`` already draws
+    between ``degenerate`` and ``fail``.
+    """
+
+    @staticmethod
+    def _blind_surface() -> la.InterpreterSurfaceAudit:
+        return la.InterpreterSurfaceAudit(bar_access_verified=True, violations=(), sites_checked=0)
+
+    def test_an_audit_that_examined_nothing_is_degenerate(self, monkeypatch):
+        monkeypatch.setattr(la, "verify_interpreter_surface", self._blind_surface)
+        audit = audit_dsl_strategy(validate_strategy_spec(FABER_2007_SPEC), broker_cheat_check=True)
+
+        assert audit.status == DEGENERATE
+        assert audit.passed is False, "an instrument with no reading is not evidence of cleanliness"
+        assert audit.blocks_deploy is True, "fail-closed"
+        assert audit.conclusive is False
+        assert "FAIL" not in audit.label, "nothing about this strategy failed — the verifier did"
+        assert audit.not_run_reason
+
+    def test_unreadable_interpreter_source_is_degenerate_too(self, monkeypatch):
+        monkeypatch.setattr(
+            la,
+            "verify_interpreter_surface",
+            lambda: la.InterpreterSurfaceAudit(
+                bar_access_verified=False,
+                violations=("interpreter source unavailable for audit: boom",),
+                sites_checked=0,
+            ),
         )
-        assert verdict.look_ahead_declared is True
-        assert verdict.look_ahead_audit in {PASSED_STRUCTURAL, PASSED_DECLARED_ONLY, FAILED}
+        audit = audit_dsl_strategy(validate_strategy_spec(FABER_2007_SPEC), broker_cheat_check=True)
+        assert audit.status == DEGENERATE
+        assert audit.blocks_deploy is True
+
+    def test_a_real_interpreter_violation_is_still_FAIL_not_degenerate(self, monkeypatch):
+        """The other direction: an instrument that DID read must accuse.
+
+        Without this arm the `degenerate` branch could swallow every real
+        interpreter violation and the audit would never fail again.
+        """
+        monkeypatch.setattr(
+            la,
+            "verify_interpreter_surface",
+            lambda: la.InterpreterSurfaceAudit(
+                bar_access_verified=False,
+                violations=("line 42: self.data.close[...] — positive bar offset [1]",),
+                sites_checked=17,
+            ),
+        )
+        audit = audit_dsl_strategy(validate_strategy_spec(FABER_2007_SPEC), broker_cheat_check=True)
+        assert audit.status == FAIL
+        assert audit.label.startswith("FAIL")
+
+    def test_degenerate_blocks_the_gate(self, monkeypatch):
+        from tests.services.test_fusion_evaluator import _make_high_sharpe_metrics, _two_variant_set
+
+        metrics = _make_high_sharpe_metrics(data_source="csv:spy.csv")
+        variants = _two_variant_set(metrics.equity_curve, data_source="csv:spy.csv")
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+
+        clean = apply_rigor_gate(metrics, variants_metrics=variants, spec=spec)
+        assert clean.passing is True, "control arm must genuinely pass or the assertion below is vacuous"
+
+        monkeypatch.setattr(la, "verify_interpreter_surface", self._blind_surface)
+        blind = apply_rigor_gate(metrics, variants_metrics=variants, spec=spec)
+        assert blind.look_ahead_status == DEGENERATE
+        assert blind.passing is False
+        # Nothing but the look-ahead leg moved.
+        assert (blind.dsr, blind.oos_sharpe, blind.pbo_score) == (clean.dsr, clean.oos_sharpe, clean.pbo_score)
 
 
 class TestFailClosedDeployButHonestRendering:
-    """The owner doctrine: only a structural PASS deploys; nothing renders a
-    not-run check as a FAIL.
+    """The owner doctrine: only a structural PASS deploys; nothing renders an
+    audit that reached no verdict as a FAIL.
 
-    Two axes, deliberately not the same axis. ``passed_declared_only`` must block
-    deploy exactly as hard as ``failed`` AND must never be shown to a user as
+    Two axes, deliberately not the same axis. ``pending``/``degenerate`` must
+    block deploy exactly as hard as ``fail`` AND must never be shown to a user as
     "your strategy failed a look-ahead audit" — because nothing looked.
     """
 
-    def test_declared_only_blocks_deploy_but_renders_not_checked(self):
+    def test_pending_blocks_deploy_but_never_renders_as_a_failure(self):
         audit = audit_dsl_strategy(None, broker_cheat_check=True)
-        assert audit.status == PASSED_DECLARED_ONLY
+        assert audit.status == PENDING
         # Deploy: fail-closed.
         assert audit.passed is False
         assert audit.blocks_deploy is True
         # Render: honest.
-        assert audit.render_state == la.RENDER_NOT_CHECKED
-        assert audit.render_state != la.RENDER_FAILED
+        assert audit.conclusive is False
         assert "NOT AUDITED" in audit.label
         assert "FAIL" not in audit.label
         assert audit.not_run_reason
@@ -707,36 +770,51 @@ class TestFailClosedDeployButHonestRendering:
         """The mirror: a check that DID look and found something must say FAIL."""
         spec = validate_strategy_spec(FABER_2007_SPEC)
         audit = audit_dsl_strategy(spec, broker_cheat_check=False)
-        assert audit.status == FAILED
+        assert audit.status == FAIL
         assert audit.blocks_deploy is True
-        assert audit.render_state == la.RENDER_FAILED
+        assert audit.conclusive is True
         assert audit.label.startswith("FAIL")
         assert audit.not_run_reason is None, "a real failure must never be labelled 'not run'"
 
-    def test_a_structural_pass_renders_passed_and_deploys(self):
+    def test_a_structural_pass_deploys(self):
         audit = audit_dsl_strategy(validate_strategy_spec(FABER_2007_SPEC), broker_cheat_check=True)
         assert audit.blocks_deploy is False
-        assert audit.render_state == la.RENDER_PASSED
+        assert audit.conclusive is True
         assert audit.not_run_reason is None
 
-    def test_the_three_states_map_onto_exactly_three_render_states(self):
-        assert {la.PASSED_STRUCTURAL, la.PASSED_DECLARED_ONLY, la.FAILED} == la.AUDIT_STATUSES
-        rendered = {s: la._RENDER_STATE_BY_STATUS[s] for s in la.AUDIT_STATUSES}
-        assert rendered == {
-            la.PASSED_STRUCTURAL: la.RENDER_PASSED,
-            la.PASSED_DECLARED_ONLY: la.RENDER_NOT_CHECKED,
-            la.FAILED: la.RENDER_FAILED,
-        }
+    def test_there_is_exactly_one_four_state_vocabulary(self):
+        """No second vocabulary to keep in sync — and the words are the four the
+        rest of the rigor stack already uses for the same idea."""
+        from archimedes.services import live_rigor_gate
 
-    def test_the_verdict_carries_both_axes_to_the_api(self):
+        assert {la.PASS, la.FAIL, la.PENDING, la.DEGENERATE} == la.AUDIT_STATUSES
+        assert {la.PASS, la.FAIL} == la.CONCLUSIVE_STATUSES
+        assert {
+            live_rigor_gate.PASS,
+            live_rigor_gate.FAIL,
+            live_rigor_gate.PENDING,
+            live_rigor_gate.DEGENERATE,
+        } == la.AUDIT_STATUSES
+        assert not hasattr(la, "_RENDER_STATE_BY_STATUS"), "a second render vocabulary is exactly what was removed"
+
+    def test_no_state_but_pass_is_ever_deployable(self):
+        for status in la.AUDIT_STATUSES:
+            audit = la.DslLookAheadAudit(status=status, reasons=("why",))
+            assert audit.passed is (status == la.PASS)
+            assert audit.blocks_deploy is (status != la.PASS)
+            if status not in la.CONCLUSIVE_STATUSES:
+                assert "FAIL" not in audit.label, f"{status!r} must never render as an accusation"
+
+    def test_the_verdict_carries_the_four_state_to_the_api(self):
         from tests.services.test_fusion_evaluator import _make_high_sharpe_metrics, _two_variant_set
 
         metrics = _make_high_sharpe_metrics(data_source="csv:spy.csv")
         variants = _two_variant_set(metrics.equity_curve, data_source="csv:spy.csv")
 
         v = apply_rigor_gate(metrics, variants_metrics=variants, spec=None)
-        assert v.look_ahead_audit == PASSED_DECLARED_ONLY
-        assert v.look_ahead_render_state == la.RENDER_NOT_CHECKED
+        assert v.look_ahead_status == PENDING
+        assert "FAIL" not in v.look_ahead_label
+        assert v.look_ahead_reason
         assert v.passing is False, "not-checked must still block"
 
     def test_gate_details_says_NOT_RUN_not_FAIL_when_the_leg_never_ran(self):
@@ -772,65 +850,68 @@ class TestFailClosedDeployButHonestRendering:
         )
         assert leaking.gate_details["look_ahead"] == "FAIL"
 
-    def test_not_run_reason_from_verdict_only_fires_for_declared_only(self):
+    def test_not_run_reason_from_verdict_only_fires_for_a_non_verdict(self):
         from archimedes.services.dsl_lookahead_audit import not_run_reason_from_verdict
 
-        assert not_run_reason_from_verdict({"look_ahead_audit": PASSED_STRUCTURAL}) is None
-        assert not_run_reason_from_verdict({"look_ahead_audit": FAILED}) is None
+        assert not_run_reason_from_verdict({"look_ahead_status": PASS}) is None
+        assert not_run_reason_from_verdict({"look_ahead_status": FAIL}) is None
         # A row written before this landed: its False is not evidence of a
         # not-run, so it keeps the plain FAIL rendering.
         assert not_run_reason_from_verdict({}) is None
-        reason = not_run_reason_from_verdict(
-            {"look_ahead_audit": PASSED_DECLARED_ONLY, "look_ahead_reasons": ["no validated spec"]}
+        assert (
+            not_run_reason_from_verdict({"look_ahead_status": PENDING, "look_ahead_reason": "no validated spec"})
+            == "no validated spec"
         )
-        assert reason == "no validated spec"
+        assert (
+            not_run_reason_from_verdict({"look_ahead_status": DEGENERATE, "look_ahead_reason": "verifier is blind"})
+            == "verifier is blind"
+        )
 
 
-class TestTheDeclaredFlagIsReadDefensively:
-    """Item 1: the audit must not break when the DSL drops ``look_ahead_safe``.
+class TestThereIsNoDeclaredFlagLeftToRead:
+    """The self-declared boolean is GONE, not demoted to a recorded field.
 
-    The flag is a record with no vote. A follow-on change deletes it from the
-    spec outright; reading it via attribute access would have turned that into a
-    breaking change here and coupled the two merges for no reason.
+    ``look_ahead_safe`` was removed from ``REQUIRED_FIELDS``, from
+    :class:`StrategySpec`, from ``to_dict``, and from the generation prompt. The
+    audit therefore cannot consult it even by accident: there is no attribute,
+    and nothing in this module names it outside a comment.
     """
 
-    def test_a_spec_without_the_attribute_still_audits(self):
+    def test_a_validated_spec_has_no_such_attribute(self):
         spec = validate_strategy_spec(FABER_2007_SPEC)
-        stripped = _SpecWithoutDeclaredFlag(spec)
-        assert not hasattr(stripped, "look_ahead_safe")
+        assert not hasattr(spec, "look_ahead_safe")
+        assert "look_ahead_safe" not in spec.to_dict()
 
-        audit = audit_dsl_strategy(stripped, broker_cheat_check=True)
-        assert audit.status == PASSED_STRUCTURAL, audit.reasons
-        assert audit.declared_intent is None, "no flag to record"
-        assert audit.passed is True
+    def test_the_audit_never_reads_a_declaration(self):
+        """The module must not look the name up, defensively or otherwise.
 
-    def test_a_stripped_spec_that_leaks_still_FAILS(self):
-        """Losing the flag must not lose the audit's teeth either."""
+        A ``getattr(spec, "look_ahead_safe", None)`` would be harmless today and
+        would quietly become a live read the moment anyone re-added the field.
+        Checked over the AST, not the text, so the docstring's account of the
+        history does not count as a read.
+        """
+        tree = ast.parse(inspect.getsource(la))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                assert node.attr != "look_ahead_safe", "the audit reads the retired declaration"
+            if isinstance(node, ast.Constant) and node.value == "look_ahead_safe":
+                raise AssertionError("the audit names the retired declaration in executable code")
+
+    def test_a_leaking_spec_still_FAILS_without_any_declaration(self):
+        """Losing the flag must not lose the audit's teeth."""
         leaking = TestOutOfSurfaceSpecsFail._spec(
             entry={"gt": ["close", "oracle_5"]},
             exit={"lt": ["close", "oracle_5"]},
             indicators=["oracle_5"],
         )
-        audit = audit_dsl_strategy(_SpecWithoutDeclaredFlag(leaking), broker_cheat_check=True)
-        assert audit.status == FAILED
-        assert audit.declared_intent is None
+        audit = audit_dsl_strategy(leaking, broker_cheat_check=True)
+        assert audit.status == FAIL
 
-
-class _SpecWithoutDeclaredFlag:
-    """A StrategySpec proxy with ``look_ahead_safe`` genuinely absent.
-
-    Deleting the attribute off a frozen dataclass instance is not possible, so
-    this forwards everything else and raises ``AttributeError`` for that one
-    name — exactly what the post-deletion spec will do.
-    """
-
-    def __init__(self, spec):
-        object.__setattr__(self, "_spec", spec)
-
-    def __getattr__(self, name):
-        if name == "look_ahead_safe":
-            raise AttributeError(name)
-        return getattr(object.__getattribute__(self, "_spec"), name)
+    def test_the_audit_carries_no_declared_field_at_all(self):
+        audit = audit_dsl_strategy(validate_strategy_spec(FABER_2007_SPEC), broker_cheat_check=True)
+        assert not hasattr(audit, "declared_intent")
+        assert "declared" not in audit.to_dict()
+        assert not any("declared" in k for k in audit.to_dict())
 
 
 def _stub_metrics_for(spec):
@@ -857,37 +938,120 @@ def _stub_metrics_for(spec):
 # ── 5. Threading: verdict → passport blob → API ───────────────────────
 
 
+class TestTheTwoGatesAgree:
+    """One strategy must not pass one gate and fail the other.
+
+    Two gates read the look-ahead leg for the same DSL strategy:
+    ``fusion_evaluator.apply_rigor_gate`` (folds it into ``RigorVerdict.passing``)
+    and ``live_rigor_gate.verdict_from_returns`` (folds it into the badge's
+    always-on floor, via the boolean ``generation_pipeline`` threads through).
+    They agree only because both read ``DslLookAheadAudit.passed`` and nothing
+    else. If either one grew its own rule — "pending does not veto here", say —
+    the same strategy would be admitted by one surface and blocked by the other.
+    """
+
+    @staticmethod
+    def _both_gates(spec, metrics, variants):
+        from archimedes.services.live_rigor_gate import verdict_from_returns
+
+        fusion = apply_rigor_gate(metrics, variants_metrics=variants, spec=spec)
+        returns = [
+            (metrics.equity_curve[i] - metrics.equity_curve[i - 1]) / metrics.equity_curve[i - 1]
+            for i in range(1, len(metrics.equity_curve))
+        ]
+        badge = verdict_from_returns(
+            "agree",
+            returns,
+            num_trials=1,
+            # Exactly what generation_pipeline._persist_real_returns passes.
+            look_ahead_audit_passed=fusion.look_ahead_clean,
+            look_ahead_status=fusion.look_ahead_status,
+        )
+        return fusion, badge
+
+    @pytest.mark.parametrize("has_spec", [True, False])
+    def test_neither_gate_admits_what_the_other_blocks(self, has_spec):
+        from tests.services.test_fusion_evaluator import _make_high_sharpe_metrics, _two_variant_set
+
+        metrics = _make_high_sharpe_metrics(data_source="csv:spy.csv")
+        variants = _two_variant_set(metrics.equity_curve, data_source="csv:spy.csv")
+        spec = validate_strategy_spec(FABER_2007_SPEC) if has_spec else None
+
+        fusion, badge = self._both_gates(spec, metrics, variants)
+
+        # The look-ahead leg is the same fact on both sides.
+        assert fusion.look_ahead_clean is (fusion.look_ahead_status == PASS)
+        assert badge.blocked_by_floor is not fusion.look_ahead_clean
+        if has_spec:
+            assert fusion.passing is True and badge.blocked_by_floor is False
+        else:
+            # Nothing audited: BOTH gates refuse. Before this change the fusion
+            # side hardcoded `look_ahead_clean = True` and would have passed here
+            # while the badge floor blocked — the disagreement state.
+            assert fusion.look_ahead_status == PENDING
+            assert fusion.passing is False
+            assert badge.blocked_by_floor is True
+
+    def test_a_failing_audit_blocks_on_both_sides(self):
+        from tests.services.test_fusion_evaluator import _make_high_sharpe_metrics, _two_variant_set
+
+        metrics = _make_high_sharpe_metrics(data_source="csv:spy.csv")
+        leaking = TestOutOfSurfaceSpecsFail._spec(
+            entry={"gt": ["close", "oracle_5"]},
+            exit={"lt": ["close", "oracle_5"]},
+            indicators=["oracle_5"],
+        )
+        fusion, badge = self._both_gates(leaking, metrics, _two_variant_set(metrics.equity_curve, "csv:spy.csv"))
+        assert fusion.look_ahead_status == FAIL
+        assert fusion.passing is False
+        assert badge.blocked_by_floor is True
+
+
 class TestVerdictThreadsThroughToThePassport:
     def test_evaluate_fusion_spec_produces_a_structural_verdict(self):
         result = evaluate_fusion_spec(FABER_2007_SPEC)
         assert result.success, result.error
-        assert result.rigor.look_ahead_audit == PASSED_STRUCTURAL
-        assert result.rigor.look_ahead_declared is True
-        assert result.rigor.look_ahead_reasons == ()
+        assert result.rigor.look_ahead_status == PASS
+        assert result.rigor.look_ahead_reason == ""
         assert "self-declared" not in result.rigor.look_ahead_label
+        assert "self-attested" not in result.rigor.look_ahead_label
 
-    def test_rigor_verdict_dict_carries_the_three_state_field(self):
+    def test_rigor_verdict_dict_carries_the_four_state_field(self):
         from archimedes.agents.debate_engine import _rigor_verdict_dict
 
         blob = _rigor_verdict_dict(evaluate_fusion_spec(FABER_2007_SPEC))
-        assert blob["look_ahead_audit"] == PASSED_STRUCTURAL
+        assert blob["look_ahead_status"] == PASS
         assert blob["lookahead_audit_passed"] is True
-        assert blob["look_ahead_declared"] is True
+        assert not any("declared" in k for k in blob), "nothing declared survives into the passport blob"
 
     def test_audit_source_label_is_derived_not_hardcoded(self):
-        """``look_ahead_audit_source`` used to be a flat ``"self_attested"``."""
+        """``look_ahead_audit_source`` used to be a flat ``"self_attested"``.
+
+        The axis is "did an audit conclude", not "did it pass" — a ``fail`` has
+        the audit as its provenance just as much as a ``pass`` does.
+        """
         from archimedes.agents.generation_pipeline import _look_ahead_audit_source
 
-        assert _look_ahead_audit_source({"look_ahead_audit": PASSED_STRUCTURAL}) == "dsl_structural_audit"
-        assert _look_ahead_audit_source({"look_ahead_audit": PASSED_DECLARED_ONLY}) == "self_attested"
-        assert _look_ahead_audit_source({"look_ahead_audit": FAILED}) == "self_attested"
+        assert _look_ahead_audit_source({"look_ahead_status": PASS}) == "dsl_structural_audit"
+        assert _look_ahead_audit_source({"look_ahead_status": FAIL}) == "dsl_structural_audit"
+        assert _look_ahead_audit_source({"look_ahead_status": PENDING}) == "dsl_audit_not_run"
+        assert _look_ahead_audit_source({"look_ahead_status": DEGENERATE}) == "dsl_audit_not_run"
         # A verdict blob written before this landed.
-        assert _look_ahead_audit_source({}) == "self_attested"
+        assert _look_ahead_audit_source({}) == "dsl_audit_not_run"
+
+    def test_self_attested_is_never_written_again(self):
+        """The retired provenance value names a field that no longer exists."""
+        from archimedes.agents.generation_pipeline import _look_ahead_audit_source
+
+        for status in (*sorted(la.AUDIT_STATUSES), None, "nonsense"):
+            blob = {} if status is None else {"look_ahead_status": status}
+            assert _look_ahead_audit_source(blob) != "self_attested", status
 
     def test_to_dict_is_json_shaped(self):
         audit = audit_dsl_strategy(validate_strategy_spec(FABER_2007_SPEC), broker_cheat_check=True)
         d = audit.to_dict()
-        assert d["status"] == PASSED_STRUCTURAL
+        assert d["status"] == PASS
         assert d["reasons"] == []
+        assert d["blocks_deploy"] is False
         assert d["surface_version"] == la.VERIFIED_SURFACE_VERSION
         assert isinstance(d["label"], str)

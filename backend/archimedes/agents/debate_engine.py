@@ -470,20 +470,17 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         "pbo": r.pbo_score,
         "oos_sharpe": r.oos_sharpe,
         "in_sample_sharpe": r.in_sample_sharpe,
-        # DERIVED from the structural audit below, not the LLM's declaration.
+        # DERIVED by the structural audit (services/dsl_lookahead_audit.py),
+        # never declared by the generating model — the DSL has no field in which
+        # it could declare it. True only on a computed "pass"; this bool renders
+        # "pending" (nothing audited) identically to a real failure, so any
+        # surface making a look-ahead claim must key off look_ahead_status.
         "lookahead_audit_passed": bool(r.look_ahead_clean),
-        # The honest surfaced field: "passed_structural" | "passed_declared_only"
-        # | "failed". `passed_declared_only` is NOT a pass — see
-        # services/dsl_lookahead_audit.py.
-        "look_ahead_audit": r.look_ahead_audit,
-        # SEPARATE axis from the gate: "passed" | "not_checked" | "failed".
-        # `passed_declared_only` blocks deploy but renders "not_checked".
-        "look_ahead_render_state": r.look_ahead_render_state,
-        # What the generator CLAIMED (spec.look_ahead_safe), kept as a record
-        # with no vote in the gate.
-        "look_ahead_declared": r.look_ahead_declared,
-        "look_ahead_reasons": list(r.look_ahead_reasons),
+        # The honest surfaced field, four-state: "pass" | "fail" | "pending" |
+        # "degenerate". The last two are NOT passes and are NOT failures.
+        "look_ahead_status": r.look_ahead_status,
         "look_ahead_label": r.look_ahead_label,
+        "look_ahead_reason": r.look_ahead_reason,
         "num_trials": int(r.num_trials),  # own pool_size, decouple #2
         "passing": bool(r.passing),
         "data_source": r.data_source,

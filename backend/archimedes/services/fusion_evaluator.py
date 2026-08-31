@@ -6,8 +6,9 @@ Orchestrates the full pipeline for fusion-generated strategies:
 3. Run a backtest
 4. Apply the rigor gate (DSR, PBO, OOS Sharpe, look-ahead audit — the last of
    which is a REAL structural audit of the spec against the verified interpreter
-   surface plus a broker cheat-on-close/open check, not the LLM's self-declared
-   ``look_ahead_safe`` boolean; see ``dsl_lookahead_audit``)
+   surface plus a broker cheat-on-close/open check. The ``look_ahead_safe``
+   boolean the LLM used to declare about its own output is gone from the DSL
+   entirely; see ``dsl_lookahead_audit``)
 5. Persist the result in the strategy library
 """
 
@@ -32,8 +33,8 @@ from archimedes.services._fusion_helpers import (
     equity_curve_to_daily_returns,
 )
 from archimedes.services.dsl_lookahead_audit import (
-    PASSED_DECLARED_ONLY,
-    RENDER_NOT_CHECKED,
+    PENDING,
+    DslLookAheadAudit,
     audit_dsl_strategy,
     broker_cheat_check_passed,
 )
@@ -108,9 +109,19 @@ class BacktestMetrics:
     # the same bar that generated the signal. Set by every runner in this module
     # from the real cerebro (dsl_lookahead_audit.broker_cheat_check_passed).
     # ``None`` means NO check was performed — the honest state for metrics built
-    # by hand — and it deliberately blocks a ``passed_structural`` look-ahead
-    # verdict rather than being assumed clean.
+    # by hand — and it deliberately holds the look-ahead verdict at ``pending``
+    # rather than letting the broker half be assumed clean.
     broker_cheat_check_passed: bool | None = None
+
+
+#: The look-ahead verdict a :class:`RigorVerdict` carries when nobody consulted
+#: the audit at all — a hand-built verdict, a test double, a metrics-only path.
+#: The field defaults below are read off THIS object rather than hardcoded, so a
+#: verdict nobody audited says the same thing as one the audit declined to grade.
+_UNCONSULTED_AUDIT = DslLookAheadAudit(
+    status=PENDING,
+    reasons=("no look-ahead audit was consulted when this verdict was built",),
+)
 
 
 @dataclass(frozen=True)
@@ -122,12 +133,15 @@ class RigorVerdict:
     dsr_p_value: float | None
     pbo_score: float | None
     oos_sharpe: float | None
-    # DERIVED, never declared: True iff `look_ahead_audit == "passed_structural"`
-    # — i.e. the spec was proven to sit inside the audited DSL surface AND the
-    # broker execution-timing check ran and passed. It used to be a hardcoded
-    # ``True`` mirroring the LLM's own `look_ahead_safe` flag; that is now
-    # recorded as `look_ahead_declared` and has no vote. This bool exists only
-    # because it participates in the `passing` computation below.
+    # DERIVED, never declared: True iff `look_ahead_status == "pass"` — i.e. the
+    # spec was proven to sit inside the audited DSL surface AND the broker
+    # execution-timing check ran and passed. It used to be a hardcoded ``True``
+    # mirroring the LLM's own `look_ahead_safe` flag; that flag is now REMOVED
+    # from the DSL, so there is nothing left to mirror. A bool cannot express
+    # "not yet checked" — it reads False for `pending` and `degenerate` exactly
+    # as it does for `fail` — so read `look_ahead_status` before rendering any
+    # claim from this field. It exists because it participates in the `passing`
+    # computation below and because `run_rigor_gate` takes a bool.
     look_ahead_clean: bool
     num_trials: int
     # In-sample (training-slice) Sharpe, surfaced so the OOS/IS cliff that the
@@ -139,31 +153,22 @@ class RigorVerdict:
     data_source: str = "synthetic"
     admissible: bool = False
     # ── Look-ahead audit (the honest surfaced field) ──────────────────
-    # Three-state, from dsl_lookahead_audit: "passed_structural" |
-    # "passed_declared_only" | "failed". This — not the LLM's boolean — is what
-    # gets persisted, gated on, and shown. "passed_declared_only" is a NON-pass
-    # for the LEAK criterion: it means the structural audit could not be
-    # completed and the only support for the claim is the generator's own
-    # say-so.
-    look_ahead_audit: str = PASSED_DECLARED_ONLY
-    # How a SURFACE should show it: "passed" | "not_checked" | "failed". A
-    # separate axis from the gating one on purpose — `passed_declared_only`
-    # blocks the gate but renders "not_checked", because no audit found a leak;
-    # none finished. Rendering it as "failed" would accuse the strategy of
-    # something nothing observed. See dsl_lookahead_audit's "Deployability is
-    # fail-closed; rendering is honest".
-    look_ahead_render_state: str = RENDER_NOT_CHECKED
-    # The LLM's self-declared `look_ahead_safe` flag, kept as a record of what
-    # the generator CLAIMED. Demoted: it has no vote in `look_ahead_clean`,
-    # `passing`, or the gate. ``None`` when no spec was available.
-    look_ahead_declared: bool | None = None
+    # The four-state audit result from dsl_lookahead_audit: "pass" | "fail" |
+    # "pending" | "degenerate". This — not a boolean, and certainly not anything
+    # the generator declared — is what gets persisted, gated on, and shown.
+    # "pending" (nothing was audited) and "degenerate" (the audit could not
+    # decide) are NON-passes for the LEAK criterion and must never be rendered
+    # as "FAIL". Defaults to "pending": a verdict built without consulting the
+    # audit makes no look-ahead claim at all.
+    look_ahead_status: str = PENDING
     # Why the audit landed where it did — the specific out-of-surface construct,
-    # the interpreter violation, or the missing check. Empty on a clean pass.
-    look_ahead_reasons: tuple[str, ...] = ()
-    # Honest user-facing sentence derived from `look_ahead_audit`.
-    look_ahead_label: str = (
-        "NOT AUDITED (LLM self-declared look_ahead_safe only — does not pass the gate): structural audit not completed"
-    )
+    # the interpreter violation, or the check that was never performed. Empty
+    # string on a clean pass.
+    look_ahead_reason: str = _UNCONSULTED_AUDIT.reason
+    # Honest user-facing sentence for the state above, rendered verbatim by the
+    # passport. Built by DslLookAheadAudit.label so the API, the passport and the
+    # audit module cannot drift apart.
+    look_ahead_label: str = _UNCONSULTED_AUDIT.label
 
 
 @dataclass(frozen=True)
@@ -752,13 +757,14 @@ def apply_rigor_gate(
 ) -> RigorVerdict:
     """Apply rigor gate to fusion backtest metrics.
 
-    ``spec`` is the validated :class:`StrategySpec` these metrics came from. It
-    is what makes the look-ahead leg REAL: ``dsl_lookahead_audit`` proves the
-    spec sits inside a DSL surface whose interpreter provably reads only bar
-    ``t`` and earlier. Omitting it is honest but expensive — with no spec there
-    is nothing to verify, the verdict degrades to ``passed_declared_only``, and
-    the LEAK criterion does NOT pass. Callers on the live path
-    (``evaluate_fusion_spec``) always pass it.
+    ``spec`` is the validated :class:`StrategySpec` these metrics came from, and
+    it is the ONLY input to the look-ahead leg: the verdict is derived by
+    ``dsl_lookahead_audit``, which proves the spec sits inside a DSL surface
+    whose interpreter provably reads only bar ``t`` and earlier — never read off
+    a field the generating model wrote (there is no longer such a field to read).
+    Omitting it is honest but expensive: with no spec there is nothing to verify,
+    the verdict is ``pending``, and the LEAK criterion does NOT pass. Callers on
+    the live path (``evaluate_fusion_spec``) always pass it.
 
     PBO is set to ``None`` (not 0.0) when there are fewer than 2 variant
     backtests. The Bailey/Borwein/López de Prado/Zhu CSCV PBO algorithm
@@ -832,27 +838,32 @@ def apply_rigor_gate(
             first_key = next(iter(pbo_map))
             pbo_score = pbo_map[first_key]
 
-    # Look-ahead: a REAL audit, not the generator's self-declaration.
+    # Look-ahead: a REAL audit, DERIVED from the validated spec — never declared
+    # by it.
     #
     # This used to be `look_ahead_clean = True`, hardcoded, because
-    # validate_strategy_spec rejects `look_ahead_safe=False` — i.e. the gate's
-    # look-ahead leg was the LLM grading its own homework. It now comes from
-    # dsl_lookahead_audit, which (1) proves by AST that the DSL interpreter
-    # reads only bar t and earlier, (2) proves this spec uses nothing outside
-    # that audited surface, and (3) folds in the broker cheat-on-close/open
-    # check charged on the cerebro that produced these metrics.
+    # validate_strategy_spec rejected `look_ahead_safe=False` — i.e. the gate's
+    # look-ahead leg was the LLM grading its own homework, and a spec was
+    # admitted on its own assertion of innocence. That field no longer exists.
+    # The verdict now comes from dsl_lookahead_audit, which (1) proves by AST
+    # that the DSL interpreter reads only bar t and earlier, (2) proves this spec
+    # uses nothing outside that audited surface, and (3) folds in the broker
+    # cheat-on-close/open check charged on the cerebro that produced these
+    # metrics.
     #
-    # `passed_declared_only` — the structural audit could not be completed — is
-    # deliberately NOT a pass: `.passed` is True only for `passed_structural`.
+    # `pending` (nothing was audited) and `degenerate` (the audit could not
+    # decide) are deliberately NOT passes: `.passed` is True only for `pass`.
     la_audit = audit_dsl_strategy(spec, broker_cheat_check=metrics.broker_cheat_check_passed)
     look_ahead_clean = la_audit.passed
+    look_ahead_status = la_audit.status
     look_ahead_label = la_audit.label
+    look_ahead_reason = la_audit.reason
     if not look_ahead_clean:
         logger.info(
             "look-ahead audit for %s: %s — %s",
             spec.name if spec is not None else "<no spec>",
             la_audit.status,
-            "; ".join(la_audit.reasons) or "no reason recorded",
+            la_audit.reason or "no reason recorded",
         )
 
     # DSR gate: Tier-1 fusion certification is a BADGE decision, so it uses the
@@ -891,7 +902,19 @@ def apply_rigor_gate(
     # (rigor_evaluator.py), where pbo_score is None fails the overall gate
     # rather than vacuously passing it.
     pbo_pass = pbo_score is not None and math.isfinite(pbo_score) and pbo_score < _badge.pbo_max
-    passing = dsr_pass and oos_pass and look_ahead_clean and pbo_pass
+
+    # The look-ahead leg is FAIL-CLOSED: only a computed `pass` clears it, so
+    # `pending` and `degenerate` block admission exactly as hard as `fail`. An
+    # audit that did not reach a verdict is not evidence, and this gate decides
+    # whether a strategy may reach live funds.
+    #
+    # This term must stay identical to what the DSL path hands
+    # `run_rigor_gate(look_ahead_audit_passed=...)` downstream
+    # (generation_pipeline._persist_real_returns), or the same strategy passes
+    # one gate and fails the other. Both read `la_audit.passed`; the test that
+    # pins them together is
+    # test_dsl_lookahead_audit.TestTheTwoGatesAgree.
+    passing = dsr_pass and oos_pass and pbo_pass and look_ahead_clean
 
     # Provenance gate: a strategy is only admissible for Tier-1 if it passes
     # the statistics AND those statistics were computed on real market data.
@@ -913,11 +936,9 @@ def apply_rigor_gate(
         oos_sharpe=oos_sharpe,
         in_sample_sharpe=in_sample_sharpe,
         look_ahead_clean=look_ahead_clean,
-        look_ahead_audit=la_audit.status,
-        look_ahead_render_state=la_audit.render_state,
-        look_ahead_declared=la_audit.declared_intent,
-        look_ahead_reasons=la_audit.reasons,
+        look_ahead_status=look_ahead_status,
         look_ahead_label=look_ahead_label,
+        look_ahead_reason=look_ahead_reason,
         num_trials=effective_trials,
         data_source=source,
         admissible=admissible,
@@ -1014,18 +1035,20 @@ def evaluate_fusion_spec(
         metrics,
         num_trials=num_trials,
         variants_metrics=variants_metrics,
-        # The validated spec IS the audit subject — without it the look-ahead
-        # leg degrades to the generator's self-declaration and cannot pass.
+        # The validated spec IS the audit subject, and threading it here is what
+        # makes the LEAK criterion a derived result on the live path. Without it
+        # the look-ahead leg is `pending` and cannot pass — there is no field on
+        # the spec the model filled in about itself to fall back on.
         spec=spec,
     )
 
     logger.info(
-        "fusion eval: %s — sharpe=%.3f rigor.passing=%s pbo=%s look_ahead_audit=%s",
+        "fusion eval: %s — sharpe=%.3f rigor.passing=%s pbo=%s look_ahead=%s",
         spec.name,
         metrics.sharpe_ratio,
         rigor.passing,
         rigor.pbo_score,
-        rigor.look_ahead_audit,
+        rigor.look_ahead_status,
     )
 
     return FusionEvalResult(spec=spec, backtest=metrics, rigor=rigor)

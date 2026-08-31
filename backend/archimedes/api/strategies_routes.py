@@ -1950,22 +1950,21 @@ async def _run_fusion_job(job_id: str) -> None:
                 "oos_sharpe": r.oos_sharpe,
                 # DERIVED from the structural audit, not the LLM's declaration.
                 "look_ahead_clean": bool(r.look_ahead_clean),
-                # The honest surfaced field: "passed_structural" (the spec was
-                # proven to sit inside a DSL surface whose interpreter reads only
-                # bar t and earlier, and the broker cheat-on-close/open check
-                # passed) | "passed_declared_only" (NOT a pass — nothing but the
-                # generator's own say-so) | "failed". See
+                # The criterion's real value: the four-state DERIVED audit result
+                # — "pass" (the spec was proven to sit inside a DSL surface whose
+                # interpreter reads only bar t and earlier, and the broker
+                # cheat-on-close/open check passed) | "fail" | "pending" (nothing
+                # was audited) | "degenerate" (the audit could not decide). The
+                # bool above is its projection and cannot say "never checked",
+                # which is precisely how the removed self-declared
+                # look_ahead_safe flag read as a passed audit. A consumer
+                # rendering a look-ahead claim must key off this, not the bool,
+                # and must never draw "pending"/"degenerate" as a failure — the
+                # audit did not catch anything, it did not conclude. See
                 # services/dsl_lookahead_audit.py.
-                "look_ahead_audit": r.look_ahead_audit,
-                # SEPARATE axis from the gate: "passed" | "not_checked" |
-                # "failed". A surface must never draw "not_checked" as a
-                # failure — the audit did not catch anything, it did not run.
-                "look_ahead_render_state": r.look_ahead_render_state,
-                # What the generator CLAIMED (spec.look_ahead_safe). Recorded,
-                # never gated on.
-                "look_ahead_declared": r.look_ahead_declared,
-                "look_ahead_reasons": list(r.look_ahead_reasons),
+                "look_ahead_status": r.look_ahead_status,
                 "look_ahead_label": r.look_ahead_label,
+                "look_ahead_reason": r.look_ahead_reason,
                 "num_trials": int(r.num_trials),
                 # Methodology marker (#1075): this verdict was computed under the
                 # self-contained num_trials convention (decouple #2). Blobs
@@ -2109,12 +2108,11 @@ async def _run_fusion_job(job_id: str) -> None:
                     "dsr_p_value": eval_result.rigor.dsr_p_value,
                     "oos_sharpe": eval_result.rigor.oos_sharpe,
                     "look_ahead_clean": eval_result.rigor.look_ahead_clean,
-                    # Three-state audit + honest label — see rigor_verdict_dict above.
-                    "look_ahead_audit": eval_result.rigor.look_ahead_audit,
-                    "look_ahead_render_state": eval_result.rigor.look_ahead_render_state,
-                    "look_ahead_declared": eval_result.rigor.look_ahead_declared,
-                    "look_ahead_reasons": list(eval_result.rigor.look_ahead_reasons),
+                    # Four-state derived audit result + honest label — see
+                    # rigor_verdict_dict above.
+                    "look_ahead_status": eval_result.rigor.look_ahead_status,
                     "look_ahead_label": eval_result.rigor.look_ahead_label,
+                    "look_ahead_reason": eval_result.rigor.look_ahead_reason,
                 }
             if eval_result.error:
                 job_result["eval_error"] = eval_result.error

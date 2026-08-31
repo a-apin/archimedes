@@ -174,7 +174,6 @@ cartesian-product point and computes a real Probability of Backtest Overfitting
   "exit": {"lt": ["close", "sma_200"]},
   "position_sizing": {"type": "full_invested_when_in_market"},
   "source_arxiv_ids": ["0706.1497"],
-  "look_ahead_safe": true,
   "parameter_variants": {
     "sma_200": [150, 175, 200, 225, 250]
   }

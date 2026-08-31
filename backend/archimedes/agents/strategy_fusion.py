@@ -793,7 +793,9 @@ N with an integer period). momentum_N is the trailing N-bar RETURN, centred on 0
 {"gt": ["momentum_20", 0]} means "trailing 20-bar return is positive". \
 Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
 or logic ops (and, or, not). Position sizing types: full_invested_when_in_market, \
-equal_weight, volatility_target (needs annual_pct). look_ahead_safe MUST be true. \
+equal_weight, volatility_target (needs annual_pct). Do NOT emit any field \
+asserting the strategy's own correctness or look-ahead safety; the platform \
+derives that from the spec and ignores anything you claim about it. \
 parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
 values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \
 Keys must reference indicators used in entry/exit conditions."""
@@ -838,7 +840,6 @@ literature>",
     "exit": {"lt": ["close", "sma_200"]},
     "position_sizing": {"type": "full_invested_when_in_market"},
     "source_arxiv_ids": ["<from source_arxiv_ids above>"],
-    "look_ahead_safe": true,
     "indicators": ["sma_200"],
     "parameter_variants": {"sma_200": [150, 175, 200, 225, 250]}
   }
