@@ -32,8 +32,9 @@ an incident should not have to know which tree a procedure lives in.
 Historical, **do not execute**: [`../archive/deployment-runbook.md`](../archive/deployment-runbook.md)
 — the EC2-era manual/break-glass deploy runbook. Its procedure routes traffic to instance
 `i-01803d3abc271d39b`, which was detached from the ALB target group during the Fargate
-cutover, so following it during an incident operates on a host serving no traffic. It is kept
-for its incident-response history and diagrams.
+cutover and then decommissioned on 2026-08-19 (stopped, snapshotted, terraform deleted —
+`infra/main.tf`), so following it during an incident operates on a host that no longer
+exists. It is kept for its incident-response history and diagrams.
 
 ## Not yet written
 

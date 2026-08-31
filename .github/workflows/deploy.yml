@@ -79,7 +79,6 @@
 #   AWS_ROLE_ARN — arn:aws:iam::037613907429:role/archimedes-github-deploy
 #     (also grants ECR push, scoped to repository/archimedes* — see
 #     infra/scripts/setup-github-oidc.sh)
-#   EC2_INSTANCE_ID — i-01803d3abc271d39b
 #   DEPLOY_ENABLED — gate flag; all three jobs below run ONLY when this repo
 #     variable equals 'true'. Unset/false → skipped (neutral, not failed). The
 #     stack was rebuilt on a NEW account (037613907429 / us-east-1) and is LIVE
@@ -155,7 +154,16 @@ env:
   BACKEND_ECR_REPO: archimedes-backend
   NGINX_ECR_REPO: archimedes-nginx
   AUTH_ECR_REPO: archimedes-auth
-  EC2_INSTANCE_ID: i-01803d3abc271d39b
+  # `EC2_INSTANCE_ID: i-01803d3abc271d39b` was REMOVED here 2026-08-31. It was the
+  # single-EC2 Docker-Compose host that the retired SSM `deploy` job targeted; the
+  # instance was stopped, snapshotted (snap-02edf9e4a9ac7f201) and its terraform
+  # deleted on 2026-08-19 (see infra/main.tf's DECOMMISSIONED block). No job in
+  # this file ever read `${{ env.EC2_INSTANCE_ID }}` after the #1039 fast-follow
+  # retired that job, so this was dead env naming a dead box — the worst kind of
+  # stale reference, because it reads like a live deploy target. The runners that
+  # DO run on EC2 today live on a different, separately-provisioned instance
+  # (infra/runner_ec2.tf `aws_instance.runner`, resolved by name tag at runtime in
+  # .github/workflows/deploy-runners.yml, never hardcoded).
   # How long deploy-ecs will wait for the ECS rollout to reach COMPLETED before
   # it calls the deploy red (issue #1532). This replaces the implicit 600s of
   # `aws ecs wait services-stable` (40 attempts x 15s), which rollout duration
@@ -486,7 +494,7 @@ jobs:
         env:
           # Matches infra/ecs.tf's `${var.project_name}-cluster` with the
           # default `project_name = "archimedes"` (infra/variables.tf) — same
-          # literal-constant pattern as EC2_INSTANCE_ID / ECR_REGISTRY above,
+          # literal-constant pattern as ECR_REGISTRY in the top-level env block,
           # not a new cross-job variable.
           ECS_CLUSTER: archimedes-cluster
           # The dedicated one-off migrate task-def family (infra/ecs_migrate.tf,
@@ -1010,7 +1018,7 @@ jobs:
         # exit-code handling below; the completion wait is likewise
         # non-fatal on timeout).
         env:
-          # Literal constant, same pattern as EC2_INSTANCE_ID (top-level env
+          # Literal constant, same pattern as ECR_REGISTRY (top-level env
           # block above) / ECS_CLUSTER / ECS_MIGRATE_TASK_FAMILY (this job's
           # sibling steps): sourced from infra/cloudfront.tf's
           # aws_cloudfront_distribution.main, output as `cloudfront_distribution_id`

@@ -4,8 +4,12 @@ import { readFileSync } from "node:fs";
 
 import { parseFeatures } from "../src/features.js";
 import {
+	isAnonymousAppPage,
+
 	canNavigateTo,
 	pageToPath,
+	passportBackLabel,
+	passportBackPage,
 	postAuthPath,
 	resolveRoute,
 	safeNextPath,
@@ -17,9 +21,14 @@ import {
 // parseFeatures() never emits this key, so app code can't pass it.
 const ROADMAP_ON = { quant: true, roadmapSurfaces: true };
 
-test("landing and architecture remain public", () => {
-	assert.deepEqual(resolveRoute("/").kind, "public");
-	assert.deepEqual(resolveRoute("/architecture").kind, "public");
+test("landing, security, and architecture remain public", () => {
+	assert.equal(resolveRoute("/").kind, "public");
+	assert.equal(resolveRoute("/architecture").kind, "public");
+	const security = resolveRoute("/security");
+	assert.equal(security.kind, "public");
+	assert.equal(security.page, "security");
+	assert.equal(pageToPath("security"), "/security");
+	assert.equal(safeNextPath("/security"), "/app");
 });
 
 // Better Auth's account-linking guard (auth/auth.js disableImplicitLinking)
@@ -153,7 +162,8 @@ test("public shell lazy-loads wallet and protected application code", () => {
 		new URL("../src/AuthenticatedApp.jsx", import.meta.url),
 		"utf8",
 	);
-	assert.match(app, /lazy\(\(\) => import\('\.\/AuthenticatedApp'\)\)/);
+	// Quote-style agnostic (rebrand formats with double quotes).
+	assert.match(app, /lazy\(\(\) => import\(["']\.\/AuthenticatedApp["']\)\)/);
 	assert.doesNotMatch(app, /from '\.\/config'/);
 	assert.match(authenticated, /from ["']\.\/config["']/);
 });
@@ -272,6 +282,61 @@ test("Library's in-page Published tab hides with the marketplace surface it lead
 	assert.match(
 		strategiesSrc,
 		/defaultTab === 'published' && !ROADMAP_SURFACES_ENABLED\) return 'generated'/,
+	);
+});
+
+test("the strategy passport's back control never signs out an anonymous visitor (#1370)", () => {
+	// The passport is deliberately deep-link reachable with no session
+	// (#1194 rev d), but 'library' is wallet-gated and not anonymous-OK —
+	// resolving the back button straight to onNavigate('library') tripped
+	// App.jsx's anonymous-page redirect and bounced a visitor who was never
+	// signed in out to /sign-in. The helper must resolve anonymous visitors
+	// to a page isAnonymousAppPage() actually allows.
+	assert.equal(isAnonymousAppPage(passportBackPage(null)), true);
+	// A signed-in visitor keeps going back to their own Library.
+	assert.equal(passportBackPage({ id: "u1" }), "library");
+	// The button's own label must track where it actually navigates — a
+	// control that says "Back to Library" while landing on Explore is a
+	// mislabeled affordance, not a fixed one.
+	assert.equal(passportBackLabel(null), "← Back to Explore");
+	assert.equal(passportBackLabel({ id: "u1" }), "← Back to Library");
+});
+
+test("the strategy passport component actually wires the back-navigation helpers at both back-button call sites (#1370)", () => {
+	// The test above only proves routes.js's helpers are correct in
+	// isolation — it imports nothing from StrategyPassport.jsx, so reverting
+	// the component's two `onClick`/label call sites back to the literal
+	// regression (`onNavigate("library")` / hard-coded "← Back to Library")
+	// would still leave it fully green. Read the component source directly,
+	// precedent: this file's own "Library's in-page Published tab..." test
+	// above and backend/tests/test_breadcrumbs.py's source-parsing tests.
+	const passportSrc = readFileSync(
+		new URL("../src/components/StrategyPassport.jsx", import.meta.url),
+		"utf8",
+	);
+	const wiredNavigate = passportSrc.match(
+		/onClick=\{\(\) => onNavigate\(passportBackPage\(user\)\)\}/g,
+	);
+	assert.equal(
+		wiredNavigate?.length,
+		2,
+		`expected both back buttons to call onNavigate(passportBackPage(user)), found ${wiredNavigate?.length ?? 0}`,
+	);
+	const wiredLabel = passportSrc.match(/\{passportBackLabel\(user\)\}/g);
+	assert.equal(
+		wiredLabel?.length,
+		2,
+		`expected both back buttons to render {passportBackLabel(user)}, found ${wiredLabel?.length ?? 0}`,
+	);
+	assert.doesNotMatch(
+		passportSrc,
+		/onNavigate\(\s*["']library["']\s*\)/,
+		"a back button still hard-codes onNavigate(\"library\") instead of the anonymous-safe helper",
+	);
+	assert.doesNotMatch(
+		passportSrc,
+		/←\s*Back to Library\s*</,
+		"a back button still hard-codes the Library label instead of passportBackLabel(user)",
 	);
 });
 

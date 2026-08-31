@@ -234,6 +234,93 @@ class TestLocalSetupContract(unittest.TestCase):
             "published containerPort",
         )
 
+    def test_nginx_gates_insights_exactly_like_every_other_app_path(self) -> None:
+        """PR #1437 review (2026-08-30), reversing this test's round-2 form.
+
+        The admin-only `/app/insights` dashboard must be served behind the
+        SAME `auth_request /_auth_session` boundary as every other `/app`
+        path, so that an anonymous GET for it is indistinguishable from an
+        anonymous GET for any unknown `/app` URL.
+
+        The round-2 version of this test asserted the opposite — that the
+        insights location must NOT carry `auth_request` — on the theory that
+        a 302 to `/sign-in?next=/app/insights` would itself confirm a
+        privileged page exists there. That was backwards. `^~ /app` below is
+        a catch-all prefix with a SPA fallback, so nginx answers an unknown
+        `/app` path with exactly that same 302; the redirect distinguishes
+        nothing. The ungated carve-out was the actual leak:
+
+            ungated: anonymous GET /app/insights -> 200 HTML
+                     anonymous GET /app/library  -> 302 /sign-in
+                     anonymous GET /app/nonsense -> 302 /sign-in
+
+        — a pre-auth existence oracle, readable before a single line of
+        client JS runs.
+
+        `insights` still must stay OUT of `ANON_APP_PAGES` in
+        ui/src/routes.js, and the real authorization is still the
+        server-side `require_platform_admin` check inside
+        `/api/metrics/private/whoami`, which nginx does not touch.
+
+        Config-parse test in the idiom of this file's other nginx checks:
+        it reads the real deployed `nginx/nginx.conf` and asserts on the
+        parsed location block rather than on a substring of the whole file.
+        """
+        nginx = (ROOT / "nginx/nginx.conf").read_text()
+        anchor = "location = /app/insights {"
+        insights_index = nginx.find(anchor)
+        self.assertNotEqual(
+            insights_index,
+            -1,
+            f"anchor {anchor!r} not found in nginx.conf — insights must be declared as an "
+            "EXACT-match location (a `^~` prefix would also capture /app/insightsfoo), and "
+            "this test's anchor has drifted from the real file",
+        )
+        gated_app_index = nginx.index("location ^~ /app {")
+        self.assertLess(
+            insights_index,
+            gated_app_index,
+            "the /app/insights block must be declared (and read, for anyone auditing "
+            "this file top-to-bottom) before the catch-all gated ^~ /app block",
+        )
+        insights_block = nginx[insights_index : nginx.index("}", insights_index) + 1]
+        self.assertIn(
+            "auth_request /_auth_session;",
+            insights_block,
+            "the insights location must sit behind the SAME auth_request boundary as "
+            "every other /app path — without it, an anonymous GET returns 200 while an "
+            "anonymous GET for any other /app path 302s, which is an existence oracle "
+            "at the layer before any client JS runs",
+        )
+        self.assertIn(
+            "error_page 401 = @sign_in;",
+            insights_block,
+            "auth_request without the 401 handler emits a bare 401 instead of the "
+            "@sign_in 302 every other /app path emits — a different kind of oracle, "
+            "not a fix",
+        )
+        self.assertIn("try_files $uri $uri/ /index.html;", insights_block)
+
+        # The whole property is INDISTINGUISHABILITY from the catch-all, so
+        # assert the two blocks actually agree on the gate rather than just
+        # checking insights in isolation: a future edit that dropped
+        # auth_request from `^~ /app` would leave this test green while the
+        # boundary it describes no longer existed anywhere.
+        gated_block = nginx[gated_app_index : nginx.index("}", gated_app_index) + 1]
+        for directive in ("auth_request /_auth_session;", "error_page 401 = @sign_in;"):
+            self.assertIn(directive, gated_block)
+
+        # And there must be no OTHER insights location re-opening the hole —
+        # nginx's exact-match `= /app/insights` wins over any `^~` prefix, but
+        # a `^~ /app/insights` sibling would still catch /app/insights/... and
+        # /app/insightsfoo, both of which must stay gated.
+        self.assertNotIn(
+            "location ^~ /app/insights",
+            nginx,
+            "a `^~ /app/insights` prefix location would take /app/insights/* and "
+            "/app/insightsfoo back off the auth boundary",
+        )
+
     def test_nginx_webmanifest_mime_override_is_additive_not_nested_in_server(self) -> None:
         """#1380: stock nginx `mime.types` has no `.webmanifest` entry, so a
         served `site.webmanifest` fell back to `default_type`

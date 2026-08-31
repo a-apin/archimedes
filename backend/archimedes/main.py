@@ -91,6 +91,124 @@ from archimedes.db import init_db
 
 logger = logging.getLogger(__name__)
 
+
+def _assert_marketplace_live_or_dry(marketplace_router_obj: object, payments_dry_run: bool) -> None:
+    """FATAL when circlekit failed to import while PAYMENTS_DRY_RUN=false (#1240).
+
+    The import above degrades on purpose (PR #958 prod incident) so a broken
+    circlekit install can never crash-loop the whole backend — correct when
+    PAYMENTS_DRY_RUN=true, since no real money is at stake and "marketplace
+    absent" (routes 404) is an honest, visible degraded state. It stops being
+    correct the moment an operator sets PAYMENTS_DRY_RUN=false: that is a
+    deliberate signal real charging is wanted, and "the process boots fine,
+    most routes 200, marketplace quietly 404s" is a silent trap for exactly
+    that operator, not a safe degrade — see architectural-principles.md's
+    fail-soft-is-wrong-for-anything-a-claim-depends-on rule. Pulled into its
+    own function so the assertion is unit-testable without importing the
+    whole app.
+
+    KNOWN LIMITATION (#1240 follow-up, not fixed here): this gates on the
+    GLOBAL PAYMENTS_DRY_RUN, which infra/ecs.tf pins to "true" in prod. The
+    rail actually settling real money today is the generation paywall, which
+    is live via the generation-scoped GENERATION_PAYMENTS_DRY_RUN="false"
+    (the 2026-08-20 split, #1428) — a switch this assertion does not read. So
+    in prod as configured this guard is INERT: it will not refuse to boot even
+    though real value is moving. Widening it to "any rail is live" is a
+    behavior change to the boot path and wants its own PR; recorded here so
+    the guard is not mistaken for protection it does not currently give.
+    """
+    if marketplace_router_obj is None and not payments_dry_run:
+        raise RuntimeError(
+            "FATAL: circlekit failed to import (marketplace router unavailable, see "
+            "the error logged above) while PAYMENTS_DRY_RUN=false. Refusing to boot "
+            "with real-money charging intended but no charging capability available. "
+            "Fix the circlekit install, or set PAYMENTS_DRY_RUN=true if dry-run is "
+            "actually what's intended."
+        )
+
+
+_assert_marketplace_live_or_dry(
+    marketplace_router,
+    os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes"),
+)
+
+
+class GatewayChainMismatch(RuntimeError):
+    """Raised ONLY by _assert_gateway_chain_matches_rpc, and only on a
+    confirmed GATEWAY_CHAIN/RPC mismatch or an unresolvable GATEWAY_CHAIN
+    name under PAYMENTS_DRY_RUN=false — never on a connectivity failure.
+
+    A dedicated type (rather than a bare RuntimeError) so the lifespan
+    startup wrapper can re-raise exactly this failure mode as fatal without
+    also catching an unrelated RuntimeError from elsewhere in the same try
+    block (e.g. get_chain_id() raising on a closed aiohttp session/event
+    loop) — a review finding on #1240: a type-based `except RuntimeError`
+    at the call site made ANY RuntimeError fatal, including ones that must
+    fall through to the non-fatal "connectivity issue?" warning branch.
+    Subclasses RuntimeError so existing `pytest.raises(RuntimeError, ...)`
+    tests against this function keep working unchanged.
+    """
+
+
+async def _assert_gateway_chain_matches_rpc(
+    chain_client_obj: object, gateway_chain: str, payments_dry_run: bool
+) -> None:
+    """FATAL when GATEWAY_CHAIN resolves to a chain_id the RPC we actually
+    talk to doesn't report — but only when PAYMENTS_DRY_RUN=false (#1240).
+
+    circlekit's ``CHAIN_ALIASES`` maps ``"mainnet"`` -> ``"ethereum"``, so a
+    fat-fingered ``GATEWAY_CHAIN`` can silently resolve to a real, DIFFERENT
+    chain than the one Arc RPC (and the vault reads/writes) actually target
+    — Gateway payments would settle on a chain trades don't execute on, and
+    ``GET /api/config/contracts``' "chain" field would be lying about which
+    chain we're on. Fatal only under PAYMENTS_DRY_RUN=false (same
+    conditioning as ``_assert_marketplace_live_or_dry`` above): a dry-run/
+    testnet boot with a stale or experimental GATEWAY_CHAIN value must not
+    crash-loop over it, just log loudly.
+
+    A connectivity failure (``chain_client_obj.get_chain_id()`` raising) is
+    the CALLER's problem, not this function's — chain_client owns its own
+    retry/backoff, and "the RPC was briefly unreachable at boot" is a
+    different failure mode than "we are pointed at the wrong chain". This
+    function only ever raises ``GatewayChainMismatch`` (never a bare
+    ``RuntimeError``) on a confirmed mismatch, or an unresolvable
+    GATEWAY_CHAIN name (also a real config bug worth being loud about) — any
+    OTHER exception (e.g. get_chain_id() raising for connectivity reasons)
+    propagates as whatever type it naturally is, unmodified, precisely so
+    the caller can tell the two failure modes apart by type.
+
+    KNOWN LIMITATION (#1240 follow-up, not fixed here): see the same note on
+    _assert_marketplace_live_or_dry — the ``payments_dry_run`` this receives
+    is the GLOBAL switch, "true" in prod, so the fatal branch never fires
+    there. It bites hardest on this assertion specifically: the live
+    generation paywall quotes ``chain: gateway_chain()`` to real payers, so a
+    fat-fingered GATEWAY_CHAIN is exactly the failure this function exists to
+    catch, and today it would only be logged as a warning.
+    """
+    from circlekit.constants import get_chain_config
+
+    try:
+        expected_chain_id = get_chain_config(gateway_chain).chain_id
+    except ValueError as exc:
+        message = f"GATEWAY_CHAIN={gateway_chain!r} is not a chain circlekit recognizes: {exc}"
+        if payments_dry_run:
+            logger.warning("%s (PAYMENTS_DRY_RUN=true — not fatal, but fix before flipping it)", message)
+            return
+        raise GatewayChainMismatch(f"FATAL: {message} Refusing to boot with PAYMENTS_DRY_RUN=false.") from exc
+
+    actual_chain_id = await chain_client_obj.get_chain_id()
+    if expected_chain_id != actual_chain_id:
+        message = (
+            f"GATEWAY_CHAIN={gateway_chain!r} resolves to chain_id={expected_chain_id}, but the "
+            f"configured RPC reports chain_id={actual_chain_id}. Gateway payments would settle "
+            "on a different chain than trades execute on."
+        )
+        if payments_dry_run:
+            logger.warning("%s (PAYMENTS_DRY_RUN=true — not fatal, but fix before flipping it)", message)
+            return
+        raise GatewayChainMismatch(f"FATAL: {message} Refusing to boot with PAYMENTS_DRY_RUN=false.")
+
+
 # ── Docs gate: disable /docs and /openapi.json in production ──────────
 # Default OFF when PUBLIC_DOMAIN is set (production). Override with
 # ENABLE_API_DOCS=1 to re-enable in any environment.
@@ -195,6 +313,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: example strategy seed failed (non-fatal): %s", exc)
 
+    # Both money-affecting switches FAIL SAFE (default to dry) and must be
+    # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
+    # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
+    # out-of-the-box deploy mirrored no real trades yet charged real USDC —
+    # the worst possible asymmetry. Charging real money now requires an
+    # explicit PAYMENTS_DRY_RUN=false.
+    #
+    # Read BEFORE step 3's try block (not inside it) so it is unconditionally
+    # bound going into step 3y below, regardless of whether step 3 itself
+    # raises. It used to be assigned inside that try, after the MarketService
+    # import and the AGENT_INTERVAL_SECONDS int() parse — either one raising
+    # first (e.g. a non-numeric AGENT_INTERVAL_SECONDS) left this name
+    # unbound, and step 3y's reference to it then raised a bare NameError
+    # that its own `except Exception` swallowed as "connectivity issue?",
+    # silently disabling the GATEWAY_CHAIN/RPC mismatch guard (#1240 review).
+    payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
+
     # 3. Start the in-process marketplace engine (MarketService).
     # FAIL-SOFT: constructing the engine (or importing its deps, e.g. circlekit)
     # must NEVER take down the whole backend — a new subsystem crashing at
@@ -206,13 +341,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         from archimedes.marketplace.service import MarketService
 
         interval = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
-        # Both money-affecting switches FAIL SAFE (default to dry) and must be
-        # turned on together and deliberately. Previously PAYMENTS_DRY_RUN
-        # defaulted to "false" while PAPER_TRADING defaulted to "true", so an
-        # out-of-the-box deploy mirrored no real trades yet charged real USDC —
-        # the worst possible asymmetry. Charging real money now requires an
-        # explicit PAYMENTS_DRY_RUN=false.
-        payments_dry_run = os.getenv("PAYMENTS_DRY_RUN", "true").lower() in ("1", "true", "yes")
         paper_trading = os.getenv("PAPER_TRADING", "true").lower() in ("1", "true", "yes")
         market = MarketService(
             interval_seconds=interval, payments_dry_run=payments_dry_run, paper_trading=paper_trading
@@ -227,6 +355,42 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _app.state.market = None
         _logger.error("startup: marketplace engine failed to start — running WITHOUT it (non-fatal): %s", exc)
+
+    # 3y. Verify GATEWAY_CHAIN against the RPC we actually talk to (#1240).
+    # Gated on marketplace_router (circlekit importable), not `market`
+    # (MarketService construction) — generation_payment.py's paywall also
+    # resolves GATEWAY_CHAIN independently of the ticking engine, so this
+    # matters even when MarketService itself failed to start for some other
+    # reason. A connectivity failure (RPC briefly unreachable at boot) is
+    # logged and swallowed here — chain_client owns its own retry/backoff,
+    # and that is a different failure mode than "pointed at the wrong
+    # chain", which is the only thing _assert_gateway_chain_matches_rpc
+    # itself treats as fatal (and only when PAYMENTS_DRY_RUN=false).
+    if marketplace_router is not None:
+        try:
+            from archimedes.chain.client import chain_client
+            from archimedes.marketplace.config import gateway_chain
+
+            # Read through config.gateway_chain(), never a hand-rolled
+            # os.getenv("GATEWAY_CHAIN", <the module default>): #1495 landed
+            # that single accessor (and a structural test that forbids any
+            # other reference to the default constant) precisely because a
+            # hand-rolled getenv is how the revenue sweep silently stayed on
+            # testnet. This boot check must resolve the chain the exact same
+            # way the money paths do, or it verifies the wrong name.
+            configured_chain = gateway_chain()
+            await _assert_gateway_chain_matches_rpc(chain_client, configured_chain, payments_dry_run)
+            _logger.info("startup: GATEWAY_CHAIN=%s verified against RPC", configured_chain)
+        except GatewayChainMismatch:
+            # Re-raise ONLY the dedicated mismatch type, by identity — not
+            # "any RuntimeError". A plain RuntimeError from get_chain_id()
+            # itself (e.g. a closed aiohttp session/event loop) must fall
+            # through to the generic warning branch below instead of aborting
+            # boot; catching RuntimeError broadly here used to make it fatal
+            # regardless of PAYMENTS_DRY_RUN (#1240 review finding).
+            raise
+        except Exception as exc:
+            _logger.warning("startup: GATEWAY_CHAIN/RPC verification skipped (connectivity issue?): %s", exc)
 
     # 3z. Register the system/agent addresses in controlled_wallets (issue
     # #1028, D1a/D3). Idempotent upsert — safe to run on every boot.
@@ -587,6 +751,46 @@ def _no_store_headers() -> dict[str, str]:
     return {"Cache-Control": _NO_STORE, "Pragma": "no-cache"}
 
 
+# ── /health's outbound budget (issue #1592) ───────────────────────────────
+# INCIDENT 2026-08-31: the two outbound probes below were awaited with no
+# deadline of their own. With the Arc RPC unreachable from inside the VPC they
+# parked; /health blew the ALB's 5s check and ECS's container HEALTHCHECK; no
+# new task ever turned healthy; the rollout wedged at 1/2 for its full 1200s
+# budget while the serving task's event loop starved every other route. The
+# same RPC answered in 0.1s from outside the VPC — nothing was slow, the calls
+# were unbounded.
+#
+# Both probes now run CONCURRENTLY under hard budgets, so the bounded outbound
+# section costs max(these two), not their sum. See services/health_cache.py for
+# the last-known-value contract and archimedes/deadline.py (plus
+# chain/client.py's BoundedAsyncHTTPProvider) for why a plain asyncio.wait_for
+# was not enough.
+#
+# WHY 1.2s AND NOT THE 5s THE ALB ALLOWS. The budget has to cover the probe AND
+# leave room for the rest of this handler, and the case that matters is a COLD
+# task — the one whose failing check wedges a rollout. Measured on this
+# handler's first call in a fresh process (corpus load, strategy-file scan,
+# risk-data probe): ~0.5s of non-outbound work, ~0.15s once warm. 1.2 + 0.5 is
+# comfortably inside the 2s the endpoint promises and the 5s the ALB and the
+# ECS container HEALTHCHECK both cut at, and it is still ~12x the 0.1s the live
+# Arc RPC answers in. Raising these numbers is how the promise gets lost, so
+# the guard in backend/tests/test_health_always_answers.py asserts the 2s.
+_CHAIN_PROBE_BUDGET_SECONDS = 1.2
+# The outer backstop for the oracle probe. Deliberately LARGER than the inner
+# budget below so the inner, better answer wins the race: oracle_health already
+# knows how to report its own deadline overrun as an honest `probe_timeout`
+# reason with the probed/universe counts intact. This outer bound exists only
+# for stalls the probe's own wait_for cannot see — contract-loader
+# construction, push-set derivation, or web3's uncancellable session-manager
+# lock (the incident's actual shape).
+_ORACLE_PROBE_BUDGET_SECONDS = 1.2
+# Passed INTO oracle_health, replacing its default 1.5s. That default was sized
+# against a /health that spent up to 3s on is_connected() before the probe even
+# started; probes now run concurrently, so the oracle's slice is smaller and
+# has to leave the outer backstop above room to be the backstop.
+_ORACLE_INNER_BUDGET_SECONDS = 0.9
+
+
 @app.get("/health")
 @app.get("/api/health")
 @limiter.exempt
@@ -594,15 +798,69 @@ async def health(response: Response):
     """Health check — used by Docker healthcheck and CI/CD.
 
     Reports corpus state so silent degradation is visible.
+
+    **This endpoint reports what we know; it does not go and find out.** Every
+    outbound probe is bounded and falls back to its last-known value, labelled
+    with age and reason (#1592). No field's MEANING changed — only how long the
+    handler is willing to wait to compute it.
     """
     _no_store(response)
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.chain.client import chain_client
     from archimedes.services.corpus_service import get_corpus_meta, get_paper_count
+    from archimedes.services.health_cache import health_probe_cache
     from archimedes.services.llm_backend import make_llm_backend
 
-    connected = await chain_client.is_connected()
+    async def _oracle_probe():
+        # Imported at call time, not module scope, so tests keep patching
+        # ``services.oracle_health.oracle_health`` the way they already do.
+        from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
+
+        return await _oracle_health_probe(budget_seconds=_ORACLE_INNER_BUDGET_SECONDS)
+
+    # Concurrent + bounded. return_exceptions keeps one broken probe from
+    # taking the other down: a raised probe is still a health verdict, it is
+    # just a "we could not read it" one, and that is what gets reported.
+    chain_outcome, oracle_outcome = await asyncio.gather(
+        health_probe_cache.probe(
+            "chain_connected",
+            chain_client.is_connected,
+            budget_seconds=_CHAIN_PROBE_BUDGET_SECONDS,
+            absent=False,
+        ),
+        health_probe_cache.probe(
+            "oracle_health",
+            _oracle_probe,
+            budget_seconds=_ORACLE_PROBE_BUDGET_SECONDS,
+            absent=None,
+        ),
+        return_exceptions=True,
+    )
+
+    # ── chain connectivity ───────────────────────────────────────────────
+    chain_probe_fields: dict[str, object] = {}
+    chain_probe_live = False
+    if isinstance(chain_outcome, BaseException):
+        # ChainClient.is_connected() already maps every chain-side failure to
+        # False, so an exception here is a defect in the probe plumbing rather
+        # than a verdict about the chain. Report it as its own state instead of
+        # letting it masquerade as either a live reading or a timeout.
+        logger.warning(
+            "chain health probe raised %s — reporting chain_connected=false",
+            type(chain_outcome).__name__,
+        )
+        connected = False
+        chain_probe_fields = {
+            "chain_probe_state": "probe_error",
+            "chain_probe_age_s": None,
+            "chain_probe_reason": f"chain probe_error: {chain_outcome}",
+        }
+    else:
+        connected = bool(chain_outcome.value)
+        chain_probe_live = chain_outcome.is_live
+        chain_probe_fields = chain_outcome.payload_fields("chain")
+
     if not connected:
         # N2 (infra #1039): /health's status code is deliberately unchanged (still
         # 200 — see the module docstring above and infra/runbooks) so a transient
@@ -681,23 +939,49 @@ async def health(response: Response):
     # as "oracles are healthy" system-wide. A chain-read failure reports
     # oracle_fresh=false with an explicit marker (never fail-soft "assume
     # fresh") — see services/oracle_health.py's module docstring.
+    #
+    # The probe itself ran CONCURRENTLY with the chain check at the top of this
+    # handler, under its own hard budget (#1592). What is left here is only the
+    # rendering of whatever that bounded probe produced — three cases, and none
+    # of them may report "fresh" without a completed read behind it.
     oracle_fresh = False
     oracle_oldest_age_s: int | None = None
     oracle_probed_count = 0
     oracle_universe_count = 0
-    # oracle_reason needs no initializer: the try body and the except handler
-    # both assign it unconditionally before any use.
-    try:
-        from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
-
-        _oracle_diag = await _oracle_health_probe()
-        oracle_fresh = _oracle_diag.oracle_fresh
-        oracle_oldest_age_s = _oracle_diag.oracle_oldest_age_s
-        oracle_probed_count = _oracle_diag.oracle_probed_count
-        oracle_universe_count = _oracle_diag.oracle_universe_count
-        oracle_reason = _oracle_diag.reason
-    except Exception as exc:
-        oracle_reason = f"oracle_health probe_error: {exc}"
+    oracle_probe_fields: dict[str, object] = {}
+    # oracle_reason needs no initializer: every branch below assigns it
+    # unconditionally before any use.
+    if isinstance(oracle_outcome, BaseException):
+        # The probe raised. Same wording as before this change, so the existing
+        # `probe_error` contract (and the test that asserts it) is untouched.
+        oracle_reason = f"oracle_health probe_error: {oracle_outcome}"
+        oracle_probe_fields = {
+            "oracle_probe_state": "probe_error",
+            "oracle_probe_age_s": None,
+            "oracle_probe_reason": oracle_reason,
+        }
+    else:
+        oracle_probe_fields = oracle_outcome.payload_fields("oracle")
+        _oracle_diag = oracle_outcome.value
+        if _oracle_diag is None:
+            # probe_timeout with nothing ever cached: there is no reading to
+            # report. oracle_fresh stays False and the counts stay 0 — a loud
+            # absence, never a fabricated "fresh" or a borrowed count.
+            oracle_reason = oracle_outcome.reason
+        else:
+            oracle_fresh = _oracle_diag.oracle_fresh
+            oracle_oldest_age_s = _oracle_diag.oracle_oldest_age_s
+            oracle_probed_count = _oracle_diag.oracle_probed_count
+            oracle_universe_count = _oracle_diag.oracle_universe_count
+            oracle_reason = _oracle_diag.reason
+            if oracle_outcome.state == "stale_cached":
+                # Served from cache. The values above are a real past reading,
+                # so they keep their meaning — but the reason string has to say
+                # out loud that they are not current, because oracle_reason is
+                # the field an operator actually reads.
+                oracle_reason = (
+                    f"{oracle_outcome.reason}; last completed read {oracle_outcome.age_s}s ago: {oracle_reason}"
+                )
 
     if not oracle_fresh:
         # Loud, greppable marker — infra/cloudwatch.tf's metric filter keys off
@@ -873,13 +1157,26 @@ async def health(response: Response):
         logger.debug("reveal reconciliation counts read failed", exc_info=True)
 
     return {
-        "status": "ok" if connected else "degraded",
+        # "ok" requires BOTH a connected chain and a LIVE reading of it (#1592).
+        # A cached `connected: true` served because the fresh probe timed out is
+        # not evidence of a connected chain, and reporting "ok" off it would be
+        # exactly the plausible-substitute failure this codebase treats as its
+        # primary defect class. This can only ever widen "degraded" — it never
+        # calls something healthy that was previously degraded — and the HTTP
+        # status stays 200 for the ALB/ECS reason documented above.
+        "status": "ok" if connected and chain_probe_live else "degraded",
         "service": "archimedes-backend",
         # Build provenance (issue #1039): the git SHA stamped in at image-build
         # time (deploy.yml --build-arg GIT_SHA). "Which code is live?" in one glance
         # — the question that turned the Fargate cutover into an hour of forensics.
         "version": os.getenv("ARCHIMEDES_GIT_SHA", "dev"),
         "chain_connected": connected,
+        # Bounded-probe provenance for chain_connected (#1592). `chain_probe_state`
+        # is always present ("live" | "stale_cached" | "probe_timeout" |
+        # "probe_error"); `chain_probe_age_s` + `chain_probe_reason` appear ONLY
+        # when the fresh probe missed, so their presence IS the signal and their
+        # absence is the all-clear. Same shape for the oracle block below.
+        **chain_probe_fields,
         # human_count / agent_count are cumulative per-request tallies (site
         # traffic, NOT users). real_users is the honest distinct-user count.
         "human_count": human_count,
@@ -926,6 +1223,7 @@ async def health(response: Response):
         "oracle_probed_count": oracle_probed_count,
         "oracle_universe_count": oracle_universe_count,
         "oracle_reason": oracle_reason,
+        **oracle_probe_fields,
         # Strategy-library presence (issue #1039) — 0 means the image is missing
         # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
         "strategy_count": strategy_count,

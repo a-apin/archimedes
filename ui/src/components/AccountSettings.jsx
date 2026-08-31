@@ -264,9 +264,14 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
   }
 
   return (
-    <div className="max-w-[760px]">
-      <h1 className="serif text-[2rem] mb-2">Account</h1>
-      <p className="body mb-7">Better Auth user owns application data. Linked wallets prove on-chain control only.</p>
+    <div className="account-page max-w-[760px]">
+      <header className="app-page-heading">
+        <p className="app-eyebrow">Identity and control</p>
+        <h1>Account</h1>
+        {/* #1370 item 8: the npm auth library is an internal dependency, not a
+            user-facing noun — describe what the account *is*, not what built it. */}
+        <p>Your account owns application data. Linked wallets prove on-chain control only.</p>
+      </header>
 
       <section className="card-flat p-5 mb-5">
         <h2 className="serif text-xl mb-3">Profile</h2>
