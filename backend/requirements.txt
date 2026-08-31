@@ -93,7 +93,7 @@ slowapi>=0.1.10
 # Paper ingestion
 arxiv>=4.0.1
 # Floor raised to 6.13.3 to close 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25).
-pypdf>=6.16.0
+pypdf>=6.16.2
 
 # Semantic retrieval — MiniLM embeddings for paper_rag.py (issue #874).
 # CPU-only torch wheel: the extra-index-url below resolves torch to the
