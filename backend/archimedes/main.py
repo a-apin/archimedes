@@ -5,8 +5,17 @@ chain services that read/write Arc smart contracts.
 """
 
 import asyncio
+import faulthandler
 import logging
 import os
+
+# #1632: the backend has died twice with a bare exit 139 (SIGSEGV) under RPC
+# distress and left NOTHING in the logs — the crash context had to be inferred
+# from the preceding lines. faulthandler dumps every thread's Python traceback
+# to stderr on SIGSEGV/SIGFPE/SIGABRT/SIGBUS, which the ECS awslogs driver
+# ships like any other stderr line, so the NEXT native crash names its frames.
+# Enabled unconditionally: it costs nothing at rest and only speaks on faults.
+faulthandler.enable()
 
 # Load .env into os.environ at import time for modules that use os.getenv()
 # (circle_signer, oracle_updater) — pydantic ChainSettings handles ARC_ vars itself.
