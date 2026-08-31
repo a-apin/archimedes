@@ -125,8 +125,8 @@ class StrategyRecord(Base):
         Index("ix_strategy_generation", "generation_method"),
     )
 
-    def _decode_strategy_spec(self) -> dict | None:
-        """Defensively decode ``strategy_spec`` for ``to_dict()``.
+    def decoded_strategy_spec(self) -> dict | None:
+        """Defensively decode ``strategy_spec``.
 
         Mirrors ``VaultMetadata.get_strategy_ids()`` (models/chat.py): a
         corrupt/non-JSON column value must not raise out of a dict-shaping
@@ -135,6 +135,16 @@ class StrategyRecord(Base):
         row shouldn't 500 the whole response. Falls back to ``None``,
         matching the ``dict | None`` contract every other reader of this
         field (``upsert_strategy``, ``to_strategy_passport``) already uses.
+
+        PUBLIC (was ``_decode_strategy_spec``, #1646) because the passport
+        detail route now reads the spec straight off an already-loaded row to
+        render it. The alternative call sites were worse: ``to_dict()`` decodes
+        four other JSON columns this route does not need, and
+        ``to_strategy_passport()`` calls ``json.loads`` on ``asset_universe``
+        with no guard — so borrowing either of them would trade one defensive
+        read for a new 500 surface on a route that must not acquire one. Same
+        single implementation, no second decoder, no private access from a
+        module ruff's SLF rules police.
         """
         if not self.strategy_spec:
             return None
@@ -155,7 +165,7 @@ class StrategyRecord(Base):
             "thesis": self.thesis,
             "asset_universe": json.loads(self.asset_universe),
             "risk_profile": self.risk_profile,
-            "strategy_spec": self._decode_strategy_spec(),
+            "strategy_spec": self.decoded_strategy_spec(),
             "status": self.status,
             "rigor_verdict": json.loads(self.rigor_verdict) if self.rigor_verdict else None,
             "is_example": self.is_example,
@@ -199,7 +209,7 @@ class StrategyRecord(Base):
             # Same defensive decode as to_dict(): a corrupt spec column must
             # degrade to None (spec-less strategy) rather than raise out of a
             # dataclass adapter that future call sites may not wrap (review).
-            strategy_spec=self._decode_strategy_spec(),
+            strategy_spec=self.decoded_strategy_spec(),
         )
 
 

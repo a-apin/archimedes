@@ -183,6 +183,35 @@ class StrategyResponse(BaseModel):
     # strategy (no brief), or a legacy generated row the backfill migration
     # could not resolve.
     brief_intent: str | None = None
+    # The validated machine-readable DSL spec that RUNS this strategy — the
+    # same dict a fusion proposal emits, stored on ``StrategyPassport.
+    # strategy_spec`` / ``strategy_store.strategy_spec`` (#1646). The passport
+    # page renders it so a reader can see the executable rules behind the
+    # prose, instead of taking ``methodology_summary`` on faith.
+    #
+    # REASONING, not card content — and that classification is not a judgement
+    # call made here, it is quoted from the #1557 matrix in
+    # ``services/strategy_visibility.py``, which names "machine-readable DSL
+    # spec" in the REASONING column beside the debate transcript and the raw
+    # return series. So the gate is ``is_strategy_reasoning_visible``: public
+    # for ``is_example`` house rows, OWNER-ONLY for a user's row **including a
+    # published one**. Publishing consents to sharing the result, not the
+    # executable derivation — the identical rule ``GET /{id}/returns`` and
+    # ``GET /{id}/debate`` already enforce by 404ing, and the same reason
+    # ``POST /api/paper/deployments``'s ``_spec_for_strategy`` fails closed
+    # ("the thing a marketplace would license, not give away").
+    #
+    # Populated ONLY by the single-strategy detail route (``get_strategy``),
+    # exactly like ``brief_intent`` above and for a second, independent
+    # reason: the shared ``_passport_to_strategy_response`` /
+    # ``_passport_responses`` builders back Library and the public
+    # leaderboard, and a 100-row list payload (already heavy with full-library
+    # grading, #1173) must not carry 100 arbitrary-size JSON blobs. Both
+    # reasons point the same way, so this field is set at the route, never in
+    # a shared helper. ``None`` = not the caller's to read, a row with no spec
+    # (curated code-path strategies carry a ``strategy_code_path`` instead),
+    # or a row persisted before the column existed.
+    strategy_spec: dict[str, Any] | None = None
     asset_universe: list[str]
     # Provenance of the asset_universe pick (#857): "user" | "model" | "full",
     # or None for rows written before this field existed (curated strategies,

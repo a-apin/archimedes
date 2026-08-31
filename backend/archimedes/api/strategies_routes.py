@@ -1642,27 +1642,52 @@ async def get_strategy(strategy_id: str, request: Request):
     response carries for a generated row is card content — name, papers,
     methodology writeup, headline metrics, the rigor badge — which is exactly
     what a published strategy is published FOR, so a published row 200s for
-    anonymous callers and the public detail page keeps working. The one
-    REASONING field on the schema, ``brief_intent``, is stripped for non-owners
-    below rather than 404ing the whole route (the strip-don't-404 rule for
-    mixed routes; the purely-reasoning siblings ``/{id}/debate`` and
-    ``/{id}/returns`` 404 instead). Audited field by field against
-    ``_passport_to_strategy_response``: ``brief_intent`` is the only reasoning
-    field it can populate — ``equity_curve`` is never set on this path, and the
-    rigor/display metrics are aggregates, not derivation. See the matrix in
-    ``services/strategy_visibility.py``.
+    anonymous callers and the public detail page keeps working. The TWO
+    REASONING fields on the schema — ``brief_intent`` and ``strategy_spec``
+    (#1646) — are stripped for non-owners below rather than 404ing the whole
+    route (the strip-don't-404 rule for mixed routes; the purely-reasoning
+    siblings ``/{id}/debate`` and ``/{id}/returns`` 404 instead). Audited field
+    by field against ``_passport_to_strategy_response``: those two are the only
+    reasoning fields reachable here, and NEITHER is set by that shared helper —
+    both are attached at this route, from rows it has already loaded.
+    ``equity_curve`` is never set on this path, and the rigor/display metrics
+    are aggregates, not derivation. They take DIFFERENT gates on purpose
+    (``owns_strategy`` vs ``is_strategy_reasoning_visible``) because a curated
+    house row has a public spec and no owner to have typed a brief — see each
+    call site and the matrix in ``services/strategy_visibility.py``.
     """
     from fastapi import HTTPException
 
     strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
-        return _to_strategy_response(strat)
+        resp = _to_strategy_response(strat)
+        # The executable DSL spec (#1646). Set HERE, not inside
+        # `_to_strategy_response`, because that helper also builds the list
+        # route (line ~626) and the leaderboard (`leaderboard_routes.py:94`) —
+        # see the field's note on `StrategyResponse` for both reasons this is
+        # detail-route-only.
+        #
+        # Ungated on THIS branch, and that is the deliberate call rather than
+        # an oversight: resolving through `strategy_provider()` is what
+        # "curated / is_example house row" MEANS on this router, and the
+        # #1557 matrix puts curated REASONING in the public column (no owner
+        # to protect; the product already renders these rows' reasoning to
+        # anonymous visitors). It is the identical curated short-circuit
+        # `GET /{id}/returns` (line ~1510) and `GET /{id}/debate` (line ~1601)
+        # already take BEFORE any row check. Most curated rows carry a
+        # `strategy_code_path` and no spec at all, so this is usually None.
+        resp.strategy_spec = strat.strategy_spec
+        return resp
 
     from archimedes.api.auth_siwe import get_verified_wallet
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import get_passport
-    from archimedes.services.strategy_visibility import is_strategy_visible, owns_strategy
+    from archimedes.services.strategy_visibility import (
+        is_strategy_reasoning_visible,
+        is_strategy_visible,
+        owns_strategy,
+    )
 
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
@@ -1701,6 +1726,24 @@ async def get_strategy(strategy_id: str, request: Request):
             # is not re-implemented at a call site.
             if row is not None and owns_strategy(row, caller, caller_user_id=user.id if user else None):
                 resp.brief_intent = row.brief_intent
+            # The executable DSL spec (#1646). REASONING, so the gate is
+            # `is_strategy_reasoning_visible` — NOT `owns_strategy` above and
+            # NOT `is_strategy_visible` from the 404 check. The three differ,
+            # and picking the wrong one is the #1557 bug class:
+            #   - `is_strategy_visible` would hand every PUBLISHED user row's
+            #     executable spec to anonymous callers.
+            #   - `owns_strategy` would hide a CURATED row's spec, which the
+            #     matrix says is public house content.
+            # `is_strategy_reasoning_visible` is the one predicate that says
+            # both (is_example → public, otherwise owner-only, is_published
+            # deliberately absent). Reached via the shared predicate rather
+            # than re-derived here, per its own module docstring.
+            #
+            # `row is None` (a passport with no strategy_store mirror) fails
+            # closed at the predicate AND has no spec to read anyway — the
+            # spec column lives on StrategyRecord, not on the passport row.
+            if row is not None and is_strategy_reasoning_visible(row, caller, caller_user_id=user.id if user else None):
+                resp.strategy_spec = row.decoded_strategy_spec()
             return resp
 
     raise HTTPException(status_code=404, detail="Strategy not found")

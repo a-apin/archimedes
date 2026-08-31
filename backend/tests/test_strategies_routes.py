@@ -1225,3 +1225,326 @@ async def test_single_strategy_endpoint_200s_with_no_linked_paper():
     assert served["paper_arxiv_id"] is None
     assert served["paper_title"] is None
     assert served["papers"] == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The executable DSL spec on the passport detail route (#1646)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `StrategyResponse.strategy_spec` is the validated machine-readable DSL that
+# actually runs the strategy. It existed on `StrategyPassport.strategy_spec`
+# and `strategy_store.strategy_spec` but was stripped before the API boundary,
+# so the passport page could never show a reader the rules behind the prose.
+#
+# The cases below pin the whole contract, positive and negative:
+#   1. the owner of a row with a spec gets the spec back, unredacted;
+#   2. a non-owner does NOT — INCLUDING on a published row the same request
+#      reads in full, because the #1557 matrix files "machine-readable DSL
+#      spec" under REASONING, and publishing shares the result, not the
+#      derivation;
+#   3. no LIST surface carries it (the issue's explicit anti-goal), pinned
+#      both at the route and at BOTH shared response builders — the seam a
+#      future refactor would actually break;
+#   4. a corrupt spec column degrades to null instead of 500ing the route.
+#
+# Hermetic: `_spec_tmp_db` genuinely rebinds `archimedes.db.engine` /
+# `SessionLocal` to a per-test tmp SQLite via the shared `redirect_to_tmp_sqlite`
+# helper and restores them after. That is deliberately NOT the file-level
+# autouse `_use_tmp_db` above, which only sets `DATABASE_URL` + calls
+# `init_db()`: `archimedes.db` binds its engine once at import time, so setting
+# the env var afterwards rebinds nothing and these tests would read and WRITE
+# the ambient dev database (observed: 37 curated passports leaking into the
+# list assertion, and a UNIQUE-constraint collision between two parametrizations
+# of the same test). Fixing this file's autouse fixture wholesale is a separate
+# change; scoping the real isolation to the new tests keeps them honest without
+# perturbing the 45 that already pass.
+#
+# Auth is the signed SIWE fixture cookie that conftest's autouse
+# `_legacy_siwe_test_adapter` maps onto a canonical Better Auth user (the shape
+# established by test_brief_on_passport.py / test_strategy_ownership.py) — a
+# real signed session, not header spoofing. No live DB, no Redis, no network.
+
+_SPEC_W_OWNER = "0xAbC0000000000000000000000000000000001646"  # mixed case on purpose
+_SPEC_W_STRANGER = "0x0000000000000000000000000000000000001647"
+
+# A real DSL-shaped spec, not a `{"a": 1}` placeholder: a nested dict is what
+# the field actually carries, and a flat one would not prove the structure
+# survives the round trip through a Text column intact.
+_SPEC_FIXTURE = {
+    "asset_universe": ["SPY", "TLT"],
+    "entry": {"all": [{"indicator": "rsi", "window": 14, "op": "<", "value": 30}]},
+    "exit": {"any": [{"indicator": "rsi", "window": 14, "op": ">", "value": 70}]},
+    "position_sizing": "equal_weight",
+    "rebalance_frequency": "weekly",
+}
+# The distinctive leaf of the fixture. Asserting on THIS rather than on the
+# `strategy_spec` key is what makes the redaction tests real: a refactor that
+# free-forms the spec into some other key (a nested passport blob, a debug
+# echo) still trips them.
+_SPEC_TELL = "rsi"
+
+
+@pytest.fixture
+def _spec_tmp_db(tmp_path):
+    """Genuinely-isolated per-test SQLite — see the section note above."""
+    from tests.db_isolation import redirect_to_tmp_sqlite
+
+    yield from redirect_to_tmp_sqlite(tmp_path)
+
+
+def _spec_user_id(wallet: str) -> str:
+    """The canonical user id conftest's legacy SIWE adapter mints for a fixture
+    cookie. Derived from the wallet rather than hard-coded so it cannot drift
+    from the adapter (whose payload is lower-cased at signing)."""
+    return f"legacy-test:{wallet.lower()}"
+
+
+def _spec_cookies(wallet: str) -> dict[str, str]:
+    import time
+
+    from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
+
+    return {_COOKIE_NAME: _sign_session(wallet, time.time())}
+
+
+def _seed_spec_row(
+    sid: str,
+    *,
+    strategy_spec: str | None,
+    owner_user_id: str | None = None,
+    is_published: bool = False,
+) -> None:
+    """A StrategyRecord (carrying the spec column + ownership) plus its
+    StrategyPassportRecord mirror under the SAME id — what `_persist_candidate`
+    writes for every generated strategy.
+
+    `strategy_spec` is passed as the RAW column value (a JSON string, or a
+    deliberately corrupt one) because that is what the defensive decoder under
+    test actually receives.
+    """
+    from archimedes.db import get_session
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_store import StrategyRecord
+
+    with get_session() as session:
+        session.add(
+            StrategyRecord(
+                id=sid,
+                content_hash=("0x" + sid).ljust(66, "0"),
+                generation_method="debate",
+                source_papers="[]",
+                strategy_name="Spec Test Strategy",
+                thesis="test thesis",
+                asset_universe='["SPY"]',
+                risk_profile="moderate",
+                status="candidate",
+                is_example=False,
+                is_published=is_published,
+                owner_user_id=owner_user_id,
+                strategy_spec=strategy_spec,
+            )
+        )
+        session.add(
+            StrategyPassportRecord(
+                id=sid,
+                generation_method="debate",
+                methodology_summary="Test methodology",
+                asset_universe='["SPY"]',
+                position_sizing="equal_weight",
+                rebalance_frequency="weekly",
+                status="candidate",
+                regime_tag="regime_neutral",
+                passes_rigor_gate=False,
+                owner_user_id=owner_user_id,
+            )
+        )
+        session.commit()
+
+
+def _spec_client(wallet: str | None = None) -> AsyncClient:
+    from archimedes.main import app
+
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies=_spec_cookies(wallet) if wallet else None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_detail_route_returns_strategy_spec_to_the_row_owner(_spec_tmp_db):
+    """THE feature: `GET /api/strategies/{id}` hands the owner back the exact
+    validated DSL spec stored for their row, structurally intact.
+
+    Asserted as whole-dict equality rather than a truthiness check — a
+    partially-serialized spec (nested conditions flattened, numbers
+    stringified) would still be truthy, and a spec the page renders as code is
+    only worth rendering if it is the spec that runs.
+    """
+    import json
+
+    sid = "spec-detail-owner"
+    _seed_spec_row(sid, strategy_spec=json.dumps(_SPEC_FIXTURE), owner_user_id=_spec_user_id(_SPEC_W_OWNER))
+
+    async with _spec_client(_SPEC_W_OWNER) as client:
+        resp = await client.get(f"/api/strategies/{sid}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["strategy_spec"] == _SPEC_FIXTURE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_wallet", [_SPEC_W_STRANGER, None], ids=["signed-in-stranger", "anonymous"])
+async def test_detail_route_hides_strategy_spec_from_non_owners(_spec_tmp_db, caller_wallet):
+    """PRIVACY GUARD — the negative half, and the reason the spec takes
+    `is_strategy_reasoning_visible` rather than either of the two predicates
+    already in scope at that line.
+
+    The row is PUBLISHED, so `is_strategy_visible` grants the request in full:
+    the caller legitimately reads the card, gets a 200, and sees the
+    methodology. What they must NOT get is the executable spec. Reusing
+    `is_strategy_visible` (the check that already ran ten lines up, and the
+    obvious thing to reach for) would look correct and would hand every
+    published user strategy's runnable definition to anonymous callers —
+    exactly the #1557 hole, reopened on a new field.
+    """
+    import json
+
+    sid = "spec-detail-published"
+    _seed_spec_row(
+        sid,
+        strategy_spec=json.dumps(_SPEC_FIXTURE),
+        owner_user_id=_spec_user_id(_SPEC_W_OWNER),
+        is_published=True,
+    )
+
+    async with _spec_client(caller_wallet) as client:
+        resp = await client.get(f"/api/strategies/{sid}")
+
+    assert resp.status_code == 200, "published row must stay readable — this is a redaction, not a 404"
+    body = resp.json()
+    assert body["id"] == sid
+    assert body["methodology_summary"] == "Test methodology", "the card itself is still public"
+    assert body["strategy_spec"] is None
+    assert _SPEC_TELL not in resp.text
+
+
+def test_strategy_spec_is_assigned_only_inside_the_detail_route():
+    """ANTI-GOAL GUARD (stated verbatim in #1646: "Do NOT expose
+    ``strategy_spec`` on the **list** response"), enforced structurally.
+
+    Parses ``strategies_routes.py`` and asserts that EVERY assignment to a
+    ``.strategy_spec`` attribute in the module sits inside ``get_strategy`` —
+    the single-strategy detail route. AST, not grep, so a comment mentioning
+    the field or a read like ``row.strategy_spec`` cannot trip it and a real
+    assignment cannot hide behind formatting.
+
+    This is the guard a route-level list assertion could not honestly give.
+    The two shared response builders below are each pinned individually, but
+    "no list surface carries the spec" is a claim about the module as a whole:
+    a third builder added next quarter would satisfy both of those tests and
+    still leak. Here it fails.
+    """
+    import ast
+    import pathlib
+
+    import archimedes.api.strategies_routes as mod
+
+    tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding="utf-8"))
+
+    offenders: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Assign):
+                continue
+            for target in sub.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "strategy_spec":
+                    offenders.append((node.name, sub.lineno))
+
+    assert offenders, "no `.strategy_spec = ` assignment found at all — the wiring is gone, not merely misplaced"
+    bad = [(fn, line) for fn, line in offenders if fn != "get_strategy"]
+    assert not bad, (
+        "`strategy_spec` may only be populated by the single-strategy detail route "
+        f"`get_strategy`; found assignments in {bad} (function, line). A shared "
+        "response builder that sets it puts an unbounded JSON blob on every row of "
+        "every list payload, and on the public leaderboard."
+    )
+
+
+def test_passport_to_strategy_response_never_sets_strategy_spec(_spec_tmp_db):
+    """GUARD: the SHARED passport response builder — behind Library
+    (`_passport_responses`), the public leaderboard
+    (`_public_generated_strategy_responses`) and the owned-rows board — must
+    never populate `strategy_spec`, even from a row that has one.
+
+    Pinned at the seam rather than only at a route: if a future edit moves the
+    spec lookup INTO this helper, the detail-route test above still passes
+    while every list surface silently starts shipping the field. Mirrors
+    `test_passport_to_strategy_response_never_sets_brief_intent`, which guards
+    `brief_intent` at this exact seam for the same reason.
+    """
+    import json
+
+    from archimedes.api.strategies_routes import _passport_to_strategy_response
+    from archimedes.db import get_session
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+
+    sid = "spec-shared-builder-guard"
+    _seed_spec_row(sid, strategy_spec=json.dumps(_SPEC_FIXTURE), owner_user_id=_spec_user_id(_SPEC_W_OWNER))
+
+    with get_session() as session:
+        record = session.query(StrategyPassportRecord).filter_by(id=sid).first()
+        assert record is not None
+        resp = _passport_to_strategy_response(record, session=session)
+
+    assert resp.strategy_spec is None
+
+
+def test_to_strategy_response_never_sets_strategy_spec():
+    """GUARD, second seam: `_to_strategy_response` is the OTHER shared builder
+    — it serves the curated library list (`list_strategies`, the route the
+    anti-goal names by name) and `leaderboard_routes.py`'s curated board, as
+    well as the curated branch of the detail route.
+
+    So the spec is attached on the detail route's curated branch instead, and
+    this pins that it is not attached here. Fed a passport that HAS a spec: a
+    builder that ignored the field would pass a `strategy_spec=None` fixture
+    trivially, which is exactly the "test passes against the unfixed code"
+    trap.
+    """
+    from archimedes.api.strategies_routes import _to_strategy_response
+    from archimedes.models.strategy import StrategyPassport
+
+    s = StrategyPassport(
+        id="spec-curated-builder-guard",
+        papers=[],
+        methodology_summary="curated",
+        asset_universe=["SPY"],
+        strategy_spec=_SPEC_FIXTURE,
+    )
+    resp = _to_strategy_response(s, verdict=RigorGateVerdict.pending(), rigor_result=None)
+
+    assert resp.strategy_spec is None
+
+
+@pytest.mark.asyncio
+async def test_detail_route_serves_null_strategy_spec_for_a_corrupt_column(_spec_tmp_db):
+    """A corrupt spec column degrades to `null` — not a 500, not a plausible
+    fragment.
+
+    `strategy_spec` is a Text column holding JSON, so a truncated write or a
+    bad backfill is representable. `StrategyRecord.decoded_strategy_spec()`
+    already fails soft for `to_dict()`; this pins that the passport route
+    inherits that behaviour rather than acquiring a new 500 surface — the
+    honest-absence rule applied to a field the page renders.
+    """
+    sid = "spec-detail-corrupt"
+    _seed_spec_row(sid, strategy_spec='{"entry": [', owner_user_id=_spec_user_id(_SPEC_W_OWNER))
+
+    async with _spec_client(_SPEC_W_OWNER) as client:
+        resp = await client.get(f"/api/strategies/{sid}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["strategy_spec"] is None
