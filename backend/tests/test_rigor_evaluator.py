@@ -46,6 +46,7 @@ from archimedes.services.rigor_evaluator import (
     align_returns_store,
     compute_board_level_fdr,
     compute_library_pbo,
+    compute_library_pbo_rf_convention,
     is_oos_zero_variance_series,
     is_zero_variance_series,
     load_daily_returns_store,
@@ -966,7 +967,7 @@ class TestDegenerateSeriesCategory:
     """
 
     def test_is_zero_variance_series_matches_the_dsr_guard(self) -> None:
-        """Same predicate as _rigor_helpers.py:130 — by construction, not by luck."""
+        """Same predicate as _rigor_helpers.py:186 — by construction, not by luck."""
         assert is_zero_variance_series([0.0] * 100) is True
         assert is_zero_variance_series([0.001] * 5659) is True  # constant non-zero too
         assert is_zero_variance_series([]) is False  # nothing to judge yet
@@ -1446,12 +1447,14 @@ class TestGateDetailsBranches:
 
     def test_gate_details_returns_all_four_keys(self):
         """gate_details must contain the four gate keys + DSR convention (#547) +
-        the DSR SE model (#621 follow-up) + the IID advisory (#621)."""
+        the DSR SE model (#621 follow-up) + the IID advisory (#621) + the rf
+        convention disclosure (#1409)."""
         r = RigorGateResult("s")
         keys = set(r.gate_details.keys())
         assert keys == {
             "dsr",
             "dsr_convention",
+            "rf_convention",
             "dsr_se",
             "pbo",
             "oos_sharpe",
@@ -1550,11 +1553,13 @@ class TestRunRigorGatePaths:
 
     def test_gate_details_populated_by_run_rigor_gate(self):
         """gate_details on the returned result must have the four gate keys + DSR
-        convention (#547) + DSR SE model (#621 follow-up) + IID (#621)."""
+        convention (#547) + DSR SE model (#621 follow-up) + IID (#621) + rf
+        convention (#1409)."""
         result = run_rigor_gate("s", _RETURNS_80)
         assert set(result.gate_details.keys()) == {
             "dsr",
             "dsr_convention",
+            "rf_convention",
             "dsr_se",
             "pbo",
             "oos_sharpe",
@@ -1985,6 +1990,104 @@ class TestComputeLibraryPbo:
             lambda *a, **k: dict.fromkeys(store, float("nan")),
         )
         assert compute_library_pbo(store) is None
+
+
+class TestComputeLibraryPboRfConvention:
+    """2026-08-21 round-4 review fix: `compute_library_pbo` no longer threads
+    the joint date axis into CSCV unconditionally. An earlier draft did so,
+    making the library PBO the one live production number this PR's rf-series
+    change moved with no explicit opt-in and no before/after value in the
+    re-grade delta table. `use_tbill_series` (default `False`) now gates that
+    behind an explicit flag, matching every other not-yet-wired call site in
+    this module — `compute_library_pbo_rf_convention` mirrors the SAME flag so
+    `LibraryPbo.rf_convention` (selection_bias_routes.py) can disclose
+    whichever convention was ACTUALLY used, honestly, either way."""
+
+    @staticmethod
+    def _series(seed: int, n: int = 256) -> dict[str, list]:
+        rng = np.random.default_rng(seed)
+        dates = [f"2020-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(n)]
+        return {"dates": dates, "daily_returns": rng.normal(0.0005, 0.01, n).tolist()}
+
+    def test_default_never_passes_dates_to_compute_pbo_at_all(self, monkeypatch) -> None:
+        """The not-yet-wired default (`use_tbill_series` omitted): `dates`
+        must never reach `compute_pbo` at all — asserted at the CALL
+        BOUNDARY (not via a PBO value comparison, which is a quantized rank
+        statistic that can tie across two different rf regimes for an
+        unlucky seed/window, as happened with an earlier draft of this test).
+        Monkeypatches the exact `compute_pbo` symbol `compute_library_pbo`
+        calls and records the `dates` kwarg every invocation actually
+        received — the only way to prove the wiring, not just the output,
+        without depending on PBO's discrete quantization landing on
+        different buckets."""
+        import archimedes.services.rigor_evaluator as rigor_evaluator_module
+
+        seen_dates: list[object] = []
+        real_compute_pbo = rigor_evaluator_module.compute_pbo
+
+        def _recording_compute_pbo(*args, **kwargs):
+            seen_dates.append(kwargs.get("dates"))
+            return real_compute_pbo(*args, **kwargs)
+
+        monkeypatch.setattr(rigor_evaluator_module, "compute_pbo", _recording_compute_pbo)
+
+        store = {f"s{i}": self._series(i) for i in range(4)}  # real, in-coverage 2020 dates
+
+        compute_library_pbo(store, s_partitions=8)
+        assert seen_dates == [None]  # default: dates never reached compute_pbo
+
+        compute_library_pbo(store, s_partitions=8, use_tbill_series=True)
+        assert seen_dates[-1] is not None
+        assert len(seen_dates[-1]) == len(next(iter(store.values()))["dates"])
+
+    def test_matches_the_convention_compute_library_pbo_actually_used(self) -> None:
+        from archimedes.services import rf_series
+
+        store = {f"s{i}": self._series(i) for i in range(4)}
+        # These dates (2020 onward) are all inside the vendored series'
+        # coverage, so both the PBO value and its convention resolve to the
+        # series ONLY when explicitly opted in — assert BOTH so a future edit
+        # that decouples them again is caught here, not just at the payload
+        # layer, and assert the default (no opt-in) stays FALLBACK even
+        # though these SAME dates would resolve to the series if asked.
+        assert compute_library_pbo(store, s_partitions=8, use_tbill_series=True) is not None
+        assert compute_library_pbo_rf_convention(store, use_tbill_series=True) == rf_series.RF_CONVENTION_SERIES
+        assert compute_library_pbo_rf_convention(store) == rf_series.RF_CONVENTION_FALLBACK
+        # `use_tbill_series=True` has a real, not merely cosmetic, effect on
+        # the number too (not just the disclosed label) — proven at the
+        # `compute_pbo` level by `test_compute_pbo_dates_materially_changes_the_value`
+        # / `test_compute_pbo_dates_axis_truncates_from_head_not_tail`
+        # (`test_rf_convention_gate.py`) with a seed/window pair verified not
+        # to land on the same quantized PBO bucket; this class's own seeds
+        # (2020 calendar dates) are NOT guaranteed not to tie (PBO is a rank
+        # statistic quantized to 1/S-sized steps), so this test does not
+        # repeat that value-level claim here — only the convention wiring.
+
+    def test_fewer_than_two_series_reports_fallback(self) -> None:
+        from archimedes.services import rf_series
+
+        store = {"a": self._series(1)}
+        assert compute_library_pbo(store, use_tbill_series=True) is None
+        assert compute_library_pbo_rf_convention(store, use_tbill_series=True) == rf_series.RF_CONVENTION_FALLBACK
+
+    def test_empty_store_reports_fallback(self) -> None:
+        from archimedes.services import rf_series
+
+        assert compute_library_pbo({}, use_tbill_series=True) is None
+        assert compute_library_pbo_rf_convention({}, use_tbill_series=True) == rf_series.RF_CONVENTION_FALLBACK
+
+    def test_out_of_coverage_dates_report_fallback(self) -> None:
+        """A store whose joint dates are all outside the vendored series'
+        coverage must disclose FALLBACK when opted in, not silently claim the
+        series."""
+        from archimedes.services import rf_series
+
+        far_future = [f"2999-01-{1 + i:02d}" for i in range(20)]
+        store = {
+            "a": {"dates": far_future, "daily_returns": np.random.default_rng(1).normal(0.0005, 0.01, 20).tolist()},
+            "b": {"dates": far_future, "daily_returns": np.random.default_rng(2).normal(0.0005, 0.01, 20).tolist()},
+        }
+        assert compute_library_pbo_rf_convention(store, use_tbill_series=True) == rf_series.RF_CONVENTION_FALLBACK
 
 
 class TestRigorGateLibraryPbo:

@@ -37,6 +37,103 @@ KEY_TRACE_PREFIX = "archimedes:trace:"
 KEY_TRACE_INDEX = "archimedes:trace:index"
 KEY_SIWE_NONCE_PREFIX = "archimedes:auth:nonce:"
 
+# Reveal-reconciliation durable index (#1353, hardening the #1276 pass).
+#
+# ``list_recent_traces(N)`` bounds its scan at the newest N entries of
+# KEY_TRACE_INDEX — correct for a per-tick cost bound, but a dangling
+# commitment that ages past that window is neither retried nor terminaled,
+# just silently unseen. These three keys are maintained INSIDE ``save_trace``
+# itself — the single write choke-point every trace record (dangling or not,
+# agent_runner.py / traces_routes.py / strategies_routes.py alike) passes
+# through — so a record enters and leaves them exactly when its
+# dangling-ness actually changes, with no separate "don't forget to update
+# the index" call site to miss:
+#   KEY_TRACE_RECONCILE_PENDING  — SET of trace_hash currently dangling
+#                                   (commit+trade, no reveal, not closed).
+#                                   SMEMBERS is therefore an EXACT dangling
+#                                   scan regardless of how much trace history
+#                                   has accumulated — unlike the bounded scan.
+#   KEY_TRACE_RECONCILE_TERMINAL — SET of trace_hash that gave up for good.
+#                                   Members are NEVER removed (terminal is a
+#                                   state, not a deletion), which makes SCARD
+#                                   of it a CUMULATIVE lifetime counter, not a
+#                                   level: it only ever goes up for the life of
+#                                   the Redis keyspace, and a single historical
+#                                   give-up pins it above zero permanently.
+#                                   Read its RATE OF INCREASE, never its
+#                                   absolute value. O(1) to read and published
+#                                   on /health — see the honesty note on
+#                                   ``get_reveal_reconcile_terminal_count`` for
+#                                   what "alertable" does and does not mean
+#                                   here today.
+#   KEY_TRACE_RECONCILE_FIRST_SEEN — HASH trace_hash -> ISO timestamp of the
+#                                   FIRST save_trace call that observed the
+#                                   record dangling, written with HSETNX (set
+#                                   once, never overwritten while still
+#                                   dangling). This lives OUTSIDE the trace
+#                                   record's own JSON blob on purpose: the
+#                                   persisted ``reveal_reconcile_attempts``
+#                                   counter is only as durable as save_trace's
+#                                   own write succeeding, so a compound
+#                                   failure (a broken Redis write path on top
+#                                   of a broken reveal) can leave that counter
+#                                   permanently stuck below its cap. A
+#                                   max-age bound read from here is
+#                                   independent of that counter's fate.
+#
+# #1403 review hardened this further: ``mark_reveal_reconcile_terminal``
+# writes the TERMINAL/PENDING/FIRST_SEEN transition directly (three small,
+# independent ops), NOT only as a side effect of the full trace blob's own
+# ``SET`` inside save_trace — a broken write path on that specific (larger)
+# key could otherwise keep failing forever while the terminal verdict itself
+# is recomputed correctly every tick but never sticks, so the guarded
+# ``reveal()`` call keeps firing regardless. ``_reconcile_dangling_reveals``
+# cross-checks ``list_reveal_reconcile_terminal_hashes`` against every
+# candidate each pass so a record closed this way can never re-enter the
+# retry loop even while its JSON blob still reads "pending".
+KEY_TRACE_RECONCILE_PENDING = "archimedes:trace:reconcile:pending"
+KEY_TRACE_RECONCILE_TERMINAL = "archimedes:trace:reconcile:terminal"
+KEY_TRACE_RECONCILE_FIRST_SEEN = "archimedes:trace:reconcile:first_seen"
+
+
+# Mirrors agent_runner._RECONCILE_CLOSED_STATES exactly (duplicated, not
+# imported: agent_runner imports FROM this module already — chain/ -> services/
+# — so importing back would be circular. Both are covered by
+# ``TestReconcileClosedStatesStaySynced`` in test_redis_state.py, which fails
+# loudly the moment the two frozensets diverge.)
+_RECONCILE_CLOSED_STATES = frozenset({"terminal", "reconciled", "reconciled_from_chain"})
+
+
+def is_dangling_reveal(record: dict) -> bool:
+    """True iff a persisted trace is a dangling commitment awaiting a reveal retry.
+
+    Canonical source for this predicate (#1353) — ``agent_runner._needs_reveal_reconciliation``
+    delegates here so the scan filter and the index-maintenance in ``save_trace``
+    can never drift apart into two different ideas of "dangling".
+
+    The exact shape (#1276): ``commit_tx_hash IS NOT NULL AND reveal_tx_hash IS
+    NULL AND trade_tx_hash IS NOT NULL`` — a trade that really executed, whose
+    reasoning was really committed, whose reveal never landed.
+
+    Everything else must NOT match, and each exclusion is load-bearing:
+      - no ``trade_tx_hash``  → nothing executed (a SKIP trace, a lease-not-held
+        cycle, a dry run). There is no money-moved asymmetry to repair, and the
+        commitment is simply unused.
+      - ``reveal_tx_hash`` present → already revealed. Retrying would revert
+        "Already revealed" and burn gas for nothing.
+      - no ``commit_tx_hash`` → nothing was ever anchored, so there is no
+        commitment to reveal against.
+      - a CLOSED ``reveal_reconcile_state`` → already resolved or already given
+        up on. This is what makes "terminal" terminal: without it the bounded
+        retry counter would still be re-scanned forever.
+    """
+    if not isinstance(record, dict):
+        return False  # a corrupt store entry is not a reconciliation candidate
+    if record.get("reveal_reconcile_state") in _RECONCILE_CLOSED_STATES:
+        return False
+    return bool(record.get("commit_tx_hash")) and bool(record.get("trade_tx_hash")) and not record.get("reveal_tx_hash")
+
+
 # Runner exactly-once lease (#1043) — funds-adjacent singleton runners
 # (oracle_runner, agent_runner, kb_runner) use this to make sure only ONE live
 # copy performs on-chain writes at a time. `KEY_LEASE_PREFIX + runner_name` is
@@ -359,6 +456,21 @@ class AgentStateStore:
         """Store off-chain reasoning trace data keyed by trace_hash.
 
         Also maintains secondary index by trace UUID for lookup.
+
+        Stamps ownership on the way in (#1556). This is the single write choke
+        point for traces — ``publish_trace``, the agent runner's three persist
+        sites and the generation-trace writer all land here — so stamping HERE
+        is what makes "every persisted trace knows who owns it" true by
+        construction rather than by five call sites remembering. The read gate
+        (``services.trace_visibility``) then needs no database round-trip for
+        anything published after this change, which is why a Postgres outage
+        cannot downgrade a private trace to a public one.
+
+        A caller that already knows the owner (the generation path, whose trace
+        has no vault at all) sets ``owner_user_id``/``owner_wallet`` itself;
+        the presence of either key suppresses the lookup, including when the
+        value is ``None`` — "this writer resolved the owner and there isn't
+        one" must not be overwritten by a vault guess.
         """
         r = await self._get_redis()
         trace_hash = trace_data.get("trace_hash", "")
@@ -366,6 +478,9 @@ class AgentStateStore:
         if not trace_hash:
             logger.warning("Cannot save trace without trace_hash")
             return
+
+        if "owner_user_id" not in trace_data and "owner_wallet" not in trace_data:
+            trace_data = {**trace_data, **self._resolve_trace_owner(trace_data.get("vault_address", ""))}
 
         # Store full trace data by hash
         key = f"{KEY_TRACE_PREFIX}{trace_hash}"
@@ -388,7 +503,49 @@ class AgentStateStore:
             score = datetime.now(UTC).timestamp()
 
         await r.zadd(KEY_TRACE_INDEX, {trace_hash: score})
+
+        # Reveal-reconciliation index maintenance (#1353) — see the key block
+        # above. Runs on EVERY save_trace call (the single write choke-point
+        # for all trace records, dangling or not) so a record enters/leaves
+        # these sets exactly when its dangling-ness actually changes, with no
+        # separate call site that could forget to do it.
+        if is_dangling_reveal(trace_data):
+            await r.sadd(KEY_TRACE_RECONCILE_PENDING, trace_hash)
+            # HSETNX: set the first-seen marker ONLY if absent, so a record
+            # that stays dangling across many retries keeps its ORIGINAL
+            # timestamp — that's what makes it a valid age bound.
+            await r.hsetnx(KEY_TRACE_RECONCILE_FIRST_SEEN, trace_hash, datetime.now(UTC).isoformat())
+        else:
+            await r.srem(KEY_TRACE_RECONCILE_PENDING, trace_hash)
+            await r.hdel(KEY_TRACE_RECONCILE_FIRST_SEEN, trace_hash)
+            if trace_data.get("reveal_reconcile_state") == "terminal":
+                # Never removed — terminal is a state, not a deletion. That
+                # makes SCARD of this set a CUMULATIVE lifetime counter (read
+                # its rate of increase, not its level) — see
+                # ``get_reveal_reconcile_terminal_count``.
+                await r.sadd(KEY_TRACE_RECONCILE_TERMINAL, trace_hash)
+
         logger.debug("Saved trace %s to Redis", trace_hash[:16])
+
+    @staticmethod
+    def _resolve_trace_owner(vault_address: str) -> dict:
+        """``{"owner_user_id": …, "owner_wallet": …}`` for a vault (#1556).
+
+        Fail-soft by design — a trace must still persist when the identity
+        database is unreachable, and an unstamped row is not a leak: the read
+        gate falls back to looking the vault owner up itself, and to the
+        house-vault allowlist below that.
+        """
+        try:
+            from archimedes.services.trace_visibility import resolve_vault_owners
+
+            owner_user_id, owner_wallet = resolve_vault_owners({str(vault_address or "")}).get(
+                str(vault_address or "").strip().lower(), (None, None)
+            )
+        except Exception:
+            logger.warning("save_trace: owner stamp lookup failed — persisting unstamped", exc_info=True)
+            return {}
+        return {"owner_user_id": owner_user_id, "owner_wallet": owner_wallet}
 
     async def get_trace(self, trace_id_or_hash: str) -> dict | None:
         """Get off-chain trace data by hash or UUID."""
@@ -479,6 +636,183 @@ class AgentStateStore:
         """Total number of stored off-chain traces."""
         r = await self._get_redis()
         return await r.zcard(KEY_TRACE_INDEX)
+
+    # ─── Reveal-reconciliation durable index (#1353) ─────────────
+
+    async def list_dangling_reveal_traces(self) -> list[dict]:
+        """EXACT set of dangling commitments via the durable index, not a bounded scan.
+
+        Unlike ``list_recent_traces(N)``, this reads ``KEY_TRACE_RECONCILE_PENDING``
+        — a set ``save_trace`` maintains every time a record's dangling-ness
+        changes — so a record can never age out of it regardless of how much
+        trace history has accumulated. Callers should still union this with a
+        bounded scan as a one-cycle migration backstop for any record written
+        dangling by code that predates this index (see agent_runner.py).
+
+        An index member whose trace blob is gone (ElastiCache maxmemory
+        eviction, a manual DEL, a key-namespace change) is pruned right here
+        (#1403 review) — SREM from the pending set and HDEL its first-seen
+        field — rather than merely skipped. Left alone, an orphaned member
+        would inflate ``get_reveal_reconcile_pending_count()`` (SCARD-backed)
+        forever with no path back to zero; this is the one call site that
+        already pays for a GET per member, so self-healing here is free.
+
+        The prune is LOUD (round-2 review) and moves the member into the
+        terminal set rather than dropping it silently: the blob carried the
+        canonical bytes and storage pointer ``reveal()`` needs, so once it's
+        gone this commitment can never be revealed again regardless of what
+        the on-chain state says — that IS terminal, not a no-op. Without the
+        SADD here, a dangling record whose blob got evicted simply vanished
+        from BOTH ``/health`` gauges with zero telemetry, in a PR whose stated
+        purpose is making exactly this state countable.
+
+        KNOWN LIMIT — this read is UNBOUNDED (#1403 review, follow-up):
+        ``SMEMBERS`` returns the whole pending set and this then issues one
+        ``GET`` per member, so both the round-trip count and the peak memory
+        scale linearly with however many commitments are dangling at once,
+        with no cap. That is acceptable at today's volumes (the pending set is
+        empty on a healthy system and the per-tick retry budget is
+        ``REVEAL_RECONCILE_MAX_PER_TICK``, currently 5 — so a large pending
+        set costs reads, not writes), but a pathological run that dangles
+        thousands of commitments would make each tick's index read
+        proportionally expensive. Deliberately not capped in this PR: a cap
+        here re-introduces exactly the "aged past the window, never retried"
+        blind spot the durable index exists to remove, so the right fix is
+        ``SSCAN`` with a cursor plus an ``MGET`` batch, tracked as follow-up
+        rather than bolted on late.
+        """
+        r = await self._get_redis()
+        hashes = await r.smembers(KEY_TRACE_RECONCILE_PENDING)
+        traces: list[dict] = []
+        for h in hashes:
+            raw = await r.get(f"{KEY_TRACE_PREFIX}{h}")
+            if not raw:
+                logger.warning(
+                    "Pruned orphaned reconcile-index member %s — trace blob is gone; this dangling "
+                    "commitment can no longer be revealed and is being marked terminal",
+                    h[:16],
+                )
+                await r.srem(KEY_TRACE_RECONCILE_PENDING, h)
+                await r.hdel(KEY_TRACE_RECONCILE_FIRST_SEEN, h)
+                await r.sadd(KEY_TRACE_RECONCILE_TERMINAL, h)
+                continue
+            data = safe_json_loads(raw, context="trace:reconcile_pending")
+            if data is not None:
+                traces.append(data)
+        return traces
+
+    async def get_reveal_reconcile_pending_count(self) -> int:
+        """O(1) count of currently-dangling commitments (SCARD, not a scan)."""
+        r = await self._get_redis()
+        return await r.scard(KEY_TRACE_RECONCILE_PENDING)
+
+    async def get_reveal_reconcile_terminal_count(self) -> int:
+        """O(1) CUMULATIVE count of permanently-given-up reveals.
+
+        Members are never removed from ``KEY_TRACE_RECONCILE_TERMINAL``, so
+        this is a monotonically non-decreasing lifetime total, NOT a level that
+        falls back once the underlying problem is fixed: one historical give-up
+        pins it at 1 forever. Interpret the RATE OF INCREASE (the delta between
+        two samples) — an absolute-value threshold on this number would fire
+        once and then stay fired, and "steady state is near zero" is only true
+        of a keyspace that has never had a terminal reveal at all.
+
+        Honesty note on "alertable" (#1403 review): the SURFACE exists — this
+        count is O(1) to read and is published on ``GET /health`` — but NO
+        alerting is wired to it. ``infra/cloudwatch.tf`` defines no metric
+        filter and no alarm over it, and unlike ``HEALTH_CHAIN_DISCONNECTED`` /
+        ``HEALTH_ORACLE_STALE`` (this repo's two working log-literal →
+        ``aws_cloudwatch_log_metric_filter`` → alarm pairs) nothing emits a
+        greppable literal a filter could key on. Wiring a pager to this is
+        follow-up work, not something this code does today.
+        """
+        r = await self._get_redis()
+        return await r.scard(KEY_TRACE_RECONCILE_TERMINAL)
+
+    async def mark_reveal_reconcile_terminal(self, trace_hash: str) -> None:
+        """Durably close a dangling commitment, independent of the trace blob write.
+
+        ``save_trace`` normally maintains the three reconcile-index structures
+        as a side effect of persisting the FULL trace JSON blob (#1353) — which
+        works, but couples the terminal transition's durability to that SAME
+        write. A broken write path specifically on the blob (oversized value,
+        a serialization bug in one record's fields, ...) can keep failing that
+        `SET` while smaller, unrelated writes still succeed, leaving
+        ``reveal_reconcile_state`` stuck at "pending" in the persisted JSON
+        forever — and ``agent_runner._reconcile_terminal`` would recompute
+        "should be terminal" every tick without it ever sticking, so the
+        actual on-chain ``reveal()`` call keeps being retried unboundedly
+        (#1403 review of the max-age circuit breaker).
+
+        Called directly by ``agent_runner._reconcile_terminal`` BEFORE (and
+        independently of) the blob save, this closes the SAME three
+        structures with three small, independent ops — SADD terminal, SREM
+        pending, HDEL first_seen — so the durable index reflects "terminal"
+        even when the blob write that same tick attempts right after this
+        keeps failing. ``_reconcile_dangling_reveals`` cross-checks this set
+        against every scan/index candidate each pass specifically so a stale
+        blob can never re-enter the retry loop once this has run.
+        """
+        if not trace_hash:
+            return
+        r = await self._get_redis()
+        await r.sadd(KEY_TRACE_RECONCILE_TERMINAL, trace_hash)
+        await r.srem(KEY_TRACE_RECONCILE_PENDING, trace_hash)
+        await r.hdel(KEY_TRACE_RECONCILE_FIRST_SEEN, trace_hash)
+
+    async def list_reveal_reconcile_terminal_hashes(self) -> set[str]:
+        """All trace_hashes durably marked terminal (SMEMBERS).
+
+        Used to cross-check reconciliation candidates whose own JSON blob may
+        be stale — see ``mark_reveal_reconcile_terminal``. Distinct from
+        ``get_reveal_reconcile_terminal_count`` (SCARD, a count only): this
+        needs the actual members to filter a candidate list by.
+        """
+        r = await self._get_redis()
+        return set(await r.smembers(KEY_TRACE_RECONCILE_TERMINAL))
+
+    async def seed_reveal_reconcile_first_seen(self, trace_hash: str) -> None:
+        """Independently seed the first-seen marker (HSETNX only — #1403 review).
+
+        Normally ``save_trace`` writes this marker as a side effect of
+        persisting the full trace JSON blob. That coupling is exactly the gap
+        this closes: a record that was ALREADY dangling before this index
+        existed (a migration-era record) has no marker yet, and if the thing
+        that's broken is that same blob write path, ``save_trace`` can keep
+        raising before it ever reaches the HSETNX line — so the marker is
+        never seeded and the max-age circuit breaker (which reads it) can
+        never fire for exactly the compound failure it exists to close.
+
+        Called from ``agent_runner._reconcile_failure`` the first time a
+        reconciliation pass sees a dangling record with no first-seen marker,
+        as a small write on its own key — independent of whether the blob
+        save that tick succeeds or fails — so the record acquires a clock
+        (starting from now, not its true unknown origin, same conservative
+        choice ``save_trace`` already makes) on this pass rather than staying
+        permanently unbounded.
+        """
+        if not trace_hash:
+            return
+        r = await self._get_redis()
+        await r.hsetnx(KEY_TRACE_RECONCILE_FIRST_SEEN, trace_hash, datetime.now(UTC).isoformat())
+
+    async def get_reveal_reconcile_first_seen(self, trace_hash: str) -> datetime | None:
+        """When this trace_hash FIRST entered the dangling index, or None.
+
+        Written once (HSETNX) by ``save_trace`` and left untouched across
+        every subsequent retry of the same record — the independent clock the
+        reconciliation pass's max-age circuit breaker reads (#1353).
+        """
+        if not trace_hash:
+            return None
+        r = await self._get_redis()
+        raw = await r.hget(KEY_TRACE_RECONCILE_FIRST_SEEN, trace_hash)
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            return None
 
     # ─── SIWE Nonces ────────────────────────────────────────────────
 
