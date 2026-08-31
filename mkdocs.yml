@@ -136,7 +136,6 @@ nav:
       - api/strategies-and-rigor.md
       - api/vaults-and-chain.md
       - api/wallets.md
-      - api/chat.md
       - api/leaderboard-and-metrics.md
       - api/paper-trading.md
       - api/admin-private.md

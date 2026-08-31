@@ -1230,11 +1230,12 @@ def default_backend(model: str | None = None) -> LLMBackend:
     return FusionCannedBackend()
 
 
-def default_fusion(model: str | None = None) -> StrategyFusion:
-    """Factory used by the fusion job path (`_run_fusion_job` in `strategies_routes.py`).
-
-    ``model`` threads the user's selected model through to the lazily-resolved
-    backend (A3 seam, T1.1) so ``served_model`` provenance is truthful; ``None``
-    preserves the env-default behavior.
-    """
-    return StrategyFusion(model=model)
+# NOTE: ``default_fusion(model=None)`` used to live here as the factory for the
+# fusion job path (``_run_fusion_job`` in ``api/strategies_routes.py``). That
+# route was deleted on 2026-08-31 and the factory went with it — it had no other
+# caller in the tree or on any open branch. The debate society deliberately does
+# NOT use a shared factory: ``debate_engine._propose_pool`` constructs
+# ``StrategyFusion(model=..., corpus=evidence)`` per proposal so the user's model
+# pick and the regime-steered evidence set are both explicit (the A3 seam,
+# docs/specs/multi-agent-debate-spec.md §8). Re-adding a module-level factory
+# would reintroduce the model-blind singleton that seam exists to prevent.

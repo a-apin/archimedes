@@ -15,10 +15,11 @@ Four things pinned here:
      without raising generate_schemas.py's ceiling (or vice versa) and this
      fails.
   2. The same guard for the DEFAULT (#1636). Before it, `/api/generate/start`
-     defaulted to 5 and `/api/strategies/generate` to 4, so the two live
-     generation routes retrieved different amounts of evidence for the same
-     brief. All three copies — the schema, FusionBrief, and the route
-     signature — must equal strategy_fusion.DEFAULT_MAX_PAPERS.
+     defaulted to 5 and the (since-deleted, #1595) `/api/strategies/generate`
+     bypass to 4, so two live generation routes retrieved different amounts of
+     evidence for the same brief. The bypass died in #1595; the surviving
+     copies — the schema and FusionBrief — must equal
+     strategy_fusion.DEFAULT_MAX_PAPERS.
   3. An over-cap max_papers is REFUSED at the schema level, not silently
      downgraded (previously ge=1, le=20 accepted anything up to 20 and the
      pipeline clamped it to 6 with no signal to the caller). The over-cap
@@ -31,7 +32,6 @@ Four things pinned here:
 
 from __future__ import annotations
 
-import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -57,13 +57,13 @@ def test_max_papers_bounds_match_strategy_fusion_enforced_range() -> None:
 def test_max_papers_default_is_the_one_shared_default_everywhere() -> None:
     """#1636: the two generation routes disagreed (5 vs 4), so the same brief
     retrieved a different amount of evidence depending on which endpoint the
-    caller hit. One default, pinned across all three copies."""
+    caller hit. The bypass route was deleted by #1595 mid-flight of this PR,
+    so the surviving copies are the schema and FusionBrief — one default,
+    pinned across both."""
     from archimedes.agents.strategy_fusion import FusionBrief
-    from archimedes.api.strategies_routes import generate_strategy
 
     assert GenerateBrief.model_fields["max_papers"].default == DEFAULT_MAX_PAPERS
     assert FusionBrief().max_papers == DEFAULT_MAX_PAPERS
-    assert inspect.signature(generate_strategy).parameters["max_papers"].default == DEFAULT_MAX_PAPERS
     # And the default is retrieval width ABOVE the fuse target, so the model
     # is never asked to cite every paper it was shown.
     assert MIN_PAPERS < FUSE_TARGET_MIN < DEFAULT_MAX_PAPERS <= FUSION_MAX_PAPERS
