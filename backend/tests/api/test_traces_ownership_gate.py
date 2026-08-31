@@ -316,8 +316,16 @@ async def test_stamped_record_stays_private_when_the_identity_db_is_down():
     with (
         _store([_user_trace(stamped=True)]),
         _as(None),
+        # Both resolvers: `resolve_vault_owners` is the write-path entry point,
+        # `_resolve_vault_owners_uncached` the one the memoized read path calls
+        # (#1573). Patching only the former would leave the read path talking to
+        # a live database and quietly stop simulating the outage.
         patch(
             "archimedes.services.trace_visibility.resolve_vault_owners",
+            side_effect=RuntimeError("db down"),
+        ),
+        patch(
+            "archimedes.services.trace_visibility._resolve_vault_owners_uncached",
             side_effect=RuntimeError("db down"),
         ),
     ):

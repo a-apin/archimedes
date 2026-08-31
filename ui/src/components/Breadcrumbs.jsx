@@ -16,15 +16,22 @@ import { roadmapSurfaceHidden } from '../featureFlags.js'
 //
 // Deliberately excluded:
 //   - landing — it *is* Home; breadcrumb would be circular.
+//   - explore — it *is* the Home crumb's own target below. Discover has no
+//     landing page distinct from Home/Explore, so unlike Strategy/Position/
+//     Market it gets no group entry either (#1370: a "Discover" mid-crumb
+//     pointing at the same page as "Home" repeated a stop, and on /app/explore
+//     itself "Home" and the current-page crumb both named 'explore' — the
+//     same page listed twice in one trail either way).
+//   - architecture — moved out of the shell nav (#1370, see Layout.jsx); it
+//     renders under PublicLayout, which never mounts Breadcrumbs, so a
+//     CRUMB_MAP entry for it was unreachable dead config.
 //   - vault-detail, strategy, market-strategy — dynamic routes with an id/address
 //     param, not entries in PAGE_TO_PATH; reached via deep-link only.
-// Primary path (generate, leaderboard, library, corpus, architecture) all have
-// entries below; if one is intentionally omitted a comment must explain why.
+// Primary path (generate, leaderboard, library, corpus) all have entries
+// below; if one is intentionally omitted a comment must explain why.
 export const CRUMB_MAP = {
   // Discover — open to anonymous visitors
-  explore:      { group: null, groupPage: null },
-  corpus:       { group: 'Discover', groupPage: 'explore' },
-  architecture: { group: 'Discover', groupPage: 'explore' },
+  corpus:       { group: null, groupPage: null },
   // Strategy — wallet-gated, owns the primary generation path
   generate:     { group: null, groupPage: null },
   library:      { group: 'Strategy', groupPage: 'generate' },
@@ -39,8 +46,21 @@ export const CRUMB_MAP = {
   marketplace:  { group: null, groupPage: null },
   publish:      { group: 'Market', groupPage: 'marketplace' },
   subscriptions:{ group: 'Market', groupPage: 'marketplace' },
-  // Ops
+  // Ops — only two members (Insights, Account). An "Ops" mid-crumb pointing
+  // at Insights would be a group crumb wearing a section name while actually
+  // linking to a sibling page, not a real section landing page — and with
+  // only two members there's no third page to justify a group crumb at all.
+  // Flat like the other two-page-or-fewer anchors above.
+  //
+  // NOTE: Strategy/generate, Position/portfolio and Market/marketplace above
+  // share this identical shape (a section-named mid-crumb that links to a
+  // sibling page) — the pattern #1370 item 1 names outright, not just the
+  // corpus/Discover repeat-page bug this PR's Discover fix addressed. Left
+  // alone here: no #1370 acceptance check requires it (those pages are
+  // genuinely distinct, so test_no_page_appears_twice_in_one_trail doesn't
+  // fire), so it's a deliberate deferral, not an oversight — tracked in #1405.
   insights:     { group: null, groupPage: null },
+  account:      { group: null, groupPage: null },
 }
 
 export default function Breadcrumbs({ page, setPage }) {

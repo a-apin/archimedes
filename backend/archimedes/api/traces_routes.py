@@ -144,19 +144,27 @@ def _offchain_trace_response(t: dict, fallback_id: str = "") -> TraceResponse:
     )
 
 
-def _assert_can_read(trace: dict, request: Request) -> None:
+async def _assert_can_read(trace: dict, request: Request) -> None:
     """404 unless the caller may read this trace (#1556).
 
     404 rather than 403 deliberately: a 403 on someone else's trace id
     confirms the id exists, which is half of the enumeration the gate is here
     to prevent.
+
+    ``can_read_trace`` may open a synchronous SQLAlchemy session (only for an
+    unstamped legacy row — a stamped one is answered from the record), so it
+    runs in a worker thread: a blocking DB call made directly here stalls the
+    whole event loop, every other in-flight request included (#1573).
     """
+    import asyncio
+
     from fastapi import HTTPException
 
     from archimedes.services.trace_visibility import can_read_trace
 
     caller_user_id, caller_wallet = _caller_identity(request)
-    if not can_read_trace(trace, caller_wallet, caller_user_id=caller_user_id):
+    allowed = await asyncio.to_thread(can_read_trace, trace, caller_wallet, caller_user_id=caller_user_id)
+    if not allowed:
         raise HTTPException(status_code=404, detail="Trace not found")
 
 
@@ -205,6 +213,8 @@ async def list_traces(
     derivation. The #1556 per-row filter still runs afterwards: passing the
     strategy gate grants no read on a trace you do not own.
     """
+    import asyncio
+
     from archimedes.services.redis_state import AgentStateStore
     from archimedes.services.trace_visibility import (
         MAX_TRACE_SCAN,
@@ -238,12 +248,18 @@ async def list_traces(
         if off_chain_traces:
             # One batched ownership lookup for the whole page, and only for rows
             # that lack an on-record stamp — a stamped row needs no DB at all.
-            owners = safe_resolve_vault_owners(
+            # `safe_resolve_vault_owners` memoizes per vault, so the handful of
+            # distinct vaults behind a 2000-row candidate set costs at most one
+            # lookup each per TTL rather than one per request; `to_thread` keeps
+            # the synchronous session it may still open off the event loop,
+            # where it was blocking every other in-flight request (#1573).
+            owners = await asyncio.to_thread(
+                safe_resolve_vault_owners,
                 {
                     str(t.get("vault_address") or "")
                     for t in off_chain_traces
                     if not (t.get("owner_user_id") or t.get("owner_wallet"))
-                }
+                },
             )
             visible = [
                 t
@@ -300,7 +316,7 @@ async def list_traces(
             # still names the vault and the anchor — gate it on exactly the
             # same predicate so a caller cannot enumerate another user's
             # vault's trace ids by taking Redis out of the picture.
-            owners = safe_resolve_vault_owners({str(d["vault"]) for _, d in on_chain_details})
+            owners = await asyncio.to_thread(safe_resolve_vault_owners, {str(d["vault"]) for _, d in on_chain_details})
             for trace_id, detail in on_chain_details:
                 view = trace_owner_view({"vault_address": detail["vault"]}, owners)
                 if not is_trace_visible(view, caller_wallet, caller_user_id=caller_user_id):
@@ -351,7 +367,7 @@ async def get_trace(trace_id: str, request: Request):
         if off_chain:
             # Gate BEFORE projecting: the projection below is the widened body,
             # and a 404 must be indistinguishable from "no such trace".
-            _assert_can_read(off_chain, request)
+            await _assert_can_read(off_chain, request)
             row = _offchain_trace_response(off_chain, fallback_id=trace_id)
             return TraceDetailResponse(
                 **row.model_dump(),
@@ -372,7 +388,7 @@ async def get_trace(trace_id: str, request: Request):
         if detail is None:
             raise HTTPException(status_code=404, detail="Trace not found")
 
-        _assert_can_read({"vault_address": detail["vault"]}, request)
+        await _assert_can_read({"vault_address": detail["vault"]}, request)
         return TraceDetailResponse(**_anchored_only_trace(trace_id, detail).model_dump())
     finally:
         await state.close()
@@ -526,7 +542,7 @@ async def verify_trace(trace_id: str, request: Request):
             if not detail:
                 raise HTTPException(status_code=404, detail="Trace not found")
 
-            _assert_can_read({"vault_address": detail["vault"]}, request)
+            await _assert_can_read({"vault_address": detail["vault"]}, request)
             return TraceVerifyResponse(
                 trace_id=int_id,
                 trace_hash=detail["trace_hash"],
@@ -538,7 +554,7 @@ async def verify_trace(trace_id: str, request: Request):
                 details="Hash is anchored on-chain — no off-chain trace body was stored, so no hashes were compared",
             )
 
-        _assert_can_read(off_chain, request)
+        await _assert_can_read(off_chain, request)
 
         trace_hash = off_chain.get("trace_hash", "")
         is_verified = False
@@ -623,7 +639,7 @@ async def get_trace_canonical(trace_id: str, request: Request):
         if not off_chain:
             raise HTTPException(status_code=404, detail="Trace not found")
 
-        _assert_can_read(off_chain, request)
+        await _assert_can_read(off_chain, request)
 
         trace = ReasoningTrace(
             id=off_chain["id"],

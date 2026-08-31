@@ -124,7 +124,7 @@ export default function RigorStrictnessControl({ level, onChange }) {
           className="grid grid-cols-3 gap-3 mt-4 pt-3"
           style={{ borderTop: '1px solid var(--glass-border)' }}
         >
-          <Threshold label="DSR p-value" value={`≥ ${current.dsr_p_min.toFixed(2)}`} />
+          <Threshold label="DSR confidence" value={`≥ ${current.dsr_p_min.toFixed(2)}`} />
           <Threshold label="PBO" value={`< ${current.pbo_max.toFixed(2)}`} />
           <Threshold label="OOS / IS Sharpe" value={`≥ ${current.oos_is_ratio_min.toFixed(2)}`} />
         </div>
@@ -144,7 +144,7 @@ export default function RigorStrictnessControl({ level, onChange }) {
 
       <p className="caption mt-3 text-[var(--text-4)] leading-relaxed">
         <strong>Always enforced, at every level:</strong> the look-ahead audit must pass, the
-        out-of-sample Sharpe must be positive, and the deflated Sharpe p-value must be ≥{' '}
+        out-of-sample Sharpe must be positive, and the deflated Sharpe confidence must be ≥{' '}
         {(floors.dsr_p_floor ?? 0.5).toFixed(2)}. You can trade statistical confidence for breadth —
         you can never fully bypass the gate.
       </p>
