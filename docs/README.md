@@ -162,7 +162,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off). |
+| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off); account management — email/password change, session revocation, deletion (#1367). |
 | [`plans/2026-07-28-account-auth-app-boundary.md`](plans/2026-07-28-account-auth-app-boundary.md) | plan | Daniel Reis | 2026-07-28 | The #1194 account-auth boundary plan. |
 | [`plans/2026-08-15-core-app-visual-refresh.md`](plans/2026-08-15-core-app-visual-refresh.md) | plan | Daniel Reis | 2026-08-15 | Core-app visual refresh plan. |
 | [`plans/2026-08-22-calm-precision-rebrand.md`](plans/2026-08-22-calm-precision-rebrand.md) | plan | Daniel Reis | 2026-08-22 | Calm-precision rebrand plan (PR #1469). |
