@@ -25,19 +25,29 @@ passed rigor (#850 privacy principle — publish is the consent signal). A
 generated strategy earns a spot the same way a curated one does: real,
 rigor-gated backtest numbers score it via ``compute_conviction`` — a strategy
 missing a metric scores 0 on that axis and sinks honestly, never fabricated.
+
+TWO SURFACES (Lane 3.4). Everything above is the RESEARCH board: conviction is
+100% backtest-era, so its rows now carry ``performance_basis="backtest_research"``
+plus the backtest window they were measured over. The forward story lives at
+``GET /api/leaderboard/live-paper`` — rows only for deployments that are
+actually running and have produced ledger observations, ranked on realised
+return. Nothing joins the two: there is no blended score anywhere in this
+module, and the anti-fabrication rule for the forward board (no row without
+ledger data) is enforced in exactly one place, ``build_live_paper_leaderboard``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Query, Request
 
 from archimedes.api._route_helpers import strategy_provider
 from archimedes.api.account_auth import get_current_user
-from archimedes.api.leaderboard_schemas import LeaderboardResponse
+from archimedes.api.leaderboard_schemas import LeaderboardResponse, LivePaperLeaderboardResponse
 from archimedes.api.wallet_routes import get_linked_wallet_address
-from archimedes.services.leaderboard import build_leaderboard
+from archimedes.services.leaderboard import LivePaperLedger, build_leaderboard, build_live_paper_leaderboard
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +225,134 @@ async def get_leaderboard(
         min_rigor=min_rigor,
         limit=limit,
         scope=effective_scope,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
+    )
+
+
+# ── Live paper board — /api/leaderboard/live-paper (Lane 3.4) ────────────────
+#
+# A SECOND endpoint rather than a ?mode= on the one above, deliberately: the
+# two boards share neither a row shape (no conviction score, no rigor gate, no
+# regime here; no inception date, no days-live there) nor a sort domain, so a
+# mode param would have to make most of LeaderboardEntry optional and push a
+# discriminated union into every existing consumer. The existing route,
+# response model and the UI table that renders it are untouched by this file's
+# addition — that is what "less invasive" means here.
+
+
+def _display_names(session, strategy_ids: set[str]) -> dict[str, str]:
+    """Best-effort human labels for the deployed strategies. Missing rows just
+    fall through to the deployed spec's own name at the call site — a label is
+    cosmetic, and a lookup failure must never drop a real ledger row."""
+    if not strategy_ids:
+        return {}
+    try:
+        from archimedes.models.strategy_store import StrategyRecord
+
+        rows = session.query(StrategyRecord.id, StrategyRecord.strategy_name).filter(
+            StrategyRecord.id.in_(strategy_ids)
+        )
+        return {rid: name for rid, name in rows if name}
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("live-paper board: strategy name lookup unavailable: %s", exc)
+        return {}
+
+
+def _spec_name(spec_json: str | None) -> str:
+    try:
+        return str(json.loads(spec_json or "{}").get("name") or "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _live_paper_ledgers(user_id: str) -> tuple[list[LivePaperLedger], bool, str]:
+    """Load the caller's ACTIVE paper deployments and their forward ledgers.
+
+    Ownership is ``owner_user_id`` only — the same predicate paper_routes uses.
+    A paper track record is private (#850): this board never shows another
+    user's deployment, published strategy or not, so there is no 'curated' or
+    global cohort here to fall back to.
+
+    Deployments with an EMPTY ledger are returned as-is (empty ``returns``) and
+    dropped by ``build_live_paper_leaderboard``, which counts them — filtering
+    them out here instead would hide the count and put the anti-fabrication
+    rule in two places.
+    """
+    from archimedes.db import get_session, init_db
+    from archimedes.models.paper_store import STATUS_ACTIVE, PaperDailyReturn, PaperDeployment
+
+    try:
+        init_db()
+        with get_session() as session:
+            deps = (
+                session.query(PaperDeployment)
+                .filter(
+                    PaperDeployment.owner_user_id == user_id,
+                    PaperDeployment.status == STATUS_ACTIVE,
+                )
+                .all()
+            )
+            if not deps:
+                return [], False, ""
+
+            dep_ids = [d.id for d in deps]
+            observations: dict[str, list[tuple]] = {}
+            last_appended: dict[str, object] = {}
+            for row in session.query(PaperDailyReturn).filter(PaperDailyReturn.deployment_id.in_(dep_ids)):
+                observations.setdefault(row.deployment_id, []).append((row.date, row.daily_return))
+                prev = last_appended.get(row.deployment_id)
+                if row.appended_at is not None and (prev is None or row.appended_at > prev):
+                    last_appended[row.deployment_id] = row.appended_at
+
+            names = _display_names(session, {d.strategy_id for d in deps})
+            return (
+                [
+                    LivePaperLedger(
+                        deployment_id=d.id,
+                        strategy_id=d.strategy_id,
+                        name=names.get(d.strategy_id) or _spec_name(d.spec_json) or d.strategy_id,
+                        inception=d.deployed_at,
+                        returns=observations.get(d.id, []),
+                        last_appended_at=last_appended.get(d.id),
+                        drift_detected=d.drift_detected_at is not None,
+                    )
+                    for d in deps
+                ],
+                False,
+                "",
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        # Same convention as the conviction board: the detail is logged
+        # server-side only, the wire gets a fixed category string.
+        logger.warning("live-paper board: paper deployments unavailable: %s", exc)
+        return [], True, "paper deployments unavailable"
+
+
+@leaderboard_router.get("/live-paper", response_model=LivePaperLeaderboardResponse)
+async def get_live_paper_leaderboard(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+) -> LivePaperLeaderboardResponse:
+    """Forward board: the caller's own active paper deployments, ranked by the
+    return they have ACTUALLY realised since inception.
+
+    Public and never 401 — same contract as the conviction board. An anonymous
+    caller has no paper deployments to show, so they get an empty board tagged
+    ``scope='anonymous'``; that is an honest empty state, distinct from
+    ``degraded`` (something broke) and from ``scope='own'`` with zero entries
+    (signed in, nothing deployed yet). The UI needs all three to say three
+    different true things.
+    """
+    user = get_current_user(request)
+    if user is None:
+        return build_live_paper_leaderboard([], scope="anonymous", limit=limit)
+
+    ledgers, degraded, degraded_reason = _live_paper_ledgers(user.id)
+    return build_live_paper_leaderboard(
+        ledgers,
+        scope="own",
+        limit=limit,
         degraded=degraded,
         degraded_reason=degraded_reason,
     )
