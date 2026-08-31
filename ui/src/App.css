@@ -51,15 +51,22 @@
      #8a8a93 on #16161a = 5.27:1 (was #71717a = 3.73:1).
 
      --text-4 (#3f3f46) is a border/decoration token here and must not be used
-     as a text colour on this palette — 1.73:1 on --surface-2. KNOWN OPEN
-     ISSUE, not a claim that the tree is clean: AssetModal.jsx and
-     AssetGroupModal.jsx portal to document.body, i.e. OUTSIDE .app-site, so
-     their "Current price" / "24h change" / "24h high" / "24h low" captions
-     resolve this base token and render at 1.73–1.83:1. Same portal mechanism
-     that forced the --chart-label fix below; the --text-4 half is unfixed
-     because raising the base token would also brighten every hairline that
-     legitimately uses it as decoration. It needs the call sites moved to
-     --text-3, not a token bump. */
+     as a text colour on this palette — 1.73:1 on --surface-2, 1.83:1 on
+     --surface-1. It stays dark on purpose: raising it would brighten every
+     hairline that legitimately uses it as decoration (the scrollbar-thumb
+     hover below, DepositFlow's spinner track, AuthPage's password-strength
+     meter segments), so the fix is to move call sites to --text-3, never to
+     bump the token — #1318.
+
+     What resolves this palette is everything rendered outside both shells:
+     the auth screen, the 404, the error-boundary fallback, and anything
+     portalled to document.body (createPortal escapes BOTH .app-site and
+     .public-site — the same mechanism that forced the --chart-label fix
+     below). Every portalled dialog that was painting text with --text-4 now
+     resolves --text-3 instead (5.59:1 on --surface-1, 5.27:1 on --surface-2);
+     ui/test/a11y.test.js computes those ratios and re-checks every portalled
+     subtree it can find by walking src/ for createPortal, so a dialog added
+     later is covered without anyone remembering to register it. */
 	--text-1: #fafafa;
 	--text-2: #a1a1aa;
 	--text-3: #8a8a93;

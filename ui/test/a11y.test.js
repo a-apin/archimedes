@@ -67,6 +67,24 @@ function nestedCssBlock(blockText, selector) {
 	return m[1];
 }
 
+// createPortal(node, document.body) mounts OUTSIDE both shells, so the
+// portalled subtree resolves the BASE palette even when a .app-site page
+// opened it. For a component that renders inside a shell AND opens a portal
+// (WalletConnect's topbar menu, Strategies' rigor modal) only that subtree is
+// on the base palette, so a whole-file check would be wrong in both
+// directions. Slice from each `createPortal(` to the `document.body` argument
+// that closes the call.
+function portalRegions(source) {
+	const regions = [];
+	const re = /createPortal\(/g;
+	let m;
+	while ((m = re.exec(source))) {
+		const end = source.indexOf("document.body", m.index);
+		if (end !== -1) regions.push(source.slice(m.index, end));
+	}
+	return regions;
+}
+
 function relativeLuminance(hex) {
 	const h = hex.replace("#", "");
 	const full = h.length === 3 ? [...h].map((c) => c + c).join("") : h;
@@ -145,6 +163,141 @@ test("base and public palettes keep muted text above the 4.5:1 floor", () => {
 	// --text-4 is a border/decoration token on the base palette (it is #3f3f46
 	// there = 1.73:1) and must never be used as text on the auth screen.
 	assert.doesNotMatch(authPage, /text-\[var\(--text-4\)\]/);
+});
+
+// RigorExplainer is the one file that is entirely portalled without calling
+// createPortal itself: it has no call site outside Strategies' portalled
+// rigor modal, so everything it draws resolves the base palette. It has to be
+// named. Every OTHER portalled subtree is DISCOVERED below rather than listed,
+// so a dialog added later is covered without anyone remembering to add it —
+// a hand-maintained list would have silently excluded CustomSelect and
+// OnboardingTour, which both portal to document.body and were outside the
+// first version of this guard.
+const ALWAYS_PORTALLED = ["components/RigorExplainer.jsx"];
+
+// Every .jsx under src/ that opens a portal, as repo-relative paths.
+function filesCallingCreatePortal() {
+	const files = [];
+	const walk = (dir) => {
+		for (const entry of readdirSync(dir)) {
+			const full = join(dir, entry);
+			if (statSync(full).isDirectory()) walk(full);
+			else if (/\.jsx$/.test(entry)) files.push(full);
+		}
+	};
+	const root = new URL("../src", import.meta.url).pathname;
+	walk(root);
+	return files
+		.filter((f) => readFileSync(f, "utf8").includes("createPortal("))
+		.map((f) => f.slice(root.length + 1));
+}
+
+// Inside a portalled subtree --text-4 is a 1.83:1 hairline, so the only
+// legitimate use of it there is DECORATION. This is deliberately an
+// allowlist of the decoration spellings rather than a denylist of the text
+// spellings: anchoring on `color:` would silently miss a colour reached
+// through a ternary or a fallback — `x ? 'var(--negative)' : 'var(--text-4)'`,
+// `TYPE_COLORS[t] || 'var(--text-4)'`, `const muted = 'var(--text-4)'` — and
+// this tree contains five such text colours today (CorpusKG, Strategies x2,
+// RigorStrictnessControl, RejectedCandidates). All five render inside
+// .app-site rather than in a portal, so none is a defect here, but a
+// denylist would not have caught one if it were.
+const TEXT_4_AS_DECORATION = [
+	// DepositFlow's CONFIRMING spinner track: a 2px ring, not text.
+	/border:\s*['"]2px solid var\(--text-4\)['"]/,
+];
+
+// A --text-4 mention that is not one of the allowed decoration spellings.
+// Comment lines are skipped so a note explaining why the token is avoided
+// does not read as a use of it.
+function text4Offenders(label, source) {
+	const found = [];
+	for (const line of source.split("\n")) {
+		if (!line.includes("--text-4")) continue;
+		const trimmed = line.trim();
+		if (/^(\/\/|\/\*|\*)/.test(trimmed)) continue;
+		// Strip the allowed decoration spellings and re-check, rather than
+		// skipping the whole line when one matches. DepositFlow's spinner is a
+		// single long inline-style line, so a line-level skip would let a text
+		// colour ride along on it — verified: that input passed a skip-based
+		// version of this guard and fails this one.
+		let rest = line;
+		for (const pattern of TEXT_4_AS_DECORATION) {
+			rest = rest.split(pattern).join("");
+		}
+		if (!rest.includes("--text-4")) continue;
+		found.push(`${label} — ${trimmed.slice(0, 100)}`);
+	}
+	return found;
+}
+
+test("portalled dialogs never paint text with the base decoration token", () => {
+	// #1318 residual. A dialog opened from .app-site still resolves the BASE
+	// palette once it is portalled to document.body, and there --text-4 is
+	// #3f3f46: 1.83:1 on --surface-1, the surface every one of these dialogs
+	// paints its card with. Eight of them were using it for body text — the
+	// asset / asset-group price captions, DepositFlow's step labels,
+	// CreateVaultModal's section headers, WelcomeProfileModal's "(optional)"
+	// hints, WalletConnect's passkey copy, the rigor modal's close control and
+	// the whole of RigorExplainer.
+	//
+	// Both sides are computed rather than pinned, for the reason the contrast
+	// helpers exist: the replacement token's ratio is asserted, not assumed,
+	// and the ban explains itself with --text-4's live ratio instead of a
+	// snapshot that can go stale.
+	const base = cssBlock(css, ":root");
+	assert.match(base, /--surface-1:/, "first :root block is not the base palette");
+	const text3 = resolveHex(base, tokenValue(base, "text-3"));
+	const text4 = resolveHex(base, tokenValue(base, "text-4"));
+
+	// --surface-1 is `.modal`'s background and AssetModal's card background;
+	// --surface-2 backs the nested blocks inside them; --surface-3 is
+	// `.table-container thead th`, which RigorExplainer renders inside the
+	// portalled rigor modal.
+	for (const surfaceName of ["surface-1", "surface-2", "surface-3"]) {
+		const surfaceHex = resolveHex(base, tokenValue(base, surfaceName));
+		const ratio = contrastRatio(text3, surfaceHex);
+		assert.ok(
+			ratio >= 4.5,
+			`--text-3 (${text3}) on --${surfaceName} (${surfaceHex}) is ${ratio.toFixed(2)}:1, below the 4.5:1 floor — portalled dialogs resolve these values`,
+		);
+	}
+
+	const surface1 = resolveHex(base, tokenValue(base, "surface-1"));
+	const decorationRatio = contrastRatio(text4, surface1);
+	assert.ok(
+		decorationRatio < 4.5,
+		`base --text-4 (${text4}) now measures ${decorationRatio.toFixed(2)}:1 on --surface-1. If that raise is deliberate it is no longer a decoration-only token — retire this guard and the App.css note with it (#1318).`,
+	);
+
+	const offenders = [];
+	for (const file of ALWAYS_PORTALLED) {
+		offenders.push(...text4Offenders(file, src(file)));
+	}
+
+	// Region-slice every file that opens a portal. A component can render
+	// inside .app-site AND open a portal (WalletConnect's topbar menu,
+	// Strategies' rigor modal), so only the portalled subtree is on the base
+	// palette — a whole-file check would be wrong in both directions, and
+	// Strategies legitimately keeps 9 --text-4 call sites outside its portal.
+	const portalFiles = filesCallingCreatePortal();
+	assert.ok(
+		portalFiles.includes("components/Strategies.jsx") &&
+			portalFiles.includes("components/CustomSelect.jsx"),
+		`portal discovery found ${portalFiles.length} files but missed a known one: ${portalFiles.join(", ")}`,
+	);
+	for (const file of portalFiles) {
+		const regions = portalRegions(src(file));
+		assert.ok(regions.length > 0, `${file}: no createPortal region found`);
+		for (const region of regions) {
+			offenders.push(...text4Offenders(`${file} (portalled subtree)`, region));
+		}
+	}
+	assert.deepEqual(
+		offenders,
+		[],
+		`these portalled dialogs paint text with --text-4 (${text4} = ${decorationRatio.toFixed(2)}:1 on --surface-1, a decoration token on the base palette) instead of --text-3:\n${offenders.join("\n")}`,
+	);
 });
 
 test("--accent is a fill token; accent-coloured TEXT resolves --accent-text", () => {
