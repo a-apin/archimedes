@@ -205,13 +205,13 @@ Same `ReasoningTrace` dataclass, same `_HASH_FIELDS`, same `canonical_json()` �
 | `trigger` | `"scheduled_tick"`, `"empty_vault"`, … | `"paper_settle"` | ✅ |
 | `timestamp` | wall clock at decision | **the decision bar's date, 00:00 UTC** | ✅ |
 | `market_context` | regime, ensemble consensus, signal summary | `venue: "paper"`, `deployment_id`, `strategy_id`, `decided_on`, `filled_on`, `rebalance_frequency`, `asset_universe`, `source_arxiv_ids`, `spec_sha256`, `trace_provenance` | ✅ |
-| `portfolio_before` | AUM + holdings + weights | per-symbol `{size, price, value}` and `cash`, immediately before the fill | ✅ |
-| `portfolio_after` | intended post-trade allocation | per-symbol `{size, price, value}` and `cash`, immediately after | ✅ |
+| `portfolio_before` | AUM + holdings + weights | **the whole deployment**: every sleeve's `{size, price, value}` and summed `cash`, immediately before the fill (§2.3) | ✅ |
+| `portfolio_after` | intended post-trade allocation | the whole deployment, immediately after (§2.3) | ✅ |
 | `reasoning` | LLM-generated | **spec-derived and deterministic** (§2.1) | ✅ |
 | `confidence` | `_compute_confidence(all_signals)` | `0.0` — no calibrated source (§2.2) | ✅ |
 | `trades_executed` | `{symbol, direction, amount}` per trade | `{symbol, side, size, price, value, commission}` per leg | ✅ |
 | `strategies_referenced` | `[ss.strategy_id for ss in all_signals]` | `[dep.strategy_id]` — exactly one, exact match (§5) | ✅ |
-| `consulted_paper_hashes` | `arxiv_id:content_hash` from signals | only when a content hash resolves; else empty (§2.3) | ✅ |
+| `consulted_paper_hashes` | `arxiv_id:content_hash` from signals | only when a content hash resolves; else empty (§2.4) | ✅ |
 | `trace_hash` | keccak of canonical JSON | identical computation | — |
 | `arc_tx_hash` / commit / reveal / trade tx | populated by commit-reveal | **`None`** — nothing is anchored by default (§6) | ❌ |
 | `is_verified` | true only on a real reveal | **`False`** | ❌ |
@@ -252,7 +252,50 @@ confidence number on this path, and inventing one contradicts the selection-bias
 rigor gate exists to enforce. The absence is stated in `expected_outcome`, not filled with a
 plausible float.
 
-### 2.3 `consulted_paper_hashes` is empty unless a hash resolves
+### 2.3 `portfolio_before` / `portfolio_after` are DEPLOYMENT-scoped, not leg-scoped
+
+A deployment runs its universe as **N independent dollar sleeves** (`paper_trading._replay`,
+faithful to the graded path), each opening with `fusion_evaluator._DEFAULT_CASH`. So a
+2-sleeve deployment holds **2 × the sleeve capital**, and on any given decision date only
+*some* of its sleeves trade.
+
+Deriving the two snapshots from the decision's legs — the obvious reading, since the legs
+carry `cash_before`/`cash_after` and `position_before`/`position_after` — gets both halves
+wrong:
+
+- **Cash is understated by the sleeves that did not trade.** A 2-sleeve deployment tracing
+  one sleeve's decision reported `cash: 100_000`-scale numbers for a deployment holding
+  `200_000`, and would report the same figure at 2 sleeves or at 20.
+- **Untraded symbols are absent from `holdings` entirely**, so a reader cannot distinguish
+  "held nothing" from "was not looked at".
+
+Both fields are **hashed**, and on the opt-in anchoring path (§6) `reveal()` writes them
+on-chain *permanently*. A wrong portfolio is worse than no portfolio: it is a false
+statement with a keccak over it.
+
+So `paper_trace.deployment_portfolio()` builds the snapshot over **every sleeve**, and it is
+built in `_replay` — the only place that has all the sleeves — rather than inside
+`build_paper_trace`, which only ever sees one date's legs. `build_paper_trace` therefore
+**requires** both snapshots instead of deriving them; a caller that supplies only legs is
+rejected at the seam rather than publishing a half-formed portfolio.
+
+| sleeve on the decision date | `size` / `cash` | mark |
+|---|---|---|
+| traded | the bracketing legs' own `position_*` / `cash_*` — first fill of the date for `before`, last for `after`, so several fills on one bar still bracket the whole date | that leg's fill price |
+| traded earlier, quiet today | carried forward from its most recent earlier fill | that sleeve's close on the decision bar (as-of the last bar ≤ it) |
+| never traded | flat, holding its full opening sleeve capital | the decision bar's close, else `None` |
+
+Two consequences worth stating:
+
+- The mark for an untraded sleeve is `None` when no close and no prior fill exist — **an
+  absence, never a `0.0`**, which would read as "this position is worthless" inside a hashed
+  field. Same rule as `confidence` (§2.2) and `consulted_paper_hashes` (§2.4).
+- `deployment_portfolio` is handed each sleeve's **complete** leg history, pre-deploy dates
+  included. A sleeve's state on a decision date is the sum of every fill before it, and the
+  replay starts at the feed's first bar — the same window the graded numbers are computed
+  over — not at `deployed_at`.
+
+### 2.4 `consulted_paper_hashes` is empty unless a hash resolves
 
 The field's contract is `"arxiv_id:content_hash"`. The snapshotted spec carries
 `source_arxiv_ids` but no content hash, and the prod corpus has `corpus_meta = 0`, so for
@@ -596,7 +639,7 @@ duplicate key; cascade removes rows with the deployment.
 New `backend/archimedes/services/paper_trace.py`, shaped after `construction_trace.py`
 (stops at the hash, never touches the chain or Redis):
 `build_paper_trace(dep, spec, decision_date, legs, before, after) -> ReasoningTrace`,
-`_render_reasoning(...)` (§2.1), `_market_context(...)`, `_paper_hashes(spec)` (§2.3).
+`_render_reasoning(...)` (§2.1), `_market_context(...)`, `_paper_hashes(spec)` (§2.4).
 *Tests* (`backend/tests/services/test_paper_trace.py`): field-by-field against §2's table;
 `decision_type is DecisionType.REBALANCE`; `vault_address == ""`; `confidence == 0.0`;
 `consulted_paper_hashes == []` with no resolvable content hash; hash is stable across two

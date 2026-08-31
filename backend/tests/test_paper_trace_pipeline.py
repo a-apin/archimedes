@@ -57,9 +57,20 @@ FILLED = date(2026, 8, 5)
 #: than about a number.
 SECRET_SYMBOL = "SECRETSPY1575"
 
+#: The deployment's SECOND sleeve. It never trades, and that is the point: a
+#: 2-sleeve deployment holds 2x the sleeve capital, and the portfolio snapshot
+#: inside the hash has to say so. The per-leg snapshot this replaced reported
+#: only the traded sleeve's cash and omitted this symbol from `holdings`
+#: entirely.
+QUIET_SYMBOL = "QUIETIWM1575"
+
+#: What one sleeve opens with — `fusion_evaluator._DEFAULT_CASH`, read rather
+#: than re-typed so the fixture cannot drift from the engine.
+SLEEVE_CASH = 100_000.0
+
 _SPEC = {
     "name": "paper trace probe",
-    "asset_universe": [SECRET_SYMBOL],
+    "asset_universe": [SECRET_SYMBOL, QUIET_SYMBOL],
     "rebalance_frequency": "monthly",
     "entry": {"gt": ["close", "sma_200"]},
     "exit": {"lt": ["close", "sma_200"]},
@@ -118,8 +129,34 @@ def _replay(spec_dict, deployed_at):
     return {d: r for d, r in _RETURNS.items() if d >= deployed_at}
 
 
+def _portfolio(side: str, legs=None) -> dict:
+    """The deployment-scoped snapshot, built the way the settle path builds it.
+
+    Both sleeves, whether or not they traded — which is what makes the numbers
+    the tests below assert on the DEPLOYMENT's numbers rather than one sleeve's.
+    """
+    from archimedes.services.paper_trace import deployment_portfolio
+
+    return deployment_portfolio(
+        decision_date=DECIDED,
+        side=side,
+        sleeve_legs={SECRET_SYMBOL: [dict(leg) for leg in (legs or [_LEG])], QUIET_SYMBOL: []},
+        sleeve_initial_cash=SLEEVE_CASH,
+        sleeve_closes={QUIET_SYMBOL: {DECIDED: 250.0}},
+    )
+
+
+def _decision(legs=None) -> dict:
+    legs = [dict(leg) for leg in (legs or [_LEG])]
+    return {
+        "legs": legs,
+        "portfolio_before": _portfolio("before", legs),
+        "portfolio_after": _portfolio("after", legs),
+    }
+
+
 def _decisions(spec_dict, deployed_at):
-    return {DECIDED: [dict(_LEG)]}
+    return {DECIDED: _decision()}
 
 
 class _Store:
@@ -634,7 +671,7 @@ async def test_a_re_replay_that_decides_differently_is_drift_not_a_rewrite():
         original = dict(next(iter(store.records.values())))
 
         def restated(spec_dict, deployed_at):
-            return {DECIDED: [{**_LEG, "size": 900.0, "price": 111.0}]}
+            return {DECIDED: _decision([{**_LEG, "size": 900.0, "price": 111.0}])}
 
         result = _advance(dep_id, decisions=restated)
 
@@ -655,6 +692,48 @@ async def test_the_coverage_identity_holds_across_every_failure_state():
         assert result["decisions"] == (result["published"] + result["failed"] + result["unowned"] + result["disabled"])
 
 
+async def test_a_stored_unknown_status_trips_the_identity_instead_of_a_KeyError(caplog):
+    """G7, third half. The publish branch already bucketed by explicit
+    membership; the EXISTING-ROW branch did ``counts[row.status] += 1`` and
+    died on a bare ``KeyError`` — deep in a loop, naming neither the deployment
+    nor the decision, and aborting the settle before the identity could say
+    what was lost. A stored row can carry anything (a hand-edited row, a
+    half-run migration, an older writer's vocabulary), so this is untrusted
+    input, not a local variable.
+
+    ADVERSARIAL: the input is seeded to a status outside all four buckets and
+    the LOUD path is asserted by type — ``PaperTraceCoverageError`` with the
+    bucket breakdown — with ``KeyError`` explicitly excluded."""
+    from archimedes.db import get_session
+    from archimedes.models.paper_store import PaperDecisionTrace
+    from archimedes.services.paper_trading import PaperTraceCoverageError
+
+    dep_id = _seed()
+    with get_session() as session:
+        session.add(PaperDecisionTrace(deployment_id=dep_id, decision_date=DECIDED, status="weird"))
+        session.commit()
+
+    with (
+        _store(_Store()),
+        caplog.at_level("ERROR"),
+        pytest.raises(PaperTraceCoverageError, match="left the pipeline uncounted") as caught,
+    ):
+        _advance(dep_id)
+    assert not isinstance(caught.value, KeyError)
+    assert any("unrecognised trace status 'weird'" in r.getMessage() for r in caplog.records)
+
+    # And the READ side does not blow up either — it reports the row instead of
+    # dropping it from the totals, so `decisions` still adds up.
+    caplog.clear()
+    with caplog.at_level("ERROR"):
+        coverage = _summary(dep_id)["trace_coverage"]
+    assert coverage["decisions"] == 1
+    assert coverage["unknown"] == 1
+    assert coverage["status"] == "gap"
+    assert sum(coverage[k] for k in ("published", "failed", "unowned", "disabled", "unknown")) == coverage["decisions"]
+    assert any("unrecognised status(es) ['weird']" in r.getMessage() for r in caplog.records)
+
+
 async def test_a_miscount_trips_the_coverage_identity():
     """G7's adversarial half: build the input that SHOULD fail the identity.
 
@@ -672,6 +751,160 @@ async def test_a_miscount_trips_the_coverage_identity():
         pytest.raises(PaperTraceCoverageError, match="left the pipeline uncounted"),
     ):
         _advance(dep_id)
+
+
+# ── The published portfolio is the DEPLOYMENT's, not one sleeve's ──────────
+
+
+async def test_the_published_trace_carries_the_whole_deployments_portfolio():
+    """A 2-sleeve deployment tracing one sleeve's decision.
+
+    ``portfolio_before``/``portfolio_after`` are hashed and, on the opt-in
+    anchoring path, ``reveal()`` writes them on-chain permanently. Derived from
+    the traded sleeve's legs alone they stated a deployment holding $200,000 as
+    holding $100,000 and left the untraded symbol out of ``holdings``
+    altogether — a false statement with a keccak over it.
+
+    ADVERSARIAL: the leg-derived figures are computed alongside and asserted to
+    DIFFER, so this measures the aggregate rather than any snapshot at all."""
+    dep_id = _seed()
+    with _store(_Store()) as store:
+        _advance(dep_id)
+    (trace,) = {payload["id"]: payload for payload in store.records.values()}.values()
+
+    before, after = trace["portfolio_before"], trace["portfolio_after"]
+
+    # Both sleeves present on both sides — the untraded one included.
+    assert sorted(before["holdings"]) == sorted([QUIET_SYMBOL, SECRET_SYMBOL])
+    assert sorted(after["holdings"]) == sorted([QUIET_SYMBOL, SECRET_SYMBOL])
+    assert after["holdings"][QUIET_SYMBOL] == {"size": 0.0, "price": 250.0, "value": 0.0}
+
+    # The deployment's cash, not the traded sleeve's: the quiet sleeve's full
+    # opening capital is in both totals.
+    assert before["cash"] == pytest.approx(_LEG["cash_before"] + SLEEVE_CASH)
+    assert after["cash"] == pytest.approx(_LEG["cash_after"] + SLEEVE_CASH)
+
+    # ADVERSARIAL CONTROL: what the per-leg rule would have published.
+    leg_only_before = sum(float(leg["cash_before"]) for leg in [_LEG])
+    leg_only_after = sum(float(leg["cash_after"]) for leg in [_LEG])
+    assert before["cash"] != pytest.approx(leg_only_before)
+    assert after["cash"] != pytest.approx(leg_only_after)
+    assert QUIET_SYMBOL not in {leg["symbol"] for leg in [_LEG]}
+
+    # And the traded sleeve is still bracketed correctly by its own leg.
+    assert before["holdings"][SECRET_SYMBOL]["size"] == 0.0
+    assert after["holdings"][SECRET_SYMBOL]["size"] == 182.0
+
+
+async def test_a_decision_payload_without_a_portfolio_is_rejected():
+    """The snapshots are required at the seam, not defaulted. A caller that
+    supplies only legs cannot produce a deployment-scoped portfolio, and the
+    honest answer is to refuse rather than to publish a half-formed one."""
+    from archimedes.services.paper_trading import PaperReplayError
+
+    dep_id = _seed()
+
+    def legs_only(spec_dict, deployed_at):
+        return {DECIDED: [dict(_LEG)]}
+
+    with _store(_Store()), pytest.raises(PaperReplayError, match="portfolio_before"):
+        _advance(dep_id, decisions=legs_only)
+
+
+# ── G7b: a broken identity is not "advance crashed" ────────────────────────
+
+
+async def test_a_broken_identity_is_isolated_but_distinct_in_advance_all(caplog):
+    """The class docstring says this must NOT be swept in with the ordinary
+    per-deployment failure — but ``advance_all``'s bare ``except Exception``
+    swept it in anyway and logged "advance crashed", which reads as one
+    deployment's bad data. A broken identity is a bug in the trace pipeline and
+    the counts users read about their own provenance are wrong.
+
+    Both halves are asserted: the distinct ERROR literal AND the isolation —
+    the other deployment's ledger still advances."""
+    from archimedes.db import get_session
+    from archimedes.models.paper_store import PaperDeployment
+    from archimedes.services import paper_trace as pt
+    from archimedes.services import paper_trading
+    from archimedes.services.paper_trading import COVERAGE_BROKEN_LOG, advance_all
+
+    broken = _seed()
+    with get_session() as session:
+        healthy = PaperDeployment(
+            id="dep1575b",
+            strategy_id=STRATEGY_ID,
+            owner_wallet=OWNER_WALLET,
+            owner_user_id=OWNER_USER_ID,
+            spec_json=json.dumps(_SPEC, sort_keys=True),
+            deployed_at=DEPLOY,
+            status="active",
+        )
+        session.add(healthy)
+        session.commit()
+
+    def one_decision(spec_dict, deployed_at):
+        return _replay(spec_dict, deployed_at), {DECIDED: _decision()}
+
+    def publish(dep, trace):
+        # Only the first deployment falls out of the buckets, so the isolation
+        # claim is measured against a deployment that genuinely succeeds.
+        return ("lost", None) if dep.id == broken else ("published", None)
+
+    original = paper_trading.replay_spec_with_decisions
+    paper_trading.replay_spec_with_decisions = one_decision
+    try:
+        with (
+            _store(_Store()),
+            patch.object(pt, "publish_paper_trace", side_effect=publish),
+            caplog.at_level("ERROR"),
+            get_session() as session,
+        ):
+            out = advance_all(session)
+            session.commit()
+    finally:
+        paper_trading.replay_spec_with_decisions = original
+
+    assert out["coverage_broken"] == 1
+    assert out["failed"] == 1
+    assert out["ok"] == 1, "one deployment's broken accounting must not stall everyone else's ledger"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(COVERAGE_BROKEN_LOG in message for message in messages)
+    assert not any("advance crashed" in message for message in messages), (
+        "the generic handler must not be what reports a broken coverage identity"
+    )
+
+
+async def test_the_create_route_reports_a_broken_identity_as_an_error_not_a_deferral(caplog):
+    """The route's other silencer, exercised through the real endpoint.
+
+    "deferred to the scheduler" is a WARNING that promises the next pass fixes
+    it, and the bare ``except Exception`` sent a broken coverage identity down
+    exactly that path. It will break the same way next pass. Distinct ERROR —
+    and the 201 still stands, because the deployment exists, its ledger is
+    fine, and ``trace_coverage`` on the returned payload is what carries the
+    hole to the user."""
+    from archimedes.main import app
+    from archimedes.services.paper_trading import COVERAGE_BROKEN_LOG, PaperTraceCoverageError
+
+    def boom(session, dep, **kwargs):
+        raise PaperTraceCoverageError("2 decisions detected but 1 accounted for — a decision left the pipeline")
+
+    _seed()
+    with (
+        patch("archimedes.api.paper_routes._spec_for_strategy", return_value=_SPEC),
+        patch("archimedes.api.paper_routes.advance_deployment", side_effect=boom),
+        _as(OWNER_USER_ID, OWNER_WALLET),
+        caplog.at_level("WARNING"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/paper/deployments", json={"strategy_id": STRATEGY_ID})
+
+    assert resp.status_code == 201, "a broken identity must not take the create route down"
+    assert any(COVERAGE_BROKEN_LOG in r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+    assert not any("deferred to the scheduler" in r.getMessage() for r in caplog.records), (
+        "the deferral path promises the next settle fixes it; this one will break identically"
+    )
 
 
 # ── The ownership stamp really does suppress the vault lookup ──────────────

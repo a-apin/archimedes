@@ -54,8 +54,50 @@ class PaperTraceCoverageError(RuntimeError):
     """
 
 
+#: The literal that names a broken coverage identity in the logs. Shared, so
+#: the scheduler's per-deployment isolation and the create-deployment route
+#: report the SAME distinctive string, and so a test can assert on it rather
+#: than on prose someone may reword.
+COVERAGE_BROKEN_LOG = "paper: TRACE COVERAGE IDENTITY BROKEN"
+
+
+def _sleeve_initial_cash() -> float:
+    """Opening capital for ONE sleeve, read from the graded engine.
+
+    Read rather than re-declared: ``_sleeve_dated_returns`` passes it straight
+    back into ``run_dsl_backtest``, so the value the deployment-scoped
+    portfolio snapshot attributes to a sleeve that never traded is the value
+    the run actually used. Re-typing the number here would let the two drift
+    and quietly misstate a hashed field.
+    """
+    from archimedes.services.fusion_evaluator import _DEFAULT_CASH
+
+    return float(_DEFAULT_CASH)
+
+
+def _closes_by_date(frame) -> dict[date, float]:
+    """``{bar date: close}`` for one sleeve, used to mark UNTRADED sleeves.
+
+    Column case follows ``fusion_market_data.feed_factory``, which lowercases
+    before handing the frame to backtrader; the raw yfinance frame is
+    ``Close``. Missing entirely → an empty dict, and the mark falls back to the
+    sleeve's last fill price (see ``paper_trace._mark_price``) rather than to a
+    fabricated zero.
+    """
+    try:
+        lowered = {str(col).lower(): col for col in frame.columns}
+        column = lowered.get("close")
+        if column is None:
+            return {}
+        series = frame[column]
+        return {(d.date() if hasattr(d, "date") else d): float(v) for d, v in zip(series.index, series, strict=True)}
+    except (AttributeError, TypeError, ValueError):
+        logger.warning("paper: could not read closes off a sleeve frame — untraded sleeves fall back to fill prices")
+        return {}
+
+
 def _sleeve_dated_returns(
-    spec, sym: str, factory, frame, *, decisions: bool = False
+    spec, sym: str, factory, frame, *, decisions: bool = False, initial_cash: float | None = None
 ) -> tuple[dict[date, float], list[dict]]:
     """Dated per-bar returns for one sleeve of the deployment's universe, and
     (when asked) the dated orders that sleeve placed.
@@ -75,7 +117,15 @@ def _sleeve_dated_returns(
     from archimedes.services.fusion_evaluator import run_dsl_backtest
 
     metrics = run_dsl_backtest(
-        spec, data_feed_factory=factory, data_source_label=f"paper:{sym}", decision_journal=decisions
+        spec,
+        data_feed_factory=factory,
+        data_source_label=f"paper:{sym}",
+        decision_journal=decisions,
+        # Explicit, and the SAME number ``run_dsl_backtest`` defaults to, so no
+        # graded value moves. Passing it makes the sleeve's opening capital a
+        # fact this module knows rather than one it guesses when it has to
+        # value a sleeve that never traded.
+        initial_cash=_sleeve_initial_cash() if initial_cash is None else initial_cash,
     )
     curve = list(metrics.equity_curve or [])
     if len(curve) < 2:
@@ -97,25 +147,43 @@ def _sleeve_dated_returns(
     return dict(zip(idx[-len(rets) :], rets, strict=True)), legs
 
 
-def _replay(spec_dict: dict, deployed_at: date, *, decisions: bool) -> tuple[dict[date, float], dict[date, list[dict]]]:
+def _replay(spec_dict: dict, deployed_at: date, *, decisions: bool) -> tuple[dict[date, float], dict[date, dict]]:
     """Shared body of :func:`replay_spec` / :func:`replay_decisions`.
 
     One pass over the sleeves produces both the dated returns and (optionally)
-    the dated decision legs, so the trace and the ledger row for a date can
-    never come from two different runs of the same spec.
+    the dated decisions, so the trace and the ledger row for a date can never
+    come from two different runs of the same spec.
+
+    A decision is ``{"legs": [...], "portfolio_before": {...},
+    "portfolio_after": {...}}``. The two snapshots are DEPLOYMENT-scoped —
+    every sleeve's cash and position, not just the sleeve that traded — which
+    is why they are built here, the only place that has all the sleeves, and
+    not inside the trace builder, which only ever sees one date's legs.
     """
     from archimedes.services import fusion_market_data
+    from archimedes.services.paper_trace import deployment_portfolio
 
     spec = validate_strategy_spec(spec_dict)
     panel = fusion_market_data.fetch_real_panel(spec.asset_universe)
     if panel is None:
         raise PaperReplayError(f"real data unavailable for universe {spec.asset_universe}")
 
+    sleeve_cash = _sleeve_initial_cash()
     sleeves: dict[str, dict[date, float]] = {}
+    #: EVERY leg each sleeve placed, pre-deploy dates included: a sleeve's
+    #: state on a decision date is the sum of every fill before it, and the
+    #: replay starts at the feed's first bar, not at `deployed_at`.
+    sleeve_legs: dict[str, list[dict]] = {}
+    sleeve_closes: dict[str, dict[date, float]] = {}
     dated_legs: dict[date, list[dict]] = {}
     for sym, frame in panel.frames.items():
         factory = fusion_market_data.feed_factory(frame)
-        sleeves[sym], legs = _sleeve_dated_returns(spec, sym, factory, frame, decisions=decisions)
+        sleeves[sym], legs = _sleeve_dated_returns(
+            spec, sym, factory, frame, decisions=decisions, initial_cash=sleeve_cash
+        )
+        if decisions:
+            sleeve_legs[sym] = list(legs)
+            sleeve_closes[sym] = _closes_by_date(frame)
         for leg in legs:
             if leg["decided_on"] >= deployed_at:
                 dated_legs.setdefault(leg["decided_on"], []).append(leg)
@@ -124,8 +192,26 @@ def _replay(spec_dict: dict, deployed_at: date, *, decisions: bool) -> tuple[dic
     # Deterministic leg order: the legs are hashed inside the trace body, so a
     # dict-iteration-order change must not move the hash of an unchanged
     # decision.
-    for legs in dated_legs.values():
+    dated_decisions: dict[date, dict] = {}
+    for decision_date, legs in dated_legs.items():
         legs.sort(key=lambda leg: (leg["symbol"], leg["side"], leg["size"]))
+        dated_decisions[decision_date] = {
+            "legs": legs,
+            "portfolio_before": deployment_portfolio(
+                decision_date=decision_date,
+                side="before",
+                sleeve_legs=sleeve_legs,
+                sleeve_initial_cash=sleeve_cash,
+                sleeve_closes=sleeve_closes,
+            ),
+            "portfolio_after": deployment_portfolio(
+                decision_date=decision_date,
+                side="after",
+                sleeve_legs=sleeve_legs,
+                sleeve_initial_cash=sleeve_cash,
+                sleeve_closes=sleeve_closes,
+            ),
+        }
 
     common = sorted(set.intersection(*(set(s.keys()) for s in sleeves.values())))
     if not common:
@@ -142,7 +228,7 @@ def _replay(spec_dict: dict, deployed_at: date, *, decisions: bool) -> tuple[dic
         total_after = sum(equities.values())
         if d >= deployed_at and total_before > 0:
             out[d] = total_after / total_before - 1.0
-    return out, dated_legs
+    return out, dated_decisions
 
 
 def replay_spec(spec_dict: dict, deployed_at: date) -> dict[date, float]:
@@ -156,8 +242,12 @@ def replay_spec(spec_dict: dict, deployed_at: date) -> dict[date, float]:
     return _replay(spec_dict, deployed_at, decisions=False)[0]
 
 
-def replay_decisions(spec_dict: dict, deployed_at: date) -> dict[date, list[dict]]:
-    """``{decision date: [order legs]}`` for dates >= ``deployed_at`` (#1575).
+def replay_decisions(spec_dict: dict, deployed_at: date) -> dict[date, dict]:
+    """``{decision date: decision}`` for dates >= ``deployed_at`` (#1575).
+
+    A decision is ``{"legs": [...], "portfolio_before": {...},
+    "portfolio_after": {...}}``; the two snapshots cover the whole deployment,
+    every sleeve, not only the sleeve whose legs are in ``legs``.
 
     A paper decision is born at a rebalance-eligible bar on which the entry or
     exit condition fired — the only place in the paper system where the
@@ -172,7 +262,7 @@ def replay_decisions(spec_dict: dict, deployed_at: date) -> dict[date, list[dict
     return _replay(spec_dict, deployed_at, decisions=True)[1]
 
 
-def replay_spec_with_decisions(spec_dict: dict, deployed_at: date) -> tuple[dict[date, float], dict[date, list[dict]]]:
+def replay_spec_with_decisions(spec_dict: dict, deployed_at: date) -> tuple[dict[date, float], dict[date, dict]]:
     """Both halves of one replay — what the settle path calls."""
     return _replay(spec_dict, deployed_at, decisions=True)
 
@@ -203,11 +293,31 @@ def create_deployment(
     return dep
 
 
+def _decision_parts(dep_id: str, decision_date: date, decision) -> tuple[list[dict], dict, dict]:
+    """Unpack one replayed decision, or fail with a message that names it.
+
+    The payload gained its two deployment-scoped portfolio snapshots when the
+    per-leg ones were found to under-report a multi-sleeve deployment's cash
+    and to omit its untraded symbols. Both are hashed fields, so a caller that
+    supplies only legs must be rejected here rather than silently producing a
+    trace with an empty or half-formed portfolio.
+    """
+    if not isinstance(decision, dict):
+        raise PaperReplayError(
+            f"deployment {dep_id} decision {decision_date}: expected "
+            f"{{'legs', 'portfolio_before', 'portfolio_after'}}, got {type(decision).__name__}"
+        )
+    missing = [key for key in ("legs", "portfolio_before", "portfolio_after") if key not in decision]
+    if missing:
+        raise PaperReplayError(f"deployment {dep_id} decision {decision_date}: decision payload is missing {missing}")
+    return decision["legs"], decision["portfolio_before"], decision["portfolio_after"]
+
+
 def _publish_decision_traces(
     session,
     dep: PaperDeployment,
     spec_dict: dict,
-    decisions: dict[date, list[dict]],
+    decisions: dict[date, dict],
     already_ledgered: set[date],
 ) -> dict:
     """Record a trace for every paper decision, and a durable row for every
@@ -253,7 +363,7 @@ def _publish_decision_traces(
     now = datetime.now(UTC)
 
     for decision_date in sorted(decisions):
-        legs = decisions[decision_date]
+        legs, portfolio_before, portfolio_after = _decision_parts(dep.id, decision_date, decisions[decision_date])
         row = rows.get(decision_date)
 
         if row is not None and row.status == TRACE_PUBLISHED:
@@ -269,6 +379,8 @@ def _publish_decision_traces(
                 spec_dict=spec_dict,
                 decision_date=decision_date,
                 legs=legs,
+                portfolio_before=portfolio_before,
+                portfolio_after=portfolio_after,
                 provenance=row.provenance or pt.PROVENANCE_SETTLE,
                 paper_hashes=paper_hashes,
             )
@@ -281,7 +393,26 @@ def _publish_decision_traces(
             # `unowned` — a data problem, not a transient one. Retrying it
             # every settle would turn a loud ERROR into a recurring one that
             # operators learn to ignore.
-            counts[row.status] += 1
+            #
+            # Same explicit-membership bucketing as the publish branch below,
+            # and for the same reason: `counts[row.status] += 1` on a row
+            # carrying a status outside the four buckets dies on a bare
+            # KeyError deep in a loop that says nothing about which decision
+            # was lost. Leaving it UNCOUNTED routes it to the accounting
+            # identity, which raises with the decision key and the full bucket
+            # breakdown. A stored row can hold anything — a hand-edited row, a
+            # half-run migration, an older writer's vocabulary — so this is a
+            # read of untrusted data, not of a local variable.
+            if row.status in counts:
+                counts[row.status] += 1
+            else:
+                logger.error(
+                    "paper: deployment %s decision %s carries unrecognised trace status %r on a stored row — "
+                    "deliberately left uncounted so the coverage identity catches it.",
+                    dep.id,
+                    decision_date,
+                    row.status,
+                )
             continue
 
         if attempted >= budget:
@@ -306,6 +437,8 @@ def _publish_decision_traces(
                 spec_dict=spec_dict,
                 decision_date=decision_date,
                 legs=legs,
+                portfolio_before=portfolio_before,
+                portfolio_after=portfolio_after,
                 provenance=provenance,
                 paper_hashes=paper_hashes,
             )
@@ -459,7 +592,7 @@ def advance_all(session) -> dict:
     """Advance every active deployment. Per-deployment failures are isolated
     and counted — one bad universe must not stall everyone else's ledger."""
     deps = session.query(PaperDeployment).filter(PaperDeployment.status == STATUS_ACTIVE).all()
-    ok = failed = appended = 0
+    ok = failed = appended = coverage_broken = 0
     traces = dict.fromkeys(("decisions", "published", "failed", "unowned", "disabled"), 0)
     for dep in deps:
         try:
@@ -471,6 +604,19 @@ def advance_all(session) -> dict:
         except (PaperReplayError, DSLError) as exc:
             failed += 1
             logger.warning("paper: advance failed for %s: %s", dep.id, exc)
+        except PaperTraceCoverageError:
+            # Ahead of the bare `except Exception` on purpose. Swept in with
+            # everything else this logged "advance crashed", which reads as one
+            # deployment's bad data — the ordinary case below. It is not: a
+            # broken identity means the coverage numbers this product publishes
+            # about its own provenance are wrong, and that is a bug in this
+            # module. Distinct literal, ERROR, and its own counter on the cycle
+            # summary. The loop still continues: one deployment's broken
+            # accounting must not stall everyone else's ledger, which is the
+            # same isolation rule the other two handlers follow.
+            failed += 1
+            coverage_broken += 1
+            logger.error("%s for deployment %s", COVERAGE_BROKEN_LOG, dep.id, exc_info=True)
         except Exception:
             failed += 1
             logger.exception("paper: advance crashed for %s", dep.id)
@@ -487,6 +633,10 @@ def advance_all(session) -> dict:
         "trace_failed": traces["failed"],
         "trace_unowned": traces["unowned"],
         "trace_disabled": traces["disabled"],
+        # Deployments whose coverage identity broke. Non-zero is a code bug,
+        # not an outage, and it is reported separately from `failed` so it
+        # cannot be read as "a universe had bad data today".
+        "coverage_broken": coverage_broken,
     }
 
 
@@ -509,9 +659,25 @@ def trace_coverage(session, dep: PaperDeployment) -> dict:
 
     rows = session.query(PaperDecisionTrace).filter(PaperDecisionTrace.deployment_id == dep.id).all()
     counts = dict.fromkeys(("published", "failed", "unowned", "disabled"), 0)
+    # A stored status outside the four buckets was previously dropped on the
+    # floor here: `decisions` counted it, no bucket did, and the payload came
+    # out with totals that silently did not add up — the same silent-zero shape
+    # the accounting identity exists to prevent, arriving on the read side.
+    # This is a READ path feeding GET /api/paper/deployments, so it reports the
+    # discrepancy instead of raising: a 500 would take the whole (correct)
+    # ledger down with it. The count is on the payload and the log is an ERROR.
+    unknown = [row.status for row in rows if row.status not in counts]
     for row in rows:
         if row.status in counts:
             counts[row.status] += 1
+    if unknown:
+        logger.error(
+            "paper: deployment %s has %d decision-trace row(s) carrying unrecognised status(es) %s — "
+            "reported as trace_coverage.unknown and counted as a gap, never dropped from the totals.",
+            dep.id,
+            len(unknown),
+            sorted(set(unknown)),
+        )
     gaps = sorted(row.decision_date for row in rows if row.status != "published")
     if counts["disabled"]:
         status = "disabled"
@@ -523,6 +689,9 @@ def trace_coverage(session, dep: PaperDeployment) -> dict:
         "status": status,
         "decisions": len(rows),
         **counts,
+        # `decisions == published + failed + unowned + disabled + unknown`
+        # holds by construction. Without this key it did not, and nothing said so.
+        "unknown": len(unknown),
         "first_gap_at": gaps[0].isoformat() if gaps else None,
         "kinds": list(paper_trace.DECISION_KINDS),
         "gap_at": dep.trace_gap_at.isoformat() if dep.trace_gap_at else None,

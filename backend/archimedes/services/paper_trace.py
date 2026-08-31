@@ -139,25 +139,89 @@ def spec_sha256(spec_dict: dict) -> str:
     return hashlib.sha256(json.dumps(spec_dict, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _portfolio_side(legs: list[dict], side: str) -> dict[str, Any]:
-    """Per-symbol holdings on one side of the decision, plus cash.
+def _mark_price(closes: dict[date, float] | None, decision_date: date, last_leg: dict | None) -> float | None:
+    """The mark for a sleeve that did NOT trade on ``decision_date``.
 
-    ``side`` is ``"before"`` or ``"after"``. Both sides come from the same
-    executed legs (see ``_DecisionJournal``), so they cannot disagree with the
-    trades they bracket.
+    Preference order, most honest first: that sleeve's close on the decision
+    bar; the as-of close (the last bar at or before it, for a sleeve whose
+    calendar has a hole); the price of its most recent fill. ``None`` when
+    none of those exist — an absence, never a zero, because a zero mark reads
+    as "this position is worthless" inside a hashed field.
     """
+    if closes:
+        exact = closes.get(decision_date)
+        if exact is not None:
+            return float(exact)
+        earlier = [d for d in closes if d <= decision_date]
+        if earlier:
+            return float(closes[max(earlier)])
+    if last_leg is not None:
+        return float(last_leg["price"])
+    return None
+
+
+def deployment_portfolio(
+    *,
+    decision_date: date,
+    side: str,
+    sleeve_legs: dict[str, list[dict]],
+    sleeve_initial_cash: float,
+    sleeve_closes: dict[str, dict[date, float]] | None = None,
+) -> dict[str, Any]:
+    """The FULL deployment's portfolio on one side of a decision.
+
+    ``side`` is ``"before"`` or ``"after"``.
+
+    This is deployment-scoped, not leg-scoped, and the distinction is the whole
+    reason this function exists. A deployment runs its universe as *N*
+    independent dollar sleeves (``paper_trading._replay``), so a 2-sleeve
+    deployment holds 2 × ``sleeve_initial_cash``. Summing only the cash carried
+    on the legs of the one sleeve that happened to trade reported a deployment
+    holding $200,000 as holding $100,000, and left every untraded symbol out of
+    ``holdings`` entirely — in a field that is hashed and, on the anchoring
+    path, written on-chain by ``reveal()``. A wrong portfolio is worse than no
+    portfolio: it is a false statement with a keccak over it.
+
+    So every sleeve contributes, whether or not it traded on this date:
+
+    * traded — the bracketing leg's own ``cash_*``/``position_*`` (first leg of
+      the date for ``before``, last for ``after``, so multiple fills on one bar
+      still bracket the whole date);
+    * untraded — the state carried forward from that sleeve's most recent
+      earlier fill, marked at the decision bar's close (:func:`_mark_price`);
+    * never traded at all — flat, holding its full opening sleeve capital.
+
+    ``sleeve_legs`` must carry each sleeve's COMPLETE leg history, not just the
+    post-deploy dates: a sleeve's state on a decision date is the sum of every
+    fill before it, including fills from before the deployment opened. The
+    replay starts at the feed's first bar, so that is the state the graded
+    numbers are computed against too.
+    """
+    if side not in ("before", "after"):
+        raise ValueError(f"deployment_portfolio: side must be 'before' or 'after', got {side!r}")
+
     holdings: dict[str, Any] = {}
     cash = 0.0
-    for leg in sorted(legs, key=lambda item: str(item.get("symbol", ""))):
-        symbol = str(leg.get("symbol", ""))
-        size = float(leg[f"position_{side}"])
-        price = float(leg["price"])
+    for symbol in sorted(sleeve_legs):
+        legs = sorted(sleeve_legs[symbol], key=lambda leg: (leg["decided_on"], leg["filled_on"]))
+        on_date = [leg for leg in legs if leg["decided_on"] == decision_date]
+        earlier = [leg for leg in legs if leg["decided_on"] < decision_date]
+        if on_date:
+            leg = on_date[0] if side == "before" else on_date[-1]
+            size = float(leg[f"position_{side}"])
+            sleeve_cash = float(leg[f"cash_{side}"])
+            price: float | None = float(leg["price"])
+        else:
+            last = earlier[-1] if earlier else None
+            size = float(last["position_after"]) if last is not None else 0.0
+            sleeve_cash = float(last["cash_after"]) if last is not None else float(sleeve_initial_cash)
+            price = _mark_price((sleeve_closes or {}).get(symbol), decision_date, last)
+        cash += sleeve_cash
         holdings[symbol] = {
             "size": round(size, 6),
-            "price": round(price, 6),
-            "value": round(size * price, 6),
+            "price": None if price is None else round(price, 6),
+            "value": None if price is None else round(size * price, 6),
         }
-        cash += float(leg[f"cash_{side}"])
     return {"holdings": holdings, "cash": round(cash, 6)}
 
 
@@ -198,6 +262,8 @@ def build_paper_trace(
     spec_dict: dict,
     decision_date: date,
     legs: list[dict],
+    portfolio_before: dict,
+    portfolio_after: dict,
     provenance: str = PROVENANCE_SETTLE,
     paper_hashes: list[str] | None = None,
 ) -> ReasoningTrace:
@@ -209,6 +275,15 @@ def build_paper_trace(
     single decision date can carry several symbol legs, and the user-visible
     unit of "a move" is the date. The legs land in ``trades_executed``.
 
+    ``portfolio_before``/``portfolio_after`` are the FULL deployment's holdings
+    and cash on each side of the decision — every sleeve, including the ones
+    that did not trade — as produced by :func:`deployment_portfolio`. They are
+    REQUIRED rather than derived from ``legs`` on purpose: this builder cannot
+    see the sleeves it was not handed legs for, and a leg-derived snapshot
+    silently under-reports both cash and holdings on any multi-symbol universe.
+    Both fields are hashed and, on the opt-in anchoring path, land on-chain via
+    ``reveal()``.
+
     ``timestamp`` is the DECISION BAR's date at 00:00 UTC, not wall clock —
     the honest decision time, and a hashed field, so a backfilled trace cannot
     claim to have been written when it was not.
@@ -217,6 +292,12 @@ def build_paper_trace(
         raise ValueError("build_paper_trace: a decision with no legs is not a decision")
     if provenance not in (PROVENANCE_SETTLE, PROVENANCE_BACKFILL):
         raise ValueError(f"build_paper_trace: unknown provenance {provenance!r}")
+    for name, snapshot in (("portfolio_before", portfolio_before), ("portfolio_after", portfolio_after)):
+        if not isinstance(snapshot, dict) or "holdings" not in snapshot or "cash" not in snapshot:
+            raise ValueError(
+                f"build_paper_trace: {name} must be a deployment-scoped snapshot "
+                f"{{'holdings': …, 'cash': …}} from deployment_portfolio(), got {snapshot!r}"
+            )
 
     fingerprint = spec_sha256(spec_dict)
     trace = ReasoningTrace(
@@ -256,8 +337,10 @@ def build_paper_trace(
             "trace_provenance": provenance,
             "decision_kinds": list(DECISION_KINDS),
         },
-        portfolio_before=_portfolio_side(legs, "before"),
-        portfolio_after=_portfolio_side(legs, "after"),
+        # Deployment-scoped, not leg-scoped — see the parameter docs above and
+        # :func:`deployment_portfolio`.
+        portfolio_before=portfolio_before,
+        portfolio_after=portfolio_after,
         reasoning=_render_reasoning(
             spec=spec,
             strategy_id=strategy_id,
@@ -321,27 +404,48 @@ def resolve_paper_hashes(arxiv_ids: list[str]) -> list[str]:
     ``"2301.00001:"`` would be a half-formed value that reads as provenance;
     an empty list reads as the absence it is.
 
-    Fail-soft is correct here and only here: a corpus outage must not block the
+    Fail-soft is correct here for a corpus OUTAGE and nothing else: a database
+    that is down or a corpus table that does not exist must not block the
     trace, and an id that does not appear is *already* recorded in
     ``market_context.source_arxiv_ids`` — nothing is claimed that isn't there.
+
+    It is NOT correct for a bug in this function, which is what the original
+    ``except Exception`` around the imports converted a typo into. The class is
+    ``PaperRecord``; this imported ``Paper``, so every call raised
+    ``ImportError``, was swallowed, returned ``[]``, and logged a WARNING on
+    every settle — a permanent "nothing resolves" that was indistinguishable
+    from the honest empty result the docstring above describes.
+
+    So the imports sit OUTSIDE the try, and the catch is ``DBAPIError`` — the
+    database-side family (connection refused, table absent, permission denied),
+    which is what "the corpus is unavailable" actually raises. Deliberately NOT
+    the ``SQLAlchemyError`` base: that also covers ``ArgumentError`` /
+    ``InvalidRequestError``, which is how a wrong model class or a malformed
+    query surfaces, and those are this module being wrong rather than the
+    corpus being down. ``ImportError``/``AttributeError``/``NameError`` reach
+    the caller for the same reason.
     """
     wanted = [i for i in (arxiv_ids or []) if i]
     if not wanted:
         return []
-    try:
-        from archimedes.db import get_session
-        from archimedes.models.corpus_store import Paper
 
+    from sqlalchemy.exc import DBAPIError
+
+    from archimedes.db import get_session
+    from archimedes.models.corpus_store import PaperRecord
+
+    try:
         with get_session() as session:
-            rows = session.query(Paper).filter(Paper.arxiv_id.in_(sorted(set(wanted)))).all()
-            return sorted(
-                f"{row.arxiv_id}:{content_hash}"
-                for row in rows
-                if (content_hash := (row.content_hash or row.pdf_sha256 or ""))
-            )
-    except Exception:
+            rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(sorted(set(wanted)))).all()
+    except DBAPIError:
         logger.warning("paper trace: corpus content-hash lookup failed — recording no consulted hashes", exc_info=True)
         return []
+
+    # Outside the try: an attribute this code is wrong about is a bug, not an
+    # outage, and must not be laundered into an empty list.
+    return sorted(
+        f"{row.arxiv_id}:{content_hash}" for row in rows if (content_hash := (row.content_hash or row.pdf_sha256 or ""))
+    )
 
 
 # ── Publishing (the only I/O in this module) ─────────────────────────────

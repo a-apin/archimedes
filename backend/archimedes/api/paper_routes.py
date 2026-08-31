@@ -25,7 +25,13 @@ from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.db import get_session, init_db
 from archimedes.models.paper_store import STATUS_STOPPED, PaperDeployment
-from archimedes.services.paper_trading import advance_deployment, create_deployment, deployment_summary
+from archimedes.services.paper_trading import (
+    COVERAGE_BROKEN_LOG,
+    PaperTraceCoverageError,
+    advance_deployment,
+    create_deployment,
+    deployment_summary,
+)
 from archimedes.services.strategy_dsl import DSLError
 
 logger = logging.getLogger(__name__)
@@ -118,6 +124,15 @@ async def deploy_paper(
         # scheduler's daily pass will backfill from deployed_at.
         try:
             advance_deployment(session, dep)
+        except PaperTraceCoverageError:
+            # NOT the deferred-warning path. "Deferred to the scheduler" says
+            # the data was momentarily unavailable and the next pass will fix
+            # it; a broken coverage identity is a bug in the trace pipeline and
+            # the next pass will break the same way. Distinct ERROR with its
+            # own literal. The deployment is still returned rather than 500ing:
+            # it exists, its ledger is fine, and its trace_coverage on the
+            # payload below is what carries the hole to the user.
+            logger.error("%s for deployment %s (initial advance)", COVERAGE_BROKEN_LOG, dep.id, exc_info=True)
         except Exception as exc:
             logger.warning("paper: initial advance for %s deferred to the scheduler: %s", dep.id, exc)
         summary = deployment_summary(session, dep)

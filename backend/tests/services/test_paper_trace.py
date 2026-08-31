@@ -27,6 +27,8 @@ from archimedes.services.paper_trace import (
     PROVENANCE_BACKFILL,
     PROVENANCE_SETTLE,
     build_paper_trace,
+    deployment_portfolio,
+    resolve_paper_hashes,
 )
 from archimedes.services.strategy_dsl import FABER_2007_SPEC, validate_strategy_spec
 
@@ -53,6 +55,17 @@ _LEGS = [
     }
 ]
 
+#: The single-sleeve deployment's portfolio, produced the way production does
+#: it — through :func:`deployment_portfolio` — so the fixture cannot drift from
+#: the shape the builder is handed at settle time.
+_SLEEVE_CASH = 100_000.0
+_PORTFOLIO_BEFORE = deployment_portfolio(
+    decision_date=_DECIDED, side="before", sleeve_legs={"SPY": _LEGS}, sleeve_initial_cash=_SLEEVE_CASH
+)
+_PORTFOLIO_AFTER = deployment_portfolio(
+    decision_date=_DECIDED, side="after", sleeve_legs={"SPY": _LEGS}, sleeve_initial_cash=_SLEEVE_CASH
+)
+
 
 def _build(**overrides):
     kwargs = {
@@ -62,6 +75,8 @@ def _build(**overrides):
         "spec_dict": _SPEC_DICT,
         "decision_date": _DECIDED,
         "legs": _LEGS,
+        "portfolio_before": _PORTFOLIO_BEFORE,
+        "portfolio_after": _PORTFOLIO_AFTER,
     }
     kwargs.update(overrides)
     return build_paper_trace(**kwargs)
@@ -155,6 +170,294 @@ def test_portfolio_sides_bracket_the_legs():
 def test_a_decision_with_no_legs_is_rejected():
     with pytest.raises(ValueError, match="not a decision"):
         _build(legs=[])
+
+
+def test_the_portfolio_snapshots_are_required_and_must_be_snapshot_shaped():
+    """They are hashed fields and, on the anchoring path, ``reveal()`` writes
+    them on-chain. A half-formed one must not get that far."""
+    with pytest.raises(TypeError):
+        build_paper_trace(
+            deployment_id=_DEPLOYMENT,
+            strategy_id=_STRATEGY,
+            spec=_SPEC,
+            spec_dict=_SPEC_DICT,
+            decision_date=_DECIDED,
+            legs=_LEGS,
+        )
+    with pytest.raises(ValueError, match="deployment-scoped snapshot"):
+        _build(portfolio_before={"cash": 1.0})
+    with pytest.raises(ValueError, match="deployment-scoped snapshot"):
+        _build(portfolio_after=None)
+
+
+# ── The portfolio is DEPLOYMENT-scoped, not leg-scoped ─────────────────────
+#
+# A deployment runs its universe as N independent dollar sleeves, so a 2-sleeve
+# deployment holds 2 x the sleeve capital. Deriving the snapshot from the legs
+# of the one sleeve that traded reported that deployment as holding half its
+# money and left the untraded symbol out of `holdings` altogether — inside a
+# hashed, reveal()-bound field.
+
+_TWO_SLEEVE_CASH = 100_000.0
+_QQQ_TRADE = {
+    "symbol": "QQQ",
+    "decided_on": date(2026, 6, 10),
+    "filled_on": date(2026, 6, 11),
+    "side": "buy",
+    "size": 100.0,
+    "price": 400.0,
+    "value": 40_000.0,
+    "commission": 20.0,
+    "cash_before": 100_000.0,
+    "cash_after": 59_980.0,
+    "position_before": 0.0,
+    "position_after": 100.0,
+}
+#: SPY trades on the decision date under test; QQQ traded a month EARLIER and
+#: does nothing today. Both sleeves are part of the deployment on both dates.
+_TWO_SLEEVE_LEGS = {"SPY": _LEGS, "QQQ": [_QQQ_TRADE]}
+_TWO_SLEEVE_CLOSES = {"QQQ": {_DECIDED: 425.0}, "SPY": {_DECIDED: 548.21}}
+
+
+def _two_sleeve(side: str) -> dict:
+    return deployment_portfolio(
+        decision_date=_DECIDED,
+        side=side,
+        sleeve_legs=_TWO_SLEEVE_LEGS,
+        sleeve_initial_cash=_TWO_SLEEVE_CASH,
+        sleeve_closes=_TWO_SLEEVE_CLOSES,
+    )
+
+
+def test_the_snapshot_covers_every_sleeve_not_just_the_one_that_traded():
+    before, after = _two_sleeve("before"), _two_sleeve("after")
+
+    # Both symbols present on both sides. The untraded sleeve's absence was the
+    # visible half of the bug: a reader could not tell "held nothing" from
+    # "was not looked at".
+    assert sorted(before["holdings"]) == ["QQQ", "SPY"] == sorted(after["holdings"])
+
+    # QQQ carries forward from its own earlier fill and is marked at TODAY's
+    # close, not at the price it filled at a month ago.
+    assert before["holdings"]["QQQ"] == {"size": 100.0, "price": 425.0, "value": 42_500.0}
+    assert after["holdings"]["QQQ"] == before["holdings"]["QQQ"], "an untraded sleeve does not move across a decision"
+
+    # SPY is bracketed by its own leg.
+    assert before["holdings"]["SPY"]["size"] == 0.0
+    assert after["holdings"]["SPY"]["size"] == 182.0
+
+
+def test_cash_is_the_whole_deployments_cash_not_one_sleeves():
+    """The load-bearing number. On this fixture the leg-derived rule reported
+    407.06 of post-decision cash for a deployment that actually held 60,387.06
+    across its two sleeves — and would report that same figure whether the
+    deployment had two sleeves or twenty, because it only ever summed the legs
+    it happened to be handed."""
+    before, after = _two_sleeve("before"), _two_sleeve("after")
+
+    spy_leg = _LEGS[0]
+    assert before["cash"] == pytest.approx(spy_leg["cash_before"] + _QQQ_TRADE["cash_after"])
+    assert after["cash"] == pytest.approx(spy_leg["cash_after"] + _QQQ_TRADE["cash_after"])
+
+    # ADVERSARIAL: the leg-derived rule this replaced, run on the same input.
+    # It must disagree — otherwise the aggregate is decoration.
+    leg_only_cash = sum(float(leg["cash_after"]) for leg in _LEGS)
+    assert leg_only_cash != pytest.approx(after["cash"])
+    assert "QQQ" not in {leg["symbol"] for leg in _LEGS}
+
+
+def test_a_sleeve_that_never_traded_holds_its_full_opening_capital():
+    """Flat, but funded — and NOT missing. Two sleeves that never traded is a
+    deployment holding 2x the sleeve capital in cash, which is the number the
+    per-leg version could never produce because there were no legs to sum."""
+    snapshot = deployment_portfolio(
+        decision_date=_DECIDED,
+        side="before",
+        sleeve_legs={"SPY": _LEGS, "QQQ": [], "IWM": []},
+        sleeve_initial_cash=_TWO_SLEEVE_CASH,
+        sleeve_closes={"QQQ": {_DECIDED: 425.0}},
+    )
+    assert snapshot["holdings"]["QQQ"] == {"size": 0.0, "price": 425.0, "value": 0.0}
+    # No leg and no close: the mark is an honest absence, never a zero, which
+    # would read as "this position is worthless".
+    assert snapshot["holdings"]["IWM"] == {"size": 0.0, "price": None, "value": None}
+    assert snapshot["cash"] == pytest.approx(_LEGS[0]["cash_before"] + 2 * _TWO_SLEEVE_CASH)
+
+
+def test_the_aggregate_snapshot_is_what_lands_in_the_hashed_trace():
+    """The wiring, not just the helper: what `deployment_portfolio` produces is
+    what the trace carries and what the keccak covers."""
+    trace = _build(portfolio_before=_two_sleeve("before"), portfolio_after=_two_sleeve("after"))
+    assert trace.portfolio_after["holdings"]["QQQ"]["size"] == 100.0
+    assert trace.portfolio_after["cash"] == _two_sleeve("after")["cash"]
+
+    understated = _build(
+        portfolio_before=_two_sleeve("before"),
+        portfolio_after={**_two_sleeve("after"), "cash": 407.06},
+    )
+    assert understated.trace_hash != trace.trace_hash, "the portfolio must be inside the hash"
+
+
+def test_multiple_fills_on_one_bar_bracket_the_whole_date():
+    """A sleeve that exits and re-enters on the same decision bar: `before` is
+    the first fill's opening state and `after` the last fill's closing state,
+    not an arbitrary one of the two."""
+    exit_leg = {**_LEGS[0], "side": "sell", "size": -50.0, "position_before": 50.0, "position_after": 0.0}
+    entry_leg = {**_LEGS[0], "position_before": 0.0, "position_after": 182.0, "filled_on": date(2026, 7, 16)}
+    legs = [exit_leg, entry_leg]
+    assert (
+        deployment_portfolio(
+            decision_date=_DECIDED, side="before", sleeve_legs={"SPY": legs}, sleeve_initial_cash=_TWO_SLEEVE_CASH
+        )["holdings"]["SPY"]["size"]
+        == 50.0
+    )
+    assert (
+        deployment_portfolio(
+            decision_date=_DECIDED, side="after", sleeve_legs={"SPY": legs}, sleeve_initial_cash=_TWO_SLEEVE_CASH
+        )["holdings"]["SPY"]["size"]
+        == 182.0
+    )
+
+
+def test_an_unknown_side_is_rejected():
+    with pytest.raises(ValueError, match="before"):
+        deployment_portfolio(
+            decision_date=_DECIDED, side="during", sleeve_legs={"SPY": _LEGS}, sleeve_initial_cash=_TWO_SLEEVE_CASH
+        )
+
+
+# ── resolve_paper_hashes: the corpus lookup, and what it may NOT swallow ────
+
+
+def test_resolve_paper_hashes_returns_nothing_for_no_ids():
+    """No DB touched at all — the early return is the reason this is cheap on
+    the overwhelmingly common path."""
+    assert resolve_paper_hashes([]) == []
+    assert resolve_paper_hashes(["", None]) == []  # type: ignore[list-item]
+
+
+class TestResolvePaperHashesAgainstTheCorpus:
+    """The corpus lookup against a real (tmp-sqlite) corpus table.
+
+    This is the regression for the shipped defect: the function imported
+    ``Paper`` from ``corpus_store``, where the class is ``PaperRecord``. Every
+    call raised ``ImportError``, a bare ``except Exception`` swallowed it, the
+    result was ``[]``, and a WARNING was logged on every settle — a permanent
+    "nothing resolves" indistinguishable from the honest empty result.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_db(self, tmp_path):
+        from archimedes.models import corpus_store  # noqa: F401  (table registration)
+
+        from tests.db_isolation import redirect_to_tmp_sqlite
+
+        yield from redirect_to_tmp_sqlite(tmp_path)
+
+    @staticmethod
+    def _seed(**columns):
+        from archimedes.db import get_session
+        from archimedes.models.corpus_store import PaperRecord
+
+        with get_session() as session:
+            session.merge(PaperRecord(**columns))
+            session.commit()
+
+    def test_the_class_this_function_imports_is_the_one_that_exists(self):
+        """The typo, stated directly. ``Paper`` is not a name in that module,
+        so the old import could only ever raise."""
+        from archimedes.models import corpus_store
+
+        assert hasattr(corpus_store, "PaperRecord")
+        assert not hasattr(corpus_store, "Paper")
+
+    def test_a_hash_resolves_when_the_record_carries_one(self):
+        self._seed(arxiv_id="0706.1497", title="Faber", content_hash="c" * 64)
+        assert resolve_paper_hashes(["0706.1497"]) == ["0706.1497:" + "c" * 64]
+
+    def test_it_falls_back_to_the_pdf_hash(self):
+        self._seed(arxiv_id="1234.5678", title="No content hash", pdf_sha256="d" * 64)
+        assert resolve_paper_hashes(["1234.5678"]) == ["1234.5678:" + "d" * 64]
+
+    def test_it_is_empty_when_no_record_exists(self):
+        """The honest empty result — the one the swallowed ImportError was
+        impersonating. Same call, real corpus, genuinely nothing there."""
+        assert resolve_paper_hashes(["2301.00001"]) == []
+
+    def test_a_record_with_no_hash_at_all_is_omitted_not_half_formed(self):
+        self._seed(arxiv_id="2401.00002", title="Bare id")
+        assert resolve_paper_hashes(["2401.00002"]) == []
+
+    def test_only_the_ids_that_resolve_are_returned(self):
+        self._seed(arxiv_id="0706.1497", title="Faber", content_hash="c" * 64)
+        assert resolve_paper_hashes(["0706.1497", "2301.00001"]) == ["0706.1497:" + "c" * 64]
+
+    def test_a_wrong_model_class_RAISES_instead_of_becoming_an_empty_list(self, monkeypatch):
+        """The narrowing, shown to reject something.
+
+        Fail-soft is correct for a corpus OUTAGE and wrong for a bug in this
+        function — the distinction the bare ``except Exception`` erased. This
+        is also why the catch is ``DBAPIError`` and not the ``SQLAlchemyError``
+        base: querying a non-model raises ``ArgumentError``, which the base
+        would have swallowed into the same ``[]`` a healthy empty corpus
+        returns."""
+        from archimedes.models import corpus_store
+        from sqlalchemy.exc import ArgumentError
+
+        monkeypatch.setattr(corpus_store, "PaperRecord", object)
+        with pytest.raises(ArgumentError):
+            resolve_paper_hashes(["0706.1497"])
+
+    def test_a_row_attribute_this_code_is_wrong_about_RAISES(self, monkeypatch):
+        """The other programming error: reading a column that is not there.
+        The result comprehension therefore sits OUTSIDE the try."""
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        import archimedes.db as db_module
+
+        class _Result:
+            def query(self, *args, **kwargs):
+                return self
+
+            def filter(self, *args, **kwargs):
+                return self
+
+            def all(self):
+                return [SimpleNamespace(arxiv_id="0706.1497")]  # no content_hash, no pdf_sha256
+
+        @contextmanager
+        def _session():
+            yield _Result()
+
+        monkeypatch.setattr(db_module, "get_session", _session)
+        with pytest.raises(AttributeError):
+            resolve_paper_hashes(["0706.1497"])
+
+    def test_an_import_error_RAISES(self, monkeypatch):
+        """The exact shape of the shipped defect, reproduced: the model import
+        itself failing. Removing the name is what importing a name that was
+        never there always did — and it must now be loud instead of returning
+        the same ``[]`` as a healthy lookup."""
+        from archimedes.models import corpus_store
+
+        monkeypatch.delattr(corpus_store, "PaperRecord")
+        with pytest.raises(ImportError):
+            resolve_paper_hashes(["0706.1497"])
+
+    def test_a_real_database_outage_IS_still_soft(self, monkeypatch, caplog):
+        """The other half of the narrowing: the case fail-soft was for. A
+        SQLAlchemyError is an outage, and the trace must still be written."""
+        import archimedes.db as db_module
+        from sqlalchemy.exc import OperationalError
+
+        def _down():
+            raise OperationalError("select 1", {}, Exception("corpus is down"))
+
+        monkeypatch.setattr(db_module, "get_session", _down)
+        with caplog.at_level("WARNING"):
+            assert resolve_paper_hashes(["0706.1497"]) == []
+        assert any("content-hash lookup failed" in r.getMessage() for r in caplog.records)
 
 
 # ── Hash properties ─────────────────────────────────────────────────────────
