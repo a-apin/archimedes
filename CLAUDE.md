@@ -194,6 +194,13 @@ Live picture: [`docs/architecture.md`](docs/architecture.md). Deployed contract 
   `--graph` show unit-of-work boundaries. Rebase-merge confuses `git branch --merged`
   (rewritten commits aren't ancestors of `main`) and loses the "this was a single PR" signal
   needed for post-hoc forensics.
+- **Close the issue from the PR body with a real keyword.** `Closes #123` / `Fixes #123` /
+  `Resolves #123`, the keyword immediately before each `#`, repeated once per issue —
+  `Closes #1 and #2` closes only #1. Without one the work merges and the issue stays open,
+  which is how a pile of already-fixed-but-still-open issues accumulates that nobody goes
+  back to drain. Referencing without closing is correct for partial work; write `Part of
+  #123` so the non-closing reference reads as deliberate.
+  [`.github/pull_request_template.md`](.github/pull_request_template.md) prompts for it.
 - **The few hard rules — universal, and they do not impede speed:** never force-push
   `main`; never commit secrets or `.env`; one logical change per PR. Force-pushing your
   *own* unmerged feature branch is fine and expected (rebase-before-merge).
