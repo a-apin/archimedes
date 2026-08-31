@@ -577,12 +577,14 @@ empty list for a spec that never enters; **G7** no-op parity.
 yields one entry per date with both legs.
 
 **3. Migration + model: `paper_decision_traces`.**
-`backend/migrations/versions/<rev>_paper_decision_traces.py`, `down_revision =
-"85ca5310b7a1"` (the current single head — re-point at the live head at write time and
-verify with the real `alembic heads`).
+`backend/migrations/versions/d7c41f9b2e58_paper_decision_traces.py`, `down_revision =
+"85ca5310b7a1"` (verified the single head at write time with the real script directory;
+`alembic heads` now returns `d7c41f9b2e58` alone).
 Columns: `id`, `deployment_id` FK→`paper_deployments.id` ON DELETE CASCADE (matching the
 ledger's own cascade), `decision_date` (Date), `trace_id`, `trace_hash`, `status`
-(`published|failed|unowned|disabled`), `error` (Text, nullable), `created_at`, `updated_at`.
+(`published|failed|unowned|disabled`), `provenance` (`settle|backfill`, the value hashed
+into the published trace — without it every re-replay reads as drift, because the
+provenance label is inside the hash), `error` (Text, nullable), `created_at`, `updated_at`.
 `UniqueConstraint(deployment_id, decision_date)` — the idempotency key.
 `PaperDeployment` gains `anchor_traces` (Boolean, default `false`), `trace_gap_at`,
 `trace_drift_at` (DateTime, nullable).

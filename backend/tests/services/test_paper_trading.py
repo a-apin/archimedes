@@ -68,7 +68,7 @@ def test_advance_appends_only_from_the_deploy_date():
     with _session() as s:
         dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
         out = advance_deployment(s, dep, replay=_replay_v1)
-        assert out == {"appended": 3, "drift": 0}
+        assert (out["appended"], out["drift"]) == (3, 0)
         dates = [r.date for r in s.query(PaperDailyReturn).order_by(PaperDailyReturn.date)]
         assert dates == [date(2026, 8, 1), date(2026, 8, 4), date(2026, 8, 5)]
         assert date(2026, 7, 30) not in dates  # law 4
@@ -78,14 +78,16 @@ def test_second_advance_is_idempotent_and_new_days_append():
     with _session() as s:
         dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
         advance_deployment(s, dep, replay=_replay_v1)
-        assert advance_deployment(s, dep, replay=_replay_v1) == {"appended": 0, "drift": 0}  # law 1
+        second = advance_deployment(s, dep, replay=_replay_v1)
+        assert (second["appended"], second["drift"]) == (0, 0)  # law 1
 
         def replay_v2(spec_dict, deployed_at):
             out = _replay_v1(spec_dict, deployed_at)
             out[date(2026, 8, 6)] = 0.003  # the next trading day arrives
             return out
 
-        assert advance_deployment(s, dep, replay=replay_v2) == {"appended": 1, "drift": 0}
+        third = advance_deployment(s, dep, replay=replay_v2)
+        assert (third["appended"], third["drift"]) == (1, 0)
         assert s.query(PaperDailyReturn).count() == 4
 
 
@@ -139,17 +141,20 @@ def test_advance_all_isolates_failures():
         calls = {}
 
         def selective(spec_dict, deployed_at):
+            """The settle path's own seam (#1575): ONE replay produces both the
+            dated returns and the decision journal, so a trace and the ledger
+            row it explains can never come from two different runs."""
             if spec_dict["entry"] == _SPEC["entry"]:
                 calls["good"] = True
-                return _replay_v1(spec_dict, deployed_at)
+                return _replay_v1(spec_dict, deployed_at), {}
             raise paper_trading.PaperReplayError("boom")
 
-        original = paper_trading.replay_spec
-        paper_trading.replay_spec = selective
+        original = paper_trading.replay_spec_with_decisions
+        paper_trading.replay_spec_with_decisions = selective
         try:
             out = advance_all(s)
         finally:
-            paper_trading.replay_spec = original
+            paper_trading.replay_spec_with_decisions = original
         assert out["deployments"] == 2
         assert out["ok"] == 1 and out["failed"] == 1
         assert calls.get("good") is True
