@@ -67,9 +67,9 @@ _CITATION_RE = re.compile(
 
 # The ledger's second citation form: a bare `:NN` that inherits the path from the last full
 # citation earlier in the same line ("`live_rigor_gate.py:54` defines DEGENERATE; `:92`
-# makes `passes` a plain bool"). 28 of the ledger's citations are written this way, and an
-# earlier revision of this file did not match them at all — so a fifth of the evidence was
-# unchecked while the module docstring advertised that line numbers are verified. A guard
+# makes `passes` a plain bool"). Roughly a fifth of the ledger's citations are written this
+# way, and an earlier revision of this file did not match them at all — so that whole slice
+# was unchecked while the module docstring advertised that line numbers are verified. A guard
 # with a silent 20% hole is the failure mode this whole file exists to catch, so the
 # shorthands are resolved against their anchor and range-checked like any other citation.
 _SHORTHAND_RE = re.compile(r"`:(\d+)(?:-\d+)?`")
