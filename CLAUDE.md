@@ -23,10 +23,9 @@ them in non-custodial vaults on Arc with USDC settlement is roadmap, not shipped
 write it in the future tense.** The `Vault`/`VaultFactory` contracts are real and deployed
 ([ADR](docs/adr/non-custodial-vault-owner-agent.md)), but the deploy-a-vault journey is
 gated off every public surface behind `ROADMAP_SURFACES_ENABLED`
-([`ui/src/featureFlags.js`](ui/src/featureFlags.js), off by default, #1266/#1354; the copy
-lives in `ui/src/roadmapCopy*.js` and `ui/test/roadmap-copy.test.js` fails if it leaks back
-onto a public page), and #1469 is open to scrub the remaining present-tense claims. Spine
-(generate → rigor-gate → execute → monitor → explore) locked in
+([`ui/src/featureFlags.js`](ui/src/featureFlags.js), off by default, #1266/#1354, guarded by
+`ui/test/roadmap-copy.test.js`), and #1469 is open to scrub the remaining present-tense
+copy. Spine (generate → rigor-gate → execute → monitor → explore) locked in
 [`docs/user-stories.md`](docs/user-stories.md).
 Repo [`a-apin/archimedes`](https://github.com/a-apin/archimedes) · Discord **Archimedes
 Arcadia** · live at [`archimedes-arc.com`](https://archimedes-arc.com/) (Arc testnet, chain
