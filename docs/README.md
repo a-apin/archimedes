@@ -99,6 +99,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | reference | Dan Browne | — | Passport architecture diagram + reference. |
 | [`bedrock-model-cost-comparison.md`](bedrock-model-cost-comparison.md) | reference | Dan Browne | — | Bedrock model costs, us-east-1 on-demand. LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`. |
 | [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | reference | Dan Browne | — | Per-generation LLM cost estimate. |
+| [`infrastructure-provider-analysis.md`](infrastructure-provider-analysis.md) | reference | Daniel Reis | 2026-08-16 | Modeled infra cost comparison across providers (list prices, not invoice). |
 
 ## On-chain and Arc
 
@@ -163,6 +164,9 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off). |
 | [`plans/2026-07-28-account-auth-app-boundary.md`](plans/2026-07-28-account-auth-app-boundary.md) | plan | Daniel Reis | 2026-07-28 | The #1194 account-auth boundary plan. |
 | [`plans/2026-08-15-core-app-visual-refresh.md`](plans/2026-08-15-core-app-visual-refresh.md) | plan | Daniel Reis | 2026-08-15 | Core-app visual refresh plan. |
+| [`plans/2026-08-22-calm-precision-rebrand.md`](plans/2026-08-22-calm-precision-rebrand.md) | plan | Daniel Reis | 2026-08-22 | Calm-precision rebrand plan (PR #1469). |
+| [`plans/2026-08-23-phantom-inspired-public-landing.md`](plans/2026-08-23-phantom-inspired-public-landing.md) | plan | Daniel Reis | 2026-08-23 | Public landing redesign plan (PR #1469). |
+| [`plans/2026-08-23-security-posture-page.md`](plans/2026-08-23-security-posture-page.md) | plan | Daniel Reis | 2026-08-23 | Static /security posture page plan (PR #1469). |
 | [`plans/2026-08-30-intraday-paper-trading.md`](plans/2026-08-30-intraday-paper-trading.md) | draft | Dan Browne | 2026-08-30 | Intraday paper trading (v8 Lane 3.5). Recommends 15-min mark-to-market on open positions (`paper_marks` + retention + a runner-box loop) and defers intraday *signal* evaluation to v2 behind an ADR — bar-counted rebalance cadence and indicator warmup would silently change strategy semantics. |
 | [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |
 | [`plans/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | plan | Dan Browne | — | Spine+ v2 phase plan. |
