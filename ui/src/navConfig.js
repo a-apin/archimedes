@@ -18,9 +18,22 @@
 //   DISCOVER — open to anonymous visitors (no wallet needed)
 //   STRATEGY — wallet-gated: generate + your saved strategies
 //   POSITION — wallet-gated: deployed vaults, on-chain audit, post-hoc review
-// Item order inside DISCOVER (Explore → Corpus → Architecture) follows the
-// natural user-onboarding read: browse the seed strategies first, see the
-// substrate they're drawn from second, see the system that fuses them third.
+// Item order inside DISCOVER (Explore → Corpus) follows the natural
+// user-onboarding read: browse the seed strategies first, see the substrate
+// they're drawn from second.
+//
+// Architecture is deliberately NOT a shell nav item (#1370, PR #1400):
+// `pageToPath('architecture')` resolves to the PUBLIC `/architecture` route
+// (routes.js PUBLIC_PATHS, not APP_PATHS), so clicking it from inside the
+// shell rendered the page in PublicLayout — no sidebar, no breadcrumbs. It
+// stays reachable from PublicLayout's own nav and by direct URL; #1370's
+// anti-goal forbids fixing it by minting a second, /app-side route.
+//
+// MERGE-ORDER NOTE: #1400 removes that item from the NAV array while it still
+// lives inline in Layout.jsx; this PR moves NAV out to this file. Those two
+// edits do not textually conflict, so leaving the item here would have let a
+// clean merge silently resurrect the entry #1400 deleted. Removed here so the
+// merge in either order lands on the same shell nav.
 export const NAV = [
 	{
 		group: null,
@@ -31,7 +44,6 @@ export const NAV = [
 		items: [
 			{ id: "explore", label: "Explore", icon: "i-lucide-compass" },
 			{ id: "corpus", label: "Corpus", icon: "i-lucide-library" },
-			{ id: "architecture", label: "Architecture", icon: "i-lucide-network" },
 		],
 	},
 	{
