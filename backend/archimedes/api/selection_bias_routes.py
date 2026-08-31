@@ -19,6 +19,7 @@ from archimedes.services.rigor_evaluator import (
     compute_average_pairwise_correlation,
     compute_board_level_fdr,
     compute_library_pbo,
+    compute_library_pbo_rf_convention,
     compute_pbo,
     load_daily_returns_store,
     run_rigor_gate,
@@ -66,6 +67,10 @@ class RigorGateDetail(BaseModel):
     look_ahead: str = "MISSING"
     cpcv: str = "MISSING"
     dsr_convention: str = "MISSING"
+    # #1409: rides the same payload path as dsr_convention -- "excess_tbill_series"
+    # (historical 3-month T-bill, per-window aligned) or "excess_flat_fallback" (the
+    # disclosed flat-5% fallback). See RigorGateResult.rf_convention.
+    rf_convention: str = "MISSING"
     iid: str = "MISSING"
     regime_robustness: str = "MISSING"
 
@@ -87,6 +92,17 @@ class LibraryPbo(BaseModel):
     data_vintage: str | None = None  # store vintage, e.g. "2026-06-11"
     selection_set_size: int = 0  # number of strategies in the selection set
     source: str = "library_cscv"  # provenance label; "unavailable" when value is None
+    # #1409 review fix (2026-08-20): `compute_library_pbo` threads the joint
+    # date axis into CSCV's per-split Sharpe ranking UNCONDITIONALLY (no
+    # caller opt-in, unlike `dates` on `run_rigor_gate`) -- so `value` can
+    # already be computed on the historical T-bill series today, even while
+    # every `run_rigor_gate` call site still reports
+    # `rf_convention=excess_flat_fallback` (no live caller threads `dates`
+    # there yet). Without this field, a changed `value` shipped with no
+    # disclosure of which rate produced it. "MISSING" when the value itself
+    # is unavailable (fewer than two series align) -- there is no convention
+    # to disclose for a PBO that wasn't computed.
+    rf_convention: str = "MISSING"
 
 
 class BoardLevelFdr(BaseModel):
@@ -373,13 +389,15 @@ async def evaluate_rigor_gate(
         # generation search of ours, so its self-contained trial count is 1 (the
         # paper's headline config) — with num_trials=1 the DSR expectation-of-max
         # term collapses, so the strategy is judged purely on its own return series.
-        # REVERSES the prior library-size deflation (#770/#820) — needs Önder's
-        # sign-off; it raises curated pass rates by removing a cross-strategy penalty.
+        # REVERSES the prior library-size deflation (#770/#820) — ratified by Önder
+        # 2026-08-31 (#1555); it raises curated pass rates by removing a cross-strategy
+        # penalty, reviewed as the removal of a penalty for a search nobody ran.
         num_trials = 1
 
         # The strategy library is the multiple-testing selection set; correlated
         # strategies (overlapping assets/signals) carry fewer independent trials, so
-        # the DSR effective-N correction relaxes the penalty via N_eff = N/(1+(N-1)ρ̄).
+        # the DSR relaxes the penalty via the equicorrelated E[max] shrinkage
+        # √(1−ρ̄) (#1558/#1559 — the earlier N_eff form was the wrong shape).
         #
         # NOTE: this cohort-wide correlation is INERT today because num_trials=1
         # above (see _dsr_from_stats: E[max_N]=0 when N==1) — it is computed and
@@ -470,6 +488,7 @@ async def evaluate_rigor_gate(
                         look_ahead=details.get("look_ahead", "MISSING"),
                         cpcv=details.get("cpcv", "MISSING"),
                         dsr_convention=details.get("dsr_convention", "MISSING"),
+                        rf_convention=details.get("rf_convention", "MISSING"),
                         iid=details.get("iid", "MISSING"),
                         regime_robustness=details.get("regime_robustness", "MISSING"),
                     ),
@@ -652,6 +671,31 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     this caller" so the route 404s either way — existence must never leak to a
     non-owner via a different response shape.
 
+    **This is CARD-level and stays on ``is_strategy_visible`` — a deliberate
+    call, not an oversight (#1557).** #1557 moved the reasoning-disclosure
+    surfaces (debate transcript, full daily-return series, DSL spec) onto
+    ``is_strategy_reasoning_visible``, which ignores ``is_published``. This
+    route is not one of them, for two reasons that were checked rather than
+    assumed:
+
+      1. Every number it returns — ``dsr_p_value``, ``pbo_score``,
+         ``out_of_sample_sharpe``, ``deflated_sharpe_ratio``,
+         ``passes_rigor_gate`` — is ALREADY served anonymously for published
+         rows by ``strategies_routes._public_generated_strategy_responses`` on
+         ``GET /api/leaderboard``. Gating here would close nothing while the
+         identical values stayed public one route over — a guard that rejects
+         nothing real.
+      2. The rigor verdict is the CERTIFICATION of a public claim, not the
+         derivation behind it. A published card asserts "this passed the gate";
+         the product's whole positioning is that a reader can check that
+         assertion. Making the check owner-only would leave the claim standing
+         and the verification private.
+
+    The existing contract test ``test_generated_strategy_published_visible_to_
+    anonymous_caller`` pins this. If a future ticket decides the gate detail IS
+    private, it must also stop the leaderboard from publishing the same
+    numbers, or it changes nothing.
+
     Returns a MISSING-shaped result (mirroring the curated "no backtest data"
     branch above) when the strategy exists, is visible, but has fewer than 10
     persisted daily returns — the honest "Pending Backtest" case, not a 404.
@@ -765,6 +809,7 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
             look_ahead=details.get("look_ahead", "MISSING"),
             cpcv=details.get("cpcv", "MISSING"),
             dsr_convention=details.get("dsr_convention", "MISSING"),
+            rf_convention=details.get("rf_convention", "MISSING"),
             iid=details.get("iid", "MISSING"),
             regime_robustness=details.get("regime_robustness", "MISSING"),
         ),
@@ -912,22 +957,31 @@ def _store_signature() -> tuple[int, int] | None:
     return (count, max_id or 0)
 
 
-def _cached_library_pbo() -> tuple[float | None, str | None, int]:
+def _cached_library_pbo() -> tuple[float | None, str | None, int, str]:
     """Load the daily-returns store and compute the single library CSCV PBO.
 
-    Returns ``(value, data_vintage, selection_set_size)`` where ``value`` is the
-    library PBO (``None`` fail-closed / store empty), ``data_vintage`` is the
-    store's max vintage, and ``selection_set_size`` is the number of aligned
-    series actually used by the CSCV. Cached on the store's DB signature so the
-    expensive CSCV does not re-run on every request.
+    Returns ``(value, data_vintage, selection_set_size, rf_convention)`` where
+    ``value`` is the library PBO (``None`` fail-closed / store empty),
+    ``data_vintage`` is the store's max vintage, ``selection_set_size`` is the
+    number of aligned series actually used by the CSCV, and ``rf_convention``
+    (#1409 review fix) discloses which rf rate ``value`` was actually computed
+    against. ``compute_library_pbo`` is called here at its default
+    ``use_tbill_series=False`` (#1409 round-4 review fix — the mechanism to
+    thread the joint date axis exists and is tested, but is not flipped on for
+    this live route, matching every ``run_rigor_gate`` call site's own
+    not-yet-wired ``dates`` default), so ``rf_convention`` is always
+    ``excess_flat_fallback`` here today — byte-identical to every pre-#1409
+    grade. Cached on the store's DB signature so the expensive CSCV does not
+    re-run on every request.
 
-    Never raises: an empty store or a DB read failure yields ``(None, None, 0)``.
+    Never raises: an empty store or a DB read failure yields
+    ``(None, None, 0, "MISSING")``.
     """
     from archimedes.services.rigor_evaluator import align_returns_store
 
     signature = _store_signature()
     if signature is None:
-        return None, None, 0
+        return None, None, 0, "MISSING"
     if signature in _LIBRARY_PBO_CACHE:
         return _LIBRARY_PBO_CACHE[signature]
 
@@ -936,7 +990,12 @@ def _cached_library_pbo() -> tuple[float | None, str | None, int]:
     # (the count CSCV runs over), not the raw row count.
     selection_set_size = len(align_returns_store(store))
     value = compute_library_pbo(store)
-    result = (value, data_vintage, selection_set_size)
+    # "MISSING" (not whatever compute_library_pbo_rf_convention resolved) when
+    # there's no value to attribute a convention to — e.g. the joint window is
+    # too short for compute_library_pbo's own s_partitions guard, a case that
+    # guard doesn't need to know about since it only resolves dates, not PBO.
+    rf_convention = compute_library_pbo_rf_convention(store) if value is not None else "MISSING"
+    result = (value, data_vintage, selection_set_size, rf_convention)
     _LIBRARY_PBO_CACHE[signature] = result
     return result
 
@@ -948,16 +1007,21 @@ def _library_pbo_payload() -> LibraryPbo:
     unavailable or the PBO fails closed, returns ``LibraryPbo(value=None,
     source="unavailable")`` and never crashes.
     """
-    value, data_vintage, selection_set_size = _cached_library_pbo()
+    value, data_vintage, selection_set_size, rf_convention = _cached_library_pbo()
     if value is None:
         return LibraryPbo(
-            value=None, data_vintage=data_vintage, selection_set_size=selection_set_size, source="unavailable"
+            value=None,
+            data_vintage=data_vintage,
+            selection_set_size=selection_set_size,
+            source="unavailable",
+            rf_convention=rf_convention,
         )
     return LibraryPbo(
         value=value,
         data_vintage=data_vintage,
         selection_set_size=selection_set_size,
         source="library_cscv",
+        rf_convention=rf_convention,
     )
 
 

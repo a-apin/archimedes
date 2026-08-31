@@ -1,0 +1,334 @@
+"""Unit tests for ``archimedes.services.rf_series`` (issue #1409).
+
+Hermetic: reads only the vendored ``backend/archimedes/data/rf/DGS3MO.csv``
+(repo data, no network) plus literal in-test CSV fixtures for the
+missing-value-marker case. No DB, no Redis, no `.env`.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pytest
+from archimedes.services import rf_series
+
+# ─── _parse_csv_text: literal fixture slices ───────────────────────────
+
+
+def test_parse_csv_handles_dot_missing_marker() -> None:
+    """FRED's classic '.' missing-value marker is skipped, not coerced to 0.0,
+    and does not poison the neighboring (real) rows either side of it."""
+    text = "DATE,DGS3MO\n2020-01-01,1.55\n2020-01-02,.\n2020-01-03,1.54\n"
+    parsed = rf_series._parse_csv_text(text)
+    assert parsed == {"2020-01-01": 1.55, "2020-01-03": 1.54}
+    assert "2020-01-02" not in parsed
+
+
+def test_parse_csv_handles_empty_missing_marker() -> None:
+    """The fredgraph.csv export path (the one actually vendored) uses an EMPTY
+    value field for missing observations, not '.'. Same skip-don't-poison rule."""
+    text = "observation_date,DGS3MO\n2020-06-01,0.15\n2020-06-02,\n2020-06-03,0.14\n"
+    parsed = rf_series._parse_csv_text(text)
+    assert parsed == {"2020-06-01": 0.15, "2020-06-03": 0.14}
+    assert "2020-06-02" not in parsed
+
+
+def test_parse_csv_skips_header_comment_lines() -> None:
+    text = "# a staleness comment\n# another comment line\nDATE,DGS3MO\n2020-01-01,1.55\n"
+    parsed = rf_series._parse_csv_text(text)
+    assert parsed == {"2020-01-01": 1.55}
+
+
+def test_parse_csv_accepts_both_date_column_names() -> None:
+    a = rf_series._parse_csv_text("DATE,DGS3MO\n2020-01-01,1.55\n")
+    b = rf_series._parse_csv_text("observation_date,DGS3MO\n2020-01-01,1.55\n")
+    assert a == b == {"2020-01-01": 1.55}
+
+
+def test_parse_csv_skips_unparseable_value(caplog: pytest.LogCaptureFixture) -> None:
+    text = "DATE,DGS3MO\n2020-01-01,1.55\n2020-01-02,not-a-number\n2020-01-03,1.54\n"
+    with caplog.at_level("WARNING"):
+        parsed = rf_series._parse_csv_text(text)
+    assert parsed == {"2020-01-01": 1.55, "2020-01-03": 1.54}
+
+
+# ─── The real vendored file loads and is well-formed ───────────────────
+
+
+def test_vendored_csv_loads_and_is_nonempty() -> None:
+    series = rf_series._load_csv()
+    assert len(series) > 1000  # decades of daily/business-day observations
+    for v in list(series.values())[:50]:
+        assert 0.0 <= v <= 25.0  # sane annualized-percent bound (historical range ~0-17%)
+
+
+def test_vendored_csv_covers_the_2015_near_zero_rate_window() -> None:
+    """Sanity precondition for the 2015-window regression test elsewhere: the
+    vendored series must actually cover 2015 (the ZIRP-era near-zero rf window
+    the decision record cites) for that test to be meaningful."""
+    series = rf_series._load_csv()
+    assert "2015-01-02" in series
+    assert series["2015-01-02"] < 0.10  # ~0.02%, per the decision record's "rf≈0.05%"
+
+
+# ─── resolve_annual_rf_for_dates: the alignment contract ───────────────
+
+
+def test_no_dates_is_the_disclosed_fallback() -> None:
+    rates, convention = rf_series.resolve_annual_rf_for_dates(None)
+    assert rates == []
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+
+    rates, convention = rf_series.resolve_annual_rf_for_dates([])
+    assert rates == []
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+
+
+def test_exact_dates_resolve_to_the_series() -> None:
+    rates, convention = rf_series.resolve_annual_rf_for_dates(["2020-01-02", "2020-01-03"])
+    assert convention == rf_series.RF_CONVENTION_SERIES
+    assert len(rates) == 2
+    assert all(r > 0.0 for r in rates)
+
+
+def test_saturday_forward_fills_from_friday() -> None:
+    """2020-01-03 is a Friday, 2020-01-04 is a Saturday (no published rate,
+    the vendored series simply has no row for it) -- the Saturday must resolve
+    to Friday's rate exactly, not the next available date's."""
+    series = rf_series._load_csv()
+    friday_rate = series["2020-01-03"]
+    assert "2020-01-04" not in series  # precondition: no row published for the Saturday
+
+    rates, convention = rf_series.resolve_annual_rf_for_dates(["2020-01-03", "2020-01-04"])
+    assert convention == rf_series.RF_CONVENTION_SERIES
+    assert rates[0] == friday_rate
+    assert rates[1] == friday_rate  # forward-filled from Friday, not Monday 2020-01-06
+
+
+def test_accepts_date_objects_not_just_strings() -> None:
+    rates, convention = rf_series.resolve_annual_rf_for_dates([date(2020, 1, 3)])
+    assert convention == rf_series.RF_CONVENTION_SERIES
+    assert len(rates) == 1
+
+
+def test_within_grace_window_forward_fills_past_series_end() -> None:
+    series = rf_series._load_csv()
+    sorted_dates = sorted(series)
+    last_date = sorted_dates[-1]
+    last_rate = series[last_date]
+    last_date_obj = date.fromisoformat(last_date)
+
+    # 5 calendar days past the last published date -- inside the 14-day grace.
+    from datetime import timedelta
+
+    near_future = (last_date_obj + timedelta(days=5)).isoformat()
+    rates, convention = rf_series.resolve_annual_rf_for_dates([last_date, near_future])
+    assert convention == rf_series.RF_CONVENTION_SERIES
+    assert rates == [last_rate, last_rate]
+
+
+def test_beyond_grace_window_falls_back_for_the_whole_grade(caplog: pytest.LogCaptureFixture) -> None:
+    """Design item 2: a date more than 14 calendar days past the vendored
+    series' end makes the WHOLE grade fall back to flat -- not just that one
+    bar -- and the fallback is logged loudly (never silent)."""
+    series = rf_series._load_csv()
+    last_date_obj = date.fromisoformat(max(series))
+
+    from datetime import timedelta
+
+    far_future = (last_date_obj + timedelta(days=30)).isoformat()
+    with caplog.at_level("WARNING"):
+        rates, convention = rf_series.resolve_annual_rf_for_dates(["2020-01-02", far_future], flat_annual_pct=5.0)
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    # The WHOLE grade falls back -- including the in-window 2020-01-02 bar,
+    # not just the out-of-coverage one.
+    assert rates == [5.0, 5.0]
+    assert any("14" in rec.message or "grace" in rec.message.lower() for rec in caplog.records)
+
+
+def test_date_before_series_start_falls_back() -> None:
+    rates, convention = rf_series.resolve_annual_rf_for_dates(["1900-01-01"])
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    assert rates == [5.0]
+
+
+def test_custom_flat_annual_pct_used_in_fallback() -> None:
+    rates, convention = rf_series.resolve_annual_rf_for_dates(None, flat_annual_pct=7.5)
+    assert rates == []  # empty-dates fallback signals via [], caller broadcasts
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+
+    rates, convention = rf_series.resolve_annual_rf_for_dates(["1900-01-01"], flat_annual_pct=7.5)
+    assert rates == [7.5]
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+
+
+# ─── Malformed / unsupported date input fails SOFT, not crashes ─────────
+# (2026-08-20 review fix.) Every other unresolvable-date case above degrades
+# to the flat rate, loudly logged, never a crash — a non-ISO string or an
+# unsupported type used to be the one exception, raising uncaught out of
+# `resolve_annual_rf_for_dates` and crashing the whole rigor gate. That
+# contradicts this module's own fail-soft posture and the PR's own claim that
+# "the mechanism is fully built, tested, and ready to wire the moment a
+# caller has real per-bar dates" — a caller's date format is exactly the kind
+# of input this function must not trust blindly.
+#
+# (2026-08-21 review fix.) `numpy.datetime64` moved OUT of "unsupported type"
+# and into a real parse (`_to_iso` now recognizes it by duck-typed class
+# name) — it was landing on the flat fallback despite being exactly the type
+# this module's own docstring names as "the type a pandas/numpy backtest
+# series is most likely to actually emit", which meant the mechanism this PR
+# advertises as "ready to wire" would have silently degraded the first real
+# caller that wired it via `.values`/`.to_numpy()`. `test_unsupported_date_type_
+# falls_back_instead_of_crashing` below now uses a genuinely-unsupported type
+# (a plain `int`) to keep exercising the crash-vs-fallback contract; the two
+# new tests after it cover the `numpy.datetime64` parse itself, including the
+# `NaT` malformed case, which must still fall back.
+
+
+def test_non_iso_date_string_falls_back_instead_of_crashing(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING"):
+        rates, convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02", "01/01/2015"], flat_annual_pct=6.0)
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    assert rates == [6.0, 6.0]  # WHOLE grade falls back, including the valid first bar
+    assert any("malformed" in rec.message.lower() for rec in caplog.records)
+
+
+def test_unsupported_date_type_falls_back_instead_of_crashing(caplog: pytest.LogCaptureFixture) -> None:
+    """A genuinely unsupported type (an int here -- not `str`/`date`/
+    `datetime`/`numpy.datetime64`, all of which `_to_iso` now parses -- see
+    `test_numpy_datetime64_resolves_the_same_as_the_equivalent_iso_string`
+    below) must degrade the same way, not raise."""
+    with caplog.at_level("WARNING"):
+        rates, convention = rf_series.resolve_annual_rf_for_dates([20150102], flat_annual_pct=6.0)  # type: ignore[list-item]
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    assert rates == [6.0]
+    assert any("unsupported date type" in rec.message.lower() for rec in caplog.records)
+
+
+def test_numpy_datetime64_resolves_the_same_as_the_equivalent_iso_string() -> None:
+    """2026-08-21 review fix: `numpy.datetime64` -- by this module's OWN
+    docstring, "the type a pandas/numpy backtest series is most likely to
+    actually emit" -- used to be treated as unsupported and degrade the
+    WHOLE grade to the flat fallback (see the PR body's round-3 mutation
+    transcript: this used to be the FALLBACK case above). It now parses,
+    resolving to the identical rate the equivalent ISO string resolves to --
+    proving the fix is a real parse, not merely a different fallback
+    reason."""
+    np = pytest.importorskip("numpy")
+
+    iso_rates, iso_convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02", "2015-01-05"])
+    dt64_rates, dt64_convention = rf_series.resolve_annual_rf_for_dates(
+        [np.datetime64("2015-01-02"), np.datetime64("2015-01-05")]
+    )
+
+    assert iso_convention == rf_series.RF_CONVENTION_SERIES
+    assert dt64_convention == rf_series.RF_CONVENTION_SERIES
+    assert dt64_rates == iso_rates
+
+    # Also exercise the precision numpy actually emits from a pandas
+    # DatetimeIndex's `.values` / `.to_numpy()` (nanosecond, not day,
+    # precision) -- the real hazard the review finding named.
+    ns_rates, ns_convention = rf_series.resolve_annual_rf_for_dates(
+        [np.datetime64("2015-01-02T00:00:00.000000000"), np.datetime64("2015-01-05T00:00:00.000000000")]
+    )
+    assert ns_convention == rf_series.RF_CONVENTION_SERIES
+    assert ns_rates == iso_rates
+
+
+def test_numpy_ndarray_of_dates_resolves_like_the_equivalent_list() -> None:
+    """A numpy ndarray of dates must resolve, not raise.
+
+    ``test_numpy_datetime64_resolves_the_same_as_the_equivalent_iso_string``
+    passes a Python LIST of ``np.datetime64`` scalars, but the caller shape
+    this module's own docstring names -- ``.values`` / ``.to_numpy()`` on a
+    pandas ``DatetimeIndex`` -- is an ``ndarray``, and an ndarray with >1
+    element raises ``ValueError`` on the ``if not dates:`` truthiness test
+    before it ever reaches ``_to_iso``'s datetime64 handling. That
+    contradicts this module's stated posture: every unresolvable-date case
+    degrades to the flat rate loudly, never a crash.
+
+    The failure was length-dependent, which is why a list-based test could
+    not catch it: a 1-element ndarray is truthy-testable and worked, so only
+    a real multi-bar window (i.e. every real one) broke.
+    """
+    np = pytest.importorskip("numpy")
+
+    iso_rates, iso_convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02", "2015-01-05", "2015-01-06"])
+    arr = np.array(["2015-01-02", "2015-01-05", "2015-01-06"], dtype="datetime64[ns]")
+
+    arr_rates, arr_convention = rf_series.resolve_annual_rf_for_dates(arr)
+
+    assert iso_convention == rf_series.RF_CONVENTION_SERIES
+    assert arr_convention == rf_series.RF_CONVENTION_SERIES
+    assert arr_rates == iso_rates
+    assert len(arr_rates) == 3
+
+
+def test_empty_numpy_ndarray_is_the_disclosed_fallback_like_an_empty_list() -> None:
+    """An empty ndarray must take the same no-date-index fallback an empty
+    list takes (``([], RF_CONVENTION_FALLBACK)``), not resolve to anything."""
+    np = pytest.importorskip("numpy")
+
+    rates, convention = rf_series.resolve_annual_rf_for_dates(np.array([], dtype="datetime64[ns]"))
+
+    assert rates == []
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+
+
+def test_numpy_datetime64_nat_still_falls_back_not_silently_accepted() -> None:
+    """The broadened `_to_iso` handling must not let a malformed
+    `numpy.datetime64("NaT")` slip through as a valid date -- it stringifies
+    to `"NaT"`, which is not ISO-8601, so it must still hit the existing
+    malformed-date fallback (`date.fromisoformat` raising `ValueError`), not
+    resolve to a bogus rate."""
+    np = pytest.importorskip("numpy")
+    # Explicit "s" unit: an un-unit'd `np.datetime64("NaT")` emits its own
+    # numpy DeprecationWarning unrelated to this module (numpy's "generic"
+    # unit is deprecated) — orthogonal to what this test is checking.
+    rates, convention = rf_series.resolve_annual_rf_for_dates([np.datetime64("NaT", "s")], flat_annual_pct=6.0)
+    assert convention == rf_series.RF_CONVENTION_FALLBACK
+    assert rates == [6.0]
+
+
+def test_basic_iso_format_exact_match_resolves_same_as_extended_form() -> None:
+    """#1409 round-4 review fix (blocker): `date.fromisoformat` (Python 3.11+)
+    parses the non-extended basic ISO 8601 form (`"20150102"`, no dashes) as
+    well as the extended form (`"2015-01-02"`) -- but `_to_iso` previously
+    only TRUNCATED a string to its first 10 characters without validating or
+    normalizing its shape, so the basic form was passed through UNCHANGED as
+    `"20150102"`. `series`/`sorted_dates` are always keyed in the extended
+    form, so the exact-match `dict.get("20150102")` always missed even when
+    the date genuinely has a published rate. Canonicalizing via
+    `date.fromisoformat(...).isoformat()` before the lookup fixes the exact
+    match: both forms must now resolve to the identical published rate."""
+    extended_rates, extended_convention = rf_series.resolve_annual_rf_for_dates(["2015-01-02"])
+    basic_rates, basic_convention = rf_series.resolve_annual_rf_for_dates(["20150102"])
+    assert extended_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_rates == extended_rates
+
+
+def test_basic_iso_format_forward_fill_is_not_corrupted_by_lexicographic_bisect() -> None:
+    """#1409 round-4 review fix (blocker): the SAME bug as the exact-match
+    case above, but for the forward-fill path (`_forward_fill_at`'s
+    `bisect_right`) -- and more dangerous, because it does not merely miss
+    (falling through to a slower/different-but-still-correct branch), it
+    silently resolves to a WRONG rate. `bisect_right` does a LEXICOGRAPHIC
+    string comparison: the basic-format string `"20200104"` sorts AFTER every
+    `"2020-01-*"` key (ASCII `'0'` (0x30) > `'-'` (0x2D)), so pre-fix, a
+    basic-format Saturday would bisect past the END of the entire vendored
+    series and forward-fill from its LAST published date (in 2026) instead of
+    the preceding Friday in 2020 -- a wrong-but-plausible-looking rate, not a
+    loud fallback. 2020-01-04 is a Saturday with no published row (see
+    `test_saturday_forward_fills_from_friday` above); both date forms must
+    forward-fill to the SAME (2020-01-03, Friday) rate."""
+    series = rf_series._load_csv()
+    friday_rate = series["2020-01-03"]
+    assert "2020-01-04" not in series  # precondition: no row published for the Saturday
+
+    extended_rates, extended_convention = rf_series.resolve_annual_rf_for_dates(["2020-01-03", "2020-01-04"])
+    basic_rates, basic_convention = rf_series.resolve_annual_rf_for_dates(["20200103", "20200104"])
+
+    assert extended_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_convention == rf_series.RF_CONVENTION_SERIES
+    assert basic_rates == extended_rates == [friday_rate, friday_rate]
