@@ -626,17 +626,7 @@ resource "aws_ecs_task_definition" "backend" {
         # deterministic: the app process never starts without them, rather
         # than depending on a best-effort in-process SSM fetch.
         { name = "AURORA_MASTER_PASSWORD", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/AURORA_MASTER_PASSWORD" },
-        { name = "EMAIL_ENCRYPTION_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/EMAIL_ENCRYPTION_KEY" },
-        # Tiingo market-data provider (#1218 Part 1 — yfinance replacement).
-        # Read at call time by TiingoProvider (services/market_data_provider.py);
-        # load-bearing only once MARKET_DATA_PROVIDER=tiingo is set (still
-        # "yfinance" by default). UNCONDITIONAL like the four secrets above
-        # (not the auth container's var.*_oauth_enabled-gated pattern below) —
-        # ECS resolves every entry in this list at task launch regardless of
-        # MARKET_DATA_PROVIDER's value, so this SSM param must be seeded
-        # BEFORE this change reaches main, or the backend task fails to
-        # launch on the next build-on-deploy roll. See the PR body.
-        { name = "TIINGO_API_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/TIINGO_API_KEY" }
+        { name = "EMAIL_ENCRYPTION_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/EMAIL_ENCRYPTION_KEY" }
       ]
 
       logConfiguration = {

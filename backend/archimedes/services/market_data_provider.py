@@ -325,9 +325,10 @@ class TiingoAPIKeyMissingError(TiingoProviderError):
     the closest thing this seam has to a "startup" check, since there is no
     separate eager app-boot validation of the market-data vendor today — AND
     again at every HTTP call (the key is never cached on the instance;
-    re-read from the environment every time, so a rotated SSM value takes
-    effect without a process restart). The message never contains the key
-    itself — there is none to include."""
+    re-read from the environment every time, so a rotated value takes effect
+    as soon as the process's own environment carries the new one — no
+    restart needed on THIS module's account). The message never contains the
+    key itself — there is none to include."""
 
 
 class TiingoUnsupportedSymbolError(TiingoProviderError, ValueError):
@@ -415,8 +416,8 @@ def _classify_tiingo_ticker(ticker: str) -> str:
 
 def _tiingo_api_key() -> str:
     """Read ``TIINGO_API_KEY`` fresh from the environment — never cached on a
-    ``TiingoProvider`` instance, so a rotated SSM-backed value takes effect
-    on the next call without a process restart. Raises loud
+    ``TiingoProvider`` instance, so a rotated value takes effect on the next
+    call as soon as the process's environment carries it. Raises loud
     (``TiingoAPIKeyMissingError``) rather than proceeding with an
     unauthenticated request Tiingo would reject anyway; the message never
     includes the key (there is none to include)."""
@@ -424,7 +425,9 @@ def _tiingo_api_key() -> str:
     if not key:
         raise TiingoAPIKeyMissingError(
             "TIINGO_API_KEY is not set. Required whenever MARKET_DATA_PROVIDER=tiingo "
-            "(see .env.example / infra/ecs.tf's /archimedes/prod/TIINGO_API_KEY SSM param)."
+            "(see .env.example). NOT wired into infra/ecs.tf's task-definition secrets yet — "
+            "seeding /archimedes/prod/TIINGO_API_KEY and adding the ecs.tf entry are cutover "
+            "follow-ups, deliberately not in this PR."
         )
     return key
 
