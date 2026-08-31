@@ -87,7 +87,7 @@ class _FakeVendor(MarketDataProvider):
     def get_intraday_quote(self, ticker: str) -> tuple[float, datetime] | None:
         raise AssertionError("get_intraday_quote must never be called by the caching wrapper's own logic")
 
-    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, tuple[float, datetime]]:
         raise AssertionError("get_intraday_quotes_batch must never be called by the caching wrapper's own logic")
 
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
@@ -131,7 +131,7 @@ class _FakeOhlcvVendor(MarketDataProvider):
     def get_intraday_quote(self, ticker: str) -> tuple[float, datetime] | None:
         raise AssertionError("not exercised in TestDailyOhlcvCache")
 
-    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, tuple[float, datetime]]:
         raise AssertionError("not exercised in TestDailyOhlcvCache")
 
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
@@ -254,7 +254,7 @@ class TestUncachedPassthrough:
     def test_intraday_quotes_batch_never_touches_the_cache(self, session_factory):
         vendor = _FakeVendorPassthroughSpy()
         provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
-        assert provider.get_intraday_quotes_batch({"sSPY": "SPY"}) == {"sSPY": 123.0}
+        assert provider.get_intraday_quotes_batch({"sSPY": "SPY"}) == {"sSPY": (123.0, vendor.ts)}
         assert vendor.batch_calls == [{"sSPY": "SPY"}]
 
     def test_get_series_never_touches_the_cache(self, session_factory):
@@ -279,9 +279,9 @@ class _FakeVendorPassthroughSpy(MarketDataProvider):
         self.quote_calls.append(ticker)
         return (123.0, self.ts)
 
-    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, float]:
+    def get_intraday_quotes_batch(self, tickers: dict[str, str]) -> dict[str, tuple[float, datetime]]:
         self.batch_calls.append(dict(tickers))
-        return dict.fromkeys(tickers, 123.0)
+        return dict.fromkeys(tickers, (123.0, self.ts))
 
     def get_series(self, ticker: str, period: str, interval: str) -> pd.Series:
         self.series_calls.append((ticker, period, interval))
@@ -549,3 +549,162 @@ class TestConcurrentPrimeRace:
         finally:
             check.close()
         assert len(rows) == len(series)  # winner's rows stand; no duplicates
+
+
+# ─── The widened batch-quote contract (intraday design §2 item 0) ──────
+#
+# ``get_intraday_quotes_batch`` used to return ``dict[str, float]``. Two
+# consumers cannot be honest on a bare float: the on-chain push staleness gate
+# (``oracle_updater._validate_for_push``, which reads ``AssetPrice.timestamp``)
+# and the paper-marks loop (which stores the upstream observation time and
+# refuses to write a row from a stale bar). The signature is now
+# ``dict[str, tuple[float, datetime]]`` — the same shape the single-ticker
+# sibling has always returned.
+
+
+class _FakeYFModule:
+    """Stand-in for the ``yfinance`` module: ``download`` returns a caller-
+    supplied frame. Installed via ``patch.dict(sys.modules, ...)`` so the
+    provider's own lazy ``import yfinance as yf`` picks it up — no network."""
+
+    def __init__(self, frame: pd.DataFrame) -> None:
+        self.frame = frame
+        self.calls: list[str] = []
+
+    def download(self, tickers, **kwargs):
+        self.calls.append(tickers)
+        return self.frame
+
+
+def _intraday_index(n: int, *, end: str = "2026-08-30 20:00", tz: str | None = "UTC") -> pd.DatetimeIndex:
+    return pd.date_range(end=pd.Timestamp(end, tz=tz), periods=n, freq="15min")
+
+
+def _multi_close_frame(cols: dict[str, list[float]], index: pd.DatetimeIndex) -> pd.DataFrame:
+    """A multi-ticker yfinance frame: ``data["Close"]`` is a DataFrame whose
+    columns are vendor tickers (the shape ``yf.download`` returns for >1
+    ticker)."""
+    return pd.DataFrame({("Close", t): v for t, v in cols.items()}, index=index)
+
+
+class TestIntradayBatchCarriesBarTimestamps:
+    def test_batch_returns_price_and_utc_bar_timestamp_per_key(self):
+        import sys
+
+        idx = _intraday_index(3)
+        frame = _multi_close_frame({"SPY": [510.0, 511.0, 512.5], "QQQ": [430.0, 431.0, 432.5]}, idx)
+        fake = _FakeYFModule(frame)
+        provider = YFinanceProvider()
+
+        with patch.dict(sys.modules, {"yfinance": fake}):
+            out = provider.get_intraday_quotes_batch({"sSPY": "SPY", "sQQQ": "QQQ"})
+
+        assert set(out) == {"sSPY", "sQQQ"}
+        for key, expected_price in (("sSPY", 512.5), ("sQQQ", 432.5)):
+            price, bar_ts = out[key]
+            assert price == pytest.approx(expected_price)
+            assert isinstance(bar_ts, datetime)
+            assert bar_ts.tzinfo is not None, "a bar timestamp with no tz is unusable to a staleness gate"
+            assert bar_ts == idx[-1].to_pydatetime()
+
+    def test_a_frozen_leg_keeps_its_own_older_bar_time_not_the_live_legs(self):
+        """THE adversarial case for this widening, and the reason the bar time
+        is read per symbol rather than once off the frame index.
+
+        A mixed universe outside US market hours: the crypto leg keeps
+        printing 15-minute bars while the equity leg's column is NaN across
+        the tail. Both legs live in ONE frame, so ``data.index[-1]`` is the
+        CRYPTO leg's time. Stamping that on the equity price is precisely
+        "a stale price wearing a fresh timestamp" — the defect §2.4 rule 1
+        exists to prevent, and it would sail past every staleness gate
+        downstream.
+
+        Demonstrated to reject: reverting the per-symbol
+        ``close.dropna().index[-1]`` to the frame-level ``data.index[-1]``
+        makes this test fail (both legs report the crypto bar time) while
+        every other test in this class still passes.
+        """
+        import sys
+
+        idx = _intraday_index(4)
+        frame = _multi_close_frame(
+            {
+                "SPY": [510.0, 512.5, float("nan"), float("nan")],  # session closed two bars ago
+                "BTC-USD": [61000.0, 61100.0, 61200.0, 61250.0],  # 24/7, still printing
+            },
+            idx,
+        )
+        fake = _FakeYFModule(frame)
+        provider = YFinanceProvider()
+
+        with patch.dict(sys.modules, {"yfinance": fake}):
+            out = provider.get_intraday_quotes_batch({"sSPY": "SPY", "sBTC": "BTC-USD"})
+
+        spy_price, spy_ts = out["sSPY"]
+        btc_price, btc_ts = out["sBTC"]
+        assert spy_price == pytest.approx(512.5)  # the last REAL equity print
+        assert btc_price == pytest.approx(61250.0)
+        assert btc_ts == idx[-1].to_pydatetime()
+        assert spy_ts == idx[-3].to_pydatetime()
+        assert spy_ts < btc_ts, "the frozen leg must not inherit the live leg's bar time"
+
+    def test_single_ticker_path_also_carries_its_bar_time(self):
+        import sys
+
+        idx = _intraday_index(3)
+        frame = pd.DataFrame({"Close": [510.0, 511.0, 512.5]}, index=idx)
+        fake = _FakeYFModule(frame)
+        provider = YFinanceProvider()
+
+        with patch.dict(sys.modules, {"yfinance": fake}):
+            out = provider.get_intraday_quotes_batch({"sSPY": "SPY"})
+
+        assert out["sSPY"][0] == pytest.approx(512.5)
+        assert out["sSPY"][1] == idx[-1].to_pydatetime()
+
+    def test_a_naive_bar_index_is_localized_to_utc_not_left_naive(self):
+        import sys
+
+        idx = _intraday_index(3, tz=None)
+        frame = pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx)
+        provider = YFinanceProvider()
+
+        with patch.dict(sys.modules, {"yfinance": _FakeYFModule(frame)}):
+            _price, bar_ts = provider.get_intraday_quotes_batch({"sX": "X"})["sX"]
+
+        assert bar_ts.tzinfo is not None
+        assert bar_ts == idx[-1].tz_localize("UTC").to_pydatetime()
+
+    def test_an_all_nan_column_is_omitted_rather_than_reported_with_a_wrong_time(self):
+        """A symbol the vendor returned nothing usable for is ABSENT from the
+        result (the long-standing contract), never present with a fabricated
+        price or a borrowed timestamp."""
+        import sys
+
+        idx = _intraday_index(3)
+        frame = _multi_close_frame(
+            {"SPY": [510.0, 511.0, 512.5], "DEAD": [float("nan")] * 3},
+            idx,
+        )
+        provider = YFinanceProvider()
+
+        with patch.dict(sys.modules, {"yfinance": _FakeYFModule(frame)}):
+            out = provider.get_intraday_quotes_batch({"sSPY": "SPY", "sDEAD": "DEAD"})
+
+        assert set(out) == {"sSPY"}
+
+
+class TestIntradayDelayedDeclaration:
+    def test_yfinance_declares_its_intraday_feed_delayed(self, monkeypatch):
+        from archimedes.services.market_data_provider import intraday_is_delayed
+
+        monkeypatch.setenv("MARKET_DATA_PROVIDER", "yfinance")
+        assert intraday_is_delayed() is True
+
+    def test_an_undeclared_provider_fails_toward_delayed(self, monkeypatch):
+        """Fail-honest: an unknown vendor is assumed DELAYED. Claiming
+        real-time for a feed nobody verified is the dishonest direction."""
+        from archimedes.services import market_data_provider as mdp
+
+        monkeypatch.setattr(mdp, "provider_name", lambda: "some-unlisted-vendor")
+        assert mdp.intraday_is_delayed() is True

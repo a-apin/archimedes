@@ -2,7 +2,7 @@
 
 > **Audience:** Archimedes team
 > **Status:** Accepted
-> **Date:** 2026-05-13 (recommended); ratified in the Day-3 sync — exact ratification date not recorded in git [unestablished — needs Dan]; closed as Accepted 2026-07-28; amended 2026-08-19 (engine census + provenance columns)
+> **Date:** 2026-05-13 (recommended); ratified in the Day-3 sync — exact ratification date not recorded in git [unestablished — needs Dan]; closed as Accepted 2026-07-28; amended 2026-08-19 (engine census + provenance columns), amended 2026-08-30 (look_ahead_audit_source is now a real structural audit)
 > **Owner:** Dan Browne
 > **Supersedes:** —
 > **Superseded-by:** —
@@ -302,8 +302,25 @@ the surviving `portfolio-simulator-v1` surface is exactly `backtest_portfolio` +
 **Provenance extended beyond the engine tag** ([PR #1242](https://github.com/a-apin/archimedes/pull/1242),
 merged, migration `b41c7d9e2a05`): `backtest_results` now also carries
 `cost_model_id` (which cost floor priced the run) and `look_ahead_audit_source`
-(AST audit vs. closed-DSL self-attestation — the distinction matters for generated
-strategies). The "engine provenance is recorded per result" consequence above now
-covers *how* a result was costed and audited, not just which engine produced it.
+(which kind of look-ahead evidence backs the boolean beside it — the distinction
+matters for generated strategies). The "engine provenance is recorded per result"
+consequence above now covers *how* a result was costed and audited, not just which
+engine produced it.
+
+**`look_ahead_audit_source` values, updated 2026-08-30.** The DSL path's value
+was `"self_attested"` when this amendment was written, because the boolean it
+labelled genuinely was the LLM's own `look_ahead_safe` declaration. It no longer
+is. [`services/dsl_lookahead_audit.py`](../../backend/archimedes/services/dsl_lookahead_audit.py)
+replaced that declaration with a structural proof — an AST audit of the DSL
+interpreter showing every bar-indexed read is at offset ≤ 0, a walk of the
+validated spec showing it uses nothing outside that audited surface, and the
+broker cheat-on-close/open check charged on the real `cerebro` — so a DSL row
+that clears it records `"dsl_structural_audit"`. `"self_attested"` survives for
+rows where the structural audit could not be completed or failed, and in *those*
+rows the boolean beside the label is `False`. A reader is no longer shown a
+self-attested `True`. The three-source distinction the amendment relied on is
+therefore now four: `broker_config_only` (execution-timing only, never fails),
+`ast_audit` (source-level audit of cited curated code), `dsl_structural_audit`
+(the closed-DSL proof), `self_attested` (no completed audit, boolean `False`).
 Per-engine row counts are a live-DB question (`GROUP BY source_pipeline,
 backtest_engine`); no number is stated here by design.
