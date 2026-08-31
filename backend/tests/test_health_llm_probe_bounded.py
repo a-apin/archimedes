@@ -23,7 +23,11 @@ seen failing is a guess.
 
 Three properties, deliberately separate:
 
-1. **The handler answers on time** even when the backend resolution hangs.
+1. **A dark endpoint costs the handler no more than the probe's budget**, even
+   when the backend resolution hangs. Asserted as a *difference* against the
+   same endpoint with a healthy backend — never as a wall-clock bound. Several
+   full suites run in parallel on one laptop here, and an absolute bound
+   measures that machine at least as much as it measures the code.
 2. **The event loop keeps turning** while it hangs — the property a pure
    wall-clock assertion cannot see, and the one that actually broke /health for
    every *other* route during the incident.
@@ -48,13 +52,9 @@ from unittest.mock import patch
 import pytest
 from archimedes.chain.client import chain_client
 from archimedes.services import oracle_health as oracle_health_mod
+from archimedes.services.health_cache import clear_health_probe_cache
 from archimedes.services.oracle_health import OracleHealth
 from httpx import ASGITransport, AsyncClient
-
-# The budget /health promises. The ALB target-group check and the ECS container
-# HEALTHCHECK both cut at 5s; 2s is the app-side promise with headroom, and it
-# is what an unbounded 3s ollama probe eats most of on its own.
-_HEALTH_BUDGET_SECONDS = 2.0
 
 # A hard stop so a regression FAILS the suite instead of hanging it.
 _HARD_STOP_SECONDS = 8.0
@@ -64,6 +64,25 @@ _HARD_STOP_SECONDS = 8.0
 # the hard stop so a regression is a fast red rather than a wedged run.
 _BLOCK_SECONDS = 3.0
 
+# How much longer /health may take with a DARK LLM endpoint than with a healthy
+# one. This is a DIFFERENCE, not a wall-clock bound, and that is the whole
+# point: an absolute "/health < 2.0s" assertion measures the machine as much as
+# the code, and this repo runs several full suites in parallel on one laptop —
+# an earlier revision of this file was written that way and flaked at 2.11s and
+# 2.19s against a 2.0s bar while the code under test was perfectly correct.
+#
+# A guard that fires on a busy box is a guard that gets muted, so the flake is
+# a defect in the test, not a tolerance to widen. Timing the SAME endpoint with
+# a fast backend and then with a hanging one cancels ambient load: both halves
+# pay it. What survives is the LLM probe's own contribution, which is the only
+# thing this test has an opinion about.
+#
+# Budget is 1.0s, so a bounded probe contributes ~1.0s and this passes with a
+# full second of slack. An UNBOUNDED probe contributes the entire block — 3.0s,
+# three times the bar — so the mutation is still caught by a wide margin at
+# both ends. Measured: ~1.0s bounded, ~3.0s unbounded.
+_MAX_DARK_ENDPOINT_COST_SECONDS = 2.0
+
 
 @pytest.fixture(scope="module", autouse=True)
 def _warm_the_app():
@@ -71,12 +90,11 @@ def _warm_the_app():
 
     The first ``/health`` in a process also loads the corpus and walks the
     DB-miss paths — hundreds of milliseconds that have nothing to do with the
-    LLM probe, and that made the first timing assertion in this file flake at
-    2.11s against a 2.0s budget on a loaded box. Loosening the budget would
-    have hidden the very regression the budget exists to catch, so the fix is
-    to measure the WARM path instead: the ECS container HEALTHCHECK and the ALB
-    target-group check hit a warm process every 30s forever, so warm is also
-    the honest thing to hold to the promise.
+    LLM probe. The differential assertions above already cancel *steady* load;
+    this cancels the *one-time* cost, which a difference between two calls
+    cannot see if only the first call pays it. Measuring the warm path is also
+    the honest thing to hold to a promise: the ECS container HEALTHCHECK and
+    the ALB target-group check hit a warm process every 30s forever.
 
     ``asyncio.run`` on a throwaway loop, then the probe cache is cleared: this
     call runs UNPATCHED, so its real chain/oracle/LLM readings must not survive
@@ -92,9 +110,6 @@ def _warm_the_app():
             await client.get("/health")
 
     asyncio.run(_once())
-
-    from archimedes.services.health_cache import clear_health_probe_cache
-
     clear_health_probe_cache()
 
 
@@ -186,14 +201,29 @@ def _with_backend(backend):
 class TestTheLlmProbeIsBounded:
     """Property 1: the handler answers, whatever the LLM endpoint is doing."""
 
-    async def test_health_answers_within_budget_when_backend_resolution_hangs(self):
+    async def test_a_dark_llm_endpoint_costs_health_no_more_than_the_probe_budget(self):
         """MUTATION: restore the inline `backend = make_llm_backend()`.
 
         This is the live shape of a dark ollama: LLM_BASE_URL points somewhere
         that accepts the connection and never replies, so httpx sits on its 3s
-        timeout and the handler sits with it. Unbounded, /health spends that 3s
-        before it even starts composing a payload.
+        timeout and the handler sits with it. Unbounded, /health spends that
+        entire 3s before it even starts composing a payload — which on a 5s ALB
+        check is most of the way to wedging a rollout.
+
+        Measured as a DIFFERENCE against the same endpoint with a healthy
+        backend, so the assertion is about the probe and not about how busy the
+        machine is. See ``_MAX_DARK_ENDPOINT_COST_SECONDS``.
         """
+        chain_p, oracle_p = _quiet_neighbours()
+        with chain_p, oracle_p, _with_backend(_LiveBackend()):
+            healthy_body, healthy_elapsed = await _get_health()
+
+        # The baseline call is a real /health, so it cached a real reading —
+        # which would make the dark call below report `stale_cached` and quietly
+        # change what this test is about. Drop it: the timing baseline is
+        # wanted, the cached VALUE is not. (`stale_cached` has its own test.)
+        clear_health_probe_cache()
+
         release = threading.Event()
         chain_p, oracle_p = _quiet_neighbours()
         try:
@@ -202,14 +232,21 @@ class TestTheLlmProbeIsBounded:
                 oracle_p,
                 patch("archimedes.services.llm_backend.make_llm_backend", _blocking_factory(release)),
             ):
-                body, elapsed = await _get_health()
+                body, dark_elapsed = await _get_health()
         finally:
             release.set()
 
-        assert elapsed < _HEALTH_BUDGET_SECONDS, (
-            f"/health took {elapsed:.2f}s with a hanging LLM backend — the ALB cuts at 5s, "
-            f"so anything near this budget wedges every rollout"
+        cost = dark_elapsed - healthy_elapsed
+        assert cost < _MAX_DARK_ENDPOINT_COST_SECONDS, (
+            f"a dark LLM endpoint cost /health {cost:.2f}s "
+            f"({dark_elapsed:.2f}s dark vs {healthy_elapsed:.2f}s healthy) — the probe is being "
+            f"awaited to completion ({_BLOCK_SECONDS:.1f}s) instead of bounded at "
+            f"{_MAX_DARK_ENDPOINT_COST_SECONDS:.1f}s. The ALB cuts at 5s."
         )
+        # Asserted AFTER the timing, deliberately: against the unbounded handler
+        # these keys do not exist at all, and a KeyError here would mask the
+        # timing failure that is the actual point of this test.
+        assert healthy_body["llm_probe_state"] == "live"  # the baseline really was the fast path
         # Answering is only half of it: the answer must say the reading is
         # missing rather than quietly reporting a verdict.
         assert body["llm_probe_state"] == "probe_timeout"
@@ -329,7 +366,7 @@ class TestThePayloadTellsTheTruthAboutTheLlm:
         substitute this codebase treats as its primary defect class."""
         chain_p, oracle_p = _quiet_neighbours()
         with chain_p, oracle_p, _with_backend(_LiveBackend()):
-            first, _ = await _get_health()
+            first, healthy_elapsed = await _get_health()
         assert first["llm_available"] is True
 
         release = threading.Event()
@@ -340,11 +377,15 @@ class TestThePayloadTellsTheTruthAboutTheLlm:
                 oracle_p,
                 patch("archimedes.services.llm_backend.make_llm_backend", _blocking_factory(release)),
             ):
-                second, elapsed = await _get_health()
+                second, dark_elapsed = await _get_health()
         finally:
             release.set()
 
-        assert elapsed < _HEALTH_BUDGET_SECONDS
+        # Serving from cache must also be FAST — the point of the cache is that
+        # the handler stops waiting, not that it waits and then lies. Same
+        # load-cancelling difference as the bounded-probe test above; the first
+        # call here doubles as the baseline.
+        assert dark_elapsed - healthy_elapsed < _MAX_DARK_ENDPOINT_COST_SECONDS
         assert second["llm_probe_state"] == "stale_cached"
         assert second["llm_available"] is True  # the cached reading, unaltered
         assert second["llm_probe_age_s"] >= 0
