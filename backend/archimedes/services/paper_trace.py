@@ -12,9 +12,12 @@ system: it builds the same ``ReasoningTrace``, hashes it with the same
 #1569's passport reachability, ``/verify``, ``/canonical`` and the tamper
 detection all apply to paper traces for free.
 
-Shaped after ``construction_trace.py``: :func:`build_paper_trace` STOPS at the
-hash and touches neither Redis nor the chain. :func:`publish_paper_trace` is
-the only function here that does I/O.
+Split at the I/O seam: :func:`build_paper_trace` STOPS at the hash and touches
+neither Redis nor the chain, so it is pure and testable without fixtures.
+:func:`publish_paper_trace` is the only function here that does I/O. (The
+retired ``services/construction_trace.py`` held the same seam; it was deleted
+as a zero-caller surface, and this module is now the only place the shape
+lives.)
 
 Four honesty rules, each enforced by a test rather than asserted here:
 
@@ -307,8 +310,9 @@ def build_paper_trace(
         # one. Deriving it from the decision key also makes a re-publish
         # overwrite the same record instead of minting a duplicate.
         id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"archimedes:paper-trace:{deployment_id}:{decision_date.isoformat()}")),
-        # NOT construction_trace.UNBOUND_VAULT. That sentinel is a non-blank
-        # address, and `is_public_trace_vault` returns True for any non-blank
+        # NOT the zero-address sentinel (`0x000…000`, the value the retired
+        # construction_trace.py used for "no vault yet"). That sentinel is a
+        # non-blank address, and `is_public_trace_vault` returns True for any non-blank
         # address while `PUBLIC_TRACE_VAULTS` is unarmed (it is set nowhere in
         # this tree), so an unstamped trace on the sentinel would be
         # WORLD-READABLE, holdings and all. A blank vault is fail-closed twice:
