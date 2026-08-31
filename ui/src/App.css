@@ -8101,6 +8101,119 @@ body:has(.public-site) {
 	width: 100%;
 }
 
+/* The auth screen renders outside both .app-site and .public-site, so neither
+   of their :focus-visible rules reaches it and it was left on the UA default
+   ring — which the surrounding `outline` shorthands can and did erase (see the
+   NOTE by the input block above). Give it its own indicator: --accent is
+   #d4a853 on the dark canvas and #8a5f0a on the light one, both well clear of
+   the 3:1 non-text floor (1.4.11), and 3px/2px matches the app shell's
+   weight. */
+.auth-site :focus-visible {
+	outline: 3px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* Quiet but visible: reads as a link, not as a disabled control. The row
+   exists so the button does not stretch to the form column's full width and
+   so the 44px target has somewhere to go without adding vertical rhythm. */
+.auth-forgot-row {
+	display: flex;
+	justify-content: flex-start;
+	margin-top: -6px;
+}
+
+.auth-quiet-link {
+	display: inline-flex;
+	align-items: center;
+	min-height: 44px;
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--accent);
+	font-family: var(--sans);
+	font-size: 0.82rem;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	cursor: pointer;
+	text-decoration: underline;
+	text-decoration-color: rgba(var(--accent-rgb), 0.4);
+	text-underline-offset: 4px;
+	transition:
+		color 150ms ease,
+		text-decoration-color 150ms ease;
+}
+
+/* Hover strengthens the underline and never lightens the text: --accent-hover
+   is #b47f17 on the light theme = 3.13:1 on --surface-1, and 1.4.3 applies to
+   every state a text colour can be in, not just the resting one. */
+.auth-quiet-link:hover {
+	text-decoration-color: currentColor;
+}
+
+/* Cross-link to the other auth screen. Sits immediately under the submit
+   button with a boundary of its own, so it is findable without competing with
+   the primary action for weight. */
+.auth-alt-action {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 18px;
+	padding: 14px 16px;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-md);
+	background: var(--surface-2);
+	color: var(--text-2);
+	font-size: 0.85rem;
+}
+
+.auth-alt-action__link {
+	color: var(--accent);
+	font-weight: 700;
+	text-decoration: underline;
+	text-underline-offset: 4px;
+	white-space: nowrap;
+}
+
+.auth-social-group {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-top: 22px;
+	padding-top: 22px;
+	border-top: 1px solid var(--glass-border);
+}
+
+/* Brand-button geometry. Both marks are reproduced unmodified, so the rules
+   that matter here are the ones outside the artwork: a fixed 18px square box
+   (never a percentage, so neither mark can be stretched), a 12px gap plus
+   20px inline padding for clear space well beyond half the mark's height, and
+   a 44px minimum height for the target size. */
+.auth-social {
+	width: 100%;
+	min-height: 44px;
+	gap: 12px;
+	padding: 12px 20px;
+	font-size: 0.9rem;
+	font-weight: 600;
+}
+
+/* .btn-secondary has no :disabled rule of its own, so these went dead-looking
+   only by losing their pointer. `social()` disables them for the whole
+   redirect, which is exactly when the state has to read. */
+.auth-social:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.auth-social__icon {
+	display: block;
+	flex: none;
+	width: 18px;
+	height: 18px;
+}
+
 .auth-fine-print {
 	margin-top: 22px;
 	padding-top: 18px;

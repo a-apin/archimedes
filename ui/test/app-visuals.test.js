@@ -119,6 +119,13 @@ test("social auth controls do not wait for provider discovery", () => {
 	assert.match(authPage, /Continue with Google/);
 	assert.match(authPage, /Continue with GitHub/);
 	assert.doesNotMatch(authPage, /getProviders|providers\.(?:google|github)/);
+	// The brand marks render from the same static markup, so they must not
+	// reintroduce a discovery/fetch dependency either — they are inline SVG,
+	// not a remote logo asset. Their fidelity (Google's four colours,
+	// GitHub's currentColor, no distortion, clear space) is pinned in
+	// auth-page-copy.test.js.
+	assert.match(authPage, /<GoogleMark \/>/);
+	assert.match(authPage, /<GitHubMark \/>/);
 });
 
 test("Generate uses brief-first workbench with context rail", () => {
