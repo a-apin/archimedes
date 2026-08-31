@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import CreateVaultModal from "./CreateVaultModal";
 import { ROADMAP_SURFACES_ENABLED } from "../featureFlags.js";
+import { passportBackPage, passportBackLabel } from "../routes.js";
 import RigorStrictnessControl, { levelLabel } from "./RigorStrictnessControl";
 import { apiGet, apiPostWithMeta } from "../api";
 import { useRigorStrictness, BADGE_LEVEL } from "../hooks/useRigorStrictness";
@@ -186,9 +187,9 @@ export default function StrategyPassport({
 			<div className="max-w-[640px]">
 				<button
 					className="btn btn-outline btn-sm mb-3"
-					onClick={() => onNavigate("library")}
+					onClick={() => onNavigate(passportBackPage(user))}
 				>
-					← Back to Library
+					{passportBackLabel(user)}
 				</button>
 				<div className="info-box warning">
 					Could not load strategy: {error || "unknown error"}
@@ -237,9 +238,9 @@ export default function StrategyPassport({
 		<div className="passport-page">
 			<button
 				className="btn btn-outline btn-sm app-back-link"
-				onClick={() => onNavigate("library")}
+				onClick={() => onNavigate(passportBackPage(user))}
 			>
-				← Back to Library
+				{passportBackLabel(user)}
 			</button>
 
 			{/* Header */}

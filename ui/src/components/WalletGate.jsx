@@ -1,3 +1,16 @@
+// Wallet-gate wrapper. Renders a Connect-Wallet CTA card when no wallet
+// is connected; renders children when one is. Used to gate per-user
+// surfaces (Portfolio, Learnings) so the logged-out experience doesn't
+// render "$0.00 across 0 vaults you created" or "27 traces (you've
+// deployed)" — personalization the user doesn't actually have without a
+// wallet. The strategy list renders ungated (AuthenticatedApp.jsx
+// `case "library"`) — it needs a signed-in session, not a wallet, so it
+// isn't this gate's job.
+//
+// Public pages (Generate, Corpus, Reasoning, Explore, Landing) deliberately
+// do NOT use this gate — they're either browse-only or paper-grounded
+// and useful without a wallet.
+
 export default function WalletGate({
 	walletAddr,
 	pageName,

@@ -797,9 +797,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
 
   return (
     <div className="strategies-page">
+      {/* #1370 item 7: the heading must name the same place the nav item, the
+          tab title and the breadcrumb name — all three say "Library". */}
       <header className="app-page-heading">
         <p className="app-eyebrow">Evidence library</p>
-        <h1>Your strategies</h1>
+        <h1>Library</h1>
         <p>
           Your strategies, plus a clearly-separated set of example strategies
           drawn from published research so you can learn the metric format.
@@ -882,9 +884,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               </button>
             </div>
           ) : (() => {
-            // Split generated strategies by rigor verdict so the main table only
-            // shows what passed (the wedge: "the Library is a quality filter, not
-            // a junk drawer"). Rejected candidates stay accessible in a collapsed
+            // Split generated strategies by rigor verdict. The main table shows
+            // [...passing, ...pending] — cleared strategies plus candidates still
+            // awaiting a verdict, NOT "only what passed" (a stricter claim this
+            // file used to make; #1370 item 7 corrected copy and comment to match
+            // what's actually shown). Rejected candidates stay accessible in a collapsed
             // section below so the user can inspect *why* they failed — honest
             // rather than hidden, but visually de-prioritised.
             const passing = generated.filter(s => s.passes_rigor_gate === true)
@@ -911,8 +915,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                       backtest window is needed for DSR / PBO to score them).
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
-                      The Library is a quality filter — only strategies that pass DSR + PBO + chronological OOS
-                      + look-ahead audit are surfaced here. That's the wedge.
+                      This table holds strategies that passed the rigor gate (DSR + PBO +
+                      chronological OOS + look-ahead audit) plus candidates still awaiting a
+                      verdict — rejected strategies are the only ones filtered out, into the
+                      section below.
                     </p>
                   </div>
                 ) : (
@@ -921,12 +927,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                     <p className="body" style={{ marginBottom: 10 }}>
                       Multi-paper fusion strategies you create from the{' '}
                       <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate</a> page will
-                      appear here once they've been backtested + cleared the rigor gate.
+                      appear here once they've been backtested; the rigor verdict (pass/fail) lands
+                      here after, once DSR / PBO / OOS scoring completes.
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
                       {ROADMAP_SURFACES_ENABLED
                         ? ROADMAP_COPY.emptyLibraryNoteRoadmap
-                        : 'Generations in flight show in the agent activity feed on Reasoning. They land in this table once the rigor gate clears.'}
+                        : 'Generations in flight show in the agent activity feed on Reasoning. They land in this table once backtesting finishes, verdict or not.'}
                     </p>
                   </div>
                 )
@@ -1000,6 +1007,12 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               emptyState={<p className="caption">No example strategies loaded.</p>}
             />
           )}
+          {examples.some(s => s.is_backtest_placeholder) && (
+            <div className="caption mt-4 text-[var(--text-4)]">
+              Pre-backtest hypothesis — empirical metrics pending evaluation. Real
+              numbers replace the placeholder once the analytics engine runs.
+            </div>
+          )}
         </>
       )}
 
@@ -1071,13 +1084,6 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             />
           )}
         </>
-      )}
-
-      {examples.some(s => s.is_backtest_placeholder) && (
-        <div className="caption mt-4 text-[var(--text-4)]">
-          * Pre-backtest hypothesis — empirical metrics pending evaluation. Real
-          numbers replace the placeholder once the analytics engine runs.
-        </div>
       )}
 
       {/* EfficientFrontier + CorrelationMatrix removed (Issue #383) — synthetic RNG data */}
