@@ -120,7 +120,15 @@ class LinkedWallet(Base):
         String(64), ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     normalized_identity: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    address: Mapped[str] = mapped_column(String(42), nullable=False)
+    # FK retrofit (schema-relations Phase 1): the sole bridge between Better
+    # Auth and the SIWE identity ledger — every row here is written only
+    # AFTER `_link_verified_wallet` (wallet_routes.py) has flushed the
+    # matching WalletIdentity, so this converts an existing app-code
+    # invariant into a schema guarantee. Indexed: this is the column every
+    # "which account owns wallet W" query filters on.
+    address: Mapped[str] = mapped_column(
+        String(42), ForeignKey("wallet_identities.wallet_address"), nullable=False, index=True
+    )
     display_address: Mapped[str] = mapped_column(String(42), nullable=False)
     chain_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
