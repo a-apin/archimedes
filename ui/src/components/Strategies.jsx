@@ -1187,7 +1187,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               <button
                 type="button"
                 onClick={closeRigorExplainer}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-4)' }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}
                 aria-label="Close"
               >
                 <span className="i-lucide-x" style={{ width: 20, height: 20 }} />

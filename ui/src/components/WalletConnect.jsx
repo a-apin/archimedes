@@ -356,7 +356,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                           className="caption"
                           style={{
                             display: 'flex', alignItems: 'center', gap: 8,
-                            margin: '6px 0', color: 'var(--text-4)',
+                            margin: '6px 0', color: 'var(--text-3)',
                             fontSize: '0.7rem', textTransform: 'uppercase',
                             letterSpacing: '0.05em',
                           }}
@@ -436,7 +436,7 @@ export default function WalletConnect({ address, displayName, onConnect, onDisco
                               Create new wallet
                             </button>
                           </div>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-4)', lineHeight: 1.4 }}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-3)', lineHeight: 1.4 }}>
                             <strong style={{ color: 'var(--text-3)' }}>Open existing wallet</strong> opens your passkey
                             picker — choose the wallet you want. <strong style={{ color: 'var(--text-3)' }}>Create new</strong> mints a fresh wallet under the name above (or an auto-generated one).
                           </span>
