@@ -27,6 +27,7 @@ import math
 import numpy as np
 import pytest
 from archimedes.services._rigor_helpers import (
+    _RF_DAILY,
     _dsr_from_stats,
     _sharpe_per_col,
     benjamini_hochberg_fdr,
@@ -45,6 +46,7 @@ from archimedes.services.rigor_evaluator import (
     align_returns_store,
     compute_board_level_fdr,
     compute_library_pbo,
+    compute_library_pbo_rf_convention,
     is_oos_zero_variance_series,
     is_zero_variance_series,
     load_daily_returns_store,
@@ -965,7 +967,7 @@ class TestDegenerateSeriesCategory:
     """
 
     def test_is_zero_variance_series_matches_the_dsr_guard(self) -> None:
-        """Same predicate as _rigor_helpers.py:130 — by construction, not by luck."""
+        """Same predicate as _rigor_helpers.py:186 — by construction, not by luck."""
         assert is_zero_variance_series([0.0] * 100) is True
         assert is_zero_variance_series([0.001] * 5659) is True  # constant non-zero too
         assert is_zero_variance_series([]) is False  # nothing to judge yet
@@ -1445,12 +1447,14 @@ class TestGateDetailsBranches:
 
     def test_gate_details_returns_all_four_keys(self):
         """gate_details must contain the four gate keys + DSR convention (#547) +
-        the DSR SE model (#621 follow-up) + the IID advisory (#621)."""
+        the DSR SE model (#621 follow-up) + the IID advisory (#621) + the rf
+        convention disclosure (#1409)."""
         r = RigorGateResult("s")
         keys = set(r.gate_details.keys())
         assert keys == {
             "dsr",
             "dsr_convention",
+            "rf_convention",
             "dsr_se",
             "pbo",
             "oos_sharpe",
@@ -1549,11 +1553,13 @@ class TestRunRigorGatePaths:
 
     def test_gate_details_populated_by_run_rigor_gate(self):
         """gate_details on the returned result must have the four gate keys + DSR
-        convention (#547) + DSR SE model (#621 follow-up) + IID (#621)."""
+        convention (#547) + DSR SE model (#621 follow-up) + IID (#621) + rf
+        convention (#1409)."""
         result = run_rigor_gate("s", _RETURNS_80)
         assert set(result.gate_details.keys()) == {
             "dsr",
             "dsr_convention",
+            "rf_convention",
             "dsr_se",
             "pbo",
             "oos_sharpe",
@@ -1683,10 +1689,11 @@ class TestDsrCorrelationRelaxesPenalty:
         )
 
     def test_full_correlation_collapses_to_single_effective_trial(self):
-        # ρ=1 under the effective-N model means N_eff = 1: all trials are the
-        # same test, so there is no selection bias to deflate. The DSR must
-        # equal the N=1 (no-penalty) result — not vanish via an undocumented
-        # sqrt(1−ρ) factor.
+        # ρ=1 means every trial is the same test, so there is no selection
+        # bias to deflate and the DSR must equal the N=1 (no-penalty) result.
+        # Note this endpoint does NOT discriminate between formulas: √(1−ρ) and
+        # the old N_eff form both vanish here, which is part of why #1558 went
+        # unnoticed. The interior is pinned in TestEquicorrelatedExpectedMax.
         rng = np.random.default_rng(9)
         rets = list(rng.normal(0.0012, 0.01, 600))
         fully_correlated = compute_dsr(rets, num_trials=25, average_correlation=1.0)
@@ -1715,6 +1722,147 @@ class TestDsrCorrelationRelaxesPenalty:
 
 
 # ─── CPCV wiring into run_rigor_gate ─────────────────────────────────
+
+
+class TestEquicorrelatedExpectedMax:
+    """#1558: the correlated-trials E[max] must be the equicorrelated one.
+
+    For N standard normals with equicorrelation ρ ≥ 0, the one-factor form
+    ``X_i = √ρ·Z + √(1−ρ)·ε_i`` makes the common term factor out of the maximum:
+
+        E[max_i X_i] = √(1−ρ) · E[max of N iid]
+
+    The prior implementation instead converted N to an effective count
+    ``N_eff = N/(1 + (N−1)ρ)`` (the Kish design effect) and pushed that through
+    the quantile approximation, which under-deflated by 2×–10× over
+    ρ ∈ [0.3, 0.9] and let the null gate admit noise at up to 29%.
+
+    Every test in this class FAILS against that prior implementation. The three
+    tests in ``TestDsrCorrelationRelaxesPenalty`` do not: they pin the ρ=0 and
+    ρ=1 endpoints (where the two formulas agree exactly) and monotonicity in
+    between (which both satisfy), so the whole file passed against either one.
+    """
+
+    ANNUALIZATION = 252
+    EULER = 0.5772156649
+
+    @classmethod
+    def _a_n(cls, n: int) -> float:
+        """Bailey-LdP two-quantile E[max of n iid standard normals]."""
+        from scipy.stats import norm
+
+        return float((1.0 - cls.EULER) * norm.ppf(1.0 - 1.0 / n) + cls.EULER * norm.ppf(1.0 - 1.0 / (n * math.e)))
+
+    @classmethod
+    def _recover_e_max(cls, sr_hat: float, t: int, n: int, rho: float) -> float:
+        """Back E_max_N out of the returned deflated Sharpe.
+
+        ``dsr = (SR_hat − SR_zero)·√252`` and ``SR_zero = √(1/(T−1))·E_max_N``,
+        so E_max_N is recoverable exactly from the public return value. Reading
+        it this way keeps the test on the observable output rather than on a
+        private intermediate, so it still bites if the block is refactored.
+        """
+        dsr, _ = _dsr_from_stats(sr_hat, t, 0.0, 3.0, n, rho)
+        assert dsr is not None
+        return (sr_hat - dsr / math.sqrt(cls.ANNUALIZATION)) * math.sqrt(t - 1)
+
+    @pytest.mark.parametrize("n", [4, 8, 16])
+    @pytest.mark.parametrize("rho", [0.0, 0.3, 0.5, 0.7, 0.9])
+    def test_expected_max_matches_the_equicorrelated_closed_form(self, n: int, rho: float) -> None:
+        """The interior, pinned by value — this is what the old tests left free."""
+        recovered = self._recover_e_max(0.03, 756, n, rho)
+        expected = math.sqrt(1.0 - rho) * self._a_n(n)
+        assert recovered == pytest.approx(expected, abs=1e-3), (
+            f"N={n}, rho={rho}: E[max] is {recovered:.4f}, equicorrelated closed form is "
+            f"{expected:.4f} (ratio {recovered / expected:.2f}x)"
+        )
+
+    @pytest.mark.parametrize(("n", "rho"), [(4, 0.5), (8, 0.7), (16, 0.5), (16, 0.9)])
+    def test_correlation_shrinkage_factor_matches_monte_carlo(self, n: int, rho: float) -> None:
+        """Independent of the closed form: simulate the maximum directly.
+
+        Draws from a Cholesky factor of Σ = (1−ρ)I + ρ·11ᵀ rather than the
+        one-factor construction, so the simulation does not assume the identity
+        under test. Seeded, so it cannot go flaky.
+
+        Compares the RATIO E[max](ρ)/E[max](0) on both sides rather than the
+        levels. The two-quantile approximation to E[max of N iid] is itself
+        ~2–3% high (at ρ=0 as much as anywhere), and that bias is common to
+        numerator and denominator, so taking the ratio cancels it and leaves
+        exactly the correlation factor this test is about. Comparing levels
+        would fold a pre-existing approximation error into a correlation test.
+        """
+        rng = np.random.default_rng(1558)
+        cov = np.full((n, n), rho) + np.eye(n) * (1.0 - rho)
+        chol = np.linalg.cholesky(cov).T
+        correlated = float((rng.standard_normal((200_000, n)) @ chol).max(axis=1).mean())
+        independent = float(rng.standard_normal((200_000, n)).max(axis=1).mean())
+        simulated_factor = correlated / independent
+
+        recovered_factor = self._recover_e_max(0.03, 756, n, rho) / self._recover_e_max(0.03, 756, n, 0.0)
+        assert recovered_factor == pytest.approx(simulated_factor, abs=0.01), (
+            f"N={n}, rho={rho}: correlation shrinks E[max] by {recovered_factor:.4f}, "
+            f"simulation says {simulated_factor:.4f} (closed form: {math.sqrt(1 - rho):.4f})"
+        )
+
+    def test_correlated_deflation_keeps_growing_with_trial_count(self) -> None:
+        """Shape in N, not just scale.
+
+        ``N_eff = N/(1 + (N−1)ρ)`` tends to 1/ρ, so the old form's penalty
+        SATURATED: at ρ=0.7 it was 0.203 at N=16 and 0.222 at N=1000, a 9% rise
+        across a 60-fold larger search. The true term grows like √(1−ρ)·√(2 ln N).
+        A large correlated sweep must be charged more than a small one.
+        """
+        small = self._recover_e_max(0.03, 756, 16, 0.7)
+        large = self._recover_e_max(0.03, 756, 1000, 0.7)
+        assert large > 1.5 * small, (
+            f"E[max] barely moved from N=16 ({small:.4f}) to N=1000 ({large:.4f}) — "
+            "the multiple-testing penalty is saturating in N"
+        )
+
+    @pytest.mark.parametrize("n", [2, 4, 16, 100])
+    def test_independent_trial_deflation_is_unchanged(self, n: int) -> None:
+        """Regression guard on the ρ=0 path, which #1558 must not move.
+
+        ρ=0 was already correct and is the only case ``test_dsr_parity`` can
+        reach (the analytics-engine mirror takes no correlation argument), so
+        pin it against the closed form directly.
+        """
+        assert self._recover_e_max(0.03, 756, n, 0.0) == pytest.approx(self._a_n(n), abs=1e-3)
+
+    def test_null_gate_does_not_admit_noise_above_the_nominal_rate(self) -> None:
+        """Calibration, which is the reason any of this matters.
+
+        Every trial is drifted at exactly ``_RF_DAILY`` so its true EXCESS Sharpe
+        is zero, matching the excess convention ``compute_dsr`` grades on (#547).
+        Getting this wrong hides the defect: drifting at zero instead makes every
+        trial underperform cash by 5%/yr, a far harsher null under which even the
+        broken form scores a respectable 10.3%.
+
+        The winner is then picked by in-sample Sharpe, which is precisely the
+        selection event the DSR exists to correct, so a gate at ``dsr_p >= 0.90``
+        should admit about 10%. The pre-#1558 form admitted 25.5% here.
+
+        Seeded and bounded at 600 runs to stay fast. Binomial noise on a 10% rate
+        at n=600 is ~1.2pp, so the 0.16 threshold sits ~5σ above the true rate and
+        ~8σ below the broken one: it cannot flake in either direction.
+        """
+        rng = np.random.default_rng(1558)
+        n, rho, t, runs = 16, 0.5, 756, 600
+        cov = np.full((n, n), rho) + np.eye(n) * (1.0 - rho)
+        chol = np.linalg.cholesky(cov).T
+        false_passes = 0
+        for _ in range(runs):
+            paths = (rng.standard_normal((t, n)) @ chol) * 0.01 + _RF_DAILY
+            in_sample = (paths.mean(axis=0) - _RF_DAILY) / paths.std(axis=0, ddof=1)
+            best = paths[:, int(np.argmax(in_sample))]
+            _, p_value = compute_dsr(best.tolist(), num_trials=n, average_correlation=rho)
+            false_passes += p_value is not None and p_value >= 0.90
+        rate = false_passes / runs
+        assert rate < 0.16, (
+            f"the gate admitted {rate:.1%} of pure-noise winners at N={n}, rho={rho}; "
+            "a calibrated gate at dsr_p >= 0.90 admits about 10%"
+        )
 
 
 class TestRunRigorGateCpcvWiring:
@@ -1842,6 +1990,104 @@ class TestComputeLibraryPbo:
             lambda *a, **k: dict.fromkeys(store, float("nan")),
         )
         assert compute_library_pbo(store) is None
+
+
+class TestComputeLibraryPboRfConvention:
+    """2026-08-21 round-4 review fix: `compute_library_pbo` no longer threads
+    the joint date axis into CSCV unconditionally. An earlier draft did so,
+    making the library PBO the one live production number this PR's rf-series
+    change moved with no explicit opt-in and no before/after value in the
+    re-grade delta table. `use_tbill_series` (default `False`) now gates that
+    behind an explicit flag, matching every other not-yet-wired call site in
+    this module — `compute_library_pbo_rf_convention` mirrors the SAME flag so
+    `LibraryPbo.rf_convention` (selection_bias_routes.py) can disclose
+    whichever convention was ACTUALLY used, honestly, either way."""
+
+    @staticmethod
+    def _series(seed: int, n: int = 256) -> dict[str, list]:
+        rng = np.random.default_rng(seed)
+        dates = [f"2020-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(n)]
+        return {"dates": dates, "daily_returns": rng.normal(0.0005, 0.01, n).tolist()}
+
+    def test_default_never_passes_dates_to_compute_pbo_at_all(self, monkeypatch) -> None:
+        """The not-yet-wired default (`use_tbill_series` omitted): `dates`
+        must never reach `compute_pbo` at all — asserted at the CALL
+        BOUNDARY (not via a PBO value comparison, which is a quantized rank
+        statistic that can tie across two different rf regimes for an
+        unlucky seed/window, as happened with an earlier draft of this test).
+        Monkeypatches the exact `compute_pbo` symbol `compute_library_pbo`
+        calls and records the `dates` kwarg every invocation actually
+        received — the only way to prove the wiring, not just the output,
+        without depending on PBO's discrete quantization landing on
+        different buckets."""
+        import archimedes.services.rigor_evaluator as rigor_evaluator_module
+
+        seen_dates: list[object] = []
+        real_compute_pbo = rigor_evaluator_module.compute_pbo
+
+        def _recording_compute_pbo(*args, **kwargs):
+            seen_dates.append(kwargs.get("dates"))
+            return real_compute_pbo(*args, **kwargs)
+
+        monkeypatch.setattr(rigor_evaluator_module, "compute_pbo", _recording_compute_pbo)
+
+        store = {f"s{i}": self._series(i) for i in range(4)}  # real, in-coverage 2020 dates
+
+        compute_library_pbo(store, s_partitions=8)
+        assert seen_dates == [None]  # default: dates never reached compute_pbo
+
+        compute_library_pbo(store, s_partitions=8, use_tbill_series=True)
+        assert seen_dates[-1] is not None
+        assert len(seen_dates[-1]) == len(next(iter(store.values()))["dates"])
+
+    def test_matches_the_convention_compute_library_pbo_actually_used(self) -> None:
+        from archimedes.services import rf_series
+
+        store = {f"s{i}": self._series(i) for i in range(4)}
+        # These dates (2020 onward) are all inside the vendored series'
+        # coverage, so both the PBO value and its convention resolve to the
+        # series ONLY when explicitly opted in — assert BOTH so a future edit
+        # that decouples them again is caught here, not just at the payload
+        # layer, and assert the default (no opt-in) stays FALLBACK even
+        # though these SAME dates would resolve to the series if asked.
+        assert compute_library_pbo(store, s_partitions=8, use_tbill_series=True) is not None
+        assert compute_library_pbo_rf_convention(store, use_tbill_series=True) == rf_series.RF_CONVENTION_SERIES
+        assert compute_library_pbo_rf_convention(store) == rf_series.RF_CONVENTION_FALLBACK
+        # `use_tbill_series=True` has a real, not merely cosmetic, effect on
+        # the number too (not just the disclosed label) — proven at the
+        # `compute_pbo` level by `test_compute_pbo_dates_materially_changes_the_value`
+        # / `test_compute_pbo_dates_axis_truncates_from_head_not_tail`
+        # (`test_rf_convention_gate.py`) with a seed/window pair verified not
+        # to land on the same quantized PBO bucket; this class's own seeds
+        # (2020 calendar dates) are NOT guaranteed not to tie (PBO is a rank
+        # statistic quantized to 1/S-sized steps), so this test does not
+        # repeat that value-level claim here — only the convention wiring.
+
+    def test_fewer_than_two_series_reports_fallback(self) -> None:
+        from archimedes.services import rf_series
+
+        store = {"a": self._series(1)}
+        assert compute_library_pbo(store, use_tbill_series=True) is None
+        assert compute_library_pbo_rf_convention(store, use_tbill_series=True) == rf_series.RF_CONVENTION_FALLBACK
+
+    def test_empty_store_reports_fallback(self) -> None:
+        from archimedes.services import rf_series
+
+        assert compute_library_pbo({}, use_tbill_series=True) is None
+        assert compute_library_pbo_rf_convention({}, use_tbill_series=True) == rf_series.RF_CONVENTION_FALLBACK
+
+    def test_out_of_coverage_dates_report_fallback(self) -> None:
+        """A store whose joint dates are all outside the vendored series'
+        coverage must disclose FALLBACK when opted in, not silently claim the
+        series."""
+        from archimedes.services import rf_series
+
+        far_future = [f"2999-01-{1 + i:02d}" for i in range(20)]
+        store = {
+            "a": {"dates": far_future, "daily_returns": np.random.default_rng(1).normal(0.0005, 0.01, 20).tolist()},
+            "b": {"dates": far_future, "daily_returns": np.random.default_rng(2).normal(0.0005, 0.01, 20).tolist()},
+        }
+        assert compute_library_pbo_rf_convention(store, use_tbill_series=True) == rf_series.RF_CONVENTION_FALLBACK
 
 
 class TestRigorGateLibraryPbo:

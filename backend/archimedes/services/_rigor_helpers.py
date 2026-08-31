@@ -18,7 +18,10 @@ Spec:  docs/specs/selection-bias-corrections-spec.md
 
 from __future__ import annotations
 
+import logging
 import math
+from collections.abc import Sequence
+from datetime import date, datetime
 from itertools import combinations
 from typing import Any
 
@@ -27,6 +30,10 @@ from scipy.stats import kurtosis as sp_kurtosis
 from scipy.stats import norm
 from scipy.stats import skew as sp_skew
 
+from archimedes.services import rf_series
+
+logger = logging.getLogger(__name__)
+
 _EULER_MASCHERONI = 0.5772156649
 _ANNUALIZATION = 252
 # GATE-side rf convention: the DSR deflates an EXCESS-return Sharpe, because
@@ -34,8 +41,47 @@ _ANNUALIZATION = 252
 # the passport DISPLAY Sharpe, which uses rf=0 (raw) — see fusion_evaluator.py's
 # rf_annual=0.0 call sites. The split is intentional (gate=excess, display=raw),
 # not drift; the two metrics answer different questions. (audit 2026-06-13 #8)
-_RF_ANNUAL = 0.05  # 5% annual risk-free rate (Fed funds 2024-2025 environment)
+#
+# #1409: this flat scalar is now the FALLBACK convention only — the primary
+# convention is the historical 3-month T-bill series (FRED DGS3MO, see
+# rf_series.py), used whenever a caller threads the return series' DATE index
+# through the optional `dates` parameter on the four functions below. Callers
+# that don't pass `dates` (every pre-#1409 call site) get this EXACT flat
+# value, computed on the EXACT pre-#1409 code path — byte-identical behavior,
+# not merely an equivalent approximation.
+_RF_ANNUAL = 0.05  # 5% annual — flat FALLBACK convention only as of #1409, see the comment block above
 _RF_DAILY = _RF_ANNUAL / _ANNUALIZATION
+
+
+def _resolve_rf_daily_array(dates: Sequence[str | date | datetime] | None, n: int) -> np.ndarray:
+    """Per-bar daily risk-free-rate array of length ``n``, aligned to ``dates``.
+
+    ``dates=None`` returns the flat ``_RF_DAILY`` broadcast (the pre-#1409
+    fallback, unchanged) — callers that don't have a date index keep working
+    exactly as before. When ``dates`` is supplied but its length disagrees
+    with ``n`` (a caller bug — the return series and its date index must be
+    1:1), this falls back the same way rather than raising, logging loudly so
+    the mismatch is visible without breaking the gate. Otherwise delegates to
+    ``rf_series.resolve_annual_rf_for_dates`` for the real forward-fill /
+    14-day-grace / fallback logic and converts FRED's percent units to a daily
+    fraction (rate/100/252, the same annualization this module uses
+    everywhere else).
+    """
+    if dates is None:
+        return np.full(n, _RF_DAILY, dtype=float)
+    dates_list = list(dates)
+    if len(dates_list) != n:
+        logger.warning(
+            "_rigor_helpers: dates length (%d) != return-series length (%d) — falling back to the "
+            "flat %.2f%% risk-free rate for this call (disclosed fallback, rf_convention=%s)",
+            len(dates_list),
+            n,
+            _RF_ANNUAL * 100.0,
+            rf_series.RF_CONVENTION_FALLBACK,
+        )
+        return np.full(n, _RF_DAILY, dtype=float)
+    rf_pct, _convention = rf_series.resolve_annual_rf_for_dates(dates_list, flat_annual_pct=_RF_ANNUAL * 100.0)
+    return np.asarray(rf_pct, dtype=float) / 100.0 / _ANNUALIZATION
 
 
 # ─── 1. Deflated Sharpe Ratio ────────────────────────────────────────
@@ -106,6 +152,7 @@ def _sharpe_influence_lrv(
 
 def _sharpe_dsr_inputs(
     daily_returns: list[float] | np.ndarray,
+    dates: Sequence[str | date | datetime] | None = None,
 ) -> tuple[np.ndarray, int, float, float, float, float, float] | None:
     """Validate the return series and extract the DSR's moments exactly once.
 
@@ -119,6 +166,16 @@ def _sharpe_dsr_inputs(
     γ₄ is RAW (Pearson) kurtosis (= 3 for normal), matching Bailey-LdP (2014)
     eq. 8; passing Fisher excess here would shift the denominator by a constant
     (3/4)·ŜR² and bias every DSR.
+
+    #1409: ``dates`` is optional and, when omitted (the default), takes the
+    EXACT pre-#1409 code path below (flat ``_RF_DAILY`` subtracted only from
+    the mean; sigma/skew/kurtosis computed on the raw series) — byte-identical
+    to every caller that hasn't threaded a date index through. When ``dates``
+    IS supplied, the whole excess-return series (``arr - rf_daily_per_bar``) is
+    computed first and mean/sigma/skew/kurtosis are ALL drawn from it — the
+    mathematically correct treatment when rf varies bar-to-bar (Sharpe 1994):
+    subtracting a time-varying series, unlike a constant, can move sigma and
+    the higher moments too, not just the mean.
     """
     arr = np.asarray(daily_returns, dtype=float)
     T = len(arr)
@@ -128,6 +185,25 @@ def _sharpe_dsr_inputs(
     # floating-point cancellation; check range first to catch constant series.
     if float(np.ptp(arr)) == 0.0:
         return None
+
+    if dates is not None:
+        rf_daily = _resolve_rf_daily_array(dates, T)
+        excess = arr - rf_daily
+        sigma = float(excess.std(ddof=1))
+        if sigma <= 0.0:
+            return None
+        mean = float(excess.mean())
+        SR_hat = mean / sigma  # already excess, un-annualized
+        gamma_3 = float(sp_skew(excess))
+        gamma_4 = float(sp_kurtosis(excess, fisher=False))
+        # Return the EXCESS series (not raw `arr`) as the first element: the
+        # HAC influence-function variance (`_sharpe_influence_lrv`, called by
+        # `compute_dsr_hac_and_iid` as `_sharpe_influence_lrv(arr, SR_hat, mean,
+        # sigma, ...)`) computes `z = (arr - mean) / sigma` — that must be the
+        # SAME series `mean`/`sigma` were drawn from, or the z-scores are
+        # incoherent (raw arr against an excess mean/sigma).
+        return excess, T, SR_hat, sigma, mean, gamma_3, gamma_4
+
     sigma = float(arr.std(ddof=1))
     if sigma <= 0.0:
         return None
@@ -143,6 +219,7 @@ def compute_dsr(
     num_trials: int,
     average_correlation: float = 0.0,
     hac_lags: int | str | None = None,
+    dates: Sequence[str | date | datetime] | None = None,
 ) -> tuple[float | None, float | None]:
     """Deflated Sharpe Ratio (Bailey & López de Prado 2014).
 
@@ -165,6 +242,14 @@ def compute_dsr(
             returns. Pass an int for a fixed maximum lag L, or "auto" for the
             Newey–West (1994) plug-in bandwidth. None (default) keeps the exact
             IID Bailey-LdP variance, which the HAC form nests.
+        dates: Optional per-bar date index (1:1 with ``daily_returns``,
+            issue #1409) — when supplied, the DSR is computed on excess
+            returns against the historical 3-month T-bill series
+            (``rf_series.py``) instead of the flat fallback rate. Omitted
+            (the default) keeps the exact pre-#1409 flat-rate behavior —
+            existing callers need no change. See ``_sharpe_dsr_inputs`` for
+            the excess-series math and ``run_rigor_gate``'s ``rf_convention``
+            for how the choice is disclosed.
 
     Returns:
         (deflated_sharpe_ratio, dsr_p_value)
@@ -180,7 +265,7 @@ def compute_dsr(
     if num_trials < 1:
         raise ValueError("num_trials must be >= 1")
 
-    inputs = _sharpe_dsr_inputs(daily_returns)
+    inputs = _sharpe_dsr_inputs(daily_returns, dates=dates)
     if inputs is None:
         return None, None
     arr, T, SR_hat, sigma, mean, gamma_3, gamma_4 = inputs
@@ -206,6 +291,7 @@ def compute_dsr_hac_and_iid(
     num_trials: int,
     average_correlation: float = 0.0,
     hac_lags: int | str = "auto",
+    dates: Sequence[str | date | datetime] | None = None,
 ) -> tuple[float | None, float | None, float | None, float | None]:
     """HAC-robust DSR and the IID-SE DSR in a single pass.
 
@@ -223,7 +309,7 @@ def compute_dsr_hac_and_iid(
     if num_trials < 1:
         raise ValueError("num_trials must be >= 1")
 
-    inputs = _sharpe_dsr_inputs(daily_returns)
+    inputs = _sharpe_dsr_inputs(daily_returns, dates=dates)
     if inputs is None:
         return None, None, None, None
     arr, T, SR_hat, sigma, mean, gamma_3, gamma_4 = inputs
@@ -279,30 +365,40 @@ def _dsr_from_stats(
         E_max_N = 0.0
     else:
         # Correlated trials are not independent tests: a parameter sweep whose
-        # variants move together carries fewer effective trials than its nominal
-        # count. Convert N to an effective count under an equicorrelation model
-        # with average pairwise correlation ρ:
-        #     N_eff = N / (1 + (N − 1)·ρ)
-        # the standard "effective number of independent tests" (Cheverud 2001;
-        # Nyholt 2004 — the equicorrelated effective sample size). ρ=0 → N_eff=N
-        # (full multiple-testing penalty); ρ=1 → N_eff=1 (all variants collapse
-        # to a single test, so there is no selection bias to deflate). This
-        # replaces a previous ad-hoc E[max]·sqrt(1 − ρ) factor that had no
-        # published source and let deflation vanish without a principled basis.
+        # variants move together offers fewer distinct chances to get lucky, so
+        # the expected best-of-N null is lower. Under equicorrelation with
+        # average pairwise correlation ρ ≥ 0, the one-factor representation
+        #     X_i = √ρ·Z + √(1−ρ)·ε_i      (Z, ε_i iid standard normal)
+        # gives every X_i unit variance and pairwise correlation ρ, and since Z
+        # is common to all of them it factors straight out of the maximum:
+        #     max_i X_i = √ρ·Z + √(1−ρ)·max_i ε_i
+        #     E[max_i X_i] = √(1−ρ)·E[max of N iid]
+        # so the correlated E[max] is exactly the iid one scaled by √(1−ρ). This
+        # is Bailey-LdP's own √(V[{SR_n}]) term specialised to equicorrelation:
+        # the cross-sectional variance of N equicorrelated null Sharpes has
+        # expectation (1−ρ), which is the same factor under the square root.
+        # Because SR_zero below substitutes the closed-form null variance
+        # 1/(T−1) for the paper's empirical V[{SR_n}], that shrinkage is not
+        # carried implicitly and has to be applied here.
+        #
+        # ρ=0 → the full independent-trial penalty; ρ=1 → all variants are one
+        # test and there is no selection bias to deflate. Negative ρ is clamped
+        # away: equicorrelation is only positive-semidefinite for ρ > −1/(N−1),
+        # and the identity above needs ρ ≥ 0 for √ρ to be real.
+        #
+        # #1558: this REPLACES an effective-trial-count form
+        # N_eff = N/(1 + (N−1)ρ) fed through the quantile approximation. That is
+        # the Kish design effect (effective sample size for a mean), not an
+        # expectation-of-maximum, and it under-deflated by 2×–10× across
+        # ρ ∈ [0.3, 0.9] — at N=16, ρ=0.7 the null gate admitted noise 28.9% of
+        # the time against a nominal 10%. It was also wrong in shape, not just
+        # scale: N_eff → 1/ρ as N grows, so deflation saturated and a
+        # 10,000-variant sweep drew the same penalty as a 64-variant one.
         rho = max(0.0, min(1.0, average_correlation))
-        n_eff = N / (1.0 + (N - 1) * rho) if rho > 0.0 else float(N)
-
-        # The Bailey-LdP two-quantile E[max] approximation is only well-behaved
-        # for ≥ 2 trials (norm.ppf(1 − 1/N) → −∞ as N → 1). Evaluate it at
-        # max(2, N_eff) and linearly taper the result to 0 across the effective
-        # range [1, 2], so a fully correlated grid (N_eff → 1) carries no penalty
-        # without the ppf blow-up a literal non-integer N_eff < 2 would cause.
-        n_for_emax = max(2.0, n_eff)
-        phi_inv_1 = float(norm.ppf(1.0 - 1.0 / n_for_emax))
-        phi_inv_2 = float(norm.ppf(1.0 - 1.0 / (n_for_emax * math.e)))
+        phi_inv_1 = float(norm.ppf(1.0 - 1.0 / N))
+        phi_inv_2 = float(norm.ppf(1.0 - 1.0 / (N * math.e)))
         e_max_full = (1.0 - _EULER_MASCHERONI) * phi_inv_1 + _EULER_MASCHERONI * phi_inv_2
-        taper = min(1.0, max(0.0, n_eff - 1.0))
-        E_max_N = e_max_full * taper
+        E_max_N = e_max_full * math.sqrt(1.0 - rho)
 
     # SR_zero: expected best-of-N under the null, scaled to per-bar variance
     # (under iid normal returns, per-bar SR has variance 1/(T-1))
@@ -335,6 +431,7 @@ def _dsr_from_stats(
 def compute_pbo(
     returns_matrix: dict[str, list[float]],
     s_partitions: int = 16,
+    dates: Sequence[str | date | datetime] | None = None,
 ) -> dict[str, float]:
     """Probability of Backtest Overfitting via CSCV (Bailey et al. 2014).
 
@@ -349,6 +446,12 @@ def compute_pbo(
             length to align them.
         s_partitions: Number of equal time-partitions S. Must be even ≥ 2.
             Default 16 is the paper's recommended value.
+        dates: Optional shared date index (1:1 with each series AFTER the
+            shortest-length truncation below — issue #1409). CSCV's per-split
+            Sharpe ranking (``_sharpe_per_col``) uses this to resolve the
+            historical T-bill rf series for the matrix's window instead of the
+            flat fallback rate. Omitted (the default) keeps the exact
+            pre-#1409 flat-rate code path.
 
     Returns:
         {strategy_id: pbo_score} — lower is better. PBO ≥ 0.5 means the
@@ -401,7 +504,16 @@ def compute_pbo(
     if rows_per_block < 1:
         return dict.fromkeys(sorted_ids, 0.0)
 
+    # #1409: resolve the per-bar rf array ONCE over the truncated (T,) window,
+    # matching R's own truncation to `T` above, then block it identically to R
+    # so every IS/OOS split's rf slice lines up with that split's return rows.
+    # `dates is None` keeps `rf_daily_full` the flat broadcast (unchanged
+    # pre-#1409 behavior); `_sharpe_per_col` only takes the excess-return
+    # branch when a per-split rf array is actually passed in below.
+    rf_daily_full = _resolve_rf_daily_array(list(dates)[:T] if dates is not None else None, T)
+
     blocks = [R[i * rows_per_block : (i + 1) * rows_per_block, :] for i in range(S)]
+    rf_blocks = [rf_daily_full[i * rows_per_block : (i + 1) * rows_per_block] for i in range(S)]
     half = S // 2
     lambdas: list[float] = []
 
@@ -410,9 +522,11 @@ def compute_pbo(
 
         IS = np.vstack([blocks[i] for i in is_indices])
         OOS = np.vstack([blocks[i] for i in oos_indices])
+        rf_is = np.concatenate([rf_blocks[i] for i in is_indices])
+        rf_oos = np.concatenate([rf_blocks[i] for i in oos_indices])
 
-        is_sharpes = _sharpe_per_col(IS)
-        oos_sharpes = _sharpe_per_col(OOS)
+        is_sharpes = _sharpe_per_col(IS, rf_daily=rf_is if dates is not None else None)
+        oos_sharpes = _sharpe_per_col(OOS, rf_daily=rf_oos if dates is not None else None)
 
         best_is_idx = int(np.argmax(is_sharpes))
 
@@ -438,6 +552,7 @@ def compute_pbo(
 def compute_oos_sharpe(
     daily_returns: list[float],
     train_fraction: float = 0.70,
+    dates: Sequence[str | date | datetime] | None = None,
 ) -> float | None:
     """Annualized Sharpe on the held-out OOS slice (no shuffling).
 
@@ -461,6 +576,10 @@ def compute_oos_sharpe(
     Args:
         daily_returns: Full per-bar return series.
         train_fraction: Fraction reserved for in-sample training (0 < f < 1).
+        dates: Optional per-bar date index (1:1 with ``daily_returns``, issue
+            #1409) — sliced to the same OOS window as the returns and used to
+            resolve the historical T-bill rf series for that window. Omitted
+            (the default) keeps the exact pre-#1409 flat-rate code path.
 
     Returns:
         Annualized OOS Sharpe, or None if the OOS slice is shorter than one
@@ -484,12 +603,22 @@ def compute_oos_sharpe(
     if sigma <= 0.0:
         return None
 
+    if dates is not None:
+        oos_dates = list(dates)[split:]
+        rf_daily = _resolve_rf_daily_array(oos_dates, len(oos))
+        excess = oos - rf_daily
+        sigma_excess = float(excess.std(ddof=1))
+        if sigma_excess <= 0.0:
+            return None
+        return round(float((float(excess.mean()) / sigma_excess) * math.sqrt(_ANNUALIZATION)), 6)
+
     return round(float(((oos.mean() - _RF_DAILY) / sigma) * math.sqrt(_ANNUALIZATION)), 6)
 
 
 def compute_in_sample_sharpe(
     daily_returns: list[float],
     train_fraction: float = 0.70,
+    dates: Sequence[str | date | datetime] | None = None,
 ) -> float | None:
     """Annualized Sharpe on the in-sample (training) slice.
 
@@ -500,6 +629,14 @@ def compute_in_sample_sharpe(
     by the fusion gate) compares like with like. Returns None when the series is
     too short to split meaningfully (mirrors ``compute_oos_sharpe`` so the IS
     Sharpe is available exactly when the OOS Sharpe is).
+
+    Args:
+        daily_returns: Full per-bar return series.
+        train_fraction: Fraction reserved for in-sample training (0 < f < 1).
+        dates: Optional per-bar date index (1:1 with ``daily_returns``, issue
+            #1409) — sliced to the same IS window as the returns and used to
+            resolve the historical T-bill rf series for that window. Omitted
+            (the default) keeps the exact pre-#1409 flat-rate code path.
     """
     arr = np.asarray(daily_returns, dtype=float)
     T = len(arr)
@@ -509,12 +646,34 @@ def compute_in_sample_sharpe(
     is_arr = arr[:split]
     if len(is_arr) < 21:  # 1 trading month minimum — mirrors compute_oos_sharpe's OOS floor
         return None
-    s = _annualized_sharpe_arr(is_arr)
+    is_dates = list(dates)[:split] if dates is not None else None
+    s = _annualized_sharpe_arr(is_arr, dates=is_dates)
     return round(s, 6) if s is not None else None
 
 
-def _annualized_sharpe_arr(arr: np.ndarray) -> float | None:
-    """Annualized Sharpe of a 1-D return array, or None if degenerate."""
+def _annualized_sharpe_arr(
+    arr: np.ndarray,
+    dates: Sequence[str | date | datetime] | None = None,
+) -> float | None:
+    """Annualized Sharpe of a 1-D return array, or None if degenerate.
+
+    #1409: ``dates`` optional, 1:1 with ``arr``. Omitted keeps the exact
+    pre-#1409 flat-rate code path. **Two** callers always take that no-dates
+    path today (2026-08-21 review fix — the docstring previously named only
+    the first, live-irrelevant one):
+
+      - ``compute_cpcv_oos_sharpe`` — out of this issue's scope, and has
+        **no production caller today** (CPCV is reported ``NOT_RUN`` until a
+        real combinatorial OOS matrix is wired in).
+      - ``regime_conditional_sharpe`` (reached via ``regime_robustness_score``,
+        which ``run_rigor_gate`` DOES call, and DOES surface on every gate
+        result long enough to classify >1 regime — see
+        ``RigorGateResult.regime_robustness``) — this one IS live. A grade
+        that threads ``dates`` therefore mixes a T-bill-series DSR/OOS/IS
+        with flat-5% per-regime Sharpes; see ``docs/rigor-methods.md`` §1a
+        for the disclosed-holdout list this is documented alongside (Kelly,
+        the optimizer, and now regime-robustness).
+    """
     if len(arr) < 2:
         return None
     if float(np.ptp(arr)) == 0.0:
@@ -522,6 +681,13 @@ def _annualized_sharpe_arr(arr: np.ndarray) -> float | None:
     sigma = float(arr.std(ddof=1))
     if sigma <= 0.0:
         return None
+    if dates is not None:
+        rf_daily = _resolve_rf_daily_array(dates, len(arr))
+        excess = arr - rf_daily
+        sigma_excess = float(excess.std(ddof=1))
+        if sigma_excess <= 0.0:
+            return None
+        return float((float(excess.mean()) / sigma_excess) * math.sqrt(_ANNUALIZATION))
     return float(((arr.mean() - _RF_DAILY) / sigma) * math.sqrt(_ANNUALIZATION))
 
 
@@ -800,10 +966,22 @@ def compute_sharpe_ci(
 # ─── 6. Private helpers ──────────────────────────────────────────────
 
 
-def _sharpe_per_col(R: np.ndarray) -> np.ndarray:
-    """Annualized Sharpe for each column (strategy) of a return matrix."""
+def _sharpe_per_col(R: np.ndarray, rf_daily: np.ndarray | None = None) -> np.ndarray:
+    """Annualized Sharpe for each column (strategy) of a return matrix.
+
+    #1409: ``rf_daily`` is an optional per-ROW rf array (shape ``(R.shape[0],)``)
+    broadcast-subtracted from every column before computing mean/sigma — the
+    excess-return treatment, consistent with ``_sharpe_dsr_inputs``. ``None``
+    (the default) keeps the exact pre-#1409 flat-``_RF_DAILY`` code path.
+    """
     if R.shape[0] < 2:
         return np.zeros(R.shape[1])
+    if rf_daily is not None:
+        R = R - rf_daily[:, None]
+        mu = R.mean(axis=0)
+        sigma = R.std(axis=0, ddof=1)
+        safe_sigma = np.where(sigma > 0, sigma, np.inf)
+        return (mu / safe_sigma) * math.sqrt(_ANNUALIZATION)
     mu = R.mean(axis=0)
     sigma = R.std(axis=0, ddof=1)
     safe_sigma = np.where(sigma > 0, sigma, np.inf)
@@ -908,7 +1086,11 @@ def classify_regimes(
     return labels
 
 
-# DEAD CODE — unwired from run_rigor_gate; see issue #621
+# NOTE: this WAS dead code (unwired from run_rigor_gate; see issue #621) but
+# is no longer — `run_rigor_gate` reaches it via `regime_robustness_score`
+# (2026-08-21 review fix: the banner below had gone stale and would mislead a
+# reader into skipping the one call site of `_annualized_sharpe_arr` that is
+# actually live in production; see that function's docstring).
 def regime_conditional_sharpe(
     strategy_returns: list[float] | np.ndarray,
     regime_labels: list[int] | np.ndarray,
