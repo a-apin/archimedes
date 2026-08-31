@@ -1957,6 +1957,10 @@ async def _run_fusion_job(job_id: str) -> None:
                 # generator's own say-so) | "failed". See
                 # services/dsl_lookahead_audit.py.
                 "look_ahead_audit": r.look_ahead_audit,
+                # SEPARATE axis from the gate: "passed" | "not_checked" |
+                # "failed". A surface must never draw "not_checked" as a
+                # failure — the audit did not catch anything, it did not run.
+                "look_ahead_render_state": r.look_ahead_render_state,
                 # What the generator CLAIMED (spec.look_ahead_safe). Recorded,
                 # never gated on.
                 "look_ahead_declared": r.look_ahead_declared,
@@ -2107,6 +2111,7 @@ async def _run_fusion_job(job_id: str) -> None:
                     "look_ahead_clean": eval_result.rigor.look_ahead_clean,
                     # Three-state audit + honest label — see rigor_verdict_dict above.
                     "look_ahead_audit": eval_result.rigor.look_ahead_audit,
+                    "look_ahead_render_state": eval_result.rigor.look_ahead_render_state,
                     "look_ahead_declared": eval_result.rigor.look_ahead_declared,
                     "look_ahead_reasons": list(eval_result.rigor.look_ahead_reasons),
                     "look_ahead_label": eval_result.rigor.look_ahead_label,

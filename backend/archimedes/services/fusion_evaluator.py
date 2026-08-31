@@ -33,6 +33,7 @@ from archimedes.services._fusion_helpers import (
 )
 from archimedes.services.dsl_lookahead_audit import (
     PASSED_DECLARED_ONLY,
+    RENDER_NOT_CHECKED,
     audit_dsl_strategy,
     broker_cheat_check_passed,
 )
@@ -145,6 +146,13 @@ class RigorVerdict:
     # completed and the only support for the claim is the generator's own
     # say-so.
     look_ahead_audit: str = PASSED_DECLARED_ONLY
+    # How a SURFACE should show it: "passed" | "not_checked" | "failed". A
+    # separate axis from the gating one on purpose — `passed_declared_only`
+    # blocks the gate but renders "not_checked", because no audit found a leak;
+    # none finished. Rendering it as "failed" would accuse the strategy of
+    # something nothing observed. See dsl_lookahead_audit's "Deployability is
+    # fail-closed; rendering is honest".
+    look_ahead_render_state: str = RENDER_NOT_CHECKED
     # The LLM's self-declared `look_ahead_safe` flag, kept as a record of what
     # the generator CLAIMED. Demoted: it has no vote in `look_ahead_clean`,
     # `passing`, or the gate. ``None`` when no spec was available.
@@ -280,13 +288,21 @@ def run_dsl_backtest(
     cerebro.addanalyzer(_EquityCurveAnalyzer, _name="equity_curve")
     cerebro.addanalyzer(_TradeStatsAnalyzer, _name="trade_stats")
 
-    # Broker-level look-ahead leg, charged on the REAL cerebro this run used.
-    # Read before run() so a cheating broker is recorded even if the run itself
-    # goes on to succeed (dsl_lookahead_audit.audit_dsl_strategy turns a False
-    # here into an outright FAILED verdict).
-    broker_clean = broker_cheat_check_passed(cerebro)
+    # Broker-level look-ahead leg, charged on the REAL cerebro this run used —
+    # on BOTH sides of run(), and ANDed.
+    #
+    # The post-run read is the load-bearing one. cheat-on-close/open is settable
+    # from inside the run: a strategy's __init__ or next() can call
+    # ``self.broker.set_coc(True)``, and backtrader honours it for the fills that
+    # follow. A pre-run read alone therefore records "clean" for a broker that
+    # cheated for the entire backtest — exactly the leak this leg exists to
+    # catch. The pre-run read is kept because it is not redundant in the other
+    # direction (a broker configured to cheat and reset by the run would
+    # otherwise read clean too). Fail-closed: both must hold.
+    broker_clean_before_run = broker_cheat_check_passed(cerebro)
 
     results = cerebro.run()
+    broker_clean = broker_clean_before_run and broker_cheat_check_passed(cerebro)
     final_value = cerebro.broker.getvalue()
     initial = initial_cash
 
@@ -455,13 +471,21 @@ def _run_variant_backtest(
     cerebro.addanalyzer(_EquityCurveAnalyzer, _name="equity_curve")
     cerebro.addanalyzer(_TradeStatsAnalyzer, _name="trade_stats")
 
-    # Broker-level look-ahead leg, charged on the REAL cerebro this run used.
-    # Read before run() so a cheating broker is recorded even if the run itself
-    # goes on to succeed (dsl_lookahead_audit.audit_dsl_strategy turns a False
-    # here into an outright FAILED verdict).
-    broker_clean = broker_cheat_check_passed(cerebro)
+    # Broker-level look-ahead leg, charged on the REAL cerebro this run used —
+    # on BOTH sides of run(), and ANDed.
+    #
+    # The post-run read is the load-bearing one. cheat-on-close/open is settable
+    # from inside the run: a strategy's __init__ or next() can call
+    # ``self.broker.set_coc(True)``, and backtrader honours it for the fills that
+    # follow. A pre-run read alone therefore records "clean" for a broker that
+    # cheated for the entire backtest — exactly the leak this leg exists to
+    # catch. The pre-run read is kept because it is not redundant in the other
+    # direction (a broker configured to cheat and reset by the run would
+    # otherwise read clean too). Fail-closed: both must hold.
+    broker_clean_before_run = broker_cheat_check_passed(cerebro)
 
     results = cerebro.run()
+    broker_clean = broker_clean_before_run and broker_cheat_check_passed(cerebro)
     final_value = cerebro.broker.getvalue()
     initial = initial_cash
 
@@ -890,6 +914,7 @@ def apply_rigor_gate(
         in_sample_sharpe=in_sample_sharpe,
         look_ahead_clean=look_ahead_clean,
         look_ahead_audit=la_audit.status,
+        look_ahead_render_state=la_audit.render_state,
         look_ahead_declared=la_audit.declared_intent,
         look_ahead_reasons=la_audit.reasons,
         look_ahead_label=look_ahead_label,

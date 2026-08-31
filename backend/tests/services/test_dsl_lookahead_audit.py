@@ -101,23 +101,39 @@ class TestInterpreterSurfaceAudit:
 
 
 class TestInterpreterVerifierRejectsFutureReads:
-    """ADVERSARIAL: feed the verifier interpreters that DO read the future."""
+    """ADVERSARIAL: feed the verifier interpreters that DO read the future.
+
+    Bodies that use ``i`` put it inside ``for i in range(20):`` on purpose: that
+    is the ONE way this verifier will accept a name inside a negation, so writing
+    it that way isolates the specific defect each case is about instead of
+    tripping the (correct) "``i`` is not provably non-negative" rejection.
+    """
 
     @pytest.mark.parametrize(
         ("body", "needle"),
         [
             # The canonical leak: bar t+1's close.
-            ("            return float(self.data.close[1])", "positive bar offset [1]"),
+            ("        return float(self.data.close[1])", "positive bar offset [1]"),
             # A larger forward jump.
-            ("            return float(self.data.high[5])", "positive bar offset [5]"),
+            ("        return float(self.data.high[5])", "positive bar offset [5]"),
             # An offset the verifier cannot prove — refuses to guess.
-            ("            return float(self.data.close[shift])", "unprovable bar offset expression"),
+            ("        return float(self.data.close[shift])", "unprovable bar offset expression"),
             # Arithmetic that moves forward in time.
-            ("            return float(self.data.close[-i + 2])", "unprovable bar-offset arithmetic"),
+            ("        for i in range(20):\n            return float(self.data.close[-i + 2])", "arithmetic"),
             # Subtracting a negative == adding.
-            ("            return float(self.data.close[-i - -3])", "moves FORWARD in time"),
+            ("        for i in range(20):\n            return float(self.data.close[-i - -3])", "FORWARD in time"),
             # backtrader's delayed-line accessor pointed the wrong way.
-            ("            return float(self.data.close(1)[0])", "positive bar offset [1]"),
+            ("        return float(self.data.close(1)[0])", "positive bar offset [1]"),
+            # A negated name nothing proves non-negative. THIS is the hole the
+            # old verifier had: it accepted every USub on sight.
+            ("        return float(self.data.close[-shift])", "not provably non-negative"),
+            # A negated CALL — likewise unprovable.
+            ("        return float(self.data.close[-offset()])", "not provably non-negative"),
+            # A subtrahend nothing proves non-negative: `-i - j` with j unknown
+            # can move forward.
+            ("        for i in range(20):\n            return float(self.data.close[-i - j])", "subtrahend"),
+            # A range that can itself yield negatives, so `-i` can be positive.
+            ("        for i in range(-5, 5):\n            return float(self.data.close[-i])", "non-negative"),
         ],
     )
     def test_forward_read_is_rejected(self, body: str, needle: str):
@@ -126,24 +142,73 @@ class TestInterpreterVerifierRejectsFutureReads:
         assert audit.ok is False, f"verifier ACCEPTED a future read: {body.strip()}"
         assert any(needle in v for v in audit.violations), audit.violations
 
+    def test_negated_module_constant_that_is_itself_negative_is_rejected(self):
+        """ADVERSARIAL, the exact mutation the old verifier waved through.
+
+        ``_SHIFT = -1`` makes ``self.data.close[-_SHIFT]`` literally
+        ``self.data.close[1]`` — bar *t+1*. The old ``_classify_offset`` accepted
+        any ``UnaryOp(USub)`` whose operand was not itself negated, so this
+        interpreter passed the audit clean while reading the future. It must FAIL.
+        """
+        source = "_SHIFT = -1\n\nclass S:\n    def next(self):\n        return float(self.data.close[-_SHIFT])\n"
+        audit = _audit_source(source)
+        assert audit.ok is False, "verifier ACCEPTED self.data.close[-_SHIFT] with _SHIFT = -1"
+        assert any("not provably non-negative" in v for v in audit.violations), audit.violations
+
     def test_past_and_present_reads_are_accepted(self):
         """The mirror image: legitimate backtrader offsets must NOT be flagged.
 
         Without this, a verifier that rejects everything would pass the tests
-        above while being useless.
+        above while being useless. ``i`` is ``range()``-bound and ``period`` is
+        guarded — the two proofs the verifier accepts.
         """
         source = (
             "class S:\n"
             "    def next(self):\n"
             "        a = float(self.data.close[0])\n"
             "        b = float(self.data.close[-1])\n"
-            "        c = float(self.data.close[-i])\n"
-            "        d = float(self.data.close[-i - 1])\n"
-            "        return a + b + c + d\n"
+            "        for i in range(20):\n"
+            "            c = float(self.data.close[-i])\n"
+            "            d = float(self.data.close[-i - 1])\n"
+            "        e = [float(self.data.close[-k]) for k in range(5)]\n"
+            "        return a + b + c + d + e[0]\n"
         )
         audit = _audit_source(source)
         assert audit.violations == ()
-        assert audit.sites_checked == 4
+        assert audit.sites_checked == 5
+
+    def test_a_guarded_parameter_is_proven_but_an_unguarded_one_is_not(self):
+        """The other accepted proof: ``if period < 1: raise`` dominates the read.
+
+        Both halves matter. Without the guard the same expression is unproven and
+        rejected — which is why deleting the guard in ``_make_indicator`` fails
+        the audit closed instead of silently weakening it.
+        """
+        guarded = (
+            "def make(data_line: bt.LineSeries, period):\n"
+            "    if period < 1:\n"
+            "        raise DSLError('bad period')\n"
+            "    return data_line(-period)\n"
+        )
+        assert _audit_source(guarded).violations == ()
+
+        unguarded = "def make(data_line: bt.LineSeries, period):\n    return data_line(-period)\n"
+        audit = _audit_source(unguarded)
+        assert audit.ok is False
+        assert any("not provably non-negative" in v for v in audit.violations), audit.violations
+
+    def test_a_read_above_its_guard_is_not_covered_by_it(self):
+        """The guard proves nothing about lines that run before it."""
+        source = (
+            "def make(data_line: bt.LineSeries, period):\n"
+            "    early = data_line(-period)\n"
+            "    if period < 1:\n"
+            "        raise DSLError('bad period')\n"
+            "    return early\n"
+        )
+        audit = _audit_source(source)
+        assert audit.ok is False
+        assert any("not provably non-negative" in v for v in audit.violations), audit.violations
 
     def test_line_aliases_are_tracked_through_assignment(self):
         """A future read hidden behind a local alias is still caught."""
@@ -151,6 +216,26 @@ class TestInterpreterVerifierRejectsFutureReads:
         audit = _audit_source(source)
         assert audit.ok is False
         assert any("positive bar offset [1]" in v for v in audit.violations)
+
+    def test_alias_used_before_its_binding_is_still_checked(self):
+        """ADVERSARIAL: source ORDER must not decide whether a read is audited.
+
+        The single-pass visitor bound aliases as it walked, so a leak textually
+        ABOVE its ``line = self.data.close`` assignment was never classified at
+        all. Statement order is not a security boundary.
+        """
+        source = (
+            "class S:\n"
+            "    def early(self):\n"
+            "        return float(line[1])\n"
+            "\n"
+            "    def bind(self):\n"
+            "        line = self.data.close\n"
+            "        return line\n"
+        )
+        audit = _audit_source(source)
+        assert audit.ok is False, "a leak above its alias binding went unaudited"
+        assert any("positive bar offset [1]" in v for v in audit.violations), audit.violations
 
     def test_line_annotated_parameter_is_tracked(self):
         """``_make_indicator``-shaped code: a line arrives as a typed parameter."""
@@ -180,6 +265,50 @@ class TestInterpreterVerifierRejectsFutureReads:
         audit = _audit_source("def f():\n    return 1\n")
         assert audit.violations == ()
         assert audit.ok is False, "a verifier that matched no data access must not report OK"
+
+
+class TestFeedIndexingIsNotABarOffset:
+    """``self.datas[i]`` picks a FEED. It is not a read of bar ``i``.
+
+    Both directions matter. Classifying the feed index as a bar offset would fail
+    a perfectly causal multi-feed interpreter and take the gate down for every
+    strategy at once (a total outage, not a leak). Skipping everything downstream
+    of it would be the leak.
+    """
+
+    def test_multi_feed_indexing_does_not_fail_the_audit(self):
+        """A causal multi-feed interpreter must not take the whole gate down."""
+        source = (
+            "class S:\n"
+            "    def next(self):\n"
+            "        a = float(self.datas[0].close[0])\n"
+            "        b = float(self.datas[1].close[-1])\n"
+            "        return a + b\n"
+        )
+        audit = _audit_source(source)
+        assert audit.violations == (), audit.violations
+        assert audit.sites_checked == 2, "the reads DOWNSTREAM of the feed pick must still be audited"
+
+    def test_a_forward_read_on_a_picked_feed_is_still_caught(self):
+        """Skipping the feed index must not skip what hangs off it."""
+        source = "class S:\n    def next(self):\n        return float(self.datas[1].close[1])\n"
+        audit = _audit_source(source)
+        assert audit.ok is False, "a forward read behind a feed pick went unaudited"
+        assert any("positive bar offset [1]" in v for v in audit.violations), audit.violations
+
+    def test_a_feed_bound_to_a_local_is_still_audited(self):
+        source = "class S:\n    def next(self):\n        feed = self.datas[1]\n        return float(feed.close[2])\n"
+        audit = _audit_source(source)
+        assert audit.ok is False
+        assert any("positive bar offset [2]" in v for v in audit.violations), audit.violations
+
+    def test_iterating_the_feeds_binds_each_feed_as_a_line(self):
+        source = (
+            "class S:\n    def next(self):\n        for feed in self.datas:\n            return float(feed.close[3])\n"
+        )
+        audit = _audit_source(source)
+        assert audit.ok is False
+        assert any("positive bar offset [3]" in v for v in audit.violations), audit.violations
 
 
 class TestInterpreterAuditFailureFailsTheStrategy:
@@ -463,6 +592,35 @@ class TestBrokerCheckIsWiredIntoTheDslBacktestPath:
         assert verdict.look_ahead_clean is False
         assert verdict.passing is False
 
+    def test_a_broker_that_starts_cheating_DURING_the_run_is_caught(self, monkeypatch):
+        """ADVERSARIAL: cheat-on-close is settable from inside the backtest.
+
+        A strategy's ``__init__``/``next`` can call ``self.broker.set_coc(True)``
+        and backtrader honours it for the fills that follow. The check used to be
+        charged BEFORE ``cerebro.run()``, so a broker that cheated for the entire
+        run was recorded clean and the verdict came out ``passed_structural``.
+
+        The Cerebro subclass here flips the flag inside ``run()`` — the same
+        observable state a mid-run ``set_coc`` produces — patched at the boundary
+        (the broker's configuration), not at the audit under test.
+        """
+
+        class _MidRunCheatingCerebro(bt.Cerebro):
+            def run(self, *args, **kwargs):
+                self.broker.set_coc(True)
+                return super().run(*args, **kwargs)
+
+        monkeypatch.setattr(bt, "Cerebro", _MidRunCheatingCerebro)
+
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        metrics = run_dsl_backtest(spec)
+        assert metrics.broker_cheat_check_passed is False, "a mid-run cheat-on-close recorded as clean"
+
+        verdict = apply_rigor_gate(metrics, spec=spec)
+        assert verdict.look_ahead_audit == FAILED
+        assert verdict.look_ahead_render_state == "failed"
+        assert verdict.passing is False
+
     def test_sleeve_aggregation_is_fail_closed_on_an_unchecked_sleeve(self):
         from archimedes.services.fusion_evaluator import _combine_broker_checks
 
@@ -521,6 +679,158 @@ class TestDeclaredOnlyIsNotAPass:
         )
         assert verdict.look_ahead_declared is True
         assert verdict.look_ahead_audit in {PASSED_STRUCTURAL, PASSED_DECLARED_ONLY, FAILED}
+
+
+class TestFailClosedDeployButHonestRendering:
+    """The owner doctrine: only a structural PASS deploys; nothing renders a
+    not-run check as a FAIL.
+
+    Two axes, deliberately not the same axis. ``passed_declared_only`` must block
+    deploy exactly as hard as ``failed`` AND must never be shown to a user as
+    "your strategy failed a look-ahead audit" — because nothing looked.
+    """
+
+    def test_declared_only_blocks_deploy_but_renders_not_checked(self):
+        audit = audit_dsl_strategy(None, broker_cheat_check=True)
+        assert audit.status == PASSED_DECLARED_ONLY
+        # Deploy: fail-closed.
+        assert audit.passed is False
+        assert audit.blocks_deploy is True
+        # Render: honest.
+        assert audit.render_state == la.RENDER_NOT_CHECKED
+        assert audit.render_state != la.RENDER_FAILED
+        assert "NOT AUDITED" in audit.label
+        assert "FAIL" not in audit.label
+        assert audit.not_run_reason
+
+    def test_a_real_violation_renders_failed_and_blocks(self):
+        """The mirror: a check that DID look and found something must say FAIL."""
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        audit = audit_dsl_strategy(spec, broker_cheat_check=False)
+        assert audit.status == FAILED
+        assert audit.blocks_deploy is True
+        assert audit.render_state == la.RENDER_FAILED
+        assert audit.label.startswith("FAIL")
+        assert audit.not_run_reason is None, "a real failure must never be labelled 'not run'"
+
+    def test_a_structural_pass_renders_passed_and_deploys(self):
+        audit = audit_dsl_strategy(validate_strategy_spec(FABER_2007_SPEC), broker_cheat_check=True)
+        assert audit.blocks_deploy is False
+        assert audit.render_state == la.RENDER_PASSED
+        assert audit.not_run_reason is None
+
+    def test_the_three_states_map_onto_exactly_three_render_states(self):
+        assert {la.PASSED_STRUCTURAL, la.PASSED_DECLARED_ONLY, la.FAILED} == la.AUDIT_STATUSES
+        rendered = {s: la._RENDER_STATE_BY_STATUS[s] for s in la.AUDIT_STATUSES}
+        assert rendered == {
+            la.PASSED_STRUCTURAL: la.RENDER_PASSED,
+            la.PASSED_DECLARED_ONLY: la.RENDER_NOT_CHECKED,
+            la.FAILED: la.RENDER_FAILED,
+        }
+
+    def test_the_verdict_carries_both_axes_to_the_api(self):
+        from tests.services.test_fusion_evaluator import _make_high_sharpe_metrics, _two_variant_set
+
+        metrics = _make_high_sharpe_metrics(data_source="csv:spy.csv")
+        variants = _two_variant_set(metrics.equity_curve, data_source="csv:spy.csv")
+
+        v = apply_rigor_gate(metrics, variants_metrics=variants, spec=None)
+        assert v.look_ahead_audit == PASSED_DECLARED_ONLY
+        assert v.look_ahead_render_state == la.RENDER_NOT_CHECKED
+        assert v.passing is False, "not-checked must still block"
+
+    def test_gate_details_says_NOT_RUN_not_FAIL_when_the_leg_never_ran(self):
+        """ADVERSARIAL on the render: the detail line a user actually reads.
+
+        ``run_rigor_gate`` with no source and no supplied verdict cannot evaluate
+        the look-ahead leg at all. It used to render that as the literal string
+        "FAIL" — an accusation about a check that never happened. Admission is
+        unchanged (the always-on floor still blocks); only the wording is honest.
+        """
+        import numpy as np
+        from archimedes.services.rigor_evaluator import run_rigor_gate
+
+        returns = np.random.default_rng(7).normal(0.001, 0.008, size=300).tolist()
+        result = run_rigor_gate(strategy_id="no_code", daily_returns=returns, num_trials=1)
+
+        assert result.look_ahead_passed is False
+        assert result.blocked_by_floor is True, "fail-closed: a not-run look-ahead leg still blocks"
+        detail = result.gate_details["look_ahead"]
+        assert detail.startswith("NOT_RUN ("), detail
+        assert "blocks admission" in detail
+        assert detail != "FAIL"
+
+    def test_gate_details_still_says_FAIL_for_a_real_look_ahead_failure(self):
+        """The guard must still be able to say FAIL, or it guards nothing."""
+        from archimedes.services.rigor_evaluator import RigorGateResult
+
+        assert RigorGateResult("s", look_ahead_passed=False).gate_details["look_ahead"] == "FAIL"
+        leaking = RigorGateResult(
+            "s",
+            look_ahead_passed=False,
+            look_ahead_not_run_reason=None,
+        )
+        assert leaking.gate_details["look_ahead"] == "FAIL"
+
+    def test_not_run_reason_from_verdict_only_fires_for_declared_only(self):
+        from archimedes.services.dsl_lookahead_audit import not_run_reason_from_verdict
+
+        assert not_run_reason_from_verdict({"look_ahead_audit": PASSED_STRUCTURAL}) is None
+        assert not_run_reason_from_verdict({"look_ahead_audit": FAILED}) is None
+        # A row written before this landed: its False is not evidence of a
+        # not-run, so it keeps the plain FAIL rendering.
+        assert not_run_reason_from_verdict({}) is None
+        reason = not_run_reason_from_verdict(
+            {"look_ahead_audit": PASSED_DECLARED_ONLY, "look_ahead_reasons": ["no validated spec"]}
+        )
+        assert reason == "no validated spec"
+
+
+class TestTheDeclaredFlagIsReadDefensively:
+    """Item 1: the audit must not break when the DSL drops ``look_ahead_safe``.
+
+    The flag is a record with no vote. A follow-on change deletes it from the
+    spec outright; reading it via attribute access would have turned that into a
+    breaking change here and coupled the two merges for no reason.
+    """
+
+    def test_a_spec_without_the_attribute_still_audits(self):
+        spec = validate_strategy_spec(FABER_2007_SPEC)
+        stripped = _SpecWithoutDeclaredFlag(spec)
+        assert not hasattr(stripped, "look_ahead_safe")
+
+        audit = audit_dsl_strategy(stripped, broker_cheat_check=True)
+        assert audit.status == PASSED_STRUCTURAL, audit.reasons
+        assert audit.declared_intent is None, "no flag to record"
+        assert audit.passed is True
+
+    def test_a_stripped_spec_that_leaks_still_FAILS(self):
+        """Losing the flag must not lose the audit's teeth either."""
+        leaking = TestOutOfSurfaceSpecsFail._spec(
+            entry={"gt": ["close", "oracle_5"]},
+            exit={"lt": ["close", "oracle_5"]},
+            indicators=["oracle_5"],
+        )
+        audit = audit_dsl_strategy(_SpecWithoutDeclaredFlag(leaking), broker_cheat_check=True)
+        assert audit.status == FAILED
+        assert audit.declared_intent is None
+
+
+class _SpecWithoutDeclaredFlag:
+    """A StrategySpec proxy with ``look_ahead_safe`` genuinely absent.
+
+    Deleting the attribute off a frozen dataclass instance is not possible, so
+    this forwards everything else and raises ``AttributeError`` for that one
+    name — exactly what the post-deletion spec will do.
+    """
+
+    def __init__(self, spec):
+        object.__setattr__(self, "_spec", spec)
+
+    def __getattr__(self, name):
+        if name == "look_ahead_safe":
+            raise AttributeError(name)
+        return getattr(object.__getattribute__(self, "_spec"), name)
 
 
 def _stub_metrics_for(spec):

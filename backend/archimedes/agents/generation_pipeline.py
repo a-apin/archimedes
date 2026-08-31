@@ -1859,6 +1859,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             SOURCE_PIPELINE_DSL_FUSION,
             insert_backtest_if_missing,
         )
+        from archimedes.services.dsl_lookahead_audit import not_run_reason_from_verdict
         from archimedes.services.fusion_evaluator import DEFAULT_COST_MODEL_ID, ENGINE_SINGLE_FEED
         from archimedes.services.live_rigor_gate import verdict_from_returns
 
@@ -1939,11 +1940,17 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         # EVERY strictness level regardless of DSR/PBO/OOS, no matter how strong the
         # strategy. A spec that cannot clear the structural audit now arrives here
         # as False and correctly fails that floor.
+        # Fail-closed on admission, honest on the surface: when the boolean above
+        # is False because the structural audit never COMPLETED (rather than
+        # because it caught a leak), say so. The gate outcome is identical either
+        # way — the always-on floor still blocks — but the user is not told their
+        # strategy failed an audit that never ran.
         live = verdict_from_returns(
             strategy_id,
             returns,
             num_trials=int(num_trials),
             look_ahead_audit_passed=result.look_ahead_audit_passed,
+            look_ahead_not_run_reason=not_run_reason_from_verdict(rv),
         )
 
         with get_session() as session:

@@ -658,6 +658,15 @@ class RigorGateResult:
         is_degenerate: bool = False,
         is_full_series_degenerate: bool = False,
         is_oos_degenerate: bool = False,
+        # Why the look-ahead leg never RAN, when it never ran. Set only for a
+        # structural not-run (no inspectable source and no audit result supplied,
+        # or a DSL structural audit that could not be completed) — never for a
+        # real failure. ``look_ahead_passed`` stays False either way, so this
+        # changes nothing about admission: it is fail-closed on the gate and
+        # honest on the surface, which are two different questions. See
+        # services/dsl_lookahead_audit.py, "Deployability is fail-closed;
+        # rendering is honest".
+        look_ahead_not_run_reason: str | None = None,
     ) -> None:
         self.strategy_id = strategy_id
         # #1184: True when the persisted return series itself is zero-variance —
@@ -724,6 +733,7 @@ class RigorGateResult:
         self.pbo_library_size = pbo_library_size
         self.oos_sharpe = oos_sharpe
         self.look_ahead_passed = look_ahead_passed
+        self.look_ahead_not_run_reason = look_ahead_not_run_reason
         self.in_sample_sharpe = in_sample_sharpe
         self.paper_claimed_sharpe = paper_claimed_sharpe
         # Combinatorial Purged CV results (None when the series is too short to
@@ -982,7 +992,18 @@ class RigorGateResult:
                 "NOT_RUN (no combinatorial OOS matrix supplied; CPCV is invalid on a single static return series)"
             )
 
-        details["look_ahead"] = "PASS" if self.look_ahead_passed else "FAIL"
+        # Three-state, for the same reason `cpcv` above is: a check that never ran
+        # must not be rendered as one that ran and failed. Admission is unchanged
+        # either way — `blocked_by_floor` reads `look_ahead_passed`, which is
+        # False for both — so this is honesty on the surface, not a loosened
+        # gate. "FAIL" is reserved for an audit that actually looked and found
+        # something; NOT_RUN says so, and says that it still blocks.
+        if self.look_ahead_passed:
+            details["look_ahead"] = "PASS"
+        elif self.look_ahead_not_run_reason:
+            details["look_ahead"] = f"NOT_RUN ({self.look_ahead_not_run_reason}) — blocks admission (fail-closed)"
+        else:
+            details["look_ahead"] = "FAIL"
 
         # IID / random-walk diagnostic (#621) — ADVISORY, never gates pass/fail.
         # The diagnostic no longer rests on an SE it cannot defend: the gate's
@@ -1029,6 +1050,7 @@ def run_rigor_gate(
     in_sample_sharpe: float | None = None,
     paper_claimed_sharpe: float | None = None,
     look_ahead_audit_passed: bool | None = None,
+    look_ahead_not_run_reason: str | None = None,
     average_correlation: float = 0.0,
     cv_returns_matrix: np.ndarray | list[list[float]] | None = None,
     library_pbo: float | None = None,
@@ -1182,6 +1204,7 @@ def run_rigor_gate(
             logger.debug("Regime-robustness diagnostic skipped [%s]: %s", strategy_id, exc)
 
     # 4. Look-ahead audit
+    la_not_run_reason = look_ahead_not_run_reason
     if strategy_code is not None:
         la_passed, la_warnings = look_ahead_audit(strategy_code)
         if la_warnings:
@@ -1189,9 +1212,20 @@ def run_rigor_gate(
                 logger.info("Look-ahead audit [%s]: %s", strategy_id, w)
     else:
         la_passed = False
+        if look_ahead_audit_passed is None and la_not_run_reason is None:
+            # Nothing to audit and nobody supplied a verdict: the leg did not run.
+            # It still blocks admission (la_passed stays False) — but the detail
+            # line must say "not run", not "FAIL". A check that never looked did
+            # not catch anything.
+            la_not_run_reason = (
+                "no strategy source to audit and no external look-ahead verdict supplied "
+                "(the AST audit needs inspectable code)"
+            )
 
     if look_ahead_audit_passed is not None:
         la_passed = look_ahead_audit_passed
+        if la_passed:
+            la_not_run_reason = None
 
     # Derive in-sample Sharpe from IS slice (first 70%) only — not the full series.
     # Using the full series blends IS+OOS and makes the OOS/IS ratio trivially easy to pass.
@@ -1214,6 +1248,7 @@ def run_rigor_gate(
         pbo_score=pbo_score,
         oos_sharpe=oos_sharpe,
         look_ahead_passed=la_passed,
+        look_ahead_not_run_reason=la_not_run_reason,
         in_sample_sharpe=in_sample_sharpe,
         paper_claimed_sharpe=paper_claimed_sharpe,
         cpcv_mean_oos_sharpe=cpcv["mean_oos_sharpe"] if cpcv else None,

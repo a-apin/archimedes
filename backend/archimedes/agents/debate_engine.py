@@ -476,6 +476,9 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         # | "failed". `passed_declared_only` is NOT a pass — see
         # services/dsl_lookahead_audit.py.
         "look_ahead_audit": r.look_ahead_audit,
+        # SEPARATE axis from the gate: "passed" | "not_checked" | "failed".
+        # `passed_declared_only` blocks deploy but renders "not_checked".
+        "look_ahead_render_state": r.look_ahead_render_state,
         # What the generator CLAIMED (spec.look_ahead_safe), kept as a record
         # with no vote in the gate.
         "look_ahead_declared": r.look_ahead_declared,

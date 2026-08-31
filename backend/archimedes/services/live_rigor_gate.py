@@ -158,6 +158,7 @@ def verdict_from_returns(
     paper_claimed_sharpe: float | None = None,
     average_correlation: float = 0.0,
     look_ahead_audit_passed: bool | None = None,
+    look_ahead_not_run_reason: str | None = None,
 ) -> RigorGateVerdict:
     """Compute the live four-state verdict from a strategy's persisted returns.
 
@@ -193,6 +194,14 @@ def verdict_from_returns(
     nothing behind it — arrives as ``False`` and fails this floor, which is the
     point: a self-declaration is not evidence. Never pass a raw
     ``spec.look_ahead_safe`` into this parameter.
+
+    ``look_ahead_not_run_reason`` is the honest-rendering half of that. A caller
+    whose ``False`` means "the structural audit could not be completed" — not "a
+    leak was found" — passes the reason here (see
+    ``dsl_lookahead_audit.DslLookAheadAudit.not_run_reason``). It changes nothing
+    about admission: the floor still fails, the strategy still cannot deploy. It
+    only stops ``gate_details["look_ahead"]`` from telling the user their
+    strategy FAILED an audit that never ran.
     """
     if not daily_returns or len(daily_returns) < _MIN_RETURNS_FOR_GATE:
         return RigorGateVerdict.pending()
@@ -218,6 +227,7 @@ def verdict_from_returns(
             paper_claimed_sharpe=paper_claimed_sharpe,
             average_correlation=average_correlation,
             look_ahead_audit_passed=look_ahead_audit_passed,
+            look_ahead_not_run_reason=look_ahead_not_run_reason,
         )
     except Exception as exc:  # never let the badge crash the library list
         logger.warning("live rigor gate failed for %s (badge → pending): %s", strategy_id, exc)

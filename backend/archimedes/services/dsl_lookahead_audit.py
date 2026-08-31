@@ -63,6 +63,32 @@ Three-state result
 ``failed``               — a real violation: an out-of-surface construct, an
                            interpreter that reads future bars, or a broker
                            configured to cheat.
+
+Deployability is fail-closed; rendering is honest
+-------------------------------------------------
+These two are separate questions and this module answers them separately, because
+collapsing them is how "we didn't check" turns into "we checked and it failed" on
+a user's screen.
+
+* **Deploy** — :attr:`DslLookAheadAudit.passed` is ``True`` for
+  ``passed_structural`` and nothing else. ``passed_declared_only`` blocks the
+  gate exactly as hard as ``failed`` does. An unfinished audit is not evidence,
+  so a strategy resting on one must not reach live funds. There is no
+  "probably fine" tier.
+
+* **Render** — :attr:`DslLookAheadAudit.render_state` is a *different* value with
+  three cases: ``passed`` / ``not_checked`` / ``failed``. ``passed_declared_only``
+  renders ``not_checked``, never ``failed``. Telling a user their strategy
+  *failed* a look-ahead audit that never ran is a false accusation, and it is the
+  same defect as the reverse — it destroys the information the four-state
+  ``pass``/``fail``/``pending``/``degenerate`` convention exists to preserve
+  (``docs/architectural-principles.md`` § fail-soft). The label carried into the
+  UI says "NOT AUDITED … does not pass the gate", which is both halves of the
+  truth: no accusation, no free pass.
+
+The pair is deliberate and must stay decoupled: ``blocks_deploy`` is what the
+gate reads, ``render_state`` is what a surface reads, and neither is derivable
+from a single boolean.
 """
 
 from __future__ import annotations
@@ -87,6 +113,23 @@ FAILED = "failed"
 
 #: Every status this module can return, for callers that validate/serialize it.
 AUDIT_STATUSES = frozenset({PASSED_STRUCTURAL, PASSED_DECLARED_ONLY, FAILED})
+
+# ── How a status RENDERS (deliberately not how it gates) ──────────────
+#
+# See the module docstring's "Deployability is fail-closed; rendering is honest".
+# `passed_declared_only` blocks deploy AND renders `not_checked`. Any surface
+# that maps it to `failed` is telling the user their strategy was caught leaking
+# when nothing looked.
+
+RENDER_PASSED = "passed"
+RENDER_NOT_CHECKED = "not_checked"
+RENDER_FAILED = "failed"
+
+_RENDER_STATE_BY_STATUS: dict[str, str] = {
+    PASSED_STRUCTURAL: RENDER_PASSED,
+    PASSED_DECLARED_ONLY: RENDER_NOT_CHECKED,
+    FAILED: RENDER_FAILED,
+}
 
 #: Bumped whenever the audited surface below changes in a way that alters what
 #: ``passed_structural`` means. Persisted alongside the verdict so an old row is
@@ -125,31 +168,66 @@ _UNIMPLEMENTED_INDICATORS = frozenset({"realized_vol"})
 # ── Interpreter bar-offset verifier (AST) ─────────────────────────────
 
 #: Attribute chains rooted at ``self`` that ARE backtrader line objects, so a
-#: subscript on them is a bar offset.
-_LINE_ROOTS = ("self.data", "self.datas")
+#: subscript on them is a bar offset. ``self.datas[]`` is the rendering
+#: :func:`_dotted` produces for ``self.datas[<anything>]`` — see
+#: ``_FEED_CONTAINERS``.
+_LINE_ROOTS = ("self.data", "self.datas[]")
 
 #: Attribute chains rooted at ``self`` that hold line objects but are ordinary
 #: containers themselves — subscripting/iterating them yields a line, and their
 #: own key is NOT a bar offset.
 _LINE_CONTAINERS = ("self._indicators",)
 
+#: Sequences of *data feeds*. ``self.datas[i]`` picks the i-th feed; ``i`` is a
+#: feed index, NOT a bar offset, so classifying it as one would make a perfectly
+#: causal multi-feed interpreter (``self.datas[1].close[0]``) fail the audit and
+#: take the whole gate down. The index is skipped; everything hanging off it
+#: (``self.datas[1].close[...]``) is still audited, because ``_dotted`` collapses
+#: the feed index to ``[]`` and ``self.datas[]`` is a line root above.
+_FEED_CONTAINERS = ("self.datas",)
+
 #: Annotation suffixes that mark a parameter as a backtrader line, so the
 #: parameter name becomes a line local inside that function.
 _LINE_ANNOTATIONS = ("LineSeries", "LineIterator", "LineBuffer", "LineActions", "Lines")
 
 
-def _dotted(node: ast.AST) -> str | None:
-    """Render an attribute chain (``self.data.close``) as a dotted string."""
+def _dotted(node: ast.AST, *, collapse_feed_index: bool = False) -> str | None:
+    """Render an attribute chain (``self.data.close``) as a dotted string.
+
+    With ``collapse_feed_index``, a subscript on a known feed container is
+    rendered as ``[]`` and the walk continues through it, so
+    ``self.datas[0].close`` becomes ``self.datas[].close``. That is what lets the
+    verifier audit reads *downstream* of a feed pick while ignoring the pick
+    itself.
+    """
     parts: list[str] = []
     cur: ast.AST = node
-    while isinstance(cur, ast.Attribute):
-        parts.append(cur.attr)
-        cur = cur.value
+    while True:
+        if isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+            continue
+        if collapse_feed_index and isinstance(cur, ast.Subscript):
+            inner = _dotted(cur.value)
+            if inner is not None and inner in _FEED_CONTAINERS:
+                parts.append("[]")
+                cur = cur.value
+                continue
+            return None
+        break
     if isinstance(cur, ast.Name):
         parts.append(cur.id)
     else:
         return None
-    return ".".join(reversed(parts))
+    rendered: list[str] = []
+    for part in reversed(parts):
+        if part == "[]":
+            if not rendered:
+                return None
+            rendered[-1] += "[]"
+        else:
+            rendered.append(part)
+    return ".".join(rendered)
 
 
 def _annotation_is_line(ann: ast.AST | None) -> bool:
@@ -169,7 +247,46 @@ class _OffsetVerdict:
         self.why = why
 
 
-def _classify_offset(node: ast.AST) -> _OffsetVerdict:
+#: Names proven non-negative, mapped to the source line from which the proof
+#: holds (0 = for the whole lexical scope). See :class:`_InterpreterAccessVisitor`.
+NonNegEnv = dict[str, int]
+
+
+def _is_int_const(node: ast.AST) -> int | None:
+    """The integer value of ``node`` when it is a plain int literal, else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    return None
+
+
+def _provably_nonnegative(node: ast.AST, env: NonNegEnv, lineno: int) -> bool:
+    """Can ``node`` be PROVEN ``>= 0`` at source line ``lineno``?
+
+    This is the whole difference between "the verifier refuses to guess" as a
+    docstring and as a behaviour. Only three things prove it:
+
+      * a non-negative integer literal;
+      * a name in ``env`` — a ``range()``-bound loop/comprehension variable, or a
+        parameter the enclosing function guards with ``if <name> < <k>: raise``
+        (``k >= 0``) *earlier in the same function body*;
+      * addition or multiplication of two things that are themselves proven.
+
+    Everything else — a bare unproven name, a call, an attribute, a subtraction,
+    a module constant that might be negative — is NOT proven, and an unproven
+    offset is treated exactly like a disproved one.
+    """
+    const = _is_int_const(node)
+    if const is not None:
+        return const >= 0
+    if isinstance(node, ast.Name):
+        proven_from = env.get(node.id)
+        return proven_from is not None and lineno > proven_from
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mult)):
+        return _provably_nonnegative(node.left, env, lineno) and _provably_nonnegative(node.right, env, lineno)
+    return False
+
+
+def _classify_offset(node: ast.AST, env: NonNegEnv | None = None, lineno: int | None = None) -> _OffsetVerdict:
     """Prove a bar-offset expression is ``<= 0`` (bar t or earlier).
 
     backtrader's convention: ``line[0]`` is *now*, ``line[-n]`` is *n bars ago*,
@@ -178,152 +295,359 @@ def _classify_offset(node: ast.AST) -> _OffsetVerdict:
 
     Accepted:
       * a non-positive integer constant — ``[0]``, ``[-3]``;
-      * a unary negation of anything non-negated — ``[-i]``, ``[-period]``;
-      * subtraction whose left side is already proven non-positive — ``[-i - 1]``.
+      * the negation of a **provably non-negative** expression — ``[-3]``,
+        ``[-i]`` where ``i`` is bound by ``range(20)``, ``[-period]`` inside a
+        function that raises for ``period < 1``;
+      * subtraction of a **provably non-negative** expression from an offset
+        already proven ``<= 0`` — ``[-i - 1]``, ``[-i - j]`` when both ``i`` and
+        ``j`` are proven.
 
-    Everything else — a bare name, an addition, a positive constant, a slice, a
-    call — is REJECTED. The verifier refuses to guess: an offset it cannot prove
-    is treated exactly like one it disproved.
+    Everything else is REJECTED: a bare name, an addition, a positive constant, a
+    slice, a call, and — the case this verifier used to wave through —
+    ``[-<anything>]`` whose operand is not provably non-negative. ``_SHIFT = -1``
+    at module scope makes ``self.data.close[-_SHIFT]`` a read of bar *t+1*; the
+    old rule accepted every ``USub`` on sight, so a mutated interpreter passed
+    clean. The verifier refuses to guess: an offset it cannot prove is treated
+    exactly like one it disproved.
     """
-    if isinstance(node, ast.Constant):
-        if isinstance(node.value, bool) or not isinstance(node.value, int):
-            return _OffsetVerdict(False, f"non-integer bar offset {node.value!r}")
-        if node.value > 0:
-            return _OffsetVerdict(False, f"positive bar offset [{node.value}] reads a FUTURE bar")
+    env = env if env is not None else {}
+    lineno = lineno if lineno is not None else getattr(node, "lineno", 0)
+
+    const = _is_int_const(node)
+    if const is not None:
+        if const > 0:
+            return _OffsetVerdict(False, f"positive bar offset [{const}] reads a FUTURE bar")
         return _OffsetVerdict(True)
+    if isinstance(node, ast.Constant):
+        return _OffsetVerdict(False, f"non-integer bar offset {node.value!r}")
 
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        # -(-x) would be positive; refuse to unwrap a double negation.
-        if isinstance(node.operand, ast.UnaryOp) and isinstance(node.operand.op, ast.USub):
-            return _OffsetVerdict(False, "double-negated bar offset cannot be proven non-positive")
-        return _OffsetVerdict(True)
+        if _provably_nonnegative(node.operand, env, lineno):
+            return _OffsetVerdict(True)
+        return _OffsetVerdict(
+            False,
+            f"unprovable bar offset [{ast.unparse(node)}] — "
+            f"{ast.unparse(node.operand)!r} is not provably non-negative, so the offset "
+            "cannot be shown <= 0 (treated as a FUTURE read)",
+        )
 
     if isinstance(node, ast.BinOp):
         if isinstance(node.op, ast.Sub):
-            # (proven <= 0) - (anything non-negative) stays <= 0. The right side
-            # must itself be a plain non-negative constant or a name; a negated
-            # right side would ADD.
-            left = _classify_offset(node.left)
+            # (proven <= 0) - (proven >= 0) stays <= 0.
+            left = _classify_offset(node.left, env, lineno)
             if not left.ok:
                 return left
             right = node.right
             if isinstance(right, ast.UnaryOp) and isinstance(right.op, ast.USub):
                 return _OffsetVerdict(False, "subtracting a negative bar offset moves FORWARD in time")
-            if isinstance(right, ast.Constant) and isinstance(right.value, int) and right.value < 0:
+            right_const = _is_int_const(right)
+            if right_const is not None and right_const < 0:
                 return _OffsetVerdict(False, "subtracting a negative constant moves FORWARD in time")
+            if not _provably_nonnegative(right, env, lineno):
+                return _OffsetVerdict(
+                    False,
+                    f"unprovable bar offset [{ast.unparse(node)}] — the subtrahend "
+                    f"{ast.unparse(right)!r} is not provably non-negative, so the "
+                    "subtraction may move FORWARD in time",
+                )
             return _OffsetVerdict(True)
         return _OffsetVerdict(False, f"unprovable bar-offset arithmetic ({type(node.op).__name__})")
 
     return _OffsetVerdict(False, f"unprovable bar offset expression ({type(node).__name__})")
 
 
+# ── Non-negativity proofs the verifier is allowed to use ──────────────
+
+
+def _range_bound_names(iter_node: ast.AST, env: NonNegEnv, lineno: int) -> bool:
+    """True when iterating ``iter_node`` can only yield non-negative integers.
+
+    Only ``range(...)`` counts, and only when every argument is itself provably
+    non-negative. ``range(-5, 5)`` yields negatives, so ``line[-i]`` over it
+    would read forward; it is not proven. ``range(5, 0, -1)`` is rejected too —
+    conservative, since a negative step is not provably non-negative.
+    """
+    if not (isinstance(iter_node, ast.Call) and isinstance(iter_node.func, ast.Name) and iter_node.func.id == "range"):
+        return False
+    if iter_node.keywords or not 1 <= len(iter_node.args) <= 3:
+        return False
+    return all(_provably_nonnegative(a, env, lineno) for a in iter_node.args)
+
+
+def _guarded_nonnegative_params(func: ast.FunctionDef | ast.AsyncFunctionDef) -> NonNegEnv:
+    """Names a top-level ``if <name> < <k>: raise`` guard proves ``>= 0`` after it.
+
+    Only guards written as a **top-level statement of the function body** count,
+    with a body that is exactly one ``raise`` and no ``else``. That is a sound
+    (if crude) dominance argument: a top-level statement either raises or falls
+    through, and every statement lexically after it in the same body — at any
+    nesting depth — runs only on the fall-through. The proof is recorded with the
+    guard's line number so an access *above* the guard does not get to use it.
+
+    ``_make_indicator``'s ``if period < 1: raise DSLError(...)`` is what makes
+    ``data_line(-period)`` provable; without it that offset is unproven and the
+    whole audit fails closed.
+    """
+    proven: NonNegEnv = {}
+    params = {a.arg for a in [*func.args.posonlyargs, *func.args.args, *func.args.kwonlyargs]}
+    for stmt in func.body:
+        if not (isinstance(stmt, ast.If) and len(stmt.body) == 1 and isinstance(stmt.body[0], ast.Raise)):
+            continue
+        if stmt.orelse:
+            continue
+        test = stmt.test
+        if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and len(test.comparators) == 1):
+            continue
+        left, op, right = test.left, test.ops[0], test.comparators[0]
+        if not isinstance(left, ast.Name) or left.id not in params:
+            continue
+        bound = _is_int_const(right)
+        if bound is None:
+            continue
+        # Fall-through of `if x < k: raise` is `x >= k`; of `if x <= k: raise` is
+        # `x >= k + 1`. Either proves `x >= 0` when that lower bound is >= 0.
+        if isinstance(op, ast.Lt):
+            lower_bound = bound
+        elif isinstance(op, ast.LtE):
+            lower_bound = bound + 1
+        else:
+            continue
+        if lower_bound >= 0:
+            proven[left.id] = stmt.lineno
+    return proven
+
+
+def _is_line_container(node: ast.AST) -> bool:
+    dotted = _dotted(node)
+    return dotted is not None and dotted in _LINE_CONTAINERS
+
+
+def _is_feed_container(node: ast.AST) -> bool:
+    """``self.datas`` — a sequence of data feeds, indexed by FEED, not by bar."""
+    dotted = _dotted(node)
+    return dotted is not None and dotted in _FEED_CONTAINERS
+
+
+def _is_line_expr(node: ast.AST, line_locals: frozenset[str]) -> bool:
+    """True when ``node`` evaluates to a backtrader line object."""
+    if isinstance(node, ast.Name):
+        return node.id in line_locals
+    if isinstance(node, ast.Attribute):
+        dotted = _dotted(node, collapse_feed_index=True)
+        if dotted is None:
+            # An attribute hanging off a name we know holds a line
+            # (``feed.close`` where ``feed = self.datas[1]``). Conservative: more
+            # expressions get bar-offset-checked, never fewer.
+            root = node
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            return isinstance(root, ast.Name) and root.id in line_locals
+        if dotted in _LINE_CONTAINERS or dotted in _FEED_CONTAINERS:
+            return False
+        if any(dotted == r or dotted.startswith(r + ".") for r in _LINE_ROOTS):
+            return True
+        root = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return isinstance(root, ast.Name) and root.id in line_locals
+    if isinstance(node, ast.Subscript):
+        # self._indicators[alias] -> a line; self.datas[1] -> a feed (line-ish);
+        # self.data.close[0] -> a float.
+        return _is_line_container(node.value) or _is_feed_container(node.value)
+    return False
+
+
+#: Bound on the alias fixpoint below. Each round can only add names, and the
+#: module has a handful, so this never binds in practice; it exists so a
+#: pathological input cannot spin.
+_LINE_LOCAL_FIXPOINT_ROUNDS = 8
+
+
+def _collect_line_locals(tree: ast.AST) -> frozenset[str]:
+    """Every name that anywhere in the module holds a backtrader line.
+
+    **Order-independent by construction.** The previous single-pass visitor
+    bound aliases as it walked, so ``line[1]`` textually *above* its
+    ``line = self.data.close`` binding was never checked at all — a leak could
+    hide behind nothing more than statement order. This runs the binding rules to
+    a fixpoint over the whole tree first, so the checking pass sees the same set
+    of aliases no matter where they appear.
+
+    The set is flat (module-wide, not per-scope) and that is deliberate: a name
+    holding a line in one function is never a non-line in another here, and a
+    false membership only makes MORE expressions get bar-offset-checked. The
+    conservative direction is toward over-auditing, never under-auditing.
+    """
+    known: set[str] = set()
+
+    def bind(target: ast.AST) -> None:
+        if isinstance(target, ast.Name):
+            known.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                bind(elt)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args
+            for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+                if _annotation_is_line(arg.annotation):
+                    known.add(arg.arg)
+
+    for _ in range(_LINE_LOCAL_FIXPOINT_ROUNDS):
+        before = len(known)
+        frozen = frozenset(known)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                if _is_line_expr(node.value, frozen):
+                    for tgt in node.targets:
+                        bind(tgt)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                it = node.iter
+                # ``for alias, ind in self._indicators.items():`` binds ``ind``.
+                if (
+                    isinstance(it, ast.Call)
+                    and isinstance(it.func, ast.Attribute)
+                    and it.func.attr in ("items", "values")
+                    and _is_line_container(it.func.value)
+                ):
+                    if it.func.attr == "values":
+                        bind(node.target)
+                    elif isinstance(node.target, (ast.Tuple, ast.List)) and len(node.target.elts) == 2:
+                        bind(node.target.elts[1])
+                elif _is_feed_container(it):
+                    # ``for feed in self.datas:`` — each element IS a feed.
+                    bind(node.target)
+                # Iterating a line container itself yields keys: nothing to bind.
+        if len(known) == before:
+            break
+    return frozenset(known)
+
+
 class _InterpreterAccessVisitor(ast.NodeVisitor):
-    """Collect and classify every bar-indexed read in the interpreter module."""
+    """Collect and classify every bar-indexed read in the interpreter module.
+
+    Two passes, not one:
+
+    1. :func:`_collect_line_locals` resolves every line alias in the tree to a
+       fixpoint, so the check below is independent of statement order.
+    2. This walk classifies each bar-indexed read, carrying a *scoped* set of
+       names proven non-negative (``range()``-bound loop variables, guarded
+       parameters) that :func:`_classify_offset` may use in its proof.
+
+    The two sets pull in opposite directions on purpose. Line aliases are flat
+    and over-inclusive (audit more). Non-negativity proofs are scoped and
+    under-inclusive — they reset at every function boundary and never leak out of
+    a loop body — because a wrong membership *there* would let a forward read
+    through.
+    """
 
     def __init__(self) -> None:
         self.violations: list[str] = []
         self.sites: list[str] = []
-        # Names known to hold a backtrader line, per enclosing scope. A single
-        # flat set is deliberate: the module is small and a name that holds a
-        # line in one function is never a non-line in another, so flat is both
-        # sufficient and strictly more conservative (more expressions get
-        # checked, never fewer).
-        self._line_locals: set[str] = set()
+        self._line_locals: frozenset[str] = frozenset()
+        self._nonneg: NonNegEnv = {}
 
-    # -- line detection -------------------------------------------------
+    def visit(self, node: ast.AST) -> Any:  # ast.NodeVisitor entry point
+        if isinstance(node, ast.Module):
+            self._line_locals = _collect_line_locals(node)
+        return super().visit(node)
 
-    def _is_line_container(self, node: ast.AST) -> bool:
-        dotted = _dotted(node)
-        return dotted is not None and dotted in _LINE_CONTAINERS
-
-    def _is_line_expr(self, node: ast.AST) -> bool:
-        """True when ``node`` evaluates to a backtrader line object."""
-        if isinstance(node, ast.Name):
-            return node.id in self._line_locals
-        if isinstance(node, ast.Attribute):
-            dotted = _dotted(node)
-            if dotted is None:
-                return False
-            if dotted in _LINE_CONTAINERS:
-                return False
-            # self.data / self.datas and any line attribute hanging off them.
-            return any(dotted == root or dotted.startswith(root + ".") for root in _LINE_ROOTS)
-        if isinstance(node, ast.Subscript):
-            # self._indicators[alias] -> a line; self.data.close[0] -> a value.
-            return self._is_line_container(node.value)
-        return False
-
-    # -- alias tracking -------------------------------------------------
-
-    def _bind_line_targets(self, target: ast.AST) -> None:
-        """Record ``target`` (a Name or a tuple of Names) as holding a line."""
-        if isinstance(target, ast.Name):
-            self._line_locals.add(target.id)
-        elif isinstance(target, (ast.Tuple, ast.List)):
-            for elt in target.elts:
-                self._bind_line_targets(elt)
+    # -- scoped non-negativity ------------------------------------------
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        args = node.args
-        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
-            if _annotation_is_line(arg.annotation):
-                self._line_locals.add(arg.arg)
-        self.generic_visit(node)
+        # A nested def does NOT inherit the enclosing function's proofs: a
+        # closure can be called at any time, so the enclosing guard's dominance
+        # argument does not carry into it.
+        outer, self._nonneg = self._nonneg, _guarded_nonnegative_params(node)
+        try:
+            self.generic_visit(node)
+        finally:
+            self._nonneg = outer
 
     visit_FunctionDef = _visit_function  # ast.NodeVisitor dispatch name
     visit_AsyncFunctionDef = _visit_function
 
-    def visit_Assign(self, node: ast.Assign) -> None:  # ast.NodeVisitor dispatch name
-        if self._is_line_expr(node.value):
-            for tgt in node.targets:
-                self._bind_line_targets(tgt)
-        self.generic_visit(node)
+    def _visit_for(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        added = self._bind_range_target(node.iter, node.target)
+        try:
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            for name in added:
+                self._nonneg.pop(name, None)
+        for stmt in node.orelse:
+            self.visit(stmt)
 
-    def visit_For(self, node: ast.For) -> None:  # ast.NodeVisitor dispatch name
-        # ``for alias, ind in self._indicators.items():`` binds ``ind`` to a line.
-        it = node.iter
-        if (
-            isinstance(it, ast.Call)
-            and isinstance(it.func, ast.Attribute)
-            and it.func.attr in ("items", "values")
-            and self._is_line_container(it.func.value)
-        ):
-            if it.func.attr == "values":
-                self._bind_line_targets(node.target)
-            elif isinstance(node.target, (ast.Tuple, ast.List)) and len(node.target.elts) == 2:
-                self._bind_line_targets(node.target.elts[1])
-        elif self._is_line_container(it):
-            # Iterating the container itself yields keys, not lines — nothing to bind.
-            pass
-        self.generic_visit(node)
+    visit_For = _visit_for  # ast.NodeVisitor dispatch name
+    visit_AsyncFor = _visit_for
+
+    def _bind_range_target(self, iter_node: ast.AST, target: ast.AST) -> list[str]:
+        """Mark a ``for x in range(<non-negative>)`` variable as proven ``>= 0``."""
+        lineno = getattr(iter_node, "lineno", 0)
+        if not _range_bound_names(iter_node, self._nonneg, lineno):
+            return []
+        if not isinstance(target, ast.Name) or target.id in self._nonneg:
+            return []
+        self._nonneg[target.id] = 0
+        return [target.id]
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        added: list[str] = []
+        try:
+            for gen in node.generators:  # type: ignore[attr-defined]
+                self.visit(gen.iter)
+                added.extend(self._bind_range_target(gen.iter, gen.target))
+                for cond in gen.ifs:
+                    self.visit(cond)
+            for child in ("elt", "key", "value"):
+                sub = getattr(node, child, None)
+                if sub is not None:
+                    self.visit(sub)
+        finally:
+            for name in added:
+                self._nonneg.pop(name, None)
+
+    visit_ListComp = _visit_comprehension  # ast.NodeVisitor dispatch name
+    visit_SetComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
 
     # -- the actual checks ----------------------------------------------
 
     def visit_Subscript(self, node: ast.Subscript) -> None:  # ast.NodeVisitor dispatch name
         loc = f"line {node.lineno}"
-        if self._is_line_expr(node.value):
-            src = _dotted(node.value) or "<line>"
-            verdict = _classify_offset(node.slice)
+        if _is_feed_container(node.value):
+            # ``self.datas[i]`` — a FEED index, not a bar offset. Skipped on
+            # purpose (see _FEED_CONTAINERS): treating it as a bar offset would
+            # fail a causal multi-feed interpreter and take the gate down for
+            # every strategy. Reads downstream of it are still audited.
+            self.generic_visit(node)
+            return
+        if _is_line_expr(node.value, self._line_locals):
+            src = _dotted(node.value, collapse_feed_index=True) or "<line>"
+            verdict = _classify_offset(node.slice, self._nonneg, node.lineno)
             self.sites.append(f"{loc}: {src}[...]")
             if not verdict.ok:
                 self.violations.append(f"{loc}: {src}[...] — {verdict.why}")
-        elif not self._is_line_container(node.value):
+        elif not _is_line_container(node.value):
             # Catch-all backstop for a line alias this visitor did not model:
             # ANY positive-constant subscript on a self-rooted expression is
             # suspicious, because bar 0 is "now" on every backtrader line.
             dotted = _dotted(node.value)
             if dotted is not None and (dotted == "self" or dotted.startswith("self.")):
-                verdict = _classify_offset(node.slice)
+                verdict = _classify_offset(node.slice, self._nonneg, node.lineno)
                 if not verdict.ok and isinstance(node.slice, ast.Constant):
                     self.violations.append(f"{loc}: {dotted}[...] — {verdict.why}")
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:  # ast.NodeVisitor dispatch name
         # backtrader's delayed-line accessor: ``data_line(-period)``.
-        if self._is_line_expr(node.func) and len(node.args) == 1 and not node.keywords:
+        if _is_line_expr(node.func, self._line_locals) and len(node.args) == 1 and not node.keywords:
             loc = f"line {node.lineno}"
-            src = _dotted(node.func) or "<line>"
-            verdict = _classify_offset(node.args[0])
+            src = _dotted(node.func, collapse_feed_index=True) or "<line>"
+            verdict = _classify_offset(node.args[0], self._nonneg, node.lineno)
             self.sites.append(f"{loc}: {src}(...)")
             if not verdict.ok:
                 self.violations.append(f"{loc}: {src}(...) — {verdict.why}")
@@ -488,6 +812,43 @@ class DslLookAheadAudit:
         return self.status == PASSED_STRUCTURAL
 
     @property
+    def blocks_deploy(self) -> bool:
+        """Fail-closed deployability: anything short of a structural pass blocks.
+
+        ``passed_declared_only`` blocks exactly as hard as ``failed``. This is
+        the same fact as ``not self.passed``, named so the call sites that mean
+        "may this reach live funds?" read as that question rather than as a
+        double negative — and so it stays visibly separate from
+        :attr:`render_state`, which answers a different one.
+        """
+        return not self.passed
+
+    @property
+    def render_state(self) -> str:
+        """What a user-facing surface should SHOW: passed / not_checked / failed.
+
+        Not the same axis as :attr:`blocks_deploy`. ``passed_declared_only``
+        blocks the gate but renders ``not_checked``, because nothing about this
+        strategy failed a look-ahead audit — no audit finished. Rendering it as
+        ``failed`` would be an accusation the evidence does not support, and it
+        would erase the difference between "we found a leak" and "we could not
+        look", which is precisely the distinction the four-state rigor
+        convention exists to keep.
+        """
+        return _RENDER_STATE_BY_STATUS.get(self.status, RENDER_NOT_CHECKED)
+
+    @property
+    def not_run_reason(self) -> str | None:
+        """Why the audit did not run, for a NOT_RUN-style detail line.
+
+        ``None`` when the audit reached a real verdict either way — a caller must
+        not turn a genuine PASS or a genuine FAIL into a "not run" note.
+        """
+        if self.status != PASSED_DECLARED_ONLY:
+            return None
+        return "; ".join(self.reasons) or "structural look-ahead audit not completed"
+
+    @property
     def label(self) -> str:
         """Honest one-line summary for the passport / API."""
         if self.status == PASSED_STRUCTURAL:
@@ -505,6 +866,11 @@ class DslLookAheadAudit:
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
+            # Rendering axis, deliberately distinct from the gating one: a
+            # consumer that only has `status` must not have to know that
+            # `passed_declared_only` means "not checked", never "failed".
+            "render_state": self.render_state,
+            "blocks_deploy": self.blocks_deploy,
             "reasons": list(self.reasons),
             "declared_intent": self.declared_intent,
             "interpreter_verified": self.interpreter_verified,
@@ -512,6 +878,21 @@ class DslLookAheadAudit:
             "surface_version": self.surface_version,
             "label": self.label,
         }
+
+
+def not_run_reason_from_verdict(rigor_verdict: dict[str, Any]) -> str | None:
+    """NOT_RUN reason for a persisted rigor-verdict blob, or ``None``.
+
+    The blob form of :attr:`DslLookAheadAudit.not_run_reason`, for the persistence
+    path that carries a dict rather than the audit object. ``None`` for a real
+    pass, a real fail, and for a pre-change row with no ``look_ahead_audit`` key —
+    an old row's ``False`` is not evidence that nothing ran, so it keeps the
+    plain FAIL rendering rather than being retro-labelled "not checked".
+    """
+    if rigor_verdict.get("look_ahead_audit") != PASSED_DECLARED_ONLY:
+        return None
+    reasons = rigor_verdict.get("look_ahead_reasons") or ()
+    return "; ".join(str(r) for r in reasons) or "structural look-ahead audit not completed"
 
 
 def _parse_alias(alias: str) -> tuple[str, int] | None:
@@ -616,7 +997,15 @@ def audit_dsl_strategy(
         A :class:`DslLookAheadAudit`. Only ``passed_structural`` satisfies the
         gate's LEAK criterion.
     """
-    declared = bool(spec.look_ahead_safe) if spec is not None else None
+    # ``getattr``, not ``spec.look_ahead_safe``. The declared flag is a RECORD of
+    # what the generator claimed; this audit does not depend on it and must not
+    # depend on its existence either. A follow-on change deletes the field from
+    # the DSL outright — when it goes, ``declared_intent`` becomes ``None`` and
+    # every verdict here is unchanged, because the flag never had a vote. Reading
+    # the attribute directly would have made that deletion a breaking change to
+    # the audit and coupled the two merges together for no reason.
+    declared_raw = getattr(spec, "look_ahead_safe", None) if spec is not None else None
+    declared = None if declared_raw is None else bool(declared_raw)
 
     if broker_cheat_check is False:
         return DslLookAheadAudit(

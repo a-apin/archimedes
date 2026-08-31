@@ -832,6 +832,8 @@ def _fake_eval_result(*, num_trials: int | None = None) -> SimpleNamespace:
         # See test_debate_engine._fake_ev: mirrors a verdict that cleared the
         # real structural look-ahead audit.
         look_ahead_audit="passed_structural",
+        # The rendering axis, distinct from the gating one on purpose.
+        look_ahead_render_state="passed",
         look_ahead_declared=True,
         look_ahead_reasons=(),
         look_ahead_label="clean",
