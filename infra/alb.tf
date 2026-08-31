@@ -227,11 +227,11 @@ resource "aws_lb_target_group" "backend" {
   target_type = "ip"            # IP-based targeting for cross-VPC (EC2 in default VPC)
 
   health_check {
-    enabled             = true
-    path                = "/health"
-    port                = "traffic-port" # ALB sends health checks on the same port as traffic (80)
-    protocol            = "HTTP"
-    healthy_threshold   = 2
+    enabled           = true
+    path              = "/health"
+    port              = "traffic-port" # ALB sends health checks on the same port as traffic (80)
+    protocol          = "HTTP"
+    healthy_threshold = 2
     # 5s x 3 was too tight for a cold task: /health does a real Arc RPC round
     # trip, and under upstream rate limiting (rpc.testnet.arc.network answered
     # 429s on 2026-08-31, #1594) cold tasks blew that budget while warming,
