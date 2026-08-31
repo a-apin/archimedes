@@ -347,6 +347,12 @@ class LivePaperEntry(BaseModel):
     # The ledger is append-only by law; a replay that disagrees with already
     # written rows stamps the deployment instead of rewriting it. Surfaced so
     # a drifted track record is visibly drifted on the board too.
+    #
+    # True for EITHER cause (#1449): an upstream data restatement
+    # (`drift_detected_at`) or a grading-engine re-grade (`engine_regrade_at`).
+    # The board does not yet distinguish them — GET /api/paper/deployments does,
+    # per deployment. Widening this to a cause is follow-up work; what it must
+    # not do is go false while a disagreement stands.
     drift_detected: bool = False
 
 

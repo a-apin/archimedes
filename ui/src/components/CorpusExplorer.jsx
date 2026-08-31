@@ -234,8 +234,9 @@ function CatalogTab({ papers, total, page, loading, catalogError, onRetry, searc
         {/* The placeholder is not a label: it disappears on the first keystroke
             and the field is then anonymous to a screen reader (3.3.2). */}
         <input
-          type="text" placeholder="Search papers..." value={search}
-          aria-label="Search papers"
+          type="text" placeholder="Search title, abstract, authors..." value={search}
+          aria-label="Search papers by title, abstract or author name"
+          aria-describedby="catalog-search-scope"
           onChange={e => { setSearch(e.target.value); setPage(1) }}
           className="catalog-search"
         />
@@ -247,6 +248,18 @@ function CatalogTab({ papers, total, page, loading, catalogError, onRetry, searc
           options={[{ value: '', label: 'All Categories' }, ...categories.map(c => ({ value: c.name, label: `${c.label || c.name} (${c.count})` }))]}
         />
       </div>
+
+      {/* State the scope of the search, because the box cannot be judged
+          without it: a user who searches a surname and sees 4 rows has no way
+          to tell whether the corpus holds 4 or the author leg was never
+          consulted (#1451). Wording is deliberately literal — this is a
+          case-insensitive substring match over three text columns. There are
+          no embeddings behind the catalog, so nothing here may read as
+          semantic, ranked, or "smart". */}
+      <p id="catalog-search-scope" className="catalog-search-scope">
+        Substring match over title, abstract and author names — case-insensitive, no ranking.
+        Author names are matched from 3 characters up.
+      </p>
 
       {loading ? <div className="corpus-loading">Loading...</div> : catalogError ? (
         <div className="catalog-results-info" role="status">

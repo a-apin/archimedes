@@ -656,11 +656,12 @@ def _patch_dsr_with_pool_correlation(candidates: list[_CandidateResult]) -> None
     mutually independent trials. They're generated from the same user brief over
     overlapping universes, so they're typically strongly correlated (ρ̄ ≈ 0.5–0.9),
     and feeding ρ̄=0 over-deflates ``E[max_N]``, over-stating the gate's strictness.
-    Under equicorrelation the effective trial count is
-    ``N_eff = N / (1 + (N-1)·ρ̄)`` (Cheverud 2001; Nyholt 2004) — this patch estimates
-    the real ρ̄ across the pool's return series (``compute_average_pairwise_correlation``)
-    and recomputes DSR at the SAME ``dsr_num_trials`` each candidate was already
-    deflated at, so only the correlation term changes.
+    Under equicorrelation the expected best-of-N null Sharpe is the
+    independent-trial ``E[max]`` scaled by ``√(1 − ρ̄)`` (#1559) — this patch
+    estimates the real ρ̄ across the pool's return series
+    (``compute_average_pairwise_correlation``) and recomputes DSR at the SAME
+    ``dsr_num_trials`` each candidate was already deflated at, so only the
+    correlation term changes.
 
     Runs AFTER ``_patch_pbo`` and mirrors its shape and scope: fusion/debate
     candidates (``has_real_rigor=True``) carry a real DSR from their own CSCV
@@ -670,8 +671,8 @@ def _patch_dsr_with_pool_correlation(candidates: list[_CandidateResult]) -> None
     is left untouched — approach A (ρ̄=0) is the fallback, per the issue.
 
     A correlated pool can only RELAX the deflation relative to ρ̄=0 (never tighten
-    beyond it — ``N_eff <= N`` always), so ``dsr_p_value`` only ever moves up or
-    stays the same here, never down. ``passing`` is re-derived from the full set
+    beyond it — ``√(1 − ρ̄) <= 1`` for every ρ̄ ∈ [0, 1]), so ``dsr_p_value`` only
+    ever moves up or stays the same here, never down. ``passing`` is re-derived from the full set
     of admission legs (DSR, OOS/cliff, look-ahead) rather than AND-ed in, since a
     higher DSR p-value can flip a candidate from failing to passing, not just the
     reverse (unlike the PBO patch above, which can only tighten).

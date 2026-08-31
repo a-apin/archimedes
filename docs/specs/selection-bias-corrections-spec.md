@@ -145,9 +145,14 @@ the additive count is the conservative, defensible deflation. It can only make t
 **stricter** (anti-goal compliant): with `n_candidates ≥ 1` it is always `≥ library_size`,
 the prior (under-deflating) value.
 
-**Why not effective-N (correlation-adjusted) here.** `compute_dsr` already accepts an
-`average_correlation` and can deflate by effective *independent* trials
-`N_eff = N / (1 + (N-1)ρ̄)` — the principled refinement when candidates are correlated
+**Why not correlation-adjusted deflation here.** *(#1558/#1559, 2026-08-31: this
+paragraph originally named `N_eff = N / (1 + (N-1)ρ̄)` as the correlation refinement.
+That form — the Kish design effect — was never the correlated `E[max]`; the shipped
+correction scales the independent-trial `E[max]` by `√(1−ρ̄)`. The reasoning below is
+unaffected: it turns on shipping the additive count first, not on which correlation
+form the refinement uses.)* `compute_dsr` already accepts an
+`average_correlation` and can deflate by scaling `E[max]` by `√(1−ρ̄)`
+— the principled refinement when candidates are correlated
 (same brief, overlapping universes). We deliberately ship the **simple additive count
 first** (smaller blast radius, strictly conservative) and leave the candidate-pool
 correlation correction as a follow-up; over-deflation (treating correlated candidates as
@@ -223,7 +228,8 @@ independent searches they aren't.
 
 **What ships.** The live society path (`agents/generation_pipeline.py`) estimates ρ̄ from
 the candidate pool's own return series via `compute_average_pairwise_correlation` (no
-change to that function or to `compute_dsr`'s `N_eff` formula — both are reused as-is) and
+change to that function or to `compute_dsr`'s correlation term — both are reused as-is;
+that term was the `N_eff` form when this addendum was written and is `√(1−ρ̄)` as of #1559) and
 feeds it into the same `compute_dsr` call each candidate's DSR was already computed with,
 at the same `num_trials`. `_patch_dsr_with_pool_correlation` runs once every candidate's
 return series is known (mirroring the existing `_patch_pbo` two-pass shape: DSR is first
@@ -238,8 +244,10 @@ from their own CSCV evaluator over a parameter-variant grid, not the buy-and-hol
 series this correlation estimate is scoped to, and are excluded from the pool the same way
 `_patch_pbo` already excludes them from cross-candidate PBO.
 
-**Why this can only relax, never loosen past the no-correction floor.** `N_eff = N / (1 +
-(N-1)ρ̄)` satisfies `1 ≤ N_eff ≤ N` for any `ρ̄ ∈ [0, 1]`, so the corrected DSR p-value sits
+**Why this can only relax, never loosen past the no-correction floor.** *(#1559: argued
+here from `1 ≤ N_eff ≤ N`; the conclusion is unchanged under the shipped form, but the
+premise is now `0 ≤ √(1−ρ̄) ≤ 1`, which shrinks `E[max]` by at most a factor of one.)*
+`√(1−ρ̄)` satisfies `0 ≤ √(1−ρ̄) ≤ 1` for any `ρ̄ ∈ [0, 1]`, so the corrected DSR p-value sits
 between the ρ̄=0 (approach A) value and the value at `num_trials=1` (no multiple-testing
 penalty at all) — it never exceeds the latter, so the gate is never made looser than the
 IID-Sharpe baseline. At ρ̄→1 (candidates fully collapse to one effective trial) the

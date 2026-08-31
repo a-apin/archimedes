@@ -1929,14 +1929,19 @@ class StrategyRunner:
         # that can never change. Checking it here is a cheap, zero-attempt
         # short-circuit straight to terminal instead. Skipped (falls through
         # to the normal path) when the signer can't be CONFIRMED
-        # (``backend_signer_address_confirmed`` returns None — always true on
-        # the Circle path, where the only address available, WALLET_ADDRESS,
-        # is a hand-maintained mirror of the real signer rather than a
-        # cryptographic derivation of it, see executor.py) or the commitment
-        # carries no committer — never guess, only reject a CONFIRMED
-        # mismatch, because terminal here is irreversible and a false
-        # positive would permanently kill a perfectly recoverable reveal.
-        configured_addr = chain_executor.backend_signer_address_confirmed()
+        # (``backend_signer_address_confirmed`` returns None) or the
+        # commitment carries no committer — never guess, only reject a
+        # CONFIRMED mismatch, because terminal here is irreversible and a
+        # false positive would permanently kill a perfectly recoverable
+        # reveal.
+        #
+        # On the Circle path (the only prod signer) that confirmation is a
+        # bounded read of GET /wallets/{WALLET_ID} asking Circle what the
+        # signing wallet's address is (#1412) — NOT the hand-maintained
+        # WALLET_ADDRESS mirror, which could drift stale and read as a
+        # rotation that never happened. If Circle can't answer, the answer is
+        # None and this check simply does not fire.
+        configured_addr = await chain_executor.backend_signer_address_confirmed()
         committer = commitment.get("committer")
         if configured_addr and committer and str(committer).lower() != str(configured_addr).lower():
             await self._reconcile_terminal(

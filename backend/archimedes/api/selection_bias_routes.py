@@ -368,7 +368,19 @@ async def evaluate_rigor_gate(
     # hit changes no served or stored value; it just skips a redundant write. The
     # moment underlying returns change, the cache key changes and the write-back
     # resumes on the next (now-live) call.
-    from archimedes.services.rigor_cache import cohort_key, get_or_compute
+    # #1518: this memo is now TWO layers — the in-process dict, and a shared
+    # Redis-backed store underneath it. In-process alone did not amortise across
+    # the fleet, it multiplied by it: with N Fargate tasks behind the ALB, each
+    # holds its own copy and round-robin routing means a request can land on a
+    # task that has not computed this cohort yet and pays the whole ~21s
+    # recompute (measured on prod: 21.9s → 0.68s → 20.9s within a minute, which a
+    # 600s TTL cannot produce). `model_list_codec(StrategyRigorResult)` is what
+    # lets the value cross the process boundary — JSON via pydantic, so a cache
+    # HIT decodes to a value indistinguishable from what a MISS computed,
+    # four-state verdict vocabulary (`passes_all` / `pending` / `degenerate`)
+    # included. Both invalidation triggers survive the move: the key below still
+    # carries `cohort_key`, and `rigor_cache.clear()` now bumps a shared epoch.
+    from archimedes.services.rigor_cache import cohort_key, get_or_compute, model_list_codec
 
     code_versions = {s.id: getattr(s, "strategy_code_hash", None) for s in strategies}
     cache_key = f"selection_bias_gate:strictness={strictness}:" + cohort_key(
@@ -539,7 +551,12 @@ async def evaluate_rigor_gate(
     # strategies_routes.py's `_live_rigor_results_for_strategies` (same failure
     # class: an empty result must never get "sticky" for the TTL) and costs
     # nothing when `_compute()` returns its normal non-empty list.
-    results = get_or_compute(cache_key, _compute, cache_if=bool)
+    results = get_or_compute(
+        cache_key,
+        _compute,
+        cache_if=bool,
+        shared_codec=model_list_codec(StrategyRigorResult),
+    )
 
     # Copilot review (PR #1040): on a rigor_cache HIT, `results` are memoized
     # StrategyRigorResult objects whose `library_pbo` reflects whatever was

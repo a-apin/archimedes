@@ -1,7 +1,7 @@
 ---
 type: method-reference
 title: Selection-bias controls
-description: The mathematics behind each rigor control — DSR with its raw-kurtosis convention and effective-N correction, PBO via CSCV, walk-forward and CPCV, the look-ahead audit, FDR versus FWER, and the circular block bootstrap — with what is implemented separated from what is only written down.
+description: The mathematics behind each rigor control — DSR with its raw-kurtosis convention and equicorrelated-E[max] correction, PBO via CSCV, walk-forward and CPCV, the look-ahead audit, FDR versus FWER, and the circular block bootstrap — with what is implemented separated from what is only written down.
 tags: [dsr, pbo, cscv, cpcv, look-ahead, fdr, bootstrap, methodology]
 verified:
   - by: openwiki/0.4.3
@@ -69,20 +69,26 @@ from the null, and the spec's reference cases use 504 / 1260 / 2520 bars.
 At `num_trials = 1`, `E[max_N] = 0` and **no correction is applied** — there was no
 selection, so there is nothing to deflate.
 
-### Effective-N for correlated trials
+### Correlated trials shrink `E[max]`, not `N`
 
-A parameter sweep whose variants move together is not `N` *independent* tests. The nominal
-count is converted under an equicorrelation model:
+A parameter sweep whose variants move together is not `N` *independent* tests. Under an
+equicorrelation model the factor common to every trial passes straight through the
+maximum, so the expected best-of-N null is the independent-trial value scaled by
+`√(1−ρ̄)`:
 
 ```
-N_eff = N / (1 + (N − 1)·ρ̄)
+E[max of N equicorrelated] = √(1−ρ̄) · E[max of N iid]
 ```
 
 At `ρ̄ = 0` the full multiple-testing penalty applies; at `ρ̄ = 1` all variants collapse to a
 single test and no deflation occurs. Negative (diversifying) correlations are **clamped to
-0.0** — a conservative "no penalty relief" default. Because the two-quantile `E[max]`
-approximation diverges as `N → 1`, it is evaluated at `max(2, N_eff)` and tapered linearly
-to zero across `N_eff ∈ [1, 2]`.
+0.0** — a conservative "no penalty relief" default. Unlike an effective-trial-count form,
+this keeps growing with `N`: a 10,000-variant sweep is charged more than a 64-variant one.
+
+> This section described an effective-trial-count form `N_eff = N / (1 + (N − 1)·ρ̄)` with a
+> `max(2, N_eff)` taper when it was generated on 2026-08-31 from
+> `docs/quant/methodology.md`, which was itself stale. See #1558/#1559 — that form was the
+> Kish design effect, not an expectation of a maximum, and it under-deflated by 2×–10×.
 
 ### What it returns
 

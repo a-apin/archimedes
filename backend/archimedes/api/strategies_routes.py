@@ -1722,9 +1722,22 @@ async def rename_strategy(
     display name. The strategy_passports table carries no display-name column,
     so only strategy_store is updated.
 
+    Ownership is decided by ``owns_strategy`` — the single implementation of
+    the two-tier rule (#1557), the same predicate every sibling reader on this
+    router calls. It is NOT re-derived here (#1283): the tiers are (1) a row
+    carrying an ``owner_user_id`` is owned by that account and by nobody else,
+    so a matching ``owner_wallet`` grants nothing, and (2) only a row with NO
+    user stamp falls back to the wallet comparison. Re-implementing that
+    ordering inline is how a mutating route drifts out of agreement with the
+    readers that gate the same row — an authorization bug, not an
+    inconsistency.
+
     Legacy-wallet fallback (#1283): a pre-account row (``owner_user_id`` NULL)
-    matched via the caller's linked wallet is reclaimed onto canonical account
-    ownership in the same transaction as the rename, using the same bulk claim
+    matched via the caller's linked wallet — i.e. tier 2 is what granted
+    ownership, which is exactly ``owns_strategy() and owner_user_id is None``
+    because tier 2 is unreachable when a user stamp exists — is reclaimed onto
+    canonical account ownership in the same transaction as the rename, using
+    the same bulk claim
     (``claim_legacy_wallet_data``) a verified wallet link performs — but
     scoped to the strategy-side tables only (``StrategyRecord`` /
     ``StrategyPassportRecord`` / ``StrategyProposal``), with
@@ -1754,6 +1767,7 @@ async def rename_strategy(
     from archimedes.models.strategy_passport_record import StrategyPassportRecord
     from archimedes.models.strategy_proposal import StrategyProposal
     from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.services.strategy_visibility import owns_strategy
 
     name = payload.get("name")
     if not isinstance(name, str):
@@ -1768,17 +1782,31 @@ async def rename_strategy(
             # Curated examples are not user-owned — same 404 as a missing row.
             raise HTTPException(status_code=404, detail="Strategy not found")
         caller = get_linked_wallet_address(request)
-        is_owner = row.owner_user_id == user.id
-        if not is_owner and row.owner_user_id is None and row.owner_wallet and caller == row.owner_wallet.lower():
-            # Proven via linked-wallet match on a still-unclaimed row: reclaim
-            # every pre-account STRATEGY row tied to this wallet (not just
-            # this one), matching what re-verifying the wallet link would do
-            # for those tables. vault_metadata/user_profiles are excluded —
-            # see the docstring above.
+        # The canonical two-tier match, asked once, from the one place it is
+        # implemented. `owns_strategy` consults `owner_wallet` ONLY when
+        # `owner_user_id` is NULL, so a row stamped with another account's id
+        # is not renamable by whoever happens to control the wallet it names.
+        is_owner = owns_strategy(row, caller, caller_user_id=user.id)
+        if is_owner and row.owner_user_id is None:
+            # Tier 2 is the only tier that can have granted this (tier 1
+            # requires a non-NULL stamp), so the caller is proven via a
+            # linked-wallet match on a still-unclaimed row: reclaim every
+            # pre-account STRATEGY row tied to this wallet (not just this
+            # one), matching what re-verifying the wallet link would do for
+            # those tables. vault_metadata/user_profiles are excluded — see
+            # the docstring above.
+            #
+            # `claim_legacy_wallet_data` filters on an EXACT `owner_wallet ==
+            # address` match, so it is handed the same normalized form
+            # `owns_strategy` compared on. Linked wallets are stored
+            # lower-cased (`issue_wallet_challenge`), so this is not a
+            # live casing fix — it keeps the bulk claim's reach identical to
+            # the reach of the check that authorized it, rather than relying
+            # on the two agreeing by convention.
             claim_legacy_wallet_data(
                 session,
                 user.id,
-                caller,
+                str(caller).strip().lower(),
                 models=(
                     (StrategyRecord, StrategyRecord.owner_wallet),
                     (StrategyPassportRecord, StrategyPassportRecord.owner_wallet),
@@ -1787,7 +1815,6 @@ async def rename_strategy(
                 include_profile=False,
             )
             row.owner_user_id = user.id
-            is_owner = True
         if not is_owner:
             # Hide unpublished rows from non-owners (404); published rows are
             # visible, so an honest 403 is returned instead.
