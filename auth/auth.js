@@ -50,7 +50,7 @@ const CONNECTED_ACCOUNT_LABELS = { credential: 'Email & password', google: 'Goog
 // Wired via databaseHooks.account.{create,delete}.after below.
 //
 // MUST NOT throw. Unlike sendResetPassword/sendVerificationEmail above
-// (hand-rolled fire-and-forget, or awaited inside their OWN try/catch),
+// (both hand-rolled fire-and-forget, each with its own .catch),
 // better-auth's databaseHooks create.after/delete.after are awaited by the
 // library itself as part of the write (node_modules/@better-auth/core/dist/
 // context/transaction.mjs: `for (const hook of pendingHooks) await hook();`
@@ -660,6 +660,21 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
         // rules stay as defense-in-depth regardless: this rule (3 signups /
         // 10 min per Better Auth's rate key), nginx's /api/auth/ limit_req
         // zone, and — decisively — the per-IP DAILY generation cap
+        //
+        // CAVEAT (#1691, found by the 2026-08-31 pre-flip audit): "per Better
+        // Auth's rate key" is not per-caller in production today. The key is
+        // `${ip}|${path}` (@better-auth/core/dist/utils/ip.mjs:225), and
+        // getIp trusts a forwarded header only when it carries exactly ONE
+        // value (:189 `if (forwardedIps.length !== 1) return null`) unless
+        // advanced.ipAddress.trustedProxies is configured — which nothing
+        // below does. Behind CloudFront -> ALB -> nginx every hop appends
+        // (nginx/nginx.conf:179), so no IP resolves and the limiter falls
+        // back to one shared `no-trusted-ip|<path>` bucket, logging a
+        // warning that says so. These rules therefore bound TOTAL rate, not
+        // per-abuser rate. Layers 2 and 3 above are unaffected. Pinned in
+        // both directions by auth/test/email-flows.test.js; do not "fix" it
+        // by trusting the leftmost XFF token, which is client-controlled and
+        // strictly worse than a shared bucket.
         // (services/generation_quota.py): a fresh account does not raise its
         // address's generation allowance, so disposable accounts gain
         // nothing at the endpoint that actually spends money.
