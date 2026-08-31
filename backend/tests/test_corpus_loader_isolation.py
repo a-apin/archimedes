@@ -53,8 +53,9 @@ _OLD = "2024-01-01"
 
 @contextmanager
 def _tmp_db(tmp_path: Path):
-    """``redirect_to_tmp_sqlite`` as a context manager (it is written for
-    ``yield from`` inside a fixture; two tests below need it inline)."""
+    """``redirect_to_tmp_sqlite`` as a context manager — it is written to be
+    consumed with ``yield from`` from a fixture, and this file needs it both in
+    a fixture and inline inside one test."""
     yield from redirect_to_tmp_sqlite(tmp_path)
 
 
@@ -111,7 +112,7 @@ def populated_db(tmp_path):
 
 
 class TestTheSuiteDatabaseIsNotInTheWorkingTree:
-    """Reverting the conftest block fails every assertion here.
+    """Reverting the conftest block fails both tests here.
 
     Without it ``DATABASE_URL`` is unset, ``archimedes.db`` resolves
     ``_default_database_url()``, and the engine binds
