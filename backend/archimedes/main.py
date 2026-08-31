@@ -809,6 +809,20 @@ _ORACLE_PROBE_BUDGET_SECONDS = 1.2
 # started; probes now run concurrently, so the oracle's slice is smaller and
 # has to leave the outer backstop above room to be the backstop.
 _ORACLE_INNER_BUDGET_SECONDS = 0.9
+# The LLM backend probe. `make_llm_backend()` looks like pure construction and
+# is not: on the ollama path — the local-mode default this budget exists for
+# (#1044) — its `available` check is a SYNCHRONOUS `httpx.get({LLM_BASE_URL}
+# /api/tags)` with a 3.0s timeout, i.e. longer than /health's entire 2s promise.
+# Until this constant existed that call sat outside the cache and outside any
+# deadline, running unwrapped inside the async handler: with LLM_PROVIDER=ollama
+# and ollama down, every /health parked the whole event loop for 3s, on exactly
+# the path the ECS container HEALTHCHECK and the ALB target-group check hammer.
+# That is the #1592 incident's shape with a different dark endpoint, and the
+# handler's own docstring ("every outbound probe is bounded") was false while it
+# stood. Kept under the chain/oracle budgets because the honest local answer
+# (`/api/tags` off loopback) returns in single-digit milliseconds — anything
+# slower is a dark endpoint, not a busy one.
+_LLM_PROBE_BUDGET_SECONDS = 1.0
 
 
 @app.get("/health")
@@ -823,6 +837,12 @@ async def health(response: Response):
     outbound probe is bounded and falls back to its last-known value, labelled
     with age and reason (#1592). No field's MEANING changed — only how long the
     handler is willing to wait to compute it.
+
+    "Every" became literally true at #1044. #1592 bounded the two probes the
+    incident named — chain and oracle — and left `make_llm_backend()` where it
+    was, which looked like construction and was in fact a blocking outbound
+    call on the ollama path. The LLM probe now runs beside the other two, on a
+    thread, under `_LLM_PROBE_BUDGET_SECONDS`.
     """
     _no_store(response)
 
@@ -830,7 +850,6 @@ async def health(response: Response):
     from archimedes.chain.client import chain_client
     from archimedes.services.corpus_service import get_corpus_meta, get_paper_count
     from archimedes.services.health_cache import health_probe_cache
-    from archimedes.services.llm_backend import make_llm_backend
 
     async def _oracle_probe():
         # Imported at call time, not module scope, so tests keep patching
@@ -839,10 +858,41 @@ async def health(response: Response):
 
         return await _oracle_health_probe(budget_seconds=_ORACLE_INNER_BUDGET_SECONDS)
 
+    async def _llm_probe() -> tuple[bool, str, str, str | None]:
+        """Resolve the LLM backend off the event loop, under a deadline (#1044).
+
+        Returns plain data — ``(available, backend_label, reason, model_id)`` —
+        rather than the backend object, because this value gets CACHED as
+        /health's last-known reading and a live client held across requests
+        would be a connection, not a measurement.
+
+        ``to_thread`` is load-bearing, not tidiness. ``make_llm_backend()`` is
+        synchronous and blocking, so calling it inside this coroutine would
+        block the loop for its full duration and ``run_with_deadline`` would
+        never get to run — a deadline cannot fire on a loop that is not turning.
+        Off-thread, an over-budget probe is abandoned exactly as deadline.py
+        describes: the worker thread unwinds on its own schedule (bounded by
+        httpx's own 3s timeout) while the handler answers on time. Safe here
+        precisely because this probe is read-only.
+        """
+
+        def _resolve() -> tuple[bool, str, str, str | None]:
+            # Imported inside the thread body so tests keep patching
+            # ``services.llm_backend.make_llm_backend`` the way they already do.
+            from archimedes.services.llm_backend import make_llm_backend as _make
+
+            backend = _make()
+            available = bool(getattr(backend, "available", False))
+            label = "live" if available else str(getattr(backend, "model_id", "unavailable"))
+            reason = "" if available else str(getattr(backend, "unavailable_reason", "") or "")
+            return available, label, reason, getattr(backend, "model_id", None)
+
+        return await asyncio.to_thread(_resolve)
+
     # Concurrent + bounded. return_exceptions keeps one broken probe from
     # taking the other down: a raised probe is still a health verdict, it is
     # just a "we could not read it" one, and that is what gets reported.
-    chain_outcome, oracle_outcome = await asyncio.gather(
+    chain_outcome, oracle_outcome, llm_outcome = await asyncio.gather(
         health_probe_cache.probe(
             "chain_connected",
             chain_client.is_connected,
@@ -854,6 +904,15 @@ async def health(response: Response):
             _oracle_probe,
             budget_seconds=_ORACLE_PROBE_BUDGET_SECONDS,
             absent=None,
+        ),
+        health_probe_cache.probe(
+            "llm_backend",
+            _llm_probe,
+            budget_seconds=_LLM_PROBE_BUDGET_SECONDS,
+            # "We could not read it" for a capability flag is FALSE. An
+            # optimistic absent value here would rebuild the exact lie #1044
+            # set out to kill — /health claiming an LLM it has never reached.
+            absent=(False, "unavailable", "llm probe never completed", None),
         ),
         return_exceptions=True,
     )
@@ -891,10 +950,37 @@ async def health(response: Response):
         logger.warning("HEALTH_CHAIN_DISCONNECTED: chain_connected=false (Arc RPC unreachable or timed out)")
     corpus = load_corpus()
     _fusion_on = fusion_enabled()
-    backend = make_llm_backend()
+
+    # ── LLM backend ──────────────────────────────────────────────────────
     llm_provider = os.getenv("LLM_PROVIDER", "auto")
-    is_available = getattr(backend, "available", False)
-    llm_backend = "live" if is_available else backend.model_id if hasattr(backend, "model_id") else "unavailable"
+    llm_probe_fields: dict[str, object] = {}
+    if isinstance(llm_outcome, BaseException):
+        # Same treatment as the chain probe above: a raised probe is a defect in
+        # the plumbing, not a verdict about the backend, so it gets its own
+        # state instead of masquerading as either a reading or a timeout.
+        logger.warning(
+            "llm health probe raised %s — reporting llm_available=false",
+            type(llm_outcome).__name__,
+        )
+        is_available, llm_backend, llm_reason, llm_model = (
+            False,
+            "unavailable",
+            f"llm probe_error: {llm_outcome}",
+            None,
+        )
+        llm_probe_fields = {
+            "llm_probe_state": "probe_error",
+            "llm_probe_age_s": None,
+            "llm_probe_reason": llm_reason,
+        }
+    else:
+        is_available, llm_backend, llm_reason, llm_model = llm_outcome.value
+        llm_probe_fields = llm_outcome.payload_fields("llm")
+        if not llm_outcome.is_live:
+            # The staleness reason is ALSO the substantive one when the probe
+            # never answered — mirrors how oracle_reason absorbs probe_timeout
+            # rather than leaving the operator to join two fields.
+            llm_reason = f"{llm_outcome.reason} (last completed read: {llm_reason or 'available'})"
 
     # DB-backed corpus diagnostics
     db_count = 0
@@ -1222,8 +1308,17 @@ async def health(response: Response):
         "fusion_enabled": _fusion_on,
         "llm_provider": llm_provider,
         "llm_backend": llm_backend,
-        "llm_model": getattr(backend, "model_id", None),
+        "llm_model": llm_model,
         "llm_available": is_available,
+        # Why the backend is not live, in a sentence an operator can act on
+        # ("ollama unreachable at …", "LLM_MODEL is unset …", "… is not pulled
+        # (run `ollama pull llama3.1`)"). Empty string when it IS live — a bool
+        # alone cannot tell those three apart, which is how a local ollama
+        # misconfiguration used to read as a mystery (#1044). Companion to the
+        # oracle_reason / paper_rag_reason / corpus_embedded_at_rest_reason
+        # pattern already in this payload.
+        "llm_reason": llm_reason,
+        **llm_probe_fields,
         "llm_has_api_key": bool(os.getenv("LLM_API_KEY") or os.getenv("ANTHROPIC_API_KEY")),
         "llm_has_auth_token": bool(os.getenv("LLM_AUTH_TOKEN") or os.getenv("ANTHROPIC_AUTH_TOKEN")),
         "llm_has_base_url": bool(os.getenv("LLM_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL")),
