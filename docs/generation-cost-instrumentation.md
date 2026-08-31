@@ -53,16 +53,18 @@ One instrumented call is therefore **inert today**:
 `propose_portfolio_with_tools()` in `portfolio_agent.py` carries a
 `record_llm_call`, and its raw-SDK tool-use loop genuinely does bypass
 `LLMBackend.complete()` — but that method is not on the generation pipeline's
-call graph. Its only caller is `GET /api/strategies/advisor`, which never opens
-a `cost_meter.measure()` scope, and the pipeline's two runners
+call graph. It now has **no callers at all**: the pipeline's two runners
 (`_run_debate_leaderboard`, `_run_fixture_candidate`) both accept an `agent`
-argument for signature parity and ignore it. So no generation reaches this loop,
-and the call cannot contribute to any job's cost snapshot as the code stands.
+argument for signature parity and ignore it, and the one route that used to call
+it — `GET /api/strategies/advisor` — has been deleted. So no generation reaches
+this loop, and the call cannot contribute to any job's cost snapshot.
 
-It is kept rather than removed because it is correct the moment that changes: if
-this loop is ever joined to a metered job, the coverage is already in place
-instead of being discovered missing after the fact. It closes no gap today, and
-the snapshots in this document do not include anything from it.
+The method is dead code queued for the follow-up deletion PR; it survives only
+because `portfolio_agent.py`'s other exports (`get_portfolio_agent`,
+`PortfolioAgent`) are still imported by `generation_pipeline.py` and the
+StockBench adapter. Treat its `record_llm_call` as something to delete with the
+method, not as coverage to preserve. It closes no gap today, and the snapshots
+in this document do not include anything from it.
 
 ## Snapshot shape (`cost_v1`)
 

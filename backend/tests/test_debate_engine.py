@@ -532,6 +532,97 @@ async def test_debate_round_degrades_when_backend_unavailable(monkeypatch):
     assert transcript == []  # never gates; no backend → empty best-effort transcript
 
 
+# ── Transcript capture (debate-transcript-capture): the return value of
+#    _debate_round used to be discarded outright at the _run_debate_leaderboard
+#    call site (`await _debate_round(...)` with no assignment) — a real, paid
+#    4-turn bull/bear transcript vanished the instant the coroutine returned.
+#    This is the end-to-end regression guard: run the FULL leaderboard builder
+#    (not just _debate_round in isolation, which was already covered above)
+#    and assert every entry — winner AND the tail alternate — carries it. ────
+
+
+async def test_run_debate_leaderboard_attaches_transcript_to_every_entry(monkeypatch, corpus):
+    """Stashing the capture line in debate_engine.py (reverting to a bare
+    `await _debate_round(...)`) makes this fail: every entry's
+    `debate_transcript` stays at its dataclass default of None. See the PR
+    description / task report for the actual stash-and-rerun demonstration."""
+    from archimedes.models.regime import Regime
+
+    _patch_regime(monkeypatch, Regime.RISK_ON)  # non-crisis: must not force ABSTAIN
+    monkeypatch.setattr(de.asyncio, "to_thread", _passthrough_to_thread)
+    monkeypatch.setattr("archimedes.agents.strategy_fusion.load_corpus", lambda *a, **k: corpus)
+
+    debate_backend = _DebateBackend()
+    monkeypatch.setattr("archimedes.services.llm_backend.make_llm_backend", lambda model=None, **k: debate_backend)
+
+    pool = [
+        _fake_proposal("A", ["2401.00001", "2402.00001"]),
+        _fake_proposal("B", ["2401.00002", "2402.00002"]),
+    ]
+
+    async def _fake_propose_pool(brief, model, corpus_arg):
+        return pool
+
+    monkeypatch.setattr(de, "_propose_pool", _fake_propose_pool)
+
+    _call_n = {"i": 0}
+
+    def _fake_eval(spec, *, num_trials=None, **kw):
+        _call_n["i"] += 1
+        # Distinct DSR per candidate so build_leaderboard produces a real
+        # winner + a real (non-abstain) alternate, not a tie or a cull-to-one.
+        return _fake_ev(cagr=0.2, dsr=float(_call_n["i"]), num_trials=num_trials)
+
+    monkeypatch.setattr("archimedes.services.fusion_evaluator.evaluate_fusion_spec", _fake_eval)
+
+    brief = GenerateBrief(intent="momentum equities", max_papers=4)
+    leaderboard = await de._run_debate_leaderboard(candidate_id="cand_1", brief=brief, emit=_FakeEmit())
+
+    assert len(leaderboard) == 2, "need winner + one alternate to prove BOTH carry the transcript"
+    expected_roles = [("bull", 1), ("bear", 1), ("bull", 2), ("bear", 2)]
+    for entry in leaderboard:
+        assert entry.debate_transcript is not None, (
+            f"{entry.candidate_id} lost its debate transcript — the exact discard this guards against"
+        )
+        assert [(t["role"], t["round"]) for t in entry.debate_transcript] == expected_roles
+    # One debate happened, not one per candidate: every entry shares the SAME
+    # transcript object (the debate runs once, over the whole pool, before
+    # C-null culls it to a winner).
+    assert leaderboard[0].debate_transcript is leaderboard[1].debate_transcript
+
+
+async def test_run_debate_leaderboard_abstain_entry_still_carries_transcript(monkeypatch, corpus):
+    """The C-regime ABSTAIN path builds its result via `_abstain_result`, a
+    different code path than the normal survivor path — must not skip the
+    transcript stamp just because it takes the early-return branch."""
+    from archimedes.models.regime import Regime
+
+    _patch_regime(monkeypatch, Regime.CRISIS)  # forces ABSTAIN
+    monkeypatch.setattr(de.asyncio, "to_thread", _passthrough_to_thread)
+    monkeypatch.setattr("archimedes.agents.strategy_fusion.load_corpus", lambda *a, **k: corpus)
+
+    debate_backend = _DebateBackend()
+    monkeypatch.setattr("archimedes.services.llm_backend.make_llm_backend", lambda model=None, **k: debate_backend)
+
+    pool = [_fake_proposal("A", ["2401.00001", "2402.00001"])]
+
+    async def _fake_propose_pool(brief, model, corpus_arg):
+        return pool
+
+    monkeypatch.setattr(de, "_propose_pool", _fake_propose_pool)
+    monkeypatch.setattr(
+        "archimedes.services.fusion_evaluator.evaluate_fusion_spec",
+        lambda spec, *, num_trials=None, **kw: _fake_ev(cagr=0.2, num_trials=num_trials),
+    )
+
+    brief = GenerateBrief(intent="momentum equities", max_papers=4)
+    leaderboard = await de._run_debate_leaderboard(candidate_id="cand_1", brief=brief, emit=_FakeEmit())
+
+    assert len(leaderboard) == 1
+    assert leaderboard[0].generation_method == "debate_abstain"
+    assert leaderboard[0].debate_transcript is not None
+
+
 # ── Review fixes: pool-max bound + leaderboard top-N cap ──────────────────────
 
 

@@ -117,12 +117,21 @@ def client(tmp_path, monkeypatch):
 # constructed at module-init from .env; under the hermetic gate there is no
 # .env, so this namespace substitutes the exact fields the route layer reads.
 #
-# Why a SEPARATE fixture (not baked into `client`): the bare `client` fixture
-# leaves `chain_client.settings` as an auto-MagicMock, which some pre-existing
-# tests rely on (e.g. the advisor optimizer fails fast against the mock and
-# falls back to a budget-normalized allocation). Installing a real settings
-# object only for the routes that need it keeps every other test's behavior
-# exactly as it was on main.
+# It is opted into through the `chain_settings_client` fixture below, whose
+# surviving consumers are the Tier-B route tests that read these addresses at
+# request time: TestConfigRoutes::test_contracts /
+# test_contracts_serves_both_chain_blocks /
+# test_contracts_does_not_swap_the_two_chain_blocks,
+# TestAssetRoutes::test_list_assets, and TestSwapRoutes::test_swap_quote_*.
+#
+# Why a SEPARATE fixture (not baked into `client`): scope containment. The bare
+# `client` fixture leaves `chain_client.settings` as an auto-MagicMock, and
+# installing a real namespace only where it is needed keeps that blast radius
+# to the tests above. Note this is now a conservative choice, not a load-bearing
+# one — the test that used to depend on the auto-MagicMock (the advisor
+# optimizer failing fast against it) was deleted with the advisor route, and
+# folding this fixture's setup into `client` was measured to break nothing in
+# this file. Keep the split unless something else forces the merge.
 _SETTINGS_NAMESPACE = SimpleNamespace(
     usdc_address="0x3600000000000000000000000000000000000000",
     synthetic_factory_address="",
@@ -362,45 +371,6 @@ class TestStrategyRoutes:
         assert mm["out_of_sample_sharpe"] is None, (
             f"out_of_sample_sharpe must be None when pending (#1187); got {mm['out_of_sample_sharpe']}"
         )
-
-    def test_advisor_serves_null_not_fixture_when_live_gate_empty(self, client, seeded_db):
-        """#1187 (``_rigor_fields``, the advisor's own copy of the leaderboard's
-        fixed-then-fixed-again fallback): when the live-gate batch returns no
-        result for any strategy, the four numeric rigor fields on EVERY advisor
-        allocation must render ``None`` — never the migrated fixture value on
-        the in-memory ``Strategy`` object. Not vacuous: reverting just this
-        fallback (restoring ``else st.<field>`` on the four keys) makes this
-        fail — an allocation then serves the exact fixture constants
-        (0.277212 / 0.339938 / 0.910213) from
-        ``backend/tests/fixtures/backtest_fixtures_snapshot.json``, confirmed
-        by hand against the pre-fix code."""
-        from archimedes.api import strategies_routes as sr
-
-        with patch.object(sr, "_live_rigor_results_for_strategies", return_value={}):
-            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
-        assert resp.status_code == 200
-        allocations = resp.json()["allocations"]
-        assert allocations, "advisor returned no allocations to check"
-        for a in allocations:
-            # The rule-based aggregate row (id "agg_<symbol>") does not carry
-            # rigor_gate_status forward (_RIGOR_KEYS omits it) — passes_rigor_gate
-            # is the field available on every row, and must stay the fail-closed
-            # default.
-            assert a["passes_rigor_gate"] is False, f"{a.get('id')}: passes_rigor_gate must be fail-closed False"
-            assert a["deflated_sharpe_ratio"] is None, (
-                f"{a.get('id')}: deflated_sharpe_ratio must be None, not the fixture value; "
-                f"got {a['deflated_sharpe_ratio']}"
-            )
-            assert a["dsr_p_value"] is None, (
-                f"{a.get('id')}: dsr_p_value must be None, not the fixture value; got {a['dsr_p_value']}"
-            )
-            assert a["pbo_score"] is None, (
-                f"{a.get('id')}: pbo_score must be None, not the fixture value; got {a['pbo_score']}"
-            )
-            assert a["out_of_sample_sharpe"] is None, (
-                f"{a.get('id')}: out_of_sample_sharpe must be None, not the fixture value; "
-                f"got {a['out_of_sample_sharpe']}"
-            )
 
     def test_list_strategies_reports_degraded_when_provider_raises(self, client):
         """#1356: a provider failure must be visible on the wire as
@@ -930,228 +900,6 @@ class TestAgentRoutes:
         valid_statuses = {"healthy", "low_liquidity", "empty", "error"}
         for pool in data["pools"]:
             assert pool["status"] in valid_statuses, f"Invalid status: {pool['status']}"
-
-
-class TestAdvisorRoutes:
-    def test_advisor_happy_path(self, client, seeded_db):
-        """Advisor returns allocations with weights summing to ≈ synth_weight."""
-        resp = client.get("/api/strategies/advisor?risk_profile=moderate")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "regime" in data
-        assert "usdc_weight" in data
-        assert "synth_weight" in data
-        assert "allocations" in data
-        assert "expected_portfolio" in data
-        ep = data["expected_portfolio"]
-        assert "sharpe" in ep
-        assert "cagr" in ep
-        assert "max_drawdown" in ep
-        # Weights must sum to ≈ synth_weight (within floating-point rounding)
-        total_alloc = sum(a["weight"] for a in data["allocations"])
-        assert abs(total_alloc - data["synth_weight"]) < 0.01, (
-            f"Allocation weights ({total_alloc:.4f}) must sum to synth_weight ({data['synth_weight']:.4f})"
-        )
-
-    def test_advisor_all_risk_profiles(self, client, seeded_db):
-        """Every valid risk_profile returns 200 with a non-empty allocations list."""
-        profiles = ["fixed_income", "conservative", "moderate", "aggressive", "hyper_risky"]
-        for profile in profiles:
-            resp = client.get(f"/api/strategies/advisor?risk_profile={profile}")
-            assert resp.status_code == 200, f"Advisor failed for profile={profile}"
-            data = resp.json()
-            assert data.get("risk_profile") == profile
-
-    def test_advisor_invalid_profile(self, client):
-        """Invalid risk_profile yields 422 validation error."""
-        resp = client.get("/api/strategies/advisor?risk_profile=yolo")
-        assert resp.status_code == 422
-
-    def test_advisor_redis_unavailable(self, client, seeded_db):
-        """Advisor falls back to transition regime when Redis is down.
-
-        Mocks AgentStateStore.load_regime so the test is hermetic — CI has
-        no Redis, but local dev usually does (with cached regime state).
-        """
-        from archimedes.services.redis_state import AgentStateStore
-
-        with (
-            patch.object(AgentStateStore, "load_regime", AsyncMock(side_effect=ConnectionError("redis down"))),
-            patch.object(AgentStateStore, "close", AsyncMock(return_value=None)),
-        ):
-            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
-        assert resp.status_code == 200
-        data = resp.json()
-        # Without Redis the regime defaults to "transition"
-        assert data["regime"] == "transition"
-
-    def test_advisor_serves_live_rigor_numbers_not_fixture(self, client, seeded_db):
-        """M1: the five numeric rigor stats must come from the SAME live-gate
-        batch that produces the badge, not the frozen fixture fields on the
-        in-memory Strategy objects. The sentinel values below exist in no
-        fixture; against the pre-fix route (which served ``st.<field>``)
-        every assertion here fails."""
-        from archimedes.api import strategies_routes as sr
-        from archimedes.services.rigor_evaluator import RigorGateResult
-
-        def fake_batch(strategies):
-            return {
-                s.id: RigorGateResult(
-                    strategy_id=s.id,
-                    deflated_sharpe=1.2468,
-                    dsr_p_value=0.97531,
-                    num_trials=1,
-                    pbo_score=0.13579,
-                    oos_sharpe=0.86421,
-                    look_ahead_passed=True,
-                )
-                for s in strategies
-            }
-
-        with patch.object(sr, "_live_rigor_results_for_strategies", side_effect=fake_batch):
-            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
-        assert resp.status_code == 200
-        allocations = resp.json()["allocations"]
-        assert allocations, "advisor returned no allocations to check"
-        for alloc in allocations:
-            assert alloc["deflated_sharpe_ratio"] == pytest.approx(1.2468)
-            assert alloc["dsr_p_value"] == pytest.approx(0.97531)
-            assert alloc["num_trials_in_selection"] == 1
-            assert alloc["pbo_score"] == pytest.approx(0.13579)
-            assert alloc["out_of_sample_sharpe"] == pytest.approx(0.86421)
-
-    def test_advisor_passes_live_rigor_statuses_to_portfolio_llm(self, client, seeded_db):
-        """M2: the portfolio LLM must receive the LIVE tri-state statuses,
-        computed BEFORE the agent call. The in-memory ``passes_rigor_gate``
-        sentinel (always False) told the model every curated strategy had
-        failed the gate; pre-fix the route passed no status map at all, so
-        the captured final positional arg here is not a status dict and the
-        assertions fail."""
-        from archimedes.services.strategy_signal_evaluator import strategy_evaluator
-
-        captured = {}
-
-        class _StubAgent:
-            available = True
-            model_id = "stub"
-
-            def propose_portfolio_with_tools(self, *args):
-                captured["with_tools"] = args
-
-            def propose_portfolio(self, *args):
-                captured["plain"] = args
-
-        fake_ranking = [
-            {
-                "synth": "sSPY",
-                "display": "SPY",
-                "asset_class": "equity_us",
-                "score": 1.0,
-                "momentum_90d": 0.1,
-                "vol_ann": 0.2,
-                "exchange": "US",
-            }
-        ]
-
-        with (
-            # get_portfolio_agent is imported inside the route function, so it
-            # must be patched at its source module.
-            patch("archimedes.agents.portfolio_agent.get_portfolio_agent", return_value=_StubAgent()),
-            patch.object(strategy_evaluator, "rank_market", return_value=fake_ranking),
-        ):
-            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
-        assert resp.status_code == 200
-        assert "with_tools" in captured, "portfolio agent was never invoked"
-        statuses = captured["with_tools"][-1]
-        assert isinstance(statuses, dict) and statuses, "final arg must be the rigor-status map"
-        assert all(isinstance(k, str) and v in {"pass", "fail", "pending"} for k, v in statuses.items())
-        # The plain (non-tool) fallback call must carry the same map.
-        assert "plain" in captured
-        assert captured["plain"][-1] == statuses
-
-    def test_advisor_rigor_summary_dsr_threshold_matches_badge_floor_direction(self, client, seeded_db):
-        """#1358 round-2 review: ``dsr_significant``/``dsr_significant_threshold``
-        must count HIGH-confidence strategies (>= the STRICTEST_LEVEL badge
-        floor — 0.90 today, rigor_profiles.py) — the SAME direction
-        RigorExplainer.jsx ("confidence >= 0.90 (badge)") and
-        RigorStrictnessControl.jsx ("DSR confidence >= dsr_p_min") already use.
-        Pre-fix, a ``< 0.05`` comparator counted the WORST (lowest-confidence)
-        strategies under this positive-sounding stat. ``dsr_p_value`` is
-        ``norm.cdf(z)`` in ``_rigor_helpers._dsr_from_stats`` — Prob(true SR >
-        best-of-N null), the Bailey-LdP DSR itself rather than a frequentist
-        p-value — so higher is better and ``>=`` is the correct direction."""
-        from archimedes.api import strategies_routes as sr
-        from archimedes.services.rigor_evaluator import RigorGateResult
-        from archimedes.services.rigor_profiles import STRICTEST_LEVEL, get_profile
-
-        badge_floor = get_profile(STRICTEST_LEVEL).dsr_p_min
-
-        def fake_batch(strategies):
-            results = {}
-            for i, s in enumerate(strategies):
-                # Alternate: even index confidently ABOVE the badge floor,
-                # odd index confidently BELOW it.
-                dsr_p = badge_floor + 0.02 if i % 2 == 0 else max(badge_floor - 0.30, 0.0)
-                results[s.id] = RigorGateResult(
-                    strategy_id=s.id,
-                    deflated_sharpe=1.0,
-                    dsr_p_value=dsr_p,
-                    num_trials=1,
-                    pbo_score=0.1,
-                    oos_sharpe=0.5,
-                    look_ahead_passed=True,
-                )
-            return results
-
-        with patch.object(sr, "_live_rigor_results_for_strategies", side_effect=fake_batch):
-            resp = client.get("/api/strategies/advisor?risk_profile=moderate")
-        assert resp.status_code == 200
-        body = resp.json()
-        summary = body["rigor_summary"]
-        allocations = body["allocations"]
-        assert allocations, "advisor returned no allocations to check"
-
-        assert summary["dsr_significant_threshold"] == pytest.approx(badge_floor)
-        expected = sum(1 for a in allocations if a.get("dsr_p_value") is not None and a["dsr_p_value"] >= badge_floor)
-        assert expected > 0, "fixture must produce >=1 above-floor allocation for this test to be meaningful"
-        assert summary["dsr_significant"] == expected
-
-    def test_build_rigor_summary_empty_branch_carries_same_keys_as_populated_branch(self):
-        """#1358 round-2 review: ``_build_rigor_summary``'s ``n == 0`` early
-        return must carry the SAME key set as its populated-case return, so
-        every consumer that reads ``dsr_significant_threshold`` /
-        ``pbo_acceptable_threshold`` unconditionally (``rigor_summary`` is
-        built unconditionally at both call sites in this route) gets the
-        honest floor value rather than ``undefined``/a ``KeyError``. There is
-        no UI consumer at all on ``main`` — ``PortfolioAdvisor.jsx`` was
-        deleted as dead code in 2fccecf6 — which makes the wire contract the
-        only thing holding this shape, not a guard in some component.
-
-        Source-text assertion (not a live route call): every reachable path
-        through ``get_portfolio_advisor`` short-circuits to a *different*,
-        ``rigor_summary``-free error shape (``if not scored: return
-        {"error": ..., "allocations": []}``) before ``_build_rigor_summary``
-        is ever called with an empty list, so the ``n == 0`` branch is
-        currently unreachable via the live endpoint — this test guards the
-        function's internal key-symmetry contract directly.
-        """
-        import inspect
-
-        from archimedes.api import strategies_routes as sr
-
-        src = inspect.getsource(sr)
-        fn_start = src.index("def _build_rigor_summary(")
-        n0_start = src.index("if n == 0:", fn_start)
-        n0_body_start = src.index("return {", n0_start)
-        n0_body_end = src.index("}", n0_body_start)
-        n0_body = src[n0_body_start : n0_body_end + 1]
-
-        assert '"dsr_significant_threshold"' in n0_body, (
-            f"n==0 branch is missing dsr_significant_threshold — got: {n0_body}"
-        )
-        assert '"pbo_acceptable_threshold"' in n0_body, (
-            f"n==0 branch is missing pbo_acceptable_threshold — got: {n0_body}"
-        )
 
 
 class TestFusionEvaluatorIntegration:
