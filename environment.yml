@@ -82,7 +82,7 @@ dependencies:
       - cryptography>=50.0.1          # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt (dependabot PR #1585)
 
       # --- AWS / S3 ---
-      - boto3>=1.43.71                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
+      - boto3>=1.43.82                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1584.
       - botocore>=1.43.81              # Direct imports for AWS exceptions/config. boto3 constrains compatible versions; aligned with backend/requirements.txt.
 
       # --- Paper ingestion (Q-fin corpus) ---
