@@ -107,7 +107,10 @@ _ABSENCE_PIN = ("backend/archimedes/api/selection_bias_routes.py", "class BoardL
 # The sentences the ledger's OVER-CLAIMED rows say are still live. See the module
 # docstring: fixing one of these SHOULD break this test.
 _OPEN_OVERCLAIMS: tuple[tuple[str, str], ...] = (
-    ("README.md", "non-custodial vault on the Arc testnet"),
+    # The README's vault-execution over-claim was FIXED by the 2026-08-31 README refresh
+    # (rewritten to the future tense), so its pin is gone from this tuple and its ledger row
+    # moved OVER-CLAIMED → CHANGED — exactly the handoff this test's failure message asks
+    # for. The remaining four machine/UI surfaces still carry the claim.
     ("ui/public/llms.txt", "executed in non-custodial USDC"),
     ("ui/public/.well-known/agent.json", "executed in a non-custodial USDC vault"),
     ("ui/index.html", "records the whole decision on Arc public testnet"),
