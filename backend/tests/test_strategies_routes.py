@@ -1243,8 +1243,9 @@ async def test_single_strategy_endpoint_200s_with_no_linked_paper():
 #      spec" under REASONING, and publishing shares the result, not the
 #      derivation;
 #   3. no LIST surface carries it (the issue's explicit anti-goal), pinned
-#      both at the route and at BOTH shared response builders — the seam a
-#      future refactor would actually break;
+#      structurally — every `.strategy_spec =` assignment in the routes module
+#      must sit inside `get_strategy` — AND at each of the two shared response
+#      builders, which is the seam a future refactor would actually break;
 #   4. a corrupt spec column degrades to null instead of 500ing the route.
 #
 # Hermetic: `_spec_tmp_db` genuinely rebinds `archimedes.db.engine` /
@@ -1253,9 +1254,10 @@ async def test_single_strategy_endpoint_200s_with_no_linked_paper():
 # autouse `_use_tmp_db` above, which only sets `DATABASE_URL` + calls
 # `init_db()`: `archimedes.db` binds its engine once at import time, so setting
 # the env var afterwards rebinds nothing and these tests would read and WRITE
-# the ambient dev database (observed: 37 curated passports leaking into the
-# list assertion, and a UNIQUE-constraint collision between two parametrizations
-# of the same test). Fixing this file's autouse fixture wholesale is a separate
+# the ambient dev database (observed while writing them: 37 real curated
+# passports appearing in a list assertion, and a UNIQUE-constraint collision
+# between two parametrizations of the same test, which under a genuinely
+# per-test DB is impossible). Fixing this file's autouse fixture wholesale is a separate
 # change; scoping the real isolation to the new tests keeps them honest without
 # perturbing the 45 that already pass.
 #
