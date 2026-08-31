@@ -488,10 +488,12 @@ section restores it and records the scope decision the deletion sidestepped.
 explicitly).** `rigor_evaluator.compute_board_level_fdr` is **ADVISORY /
 annotation only** — it computes a real BH-FDR-adjusted significance figure
 across the current leaderboard cohort's DSR p-values and surfaces it
-(`GET /api/selection-bias/gate` → `RigorGateResponse.board_level_fdr` +
-per-strategy `StrategyRigorResult.board_fdr_significant` /
-`board_fdr_adjusted_p` / `board_fdr_confidence`), but it is **not** wired into `passes_all` /
-`blocked_by_floor` at any strictness level. Three reasons, in order of
+(`GET /api/leaderboard` → `LeaderboardResponse.board_level_fdr` + per-row
+`LeaderboardEntry.board_fdr_significant` / `board_fdr_adjusted_p` /
+`board_fdr_confidence` — **relocated there from the per-strategy gate by
+#1564, see §6.1**), but it is **not** wired into `passes_all` /
+`blocked_by_floor` at any strictness level, and it is not an input to the
+leaderboard's `conviction_score` either. Three reasons, in order of
 weight:
 
 1. **Admission-policy calls belong to the rigor lane (Dan/Önder), not to an
@@ -530,9 +532,60 @@ correction and omitted from the result — never assigned a fabricated verdict,
 matching every other MISSING convention in this gate. Default `fdr_level =
 rigor_evaluator.DEFAULT_BOARD_FDR_LEVEL` (`0.05`), independently chosen (BH
 convention) — NOT derived from the DSR badge's `dsr_p_min`. Computed fresh on
-every `/gate` request over the exact cohort being served (same reconciliation
-pattern as `library_pbo`), so a rigor-cache hit can never serve a stale board
-composition's correction.
+every board request over the exact cohort being served, so a rigor-cache hit
+can never serve a stale board composition's correction.
+
+### 6.1 Placement and rendering (#1564, 2026-08-31)
+
+**Owner decision (Dan).** *The strategy passport carries only information about
+the strategy itself; the Leaderboard is the one cross-strategy surface.
+Relational metrics must not ride per-strategy responses.* Board-level FDR is
+relational by construction — the same strategy's `board_fdr_significant` flips
+as unrelated strategies join or leave the cohort, which is the library-coupled
+verdict [`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md)
+Decision #3 already rejected.
+
+**Where it lives now.** `GET /api/leaderboard` only. `GET
+/api/selection-bias/gate` and `GET /api/selection-bias/gate/{id}` carry no
+`board_fdr` or `board_level_fdr` key —
+`test_selection_bias_routes.py::TestBoardFdrStaysOffThePerStrategyGate` scans
+both the response models and a live response shape and fails if one reappears.
+
+**Cache.** No new scheduler and no cache of its own. The `dsr_p_value`s it
+corrects arrive on already-built `StrategyResponse` objects, which for the
+curated cohort come from the rigor_cache-memoized
+`_live_rigor_results_for_strategies` — so the expensive part rides the
+leaderboard's existing cache/TTL semantics, and the BH itself (pure numpy over
+a few hundred floats) recomputes per request so the correction always matches
+the cohort actually served.
+
+**Cohort = the whole board, before filters and before `limit`.** Load-bearing:
+BH's adjusted p is `p_(k)·m/k`, so a smaller *m* makes every row look *more*
+significant. If *m* tracked the filtered/paged view, a reader could narrow
+`regime_tag` or shrink `limit` until a row went significant — manufacturing the
+exact selection effect the correction exists to price in. Pinned by
+`test_leaderboard_board_fdr.py::test_correction_is_invariant_to_limit` /
+`..._to_regime_and_min_rigor_filters`, each with an anti-vacuity test proving
+the shrink really would flip the verdict.
+
+**Rendering (the other half of the owner's call: "render it honestly, as best
+we can").** The research board gets a `Board FDR` column plus a board-level
+line. When nothing clears — the state prod is in, per Önder's pull on #1555 —
+it reads *"Not yet distinguishable from selection noise at board level."* A row
+with no finite `dsr_p_value` was never corrected and renders an **em-dash**,
+never a verdict; `None` is not `False`. Guarded in
+`ui/test/leaderboard-board-fdr.test.js`.
+
+**`library_pbo` STAYS on the per-strategy result** (the call #1564 item 3
+asked for; it was flagged as the same impurity class and is not one). It is
+byte-identical for every strategy in a selection set, so it is a *disclosure*,
+not a per-strategy verdict — nothing about strategy A's passport changes
+because of strategy B. And it is the scope label for a number the same
+response already shows: on the curated path `pbo_score` comes from
+`compute_pbo`, which assigns one library-wide CSCV value to every strategy.
+Removing `library_pbo` would delete the label and leave the labelled number —
+strictly less honest, and it would purify nothing. Pinned by
+`test_selection_bias_routes.py::TestLibraryPboStaysOnThePassport`.
 
 ## API surface
 
