@@ -160,7 +160,12 @@ async def revoke_api_key(
             raise HTTPException(status_code=404, detail="API key not found")
         revoke_key(session, record)
         session.commit()
-        logger.info("api key revoked: id=%s user=%s", key_id, user.id)
+        # ``record.id``, not the raw path parameter. They are equal by construction
+        # here — ``get_owned_key`` matched on it — but logging the value that came
+        # out of the database rather than the one that came off the wire means no
+        # caller-controlled string can ever reach a log line, so log forging is not
+        # a question a reader has to reason about.
+        logger.info("api key revoked: id=%s user=%s", record.id, user.id)
         return Response(status_code=204)
     except HTTPException:
         session.rollback()
