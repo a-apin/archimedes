@@ -374,9 +374,15 @@ test("dark landing preserves atmospheric contrast and semantic accents", () => {
 		/\.public-site\s*\{[^}]*--canvas:\s*#15131d;[^}]*--glass-border:\s*#484155;[^}]*--accent-on:\s*#17151f;/s,
 	);
 	assert.match(css, /--accent-on-muted:\s*rgba\(23, 21, 31, 0\.82\);/);
+	// The light half of this pair used to be rgba(255,255,255,0.9). It is drawn
+	// on --accent (#625cf6), whose contrast ceiling with PURE white is 4.79:1 —
+	// so a 0.9 alpha landed at 4.21:1 and the closing panel's disclaimer failed
+	// 1.4.3. There is no headroom to mute against this accent; the paragraph
+	// takes its lower prominence from size instead. Pinned opaque so a future
+	// edit cannot quietly reintroduce an alpha here.
 	assert.match(
 		css,
-		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--accent-on-muted:\s*rgba\(255, 255, 255, 0\.9\);/s,
+		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--accent-on-muted:\s*#ffffff;/s,
 	);
 	assert.match(
 		css,
@@ -636,4 +642,148 @@ test("honesty ledger's rebalance row does not tie the full commit/trade/reveal m
 		rebalanceRow.indexOf(") : ("),
 	);
 	assert.match(liveBranch, /heartbeat/i);
+});
+
+// ── Type scale, controls and link affordance ──────────────────────────────
+//
+// Owner review of the rebrand: "a lot of blank space and small text… make
+// things a bit bigger, easier to read, links more obvious, buttons look
+// better." The measured cause was a ~10x spread on one screen — a 96px
+// section heading over a 9.6px footer, with running prose at 0.74rem — so the
+// fix was a scale expressed as tokens rather than ~40 tuned literals. These
+// guard the scale and, more importantly, the two mechanisms that let a
+// sub-floor size reach the screen in the first place.
+
+const TYPE_FLOOR_REM = 0.8125; // 13px
+
+// App.css carries TWO `.public-site {` blocks — a legacy one and the rebrand
+// layer at the end of the sheet. They have identical specificity, so the LAST
+// one is the one that renders; a helper that grabbed the first would assert
+// against a palette no visitor ever sees.
+function publicSiteBlock() {
+	const blocks = [...css.matchAll(/\n\.public-site \{([\s\S]*?)\n\}/g)];
+	assert.ok(blocks.length, ".public-site block not found");
+	return blocks.at(-1)[1];
+}
+
+test("the public type scale and control tokens exist, and the scale bottoms out at 13px", () => {
+	const block = publicSiteBlock();
+	for (const name of [
+		"fs-display",
+		"fs-title",
+		"fs-lede",
+		"fs-body",
+		"fs-ui",
+		"fs-meta",
+		"fs-micro",
+		"control-h",
+		"control-h-lg",
+		"control-pad",
+		"control-radius",
+	]) {
+		assert.match(
+			block,
+			new RegExp(`--${name}:`),
+			`the public token set is missing --${name}`,
+		);
+	}
+	// --fs-micro is the floor every other public size is measured against. If
+	// it drops, every call site that resolves it drops with it, silently.
+	const micro = /--fs-micro:\s*([^;]+);/.exec(block)[1].trim();
+	assert.ok(
+		micro.endsWith("rem") && Number.parseFloat(micro) >= TYPE_FLOOR_REM,
+		`--fs-micro is ${micro}; the public floor is ${TYPE_FLOOR_REM}rem (13px)`,
+	);
+});
+
+test("no live public selector resolves to a sub-13px font size", () => {
+	// The footer rendered at 9.6px for a reason worth guarding: a LEGACY
+	// `.public-footer { font-size: 0.6rem }` earlier in the sheet, and a
+	// rebrand rule for the same selector that declared no font-size at all —
+	// so the legacy literal won and nothing in the rebrand layer looked wrong.
+	// Equal specificity means the LAST declaration wins, so "some rule sets a
+	// good value" is not a sufficient check; this resolves the winner the way
+	// the cascade does and inspects that one.
+	const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+	const winner = new Map();
+	let m;
+	while ((m = ruleRe.exec(css))) {
+		const selector = m[1]
+			.replace(/\/\*[\s\S]*?\*\//g, "")
+			.trim()
+			.split("\n")
+			.map((s) => s.trim())
+			.join(" ");
+		if (!/^\.public-[\w-]/.test(selector)) continue;
+		const fs = /font-size:\s*([^;]+);/.exec(m[2]);
+		if (fs) winner.set(selector, fs[1].trim());
+	}
+	assert.ok(winner.size > 10, "found no .public-* font-size rules to check");
+	const offenders = [];
+	for (const [selector, value] of winner) {
+		const rem = /^([0-9.]+)rem$/.exec(value);
+		if (rem && Number.parseFloat(rem[1]) < TYPE_FLOOR_REM) {
+			offenders.push(`${selector} → ${value}`);
+		}
+	}
+	assert.deepEqual(
+		offenders,
+		[],
+		`public selectors resolving under ${TYPE_FLOOR_REM}rem (13px):\n${offenders.join("\n")}`,
+	);
+});
+
+test("links carry their affordance at rest, not only on hover", () => {
+	// A hover-only underline is not an affordance: keyboard and touch users
+	// never produce a hover. Public links that are not shaped like buttons
+	// underline at rest, in a colour mixed from currentColor so the rule stays
+	// correct on the light canvas, the dark canvas and the theatre panels.
+	assert.match(
+		css,
+		/\.public-site\s*\n\ta:where\([\s\S]{0,400}?\)\s*\{[^}]*text-decoration:\s*underline;[^}]*text-decoration-color:\s*color-mix\(in srgb, currentColor \d+%, transparent\)/s,
+		"public links must underline at rest, derived from currentColor",
+	);
+	// The header's links opt out of the resting underline (five underlines in a
+	// row would fight the wordmark), so they must gain one on FOCUS as well as
+	// hover — otherwise a keyboard user gets no affordance at all.
+	assert.match(
+		css,
+		/\.public-nav__link:focus-visible[\s\S]{0,240}?\{[^}]*text-decoration-color:\s*currentColor;/s,
+		"header nav links must show their underline on keyboard focus, not just hover",
+	);
+});
+
+test("muted ink is never applied over the accent, which has no headroom for it", () => {
+	// The light theme's accent is #625cf6: its contrast ceiling is 4.79:1 with
+	// pure white and 4.38:1 with pure black, so ANY alpha reduction on an
+	// accent-backed surface drops the text under 4.5:1. The deck's secondary
+	// text was muted with a bare `opacity` and measured 3.93–4.09:1 on the
+	// accent card — the honest "what this check does NOT prove" caveat was the
+	// least readable text in the section. The reduction now routes through
+	// --ink-muted so accent-backed surfaces opt out of it entirely.
+	assert.match(
+		css,
+		/\.public-proof-deck article\s*\{[^}]*--ink-muted:\s*0\.88;/s,
+	);
+	assert.match(
+		css,
+		/\.public-proof-deck article:nth-child\(2\)\s*\{[^}]*--ink-muted:\s*1;/s,
+		"the accent-backed deck card must opt out of opacity muting",
+	);
+	assert.match(
+		css,
+		/\.public-use-case-scenes \.is-rigor\s*\{[^}]*--ink-muted:\s*1;/s,
+		"the accent-backed use-case card must opt out of opacity muting",
+	);
+	// And no deck rule may go back to a bare literal, which would bypass the
+	// opt-out entirely.
+	const deck = css.slice(
+		css.indexOf(".public-proof-deck article {"),
+		css.indexOf(".public-proof-deck__board"),
+	);
+	assert.doesNotMatch(
+		deck,
+		/^\topacity:\s*0\.\d+;$/m,
+		"a proof-deck rule sets a bare opacity literal instead of var(--ink-muted)",
+	);
 });

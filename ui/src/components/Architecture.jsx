@@ -281,7 +281,11 @@ function PipelineStep({ index, title, sub, youAct, actLabel, isLast }) {
 						flexShrink: 0,
 						fontSize: "0.85rem",
 						fontVariantNumeric: "tabular-nums",
-						color: youAct ? "var(--canvas)" : "var(--accent)",
+						// --accent-text, not --accent: the accent is a fill colour and is only
+						// 3.91:1 as a numeral on the light theme's pale card. The filled
+						// state needs --accent-on (pure white on light) rather than
+						// --canvas, which is the tinted page ground and gave 4.16:1.
+						color: youAct ? "var(--accent-on, var(--canvas))" : "var(--accent-text, var(--accent))",
 						background: youAct ? "var(--accent)" : "var(--surface-1)",
 						border: "1.5px solid var(--accent)",
 						boxShadow: youAct ? "0 0 0 4px var(--accent-glow)" : "none",
@@ -311,7 +315,10 @@ function PipelineStep({ index, title, sub, youAct, actLabel, isLast }) {
 				>
 					{title}
 					{youAct && (
-						<span className="label" style={{ color: "var(--accent)" }}>
+						<span
+							className="label"
+							style={{ color: "var(--accent-text, var(--accent))" }}
+						>
 							· you act: {actLabel}
 						</span>
 					)}
