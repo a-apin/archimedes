@@ -107,6 +107,19 @@ def classify_drift(row_version: str | None, current_version: str | None) -> str:
     an unstamped row is a real, expected population — every row written before
     the column existed — and calling those a data restatement is precisely the
     false claim #1449 was filed about. They get their own bucket instead.)
+
+    KNOWN LIMIT, stated because this function's whole job is honest attribution:
+    ``DRIFT_ENGINE`` MASKS a co-occurring data restatement. Once the engine has
+    moved, a row graded by the old version disagrees for two reasons at once —
+    our cost model changed AND upstream may also have revised that bar — and
+    this returns the engine answer for both. Separating them would require
+    re-running the RETIRED engine version against today's data, which is not
+    possible: the old code is gone, only its version string survives. So the
+    engine bucket means "at least a re-grade", not "only a re-grade". The
+    alternative — reporting these as data drift — would assert an upstream
+    restatement we equally cannot show, and would re-create exactly the false
+    claim this policy exists to prevent. Over-attributing to OURSELVES is the
+    honest direction to fail: it blames us, not the user's track record.
     """
     current = (current_version or "").strip()
     if not current:
