@@ -175,7 +175,12 @@ Two sources, not two views of the same data:
 - **`source=visitor`** (default) — the pre-#1028 anonymous browser-id funnel
   (`landed → wallet_connected → generation_started → vault_deployed`),
   backed by Redis HyperLogLog. Every stage also carries `by_agent_type`
-  (`internal`/`external`/`human` breakdown), additive to `distinct_visitors`.
+  (`internal`/`keyed`/`external`/`human` breakdown), additive to `distinct_visitors`.
+  `keyed` is a caller authenticated by a scoped API key (`Authorization: Bearer
+  archim_…`) — an identity, unlike `external`, which is a User-Agent guess about
+  an unauthenticated client. Readings that predate the key lane cannot be
+  compared with later ones: before it, an authenticated agent classified as
+  `human`.
 - **`source=identity`** — `wallet_connected → generation_started →
   vault_deployed`, each a live `COUNT(DISTINCT wallet)` over the durable
   `identity_events` ledger, no Redis/HLL involved. `human_only=true`
