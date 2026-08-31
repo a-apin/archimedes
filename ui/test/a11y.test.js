@@ -573,7 +573,11 @@ test("the generate form's fields are programmatically labelled", () => {
 });
 
 test("the corpus search field has a name that survives typing", () => {
-	assert.match(corpusExplorer, /aria-label="Search papers"/);
+	// The name widened with the author leg (#1451) — it now states the three
+	// columns the field actually searches, so match on the stable prefix rather
+	// than the exact old string.
+	assert.match(corpusExplorer, /aria-label="Search papers[^"]*"/);
+	assert.match(corpusExplorer, /aria-describedby="catalog-search-scope"/);
 });
 
 test("sign-up states why the confirm field is invalid and the button disabled", () => {
