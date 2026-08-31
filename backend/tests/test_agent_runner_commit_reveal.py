@@ -5,8 +5,8 @@ store are all mocked at the boundary (mirrors ``test_agent_runner.py``'s runner 
 
 Covers:
   - the reveal phase uses the real ``trace_publisher.reveal()`` (NOT publishTrace) when a
-    commit-reveal trace_id exists, and gracefully falls back to ``publish()`` when it does
-    not (pre-v1.5 registry, #588 still open);
+    commit-reveal trace_id exists, and anchors NOTHING when it does not — the v1
+    ``publishTrace`` fallback was removed once the #588 redeploy landed (#714);
   - ``temporal_binding_source`` is "chain" ONLY on the real commit-reveal path, and the
     persisted ``temporal_binding_valid`` requires commit < trade <= reveal block ordering;
   - the TraceResponse schema guard can never surface a True binding without a chain source
@@ -83,17 +83,26 @@ class TestRevealWiring:
         mock_tp.reveal.assert_called_once()
         mock_tp.publish.assert_not_called()  # the live path is commit-reveal, never publishTrace
 
-    def test_reveal_falls_back_to_publish_without_trace_id(self, runner_env):
+    def test_reveal_without_trace_id_anchors_nothing(self, runner_env):
+        """#714: no commitment => no anchor at all, never a v1 publishTrace stand-in.
+
+        Before #714 this fell back to ``publish()``. That anchor reveals no
+        commitment, so persisting its tx as ``reveal_tx_hash``/``arc_tx_hash``
+        reported an unbound anchor as a completed reveal and set ``is_verified``.
+        """
         runner, mock_tp = runner_env
         mock_tp.supports_commit_reveal = MagicMock(return_value=True)
         mock_tp.reveal = AsyncMock(return_value=("0xREVEAL", 102))
-        mock_tp.publish = AsyncMock(return_value=None)
+        mock_tp.publish = AsyncMock(return_value="0xLEGACY")
 
-        # trace_id None => pre-v1.5 registry path => graceful publishTrace fallback (#588).
         asyncio.run(runner._reveal_trace(_make_trace(), trace_id=None, tick_id="t1", tx_hashes=["0xtrade"]))
 
-        mock_tp.publish.assert_called_once()
+        mock_tp.publish.assert_not_called()
         mock_tp.reveal.assert_not_called()
+        saved = _saved(runner)
+        assert saved["arc_tx_hash"] is None
+        assert saved["reveal_tx_hash"] is None
+        assert saved["is_verified"] is False
 
 
 class TestTemporalBindingPersistence:
@@ -345,19 +354,190 @@ class TestRevealFailureAfterTradeExecuted:
         assert saved["commit_tx_hash"] == "0xcommit"
         assert saved["commit_block_number"] == 100
 
-    def test_publish_fallback_failure_keeps_the_same_honest_contract(self, runner_env, caplog):
-        """Pre-v1.5 registries (#588): publishTrace raising must degrade
-        identically — loud, unverified, trade visible."""
+    def test_pre_v15_registry_keeps_the_same_honest_contract(self, runner_env, caplog):
+        """A registry with no commit/reveal degrades identically — loud, unverified.
+
+        #714 removed the v1 ``publishTrace`` fallback that used to run here, so the
+        degraded state is now a visible absence: an ERROR naming the reason and a
+        trace persisted unanchored. The executed trade stays visible either way.
+        """
         runner, mock_tp = runner_env
-        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.supports_commit_reveal = MagicMock(return_value=False)
         mock_tp.reveal = AsyncMock(return_value=("0xNEVER", 0))
-        mock_tp.publish = AsyncMock(side_effect=RuntimeError("rpc down"))
+        mock_tp.publish = AsyncMock(return_value="0xLEGACY")
 
         with caplog.at_level("ERROR"):
             asyncio.run(runner._reveal_trace(_make_trace(), trace_id=None, tick_id="t9b", tx_hashes=["0xtrade"]))
 
-        assert "REVEAL publish FAILED" in caplog.text
+        assert "REVEAL SKIPPED" in caplog.text  # the loud, alertable signal
+        mock_tp.publish.assert_not_called()
         saved = _saved(runner)
         assert saved["is_verified"] is False
+        assert saved["arc_tx_hash"] is None
         assert saved["trade_tx_hash"] == "0xtrade"
         assert saved["temporal_binding_valid"] is False
+
+
+# ── #714: the legacy publishTrace call sites are gone from agent_runner ──
+
+
+def _commit_args(**over):
+    """Minimal real-shaped args for ``_commit_trace``.
+
+    Only the fields the method actually reads are set, and they are real values
+    (not MagicMocks) because the trace it builds must survive ``canonical_json()``.
+    """
+    consensus = MagicMock()
+    consensus.label.value = "aligned"
+    consensus.flat_pct = 0.0
+    portfolio = MagicMock()
+    portfolio.total_value_usdc = 1000.0
+    portfolio.holdings = []
+    args = {
+        "vault_address": "0x1234567890abcdef1234567890abcdef12345678",
+        "trades": [],
+        "all_signals": [],
+        "market_regime": "bull",
+        "consensus": consensus,
+        "tick_id": "t714",
+        "reasoning": "commit wiring guard",
+        "portfolio": portfolio,
+        "targets": [],
+        "trade_id": b"\x11" * 32,
+    }
+    args.update(over)
+    return args
+
+
+class TestCommitPhaseUsesTheModernPath:
+    """#714: ``_commit_trace`` anchors via ``commit()`` and never via ``publish()``.
+
+    The representative site for the three legacy ``trace_publisher.publish()`` calls
+    removed from ``agent_runner.py``. Mocked at the publisher boundary (the repo
+    idiom — see the ``runner_env`` fixture), so this pins the call actually made to
+    the chain layer rather than any internal helper.
+    """
+
+    def test_commit_invokes_commit_never_publish(self, runner_env):
+        # CHARACTERIZATION, not a regression guard (CLAUDE.md § "Before you approve a
+        # merge" rule 3): this passes against the pre-#714 tree too — the old fallback
+        # only ran when supports_commit_reveal() was False, which this test sets True.
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.commit = AsyncMock(return_value=(42, "0xCOMMIT", 100, False))
+        mock_tp.publish = AsyncMock(return_value="0xLEGACY")
+
+        trace, trace_id, commit_tx, commit_block, claimed, reverted = asyncio.run(
+            runner._commit_trace(**_commit_args())
+        )
+
+        mock_tp.commit.assert_awaited_once()
+        mock_tp.publish.assert_not_called()  # the retired v1 anchor
+        # The tradeId binding reaches the contract call unchanged.
+        assert mock_tp.commit.await_args.args[2] == b"\x11" * 32
+        # ...and the hash committed is the trace's own canonical hash (untouched here).
+        assert mock_tp.commit.await_args.args[0] is trace
+        assert (trace_id, commit_tx, commit_block, reverted) == (42, "0xCOMMIT", 100, False)
+        assert claimed is not None
+
+    def test_pre_v15_registry_anchors_nothing_and_says_so(self, runner_env, caplog):
+        """No commit/reveal on the deployed ABI => a loud absence, not a v1 anchor.
+
+        The removed fallback returned the publishTrace tx as ``commit_tx``, which
+        then persisted as ``commit_tx_hash`` despite binding no trade.
+        """
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=False)
+        mock_tp.commit = AsyncMock(return_value=(42, "0xCOMMIT", 100, False))
+        mock_tp.publish = AsyncMock(return_value="0xLEGACY")
+
+        with caplog.at_level("ERROR"):
+            result = asyncio.run(runner._commit_trace(**_commit_args()))
+
+        mock_tp.publish.assert_not_called()
+        mock_tp.commit.assert_not_called()
+        assert "COMMIT SKIPPED" in caplog.text
+        # (trace, trace_id, commit_tx, commit_block, claimed, reverted) — no anchor.
+        assert result[1:] == (None, None, None, None, False)
+
+    def test_commit_failure_never_escapes_to_the_tick_loop(self, runner_env, caplog):
+        """Error-handling semantics preserved: a publisher raise is logged, not raised."""
+        # CHARACTERIZATION, not a regression guard (CLAUDE.md § "Before you approve a
+        # merge" rule 3): this passes against the pre-#714 tree too — the raise happens
+        # inside commit(), so the except wrapper short-circuits before either tree could
+        # reach the fallback. It documents the preserved contract, it does not pin it.
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.commit = AsyncMock(side_effect=RuntimeError("rpc down"))
+        mock_tp.publish = AsyncMock(return_value="0xLEGACY")
+
+        with caplog.at_level("ERROR"):
+            result = asyncio.run(runner._commit_trace(**_commit_args()))
+
+        assert "COMMIT FAILED" in caplog.text
+        mock_tp.publish.assert_not_called()  # no silent legacy retry
+        assert result[1:] == (None, None, None, None, False)
+
+
+class TestNoTradeDecisionsAreNeverAnchored:
+    """#714 site 3: ``_publish_trace`` is the SKIP/error path and touches no chain write.
+
+    Every call site passes an empty trade list, so there is no tradeId to bind and
+    nothing for ``Vault.executeTrade()`` to consume — the trace is recorded off-chain,
+    honestly unverified, rather than anchored via the retired v1 path.
+    """
+
+    def test_skip_trace_touches_no_publisher_write_and_is_unverified(self, runner_env):
+        runner, mock_tp = runner_env
+        mock_tp.supports_commit_reveal = MagicMock(return_value=True)
+        mock_tp.publish = AsyncMock(return_value="0xLEGACY")
+        mock_tp.commit = AsyncMock(return_value=(42, "0xCOMMIT", 100, False))
+
+        args = _commit_args()
+        asyncio.run(
+            runner._publish_trace(
+                args["vault_address"],
+                DecisionType.SKIP,
+                "aligned",
+                args["portfolio"],
+                [],
+                [],
+                args["market_regime"],
+                args["consensus"],
+                "t714b",
+                "no drift",
+            )
+        )
+
+        mock_tp.publish.assert_not_called()
+        mock_tp.commit.assert_not_called()
+        saved = _saved(runner)
+        assert saved["arc_tx_hash"] is None
+        assert saved["is_verified"] is False
+        assert saved["decision_type"] == "skip"
+
+
+class TestLegacyPublishCallSitesStayGone:
+    """The #714 anti-goal gate, enforced as a test rather than a one-off grep.
+
+    Acceptance criterion from the issue: ``grep -n "trace_publisher.publish("
+    backend/archimedes/chain/agent_runner.py`` returns 0 matches. Reading the
+    source keeps that durable — a future edit that reintroduces the retired v1
+    anchor on the tick path fails here instead of silently shipping.
+    """
+
+    def test_agent_runner_never_calls_the_v1_publish_anchor(self):
+        from pathlib import Path
+
+        from archimedes.chain import agent_runner
+
+        source = Path(agent_runner.__file__).read_text(encoding="utf-8")
+        offenders = [
+            f"{n}: {line.strip()}"
+            for n, line in enumerate(source.splitlines(), start=1)
+            if "trace_publisher.publish(" in line
+        ]
+        assert offenders == [], (
+            "agent_runner.py must anchor via commit()/reveal() only (#714); "
+            f"found legacy publishTrace call site(s): {offenders}"
+        )

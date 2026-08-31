@@ -833,7 +833,8 @@ def _society_num_trials(selection_pool_size: int) -> int:
     NOTE: this REVERSES the ``N + library_size`` additive convention from #770/#811/#820
     (which treated the library as a second selection layer). See the decouple plan in
     ``docs/CURATED-STRATEGY-DECOUPLE-AND-CONSOLIDATE-2026-07-08.md`` Part A #2.
-    Needs Önder's sign-off (portfolio math) — it changes DSR p-values.
+    Ratified by Önder Akkaya (portfolio math) 2026-08-31 — #1555 outcome 3; see
+    ``docs/adr/num-trials-self-containment.md`` § Ratification.
     """
     return max(1, selection_pool_size)
 
@@ -1657,6 +1658,11 @@ async def _persist_candidate(
                 # strategy can be autonomously rebalanced by the agent runner.
                 # None on the fixture/buy-and-hold path — nothing to persist.
                 strategy_spec=c.strategy_spec,
+                # The user's own free-text ask (v8 Lane 3.3), surfaced on the
+                # passport as "Your brief" — already in hand here, no
+                # strategy_proposals lookup needed for a strategy persisted
+                # from this call.
+                brief_intent=brief.intent,
             )
             # Stamp the generating wallet so wallet_can_publish() returns True
             # for this wallet/strategy pair (D5 publish gate).
