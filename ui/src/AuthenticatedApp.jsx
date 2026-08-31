@@ -1,32 +1,44 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { disconnectWallet, reconnectWallet } from "./config";
 import { EXECUTION_CHAIN_ID } from "./chain-config";
 import { checkLegacyWallet, listLinkedWallets } from "./linked-wallets";
-import AccountSettings from "./components/AccountSettings";
-import CorpusExplorer from "./components/CorpusExplorer";
 import ErrorBoundary from "./components/ErrorBoundary";
-import Explore from "./components/Explore";
-import Generate from "./components/Generate";
-import Insights from "./components/Insights";
-import Leaderboard from "./components/Leaderboard";
 import Layout from "./components/Layout";
-import Learnings from "./components/Learnings";
-import MarketplacePage from "./components/MarketplacePage";
 import OnboardingTour, {
 	hasCompletedOnboarding,
 } from "./components/OnboardingTour";
-import PaperTrading from "./components/PaperTrading";
-import Portfolio from "./components/Portfolio";
-import PublishPage from "./components/PublishPage";
-import QuantLab from "./components/QuantLab";
-import Reasoning from "./components/Reasoning";
-import Strategies from "./components/Strategies";
-import StrategyDetailPage from "./components/StrategyDetailPage";
-import StrategyPassport from "./components/StrategyPassport";
-import SubscriptionsPage from "./components/SubscriptionsPage";
-import VaultDetail from "./components/VaultDetail";
 import WalletGate from "./components/WalletGate";
+
+const AccountSettings = lazy(() => import("./components/AccountSettings"));
+const CorpusExplorer = lazy(() => import("./components/CorpusExplorer"));
+const Explore = lazy(() => import("./components/Explore"));
+const Generate = lazy(() => import("./components/Generate"));
+const Insights = lazy(() => import("./components/Insights"));
+const Leaderboard = lazy(() => import("./components/Leaderboard"));
+const Learnings = lazy(() => import("./components/Learnings"));
+const MarketplacePage = lazy(() => import("./components/MarketplacePage"));
+const PaperTrading = lazy(() => import("./components/PaperTrading"));
+const Portfolio = lazy(() => import("./components/Portfolio"));
+const PublishPage = lazy(() => import("./components/PublishPage"));
+const QuantLab = lazy(() => import("./components/QuantLab"));
+const Reasoning = lazy(() => import("./components/Reasoning"));
+const Strategies = lazy(() => import("./components/Strategies"));
+const StrategyDetailPage = lazy(
+	() => import("./components/StrategyDetailPage"),
+);
+const StrategyPassport = lazy(() => import("./components/StrategyPassport"));
+const SubscriptionsPage = lazy(() => import("./components/SubscriptionsPage"));
+const VaultDetail = lazy(() => import("./components/VaultDetail"));
+
+function AppRouteFallback() {
+	return (
+		<div className="app-route-fallback" role="status" aria-live="polite">
+			<span className="spinner" aria-hidden="true" />
+			Loading view…
+		</div>
+	);
+}
 
 const openConnectModal = () =>
 	window.dispatchEvent(new Event("open-wallet-modal"));
@@ -295,7 +307,9 @@ export default function AuthenticatedApp({
 				<ErrorBoundary
 					key={`${route.page}:${route.strategyId ?? ""}:${route.vaultAddress ?? ""}:${route.traceId ?? ""}:${route.highlight ?? ""}:${route.tab ?? ""}`}
 				>
-					{renderPage()}
+					<Suspense fallback={<AppRouteFallback />}>
+						{renderPage()}
+					</Suspense>
 				</ErrorBoundary>
 			</Layout>
 			<OnboardingTour

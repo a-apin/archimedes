@@ -1,5 +1,20 @@
 # Archimedes — User Stories & The One Spine
 
+> **status:** current
+> **owner:** Dan Browne
+> **updated:** 2026-08-31
+> **superseded-by:** —
+
+> **Re-verified 2026-08-31** against the live system (`GET /api/health`), not against
+> memory. The spine below is unchanged and still canonical. Three MVP-scope claims were
+> wrong and are corrected in place, each marked inline: the `/generate` "fusion preview"
+> surface (superseded by the debate society,
+> [ADR](adr/debate-society-sole-generation-pipeline.md)), "GLM-backed" (live LLM is
+> `bedrock_converse` / `amazon.nova-micro-v1:0`,
+> [ADR](adr/glm-to-bedrock-llm-migration.md)), and the curated-library size. Vault
+> execution reads as present tense throughout this doc because it was written that way on
+> Day 9; it is **roadmap, not shipped product** — see `CLAUDE.md` § Project and #1469.
+
 > **Status:** Day-9 rewrite (2026-05-20). The spine is locked; this rewrite refocuses
 > the doc around **who the user is and what they're trying to do**, with the
 > Linus/KnowledgeBase architectural lineage moved out to
@@ -197,7 +212,8 @@ a strategy** (no wallet required).
 > to pick from a menu of pre-built options."*
 
 **Surfaces:** the natural-language brief input + optional structured inputs (asset
-class, risk, horizon) + the 3-input fusion preview ("what fusion will see") + the
+class, risk, horizon) + the live SSE debate stream (proposer pool → bull/bear round →
+deterministic critics → K=1 winner + considered-rejects) + the
 result card (strategy spec, citations, rigor verdict, deploy CTA) + the
 **Portfolio Advisor preview banner** (rendered after a candidate completes — shows
 Kelly + risk-parity allocation, DSR/PBO/walk-forward OOS rigor counters, six-scenario
@@ -205,6 +221,16 @@ stress matrix, variance decomposition, correlation pairs, and the keccak reasoni
 hash for the proposed portfolio — all *before* the user commits any funds). See
 Prompt 3 in ``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19) for the screen
 design.
+
+> **Corrected 2026-08-31.** This bullet used to name a "3-input fusion preview ('what
+> fusion will see')". That surface described the pre-debate routing tree and never
+> shipped — `_pick_pipeline()` returns `"debate"` unconditionally
+> ([`agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py)),
+> fusion is a *step inside* the society rather than a standalone preview, and no
+> fusion-preview component exists in `ui/src`. Decision:
+> [`adr/debate-society-sole-generation-pipeline.md`](adr/debate-society-sole-generation-pipeline.md)
+> (supersedes `adr/fusion-primary-generation.md`); mechanics:
+> [`specs/multi-agent-debate-spec.md`](specs/multi-agent-debate-spec.md).
 
 ### `/portfolio` My Portfolio (consolidates current Trade + Vaults + personalized Risk view)
 
@@ -312,11 +338,21 @@ bearing for trust.
 ## Scope
 
 **In (the MVP we ship & demo):** the single-user spine end-to-end, one user at a
-time, GLM-backed, hosted, **on the Arc public testnet with faucet USDC (no real
-funds)**. The 5 reference strategies (2 of them currently Tier-1) plus the
-generator-produced strategies. The DB-backed 10,000-paper q-fin corpus + the live
-Corpus Explorer. The rigor gate with real 22-year SPY data. On-chain reasoning
-traces via the deployed `ReasoningTraceRegistry`.
+time, hosted, **on the Arc public testnet with faucet USDC (no real funds)**. The
+curated reference library plus the generator-produced strategies. The DB-backed
+10,000-paper q-fin corpus + the live Corpus Explorer. The rigor gate with real 22-year
+SPY data. On-chain reasoning traces via the deployed `ReasoningTraceRegistry`.
+
+> **Corrected 2026-08-31.** Two claims in this paragraph were stale.
+> **(a) "GLM-backed"** — the live LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`
+> ([ADR](adr/glm-to-bedrock-llm-migration.md)); BYOK and local-Ollama paths survive behind
+> the `LLM_*` seam. Live values: `GET /api/health` → `llm_provider`, `llm_model`.
+> **(b) "The 5 reference strategies (2 of them currently Tier-1)"** — the curated library
+> is neither of those numbers today (`GET /api/health` → `strategy_count`; consolidation
+> plan in [`audits/2026-07-09-curated-consolidation.md`](audits/2026-07-09-curated-consolidation.md)),
+> and the *passing* count is deliberately **unestablished** — the earlier pass count graded
+> equity-like series through a data-feed fallback, so no number is quoted here on purpose
+> (`CLAUDE.md` § The hard constraint).
 
 **Out (stated vision / roadmap — narrate, do not build):**
 
@@ -327,12 +363,16 @@ traces via the deployed `ReasoningTraceRegistry`.
   fit the hackathon window.
 - **Mainnet + real-funds custody.** Requires the regulatory architecture (off-chain
   redemptions, preset-strategy / RIA posture, exploit alerting).
-- **The full KB-pipeline artifact (#101).** Substrate is scaffolded (named volume
-  mounted, `cluster_id`/`topic_label` columns ready); the heavy embedding +
-  clustering + KG build is deferred post-hackathon. Lightweight graph/kg endpoints
-  serve the demo from on-the-fly DB queries.
-- **Real fusion retrieval (#96).** Currently keyword matching; SPECTER2 + RAG + KG
-  is now unblocked and may land before submission depending on time budget.
+- **The full KB-pipeline artifact (#101, now tracked as #778).** Substrate is scaffolded
+  (named volume mounted, `cluster_id`/`topic_label` columns ready); the embedding +
+  clustering + KG build has still not run. **Corrected 2026-08-31:** the graph/KG
+  endpoints do *not* synthesise a demo from on-the-fly DB queries — that was the Day-9
+  plan and it was rejected. `/graph` returns an honest 503 `kb_artifact_not_found` and
+  `/kg/*` returns empty sets, pinned by `backend/tests/test_corpus_claim_integrity.py`.
+- **Real semantic retrieval (#96 → #778).** **Corrected 2026-08-31:** retrieval is a
+  keyword filter plus a *query-time* rerank of the candidate set — nothing is stored, and
+  `GET /api/health` publishes both facts separately (`corpus_embedded_at_rest` for the
+  corpus, `paper_rerank_model_live` for the process). SPECTER2 + KG remains unbuilt.
 
 ## Open items to verify (🔍 — owners: Marten / Daniel R., per #39)
 

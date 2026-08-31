@@ -23,11 +23,11 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`architecture.md`](architecture.md) | current | Dan Browne | 2026-07-28 | System architecture map. ECS Fargate + ALB + CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1. Every claim is a link to a file. |
+| [`architecture.md`](architecture.md) | current | Dan Browne | 2026-08-31 | System architecture map. ECS Fargate + ALB + CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1. Every claim is a link to a file. Amended 2026-08-31 for the leaderboard research/live-paper split (#1563), ratified `num_trials` self-containment (#1560), the four-state `paper_rag` signal, and `deploy.yml`'s explicit rollout verdict (#1532/#1544). |
 | [`reference/file-tree.md`](reference/file-tree.md) | reference | Dan Browne | 2026-07-14 | Repository map generated alongside the architecture map. |
 | [`reference/flow-diagram.mmd`](reference/flow-diagram.mmd) | reference | Dan Browne | 2026-07-14 | Request/generation flow, Mermaid source (`flow-diagram.svg`, `file-tree.svg` render it). |
-| [`database-architecture.md`](database-architecture.md) | current | Dan Browne | 2026-06-28 | Data stores, schemas, migration posture. |
-| [`database-relations.md`](database-relations.md) | draft | Dan Browne | 2026-08-30 | Identity/ownership/money-table relational structure: the schema-relations audit (corrections + gap found), the Phase 1 indices + gated FKs [PR #1438](https://github.com/a-apin/archimedes/pull/1438) introduces (unmerged draft, not yet live), the target ERD, and the Phase 2 proposal (G1 since shipped on main; the rest not built). |
+| [`database-architecture.md`](database-architecture.md) | current | Dan Browne | 2026-08-31 | Data stores, schemas, migration posture. The § 2.3 table list is a 2026-06-28 cutover inventory and has drifted ~15 tables — `backend/archimedes/db.py` is the live source; see `database-relations.md` for FKs and deletion policy. |
+| [`database-relations.md`](database-relations.md) | current | Dan Browne | 2026-08-31 | Identity/ownership/money-table relational structure: the schema-relations audit (corrections + gap found), the Phase 1 indices + FKs from [PR #1438](https://github.com/a-apin/archimedes/pull/1438) — **merged 2026-08-31**, with #1429 reconciling the account-deletion policy — the target ERD, and the Phase 2 proposal (G1 shipped; the rest not built). |
 | [`deployment.md`](deployment.md) | current | Dan Browne | 2026-07-28 | Local vs production topology from one compose file. |
 | [`architectural-principles.md`](architectural-principles.md) | current | Dan Browne | 2026-07-28 | The four primitives the product is built to defend. |
 | [`anti-features.md`](anti-features.md) | current | Dan Browne | 2026-07-28 | What Archimedes deliberately does not build. |
@@ -52,7 +52,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`user-stories.md`](user-stories.md) | current | Dan Browne | 2026-05-20 | The locked product spine. Canonical statement of what the product is. |
+| [`user-stories.md`](user-stories.md) | current | Dan Browne | 2026-08-31 | The locked product spine. Canonical statement of what the product is. Re-verified against `/api/health` 2026-08-31; the Day-9 body carries dated inline corrections (fusion-preview surface, "GLM-backed", library size, KG demo claim) and reads vault execution in the present tense, which is roadmap (#1469). |
 | [`agent-api.md`](agent-api.md) | current | Dan Browne | — | Driving the full journey programmatically; the agent-native surface. |
 | [`agent-quickstart.md`](agent-quickstart.md) | current | Dan Browne | 2026-08-30 | Zero to paper-traded for an external agent: eleven steps, exact response shapes, and an error table (401/402/409/422/429). Includes the live x402 paywall — production charges $2.00 USDC per generation, so steps 6a–6b link a wallet and pay. Narrower than `agent-api.md` on purpose: no vault, no capital deployed. Route strings and worked commands are drift-guarded by `backend/tests/test_agent_quickstart_drift.py`. |
 | [`asset-universe.md`](asset-universe.md) | current | Dan Browne | — | Tradable universe and how it is assembled. |
@@ -63,9 +63,9 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
 | [`quant/README.md`](quant/README.md) | current | Önder Akkaya | 2026-07-28 | Index for the quant docs. Read this before any strategy claim. |
-| [`quant/methodology.md`](quant/methodology.md) | current | Önder Akkaya | 2026-06-12 | The math layer end to end. |
+| [`quant/methodology.md`](quant/methodology.md) | current | Önder Akkaya | 2026-08-31 | The math layer end to end. DSR gate threshold corrected 0.95 → 0.90 (PR #901) 2026-08-31. |
 | [`quant/admission-criteria.md`](quant/admission-criteria.md) | current | Önder Akkaya | 2026-07-28 | Tier-1 admission. DSR badge threshold is 0.90. |
-| [`quant/backtest-interpretation.md`](quant/backtest-interpretation.md) | current | Önder Akkaya | 2026-06-12 | How to read a backtest without fooling yourself. |
+| [`quant/backtest-interpretation.md`](quant/backtest-interpretation.md) | current | Önder Akkaya | 2026-08-31 | How to read a backtest without fooling yourself. The doc's two DSR thresholds disagreed with each other; the stale 0.95 was corrected to 0.90 on 2026-08-31. |
 | [`quant/strategy-library.md`](quant/strategy-library.md) | current | Önder Akkaya | 2026-07-28 | Curated library reference. Pass/fail status is whatever the live gate returns, not a number in a doc. |
 | [`quant/library-pbo.md`](quant/library-pbo.md) | findings | Önder Akkaya | 2026-06-11 | Library-level PBO findings (fourth wave). |
 | [`quant/third-wave-retest.md`](quant/third-wave-retest.md) | findings | Önder Akkaya | 2026-06-11 | Third-wave candidates through the cost model and walk-forward. |
@@ -99,6 +99,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`diagrams/strategy-passport-architecture.md`](diagrams/strategy-passport-architecture.md) | reference | Dan Browne | — | Passport architecture diagram + reference. |
 | [`bedrock-model-cost-comparison.md`](bedrock-model-cost-comparison.md) | reference | Dan Browne | — | Bedrock model costs, us-east-1 on-demand. LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`. |
 | [`cost-estimates/generate-llm-costs.md`](cost-estimates/generate-llm-costs.md) | reference | Dan Browne | — | Per-generation LLM cost estimate. |
+| [`infrastructure-provider-analysis.md`](infrastructure-provider-analysis.md) | reference | Daniel Reis | 2026-08-16 | Modeled infra cost comparison across providers (list prices, not invoice). |
 
 ## On-chain and Arc
 
@@ -145,7 +146,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/aws-account-migration.md`](adr/aws-account-migration.md) | accepted | Dan Browne | 2026-06-24 | Production moved to account 037613907429 / us-east-1. |
 | [`adr/generation-payment-credit-not-refund.md`](adr/generation-payment-credit-not-refund.md) | accepted | Önder Akkaya | 2026-08-29 | An undelivered generation is repaid as a durable credit, never a refund; the claim is taken before the money moves. |
 | [`adr/glm-to-bedrock-llm-migration.md`](adr/glm-to-bedrock-llm-migration.md) | accepted | Dan Browne | 2026-06-24 | GLM → Bedrock. |
-| [`adr/non-custodial-vault-owner-agent.md`](adr/non-custodial-vault-owner-agent.md) | accepted | Dan Browne | 2026-06-26 | Owner ≠ agent; non-custodial vaults. |
+| [`adr/non-custodial-vault-owner-agent.md`](adr/non-custodial-vault-owner-agent.md) | accepted | Dan Browne | 2026-06-26 | Owner ≠ agent; non-custodial vaults. **Amended 2026-08-31** (product framing only, decision unchanged): the contracts are deployed; the user-facing vault journey is roadmap, gated off public surfaces (#1266/#1354/#1469). |
 | [`adr/portfolio-constructor-consolidation.md`](adr/portfolio-constructor-consolidation.md) | accepted | Önder Akkaya | 2026-06-26 | Legacy constructor paths retired; dual-signal sizer activated. |
 | [`adr/rigor-gate-unification.md`](adr/rigor-gate-unification.md) | accepted | Dan Browne | 2026-06-26 | One source of selection-bias truth. |
 | [`adr/fusion-primary-generation.md`](adr/fusion-primary-generation.md) | superseded | Dan Browne | 2026-06-26 | Fusion-primary routing. Superseded by the debate-society record (2026-07-09). |
@@ -163,7 +164,11 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off). |
 | [`plans/2026-07-28-account-auth-app-boundary.md`](plans/2026-07-28-account-auth-app-boundary.md) | plan | Daniel Reis | 2026-07-28 | The #1194 account-auth boundary plan. |
 | [`plans/2026-08-15-core-app-visual-refresh.md`](plans/2026-08-15-core-app-visual-refresh.md) | plan | Daniel Reis | 2026-08-15 | Core-app visual refresh plan. |
+| [`plans/2026-08-22-calm-precision-rebrand.md`](plans/2026-08-22-calm-precision-rebrand.md) | plan | Daniel Reis | 2026-08-22 | Calm-precision rebrand plan (PR #1469). |
+| [`plans/2026-08-23-phantom-inspired-public-landing.md`](plans/2026-08-23-phantom-inspired-public-landing.md) | plan | Daniel Reis | 2026-08-23 | Public landing redesign plan (PR #1469). |
+| [`plans/2026-08-23-security-posture-page.md`](plans/2026-08-23-security-posture-page.md) | plan | Daniel Reis | 2026-08-23 | Static /security posture page plan (PR #1469). |
 | [`plans/2026-08-30-intraday-paper-trading.md`](plans/2026-08-30-intraday-paper-trading.md) | draft | Dan Browne | 2026-08-30 | Intraday paper trading (v8 Lane 3.5). Recommends 15-min mark-to-market on open positions (`paper_marks` + retention + a runner-box loop) and defers intraday *signal* evaluation to v2 behind an ADR — bar-counted rebalance cadence and indicator warmup would silently change strategy semantics. |
+| [`plans/2026-08-30-interpreter-unification.md`](plans/2026-08-30-interpreter-unification.md) | draft | Dan Browne | 2026-08-30 | Collapsing the two DSL interpreters (backtrader backtest vs live signal FSM) into one shared decision core: divergence inventory, architecture options, and a migration ratcheted on the parity suite. Cross-references the intraday-paper-trading plan (§4.1). |
 | [`plans/quant-roadmap.md`](plans/quant-roadmap.md) | plan | Önder Akkaya | — | The portfolio-math and backtest-rigor lane. |
 | [`plans/spine-plus-v2-plan.md`](plans/spine-plus-v2-plan.md) | plan | Dan Browne | — | Spine+ v2 phase plan. |
 | [`plans/second-wave-multi-asset-strategies.md`](plans/second-wave-multi-asset-strategies.md) | plan | Önder Akkaya | 2026-06-11 | Second-wave multi-asset strategies. |

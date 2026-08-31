@@ -615,7 +615,15 @@ resource "aws_ecs_task_definition" "backend" {
         # the admin-wallet publish bypass / marketplace publish respectively
         # until Dan supplies real values.
         { name = "PLATFORM_ADMIN_WALLETS", value = var.platform_admin_wallets },
-        { name = "ARCHIMEDES_TREASURY_WALLET", value = var.archimedes_treasury_wallet }
+        { name = "ARCHIMEDES_TREASURY_WALLET", value = var.archimedes_treasury_wallet },
+        # Arms the #1556 trace-visibility floor: ownerless trace rows are served
+        # publicly ONLY for these house vaults; every other ownerless row goes
+        # private. Unset, the floor is unarmed (every ownerless row is presumed
+        # house content — WARNING-logged). Public on-chain addresses, not
+        # secrets — same reasoning as PLATFORM_ADMIN_WALLETS above. Terraform
+        # owns this so a bare apply can never silently revert it (the
+        # infra/README PLATFORM_ADMIN_WALLETS lesson).
+        { name = "PUBLIC_TRACE_VAULTS", value = var.public_trace_vaults }
       ]
 
       # KNOWN GAP #3 (see file header) — RESOLVED (2026-07-08): AURORA_MASTER_PASSWORD

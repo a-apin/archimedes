@@ -23,7 +23,7 @@ const ALL_CARDS = [
     body: (
       <>
         <strong>Research-grounded strategy generation</strong> — not a robo-advisor.
-        Describe what you want; we fuse your intent with bleeding-edge academic
+        Describe what you want; we fuse your intent with primary academic
         research in quantitative finance, machine learning, agentic systems, and
         pure mathematics, then gate the result through selection-bias rigor.
       </>
@@ -131,7 +131,7 @@ function Illustration({ name }) {
       return (
         <svg viewBox="0 0 160 80" width="100%" height="80" aria-hidden="true">
           <rect x="2" y="2" width="156" height="76" rx="6" fill={bg} />
-          <text x="80" y="50" textAnchor="middle" fontFamily="serif" fontSize="44" fill={accent}>Λ</text>
+          <text x="80" y="50" textAnchor="middle" fontFamily="serif" fontSize="44" fill={accent}>A</text>
           <text x="80" y="68" textAnchor="middle" fontFamily="serif" fontStyle="italic" fontSize="9" fill={muted}>archimedes</text>
         </svg>
       )

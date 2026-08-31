@@ -1,9 +1,18 @@
 # Database Relations — Identity, Ownership, and the Schema-Relations Audit
 
-> **status:** draft — pending merge (PR #1438, unmerged)
+> **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-30
+> **updated:** 2026-08-31
 > **superseded-by:** —
+
+> **Amended 2026-08-31.** [PR #1438](https://github.com/a-apin/archimedes/pull/1438)
+> **merged** (`526f99e7`), followed by [#1429](https://github.com/a-apin/archimedes/pull/1429)
+> (`f2eb22ea`) reconciling the account-deletion policy with #1438's `paper_deployments` FK.
+> The "**Nothing in § 2 is live**" paragraph below and the `pending merge` status were
+> written while the PR sat in draft and are **no longer true** — § 2 describes shipped
+> schema. Left in place rather than deleted so the sequencing (audit → draft → merge) still
+> reads; anything below phrased as *would do* should now be read as *does*. § 4 Phase 2 is
+> still a proposal, except G1.
 
 Companion to [`database-architecture.md`](database-architecture.md) (the two-store
 overview). This doc is scoped narrower: the **relational structure between identity,

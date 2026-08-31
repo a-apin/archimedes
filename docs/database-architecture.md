@@ -83,6 +83,23 @@ Table list below is historical cutover inventory. Current schema additionally in
 and `wallet_link_challenges`. Better Auth user ID is canonical; wallet columns remain
 provenance/compatibility. Row counts are point-in-time, not guarantees.
 
+> **Re-checked 2026-08-31 — this table is an inventory, not a census.** It is a snapshot of
+> the 2026-06-28 cutover and it has drifted: the models imported by
+> [`backend/archimedes/db.py`](../backend/archimedes/db.py) now also include
+> `asset_daily_bars`, `strategy_daily_returns`, `strategy_backtest_fixtures`,
+> `debate_transcripts`, `generation_costs`, `generation_credits`, `controlled_wallets`,
+> `identity_events`, `wallet_identities`, `payment_receipts`, `request_count_snapshots`,
+> `strategy_generators`, and the marketplace set (`marketplace_agents`,
+> `settlement_intents`, `subscriber_liability`, `subscriber_tick_log`) — roughly fifteen
+> tables this list does not carry, consistent with the #1438 / #1429 schema-relations work.
+> Rather than re-inventory a list that will drift again by the next merge train, treat
+> `db.py`'s import block as the live source (per `docs/CONVENTIONS.md` § 4 — anything that
+> decays fast belongs in the live source, not a doc); read
+> [`database-relations.md`](database-relations.md) for the foreign-key and deletion-policy
+> picture the #1438/#1429 pair landed. What this section *is* still good for — the
+> Postgres/Redis split, the honesty notes on `papers` / `corpus_meta` / `kg_*`, and the
+> per-table purposes — was re-verified on this date and holds.
+
 | Table | Model | Rows @ cutover | Purpose |
 | --- | --- | ---: | --- |
 | `strategy_passports` | [`strategy_passport_record.py`](../backend/archimedes/models/strategy_passport_record.py) `StrategyPassportRecord` | 4 | **The unified strategy table.** One row per strategy of any origin — curated, fusion, or architect. See §2.4. |
