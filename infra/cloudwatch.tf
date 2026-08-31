@@ -1050,15 +1050,24 @@ resource "aws_cloudwatch_log_metric_filter" "oracle_stale" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "oracle_stale_alarm" {
-  alarm_name          = "${var.project_name}-oracle-stale"
-  alarm_description   = "/health reported oracle_fresh=false 3+ times in 5 min — the probed on-chain PriceOracle push set is not current (see oracle_oldest_age_s / oracle_reason in the /health response)."
-  namespace           = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].namespace
-  metric_name         = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].name
-  statistic           = "Sum"
+  alarm_name        = "${var.project_name}-oracle-stale"
+  alarm_description = "/health reported oracle_fresh=false 3+ times per 5-min window in 2 of the last 3 windows — the probed on-chain PriceOracle push set is not current (see oracle_oldest_age_s / oracle_reason in the /health response)."
+  namespace         = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].namespace
+  metric_name       = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].name
+  statistic         = "Sum"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = 3
   period              = 300
-  evaluation_periods  = 1
+  # 2-of-3 windows, not 1-of-1 (2026-08-31): during the Arc RPC 429 incident
+  # the single-window form flapped ALARM↔OK for hours and, with ok_actions
+  # also subscribed, emailed the owner on every transition — dozens of
+  # messages for one underlying condition. Requiring two breaching windows
+  # out of three fires within ~10–15 min of REAL sustained staleness (the
+  # 42-day silent-stale defect this alarm exists for would still page) while
+  # a single flappy window no longer does. The signal is not muted — the
+  # threshold and metric are untouched; only sustained-ness is required.
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
