@@ -21,3 +21,34 @@ duplicating content here.
 A machine-readable manifest is also live at
 [`/api/agent/manifest`](https://archimedes-arc.com/api/agent/manifest) and
 [`/.well-known/agent.json`](https://archimedes-arc.com/.well-known/agent.json).
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository has a generated `openwiki/` evidence index. It is optional just-in-time
+context, not required startup reading.
+
+**Know its boundary before you trust it.** `.openwikiignore` is an **allow-list**, currently
+scoped to `docs/quant/` alone. Every page is therefore grounded in *documentation*, not in
+implementation: a claim there records what a doc asserts, never what the code enforces.
+Treat source code and tests as authoritative — a page's unknowns and conflicts are
+verification gaps, not automatic requirements.
+
+Start at [`openwiki/quickstart.md`](openwiki/quickstart.md). Before quoting a threshold, a
+pass/fail, or a library size from any page, read
+[`openwiki/rigor/documented-conflicts.md`](openwiki/rigor/documented-conflicts.md) — the
+slice contradicts itself in seven places.
+
+Do not hand-edit generated pages unless explicitly asked; fix the source doc and let
+OpenWiki regenerate. `openwiki/INSTRUCTIONS.md` is the one user-authored file OpenWiki reads
+and never rewrites.
+
+The GitHub Actions workflow is `workflow_dispatch`-only and **cannot run today** — Bedrock's
+Anthropic models are not enabled on the AWS account. The committed wiki was generated
+through OpenWiki's coding-agent integration, which needs no provider credentials. Both the
+blocker and the cost of the run are recorded in
+[`docs/decisions/tooling-adoptions-2026-08.md`](docs/decisions/tooling-adoptions-2026-08.md);
+widen the boundary one slice at a time and add a row there each time.
+
+<!-- OPENWIKI:END -->
