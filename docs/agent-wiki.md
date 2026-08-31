@@ -35,12 +35,21 @@ recorded in
 
 ## What it covers, and what it therefore cannot say
 
-The read boundary is [`../.openwikiignore`](../.openwikiignore), which is an
-**allow-list**: it excludes the whole repository and re-includes exactly one
-slice, `docs/quant/`. The generation run could not read `backend/`, `contracts/`,
-`ui/`, or any other documentation tree.
+The read boundary is [`../.openwikiignore`](../.openwikiignore), an **allow-list**
+that excludes the whole repository and re-includes the readable slice.
 
-Two consequences a reader has to hold on to:
+**The boundary and the published pages are currently out of step, and that gap is
+the most important thing on this page.** The boundary is now codebase-wide —
+`backend/archimedes/` and its migrations, `analytics-engine/src` and `strategies`,
+`ui/src/`, `contracts/`, `infra/`, `.github/`, `scripts/`, all of `docs/`, and the
+root contract files — about 825 files and 199,000 lines, measured 2026-08-31 with
+OpenWiki's own matcher. **Every page published
+today predates that.** They came from the bootstrap run above, which could read
+`docs/quant/` and nothing else — not `backend/`, not `contracts/`, not `ui/`, not
+any other documentation tree. The codebase-wide regeneration is a separate run
+that has not happened yet.
+
+So, for the pages as they stand:
 
 - **Every claim is grounded in a document, not in an implementation.** A wiki page
   reporting a threshold is evidence that a doc asserts that threshold — not
@@ -50,11 +59,15 @@ Two consequences a reader has to hold on to:
   live system, they win.** The wiki is a navigational summary layer over
   `docs/quant/`, never an authority over it.
 
-The scope rules the run was given, including the accuracy overrides it was
-required to honour (vaults are roadmap; never quote a library pass count; the
-FDR helpers are disclosed, not implemented), are in the human-authored brief
+The rules the next run is given are in the human-authored brief
 [`../openwiki/INSTRUCTIONS.md`](../openwiki/INSTRUCTIONS.md), which OpenWiki reads
-and never rewrites.
+and never rewrites. It is worth reading before you review a regenerated wiki: it
+sets the purpose (code↔docs alignment, and making bloat, dead code, long import
+chains and deep inheritance enumerable), the citation discipline (a claim about
+behaviour cites the line that implements it, never the line that documents it),
+the ceilings the pages must state (the test suites and the live system are both
+outside the boundary), and the standing accuracy overrides — vaults are roadmap;
+never quote a library pass count; the FDR helpers are disclosed, not implemented.
 
 ## What review it did and did not get
 
@@ -83,7 +96,21 @@ agent-written pages in front of readers with nobody in the loop.
 when an `openwiki/**.md` file has no nav entry, so admitting a page is an explicit
 act — add the nav row in the same change that adds the page.
 
-Widening the slice is one directory at a time, with the cost recorded in the
-tooling-adoptions register; the rules are at the top of
-[`../.openwikiignore`](../.openwikiignore), and any edit to it must be re-verified
-with `node scripts/check_openwiki_ignore.mjs`.
+Widening the slice means moving a path from `DENIED` to `ALLOWED` in
+[`../scripts/check_openwiki_ignore.mjs`](../scripts/check_openwiki_ignore.mjs) —
+every directory the boundary deliberately excludes has a case there asserting it
+is denied today, so the guard goes red before the `!` line is added and the change
+is visible in the diff. The rules are at the top of
+[`../.openwikiignore`](../.openwikiignore), any edit to it must be re-verified with
+`node scripts/check_openwiki_ignore.mjs`, and each generation wave adds a row to
+the tooling-adoptions register.
+
+## Where it is published
+
+The site is served from **`docs.archimedes-arc.com`** on our own infrastructure —
+S3 + CloudFront + Route 53 in the production account, on the pattern already
+applied for `aprin.ai` in `../company-site/infra/main.tf` — rather than GitHub
+Pages. `mkdocs build --strict` remains the build step; only the publish step
+changes. That work is tracked in
+[#1634](https://github.com/a-apin/archimedes/issues/1634), which also adds the
+docs link to the landing footer and the public header.
