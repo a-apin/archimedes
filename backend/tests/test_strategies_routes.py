@@ -414,6 +414,29 @@ class TestSingleStrategyGateRunCount:
         assert verdict.status == FAIL, "the badge must be reduced from that same result"
         assert len(batches) == 1, f"exactly one cohort computation; got {len(batches)}"
 
+    def test_batch_failure_still_fail_closes_to_pending(self, monkeypatch):
+        """The old `_live_verdict_for_one` had its own try/except that degraded a
+        gate failure to `pending`. Collapsing it onto the memoized path must not
+        drop that: the badge is a claim, and a crash must never surface as a PASS
+        or propagate into a 500. This guards the fail-closed sentence the new
+        docstring asserts (CLAUDE.md: a prose claim the code does not enforce is
+        the same defect as an unenforced guard).
+        """
+        from archimedes.api import strategies_routes as sr
+
+        def _boom(_strategies):
+            raise RuntimeError("cohort compute exploded")
+
+        provider = MagicMock()
+        provider.list_strategies.return_value = [MagicMock(id="t")]
+        monkeypatch.setattr(sr, "strategy_provider", lambda: provider)
+        monkeypatch.setattr(sr, "_live_rigor_results_for_strategies", _boom)
+
+        verdict, result = sr._live_verdict_and_result_for_one(MagicMock(id="t"))
+        assert verdict.status == PENDING, "a gate failure must fail CLOSED, never to a pass/fail claim"
+        assert verdict.passes is False
+        assert result is None, "no numbers may be served when the gate could not run"
+
 
 class TestRigorGateVerdict:
     def test_passes_only_truthy_for_pass(self):
