@@ -61,6 +61,19 @@ DEFAULT_HOURLY_RETENTION_DAYS = 90
 DEFAULT_MAX_ROWS_PER_DEPLOYMENT = 20_000
 DEFAULT_MARKS_INTERVAL_MINUTES = 15
 DEFAULT_MAX_STALENESS_MINUTES = 60
+#: Publication outcome for one paper decision (#1575 §7). Every decision the
+#: replay detects lands in exactly one of these, and the settle asserts the
+#: accounting identity over them — a decision that falls out of the pipeline
+#: uncounted is the failure mode that produces a silent zero.
+TRACE_PUBLISHED = "published"
+TRACE_FAILED = "failed"
+TRACE_UNOWNED = "unowned"
+TRACE_DISABLED = "disabled"
+TRACE_STATUSES = (TRACE_PUBLISHED, TRACE_FAILED, TRACE_UNOWNED, TRACE_DISABLED)
+#: The states a later settle re-attempts. ``unowned`` is deliberately absent:
+#: it is a data problem, not a transient one, and retrying it forever would
+#: turn a loud ERROR into a recurring one that operators learn to ignore.
+TRACE_RETRYABLE = (TRACE_FAILED, TRACE_DISABLED)
 
 
 def _new_id() -> str:
@@ -117,6 +130,22 @@ class PaperDeployment(Base):
     # data restatement). The ledger is never rewritten; this flags that a
     # fresh replay would tell a different story — surfaced, not hidden.
     drift_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Opt-in on-chain anchoring for this deployment's reasoning traces (#1575
+    # §6). Default false, and PER DEPLOYMENT rather than a global switch,
+    # because the commit-reveal `reveal()` puts `portfolio_before/after` —
+    # the user's holdings — on-chain permanently. Anchoring a private
+    # simulation by default would defeat #1556's ownership gate on purpose,
+    # irreversibly. Both this and PAPER_TRACE_ANCHOR must be true to anchor.
+    anchor_traces: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # Set when a decision this deployment made did NOT get a published trace.
+    # Distinct from drift_detected_at: that is the ledger disagreeing with
+    # itself, this is the provenance claim having a hole in it.
+    trace_gap_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when a re-replay produces a decision for a date whose trace is
+    # already published. The trace is NOT rewritten — the hash is the point —
+    # so the disagreement is stamped and surfaced, exactly as the ledger's own
+    # drift is.
+    trace_drift_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # ── The position-set cache (intraday design §4.1) ──────────────────
     # WRITTEN by the daily advance, READ by the 15-minute marks loop, and by
     # nothing else. That one-way arrow is the entire safety argument for
@@ -156,6 +185,53 @@ class PaperDailyReturn(Base):
     __table_args__ = (
         UniqueConstraint("deployment_id", "date", name="uq_paper_daily_returns_dep_date"),
         Index("ix_paper_daily_returns_dep", "deployment_id"),
+    )
+
+
+class PaperDecisionTrace(Base):
+    """One paper DECISION and what happened when we tried to publish its trace.
+
+    The idempotency key AND the loud-failure record, in one row — deliberately
+    the same table, because a design where the "published" bookkeeping is
+    durable and the "failed" bookkeeping is a log line degrades into a silent
+    zero the first time Redis blips. ``advance_deployment`` re-derives every
+    historical decision on every settle (the engine is a position FSM with no
+    serialisable state), so without a durable key each deployment would
+    republish its whole decision history daily.
+
+    ``(deployment_id, decision_date)`` is the key, not the leg: the universe
+    runs as independent dollar sleeves, so one decision date can carry several
+    symbol legs, and the user-visible unit of "a move" is the date. The legs
+    live inside the trace body's ``trades_executed``.
+    """
+
+    __tablename__ = "paper_decision_traces"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    deployment_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("paper_deployments.id", ondelete="CASCADE"), nullable=False
+    )
+    decision_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # Null for every non-published status: a trace id we never wrote is not a
+    # trace id, and a placeholder here would make `trace_coverage` countable
+    # but wrong.
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trace_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # "settle" or "backfill" — the value that was HASHED INTO the published
+    # trace. Stored so a later settle can re-derive that trace's hash exactly
+    # and tell "the replay now decides differently" from "this row was written
+    # on a different settle". Without it every re-replay would look like drift.
+    provenance: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("deployment_id", "decision_date", name="uq_paper_decision_traces_dep_date"),
+        Index("ix_paper_decision_traces_dep", "deployment_id"),
     )
 
 

@@ -25,6 +25,7 @@ from archimedes.services._fusion_helpers import (
     _annualized_sortino,
     _compute_monthly_returns,
     _csv_data_feed,
+    _DecisionJournalAnalyzer,
     _EquityCurveAnalyzer,
     _max_drawdown,
     _synthetic_data,
@@ -103,6 +104,12 @@ class BacktestMetrics:
     # remove the limitation is deliberately out of scope.
     backtest_engine: str = ENGINE_SINGLE_FEED
     portfolio_construction: str = CONSTRUCTION_SINGLE_ASSET
+    # Dated record of the orders this run actually placed, captured by an
+    # observer-only analyzer (#1575). ``None`` — not ``[]`` — when the caller
+    # did not ask for it, so "the journal was off" stays distinguishable from
+    # "the strategy never traded". Paper trading is the only consumer; every
+    # other caller leaves it off and gets byte-identical metrics.
+    decision_journal: list[dict] | None = None
     # Broker execution-timing check for the cerebro that produced these numbers:
     # cheat-on-close / cheat-on-open must be OFF or the broker fills orders on
     # the same bar that generated the signal. Set by every runner in this module
@@ -245,6 +252,7 @@ def run_dsl_backtest(
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    decision_journal: bool = False,
 ) -> BacktestMetrics:
     """Run a backtest for a DSL-interpreted strategy.
 
@@ -255,6 +263,11 @@ def run_dsl_backtest(
     builds a ``GenericCSVData`` feed from the CSV. If all are None, generates a
     deterministic synthetic price series. The equity curve is captured
     **bar-by-bar** via a backtrader analyzer.
+
+    ``decision_journal`` binds one extra OBSERVER-ONLY analyzer and populates
+    ``BacktestMetrics.decision_journal`` with the dated orders the run placed
+    (#1575). It must not move any graded number; that claim is a test
+    (``test_decision_journal.py::test_journal_is_a_no_op``), not a comment.
     """
     import backtrader as bt
 
@@ -287,6 +300,8 @@ def run_dsl_backtest(
     # (see commit log for the equity-curve correctness fix).
     cerebro.addanalyzer(_EquityCurveAnalyzer, _name="equity_curve")
     cerebro.addanalyzer(_TradeStatsAnalyzer, _name="trade_stats")
+    if decision_journal:
+        cerebro.addanalyzer(_DecisionJournalAnalyzer, _name="decision_journal")
 
     # Broker-level look-ahead leg, charged on the REAL cerebro this run used —
     # on BOTH sides of run(), and ANDed.
@@ -310,6 +325,7 @@ def run_dsl_backtest(
     equity_curve: list[float]
     bar_start: date | None = None
     bar_end: date | None = None
+    journal: list[dict] | None = None
     if strat is not None:
         ec = strat.analyzers.equity_curve.get_analysis()
         equity_curve = list(ec.get("values", [])) or [initial_cash]
@@ -319,8 +335,14 @@ def run_dsl_backtest(
         # variant path, a fabricated 2004-01-02) window.
         bar_start = ec.get("first_bar_date")
         bar_end = ec.get("last_bar_date")
+        if decision_journal:
+            journal = list(strat.analyzers.decision_journal.get_analysis().get("events", []))
     else:
         equity_curve = [initial_cash]
+        # No strategy came back, so nothing was observed. Leaving the journal
+        # None (rather than []) keeps "the run produced nothing" distinct from
+        # "the strategy decided nothing" — the paper writer fails closed on the
+        # former and would silently publish zero traces for the latter.
 
     monthly_returns = _compute_monthly_returns(equity_curve)
 
@@ -351,6 +373,7 @@ def run_dsl_backtest(
     )
 
     return BacktestMetrics(
+        decision_journal=journal,
         sharpe_ratio=round(sharpe, 4),
         sortino_ratio=round(sortino, 4),
         max_drawdown=round(max_dd, 4),

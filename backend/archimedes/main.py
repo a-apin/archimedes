@@ -519,6 +519,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
             _app.state.paper_advance_task = asyncio.create_task(paper_advance_loop())
             _logger.info("startup: paper-trading advance scheduler armed")
+            # Trace coverage is a claim the product makes ("auditable reasoning
+            # behind every move"), so publishing being off is announced once at
+            # boot rather than only discovered per-deployment (#1575 §7).
+            from archimedes.services.paper_trace import publishing_enabled
+
+            if not publishing_enabled():
+                _logger.error(
+                    "startup: PAPER_TRACE_PUBLISH is OFF — paper deployments will make decisions with "
+                    "NO published reasoning trace. Every such decision is recorded as a durable gap and "
+                    "surfaced as trace_coverage.status='disabled'; the product's provenance claim does "
+                    "not hold while this is off."
+                )
         else:
             _logger.info("startup: backtest refresh scheduler disabled")
     except Exception as exc:

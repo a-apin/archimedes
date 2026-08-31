@@ -756,38 +756,42 @@ def _seed_phase1_fixture(db_path: Path) -> None:
                 updated_at=now,
             )
         )
-        # Core inserts, not ORM adds, for the one table later migrations keep
-        # growing: the ORM's executemany pads the INSERT with every mapped
-        # nullable column, and this fixture's schema is pinned at phase1's
-        # down_revision — a column the model gains in a LATER revision (first
-        # bitten by e41c7a9b2d63's position_cache_json) gets named against a
-        # table that predates it. Core emits only the columns listed here,
-        # all of which exist at the pinned revision.
-        pd_common = {
-            "spec_json": "{}",
-            "deployed_at": date(2026, 1, 1),
-            "status": "active",
-            "created_at": now,
-        }
-        session.execute(
-            sa.insert(PaperDeployment.__table__),
-            [
-                {
-                    "id": "pd-healthy",
-                    "strategy_id": _REAL_STRATEGY,
-                    "owner_wallet": _REAL_WALLET,
-                    "owner_user_id": "user-1",
-                    **pd_common,
-                },
-                {
-                    "id": "pd-orphan",
-                    "strategy_id": _ORPHAN_STRATEGY,
-                    "owner_wallet": _ORPHAN_WALLET,
-                    "owner_user_id": "user-1",
-                    **pd_common,
-                },
-            ],
-        )
+        # paper_deployments goes in through the table AS IT EXISTS AT THIS
+        # REVISION, not through every column today's ORM model carries. A
+        # column added by a LATER migration (#1575's anchor_traces /
+        # trace_gap_at / trace_drift_at) is absent from the pre-migration
+        # schema, and a plain ORM insert would name it and fail with "no such
+        # column" — a failure about the fixture, not about the migration under
+        # test. The values still come from the model's own construction, so
+        # nullability/defaults keep tracking the model.
+        paper_table = sa.Table("paper_deployments", sa.MetaData(), autoload_with=engine)
+        available = set(paper_table.c.keys())
+        for deployment in (
+            PaperDeployment(
+                id="pd-healthy",
+                strategy_id=_REAL_STRATEGY,
+                owner_wallet=_REAL_WALLET,
+                owner_user_id="user-1",
+                spec_json="{}",
+                deployed_at=date(2026, 1, 1),
+                status="active",
+                created_at=now,
+            ),
+            PaperDeployment(
+                id="pd-orphan",
+                strategy_id=_ORPHAN_STRATEGY,
+                owner_wallet=_ORPHAN_WALLET,
+                owner_user_id="user-1",
+                spec_json="{}",
+                deployed_at=date(2026, 1, 1),
+                status="active",
+                created_at=now,
+            ),
+        ):
+            values = {
+                name: getattr(deployment, name) for name in available if getattr(deployment, name, None) is not None
+            }
+            session.execute(paper_table.insert().values(**values))
         session.commit()
     engine.dispose()
 

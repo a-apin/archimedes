@@ -283,19 +283,23 @@ def test_migrated_schema_is_what_is_under_test(engine):
     tables is caught here by introspection, in addition to being caught
     behaviourally by ``test_account_deletion_cascades_or_nulls_every_owned_table``.
     """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
     with engine.connect() as conn:
         stamped = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        # The premise defended here is "this engine is at the Alembic HEAD",
-        # not "this file's own migration is forever head" — a frozen literal
-        # broke on the first successor (e41c7a9b2d63). Derive head from the
-        # script directory so the assert survives the chain growing, while a
-        # gutted/forked chain still fails it loudly.
-        from alembic.config import Config as _AlembicConfig
-        from alembic.script import ScriptDirectory as _ScriptDirectory
-
-        head = _ScriptDirectory.from_config(_AlembicConfig(str(_BACKEND_DIR / "alembic.ini"))).get_current_head()
-        assert stamped == head, f"expected the chain head {head!r}, got {stamped!r}"
-        assert stamped is not None
+        # The premise is "this ran `upgrade head`", NOT "85ca5310b7a1 is
+        # forever the newest revision". Pinning the literal made every later
+        # migration break this file for a reason unrelated to what it guards
+        # (#1575's paper_decision_traces was the first). Resolve head from the
+        # script directory instead, and assert separately that the cascade
+        # policy revision this file is ABOUT is in the applied chain.
+        script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+        heads = script.get_heads()
+        assert len(heads) == 1, f"the migration chain must stay serial; found heads {heads}"
+        assert stamped == heads[0], f"expected head {heads[0]!r} to be stamped, got {stamped!r}"
+        applied = {rev.revision for rev in script.iterate_revisions(stamped, "base")}
+        assert "85ca5310b7a1" in applied, "the cascade-policy migration this file guards was not applied"
 
         for table in _ALL_OWNED_TABLES:
             expected = "CASCADE" if table in _CASCADE_TABLES else "SET NULL"
