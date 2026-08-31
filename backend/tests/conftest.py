@@ -40,6 +40,14 @@ os.environ["TESTING"] = "1"
 # run start from the fresh-worktree state by construction. `setdefault`, not an
 # unconditional set: the two `@pytest.mark.integration` tests that want a real
 # Postgres pass `DATABASE_URL` explicitly and must keep winning.
+#
+# `tempfile.mkdtemp` rather than `tmp_path_factory`: this has to happen at
+# conftest *import* time, before `archimedes.db` is imported and freezes its
+# engine — no fixture, session-scoped or otherwise, runs early enough. It is
+# also per-process, so the file is shared across the run exactly as the in-tree
+# one was; only its starting contents change (empty, like a fresh worktree).
+# `tests/db_isolation.redirect_to_tmp_sqlite` remains the right tool for
+# per-test isolation and layers on top of this unchanged.
 if not os.environ.get("DATABASE_URL"):
     _TEST_DB_DIR = tempfile.mkdtemp(prefix="archimedes-test-db-")
     atexit.register(shutil.rmtree, _TEST_DB_DIR, ignore_errors=True)
