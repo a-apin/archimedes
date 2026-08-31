@@ -54,7 +54,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 |---|---|---|---|---|
 | [`user-stories.md`](user-stories.md) | current | Dan Browne | 2026-08-31 | The locked product spine. Canonical statement of what the product is. Re-verified against `/api/health` 2026-08-31; the Day-9 body carries dated inline corrections (fusion-preview surface, "GLM-backed", library size, KG demo claim) and reads vault execution in the present tense, which is roadmap (#1469). |
 | [`agent-api.md`](agent-api.md) | current | Dan Browne | — | Driving the full journey programmatically; the agent-native surface. |
-| [`agent-quickstart.md`](agent-quickstart.md) | current | Dan Browne | 2026-08-30 | Zero to paper-traded for an external agent: eleven steps, exact response shapes, and an error table (401/402/409/422/429). Includes the live x402 paywall — production charges $2.00 USDC per generation, so steps 6a–6b link a wallet and pay. Narrower than `agent-api.md` on purpose: no vault, no capital deployed. Route strings and worked commands are drift-guarded by `backend/tests/test_agent_quickstart_drift.py`. |
+| [`agent-quickstart.md`](agent-quickstart.md) | current | Dan Browne | 2026-08-31 | Zero to paper-traded for an external agent: eleven steps, exact response shapes, and an error table (401/402/409/422/429). Includes the live x402 paywall — production charges $2.00 USDC per generation, so steps 6a–6b link a wallet and pay. Narrower than `agent-api.md` on purpose: no vault, no capital deployed. Route strings and worked commands are drift-guarded by `backend/tests/test_agent_quickstart_drift.py`. |
 | [`asset-universe.md`](asset-universe.md) | current | Dan Browne | — | Tradable universe and how it is assembled. |
 | [`demo-script-lepton.md`](demo-script-lepton.md) | current | Dan Browne | 2026-07-06 | Current demo video script. |
 
@@ -130,6 +130,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) | runbook | Dan Browne | — | Contract redeploy procedure and secret handling. |
 | [`runbooks/docs-site-setup.md`](runbooks/docs-site-setup.md) | runbook | Dan Browne | 2026-08-20 | GitHub Pages docs site (#1381, option B): Dan's two manual steps (Pages source + Route 53 CNAME), local `mkdocs serve` preview, and why `mkdocs build --strict` isn't used. |
 | [`runbooks/backtest-results-retention.md`](runbooks/backtest-results-retention.md) | runbook | Dan Browne | 2026-08-30 | `backtest_results` archive-then-prune procedure (v8 Lane 3.1): keep policy, `archive_backtest_results.py`'s `--plan`/`--archive`/`--prune` flags, the manifest-verification guard, and the post-prune VACUUM step. |
+| [`runbooks/erc8004-identity-registration.md`](runbooks/erc8004-identity-registration.md) | runbook | Dan Browne | 2026-08-31 | Minting the ERC-8004 agent identity on Arc (#1527): the live-verified registry facts, `--plan`/`--verify`/`--execute`, the Circle-signed owner step, and why `ERC8004_AGENT_ID` points at a token rather than making a claim. |
 
 ## Decisions (ADRs)
 
