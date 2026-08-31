@@ -37,8 +37,8 @@ function DeployabilityChip({ deploy, level }) {
   // correctness floor", asserting a measurement that never happened. Checked
   // before blocked_by_floor for exactly the reason pending is: you cannot fail
   // a floor nothing measured you against. Same neutral treatment as pending,
-  // with its own honest sentence (the wording chat_service.py:395 already gives
-  // this state when it hands it to the LLM) rather than borrowing pending's —
+  // with its own honest sentence (the same wording the backend hands the LLM in
+  // agents/portfolio_agent.py `_format_strategies`) rather than borrowing pending's —
   // "not yet evaluated" would be a second false claim, since the data IS here.
   if (deploy.degenerate) {
     return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation">unevaluable</span>
