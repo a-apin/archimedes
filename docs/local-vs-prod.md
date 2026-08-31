@@ -6,8 +6,15 @@
 > **superseded-by:** —
 
 Archimedes runs in two modes off **one codebase and one compose file**. The difference is
-configuration, never a code fork — there is no `if LOCAL:` branch anywhere in the request
-path, and adding one is the thing this document exists to prevent.
+configuration, never a code fork. Nothing in the generate → backtest → rigor-gate → explore
+path branches on which mode it is in, and adding such a branch is the thing this document
+exists to prevent.
+
+The exception, stated so it is not mistaken for one: `main.py` reads `PUBLIC_DOMAIN` as the
+production signal in four places — the SSM secret load, the `/docs` Swagger gate and the
+`EMAIL_ENCRYPTION_KEY` fail-close (both via `_is_production`), and the CORS origin list.
+Those are **hardening decisions about the deployment**, not product behaviour: they change
+what the process trusts, never what the product does.
 
 - **Local mode** — single-user, self-contained. `docker compose up -d --build` and go.
   In-stack Postgres and Redis, no AWS account, no Circle keys, no chain keys. Generate →
@@ -122,9 +129,11 @@ no-op, recorded as such in
 [`operations/feature-flag-fliplist.md`](operations/feature-flag-fliplist.md). Generation
 auth is now unconditional at router-registration time.
 
-So the contract is *simpler* than the issue assumed: **auth is unconditional everywhere —
-generation, chat, portfolio, vault-create — in both modes, and local mode will not get an
-opt-out.** The reason to keep it that way is the whole point of having two modes off one
+So the contract is *simpler* than the issue assumed: **every route that is authenticated is
+authenticated identically in both modes, and local mode will not get an opt-out.**
+Generation, portfolio, and user routes require a session; vault-create and chat *writes*
+require a linked wallet; chat reads are public by design. None of that varies by mode. The
+reason to keep it that way is the whole point of having two modes off one
 codebase: an auth bypass that exists only locally is a code path production never
 exercises, which is exactly the class of divergence a config-driven split is meant to
 avoid.
@@ -137,9 +146,12 @@ the Better Auth sidecar before it can generate**. That step is now in
 
 ## 5. Local smoke path
 
-Verified end to end against `.env.example` as committed. `GENERATION_PAYMENT_REQUIRED`
-defaults `false`, which keeps **both** the 409 wallet-link precondition and the 402 paywall
-in `generate_routes.py` inert, so a local account can generate with no wallet and no funds.
+Each step below is checked against `.env.example` and the route code as committed — the
+values, the gates, and the auth model, not a remembered recipe. (The stack was not started
+as part of writing this page; treat the flow as *specified*, and `make check-local` as the
+part that is *enforced*.) `GENERATION_PAYMENT_REQUIRED` defaults `false`, which keeps
+**both** the 409 wallet-link precondition and the 402 paywall in `generate_routes.py`
+inert, so a local account can generate with no wallet and no funds.
 
 ```bash
 git clone --recurse-submodules https://github.com/a-apin/archimedes.git
