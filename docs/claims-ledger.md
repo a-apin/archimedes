@@ -146,7 +146,7 @@ checks that recur:
 ## Market data — the Explore page and what paid analysis runs on
 
 The owner's framing, recorded here because the ledger is where the public position lives.
-The decision record is `docs/adr/market-data-sourcing.md`, being added by the parallel
+The decision record is `docs/adr/market-data-sourcing.md`, added by the now-merged
 [#1218](https://github.com/a-apin/archimedes/issues/1218) work — open as
 [PR #1627](https://github.com/a-apin/archimedes/pull/1627), not merged as of 2026-08-31.
 The rows below are marked `PENDING ADR MERGE` until it lands, and they should be re-pointed
@@ -158,7 +158,7 @@ provider, which is what the rows below say.
 | Claim | Status | What backs it |
 |---|---|---|
 | The Explore page is free, open, and ungated | `TRUE` | `ui/src/routes.js:43` puts `explore` in `ANON_APP_PAGES`, so it renders with no session; `backend/archimedes/api/explore_routes.py:24` and `:30` carry no auth dependency. The code is public domain (`LICENSE`). |
-| Explore is a FOSS viewer over yfinance streams, not a redistribution product | `PENDING ADR MERGE` | The mechanism is true and labelled on the page — `ui/src/components/Explore.jsx:416` tells the visitor which cards are oracle-priced and which come from yfinance, and `ui/src/components/AssetModal.jsx:22` labels the source per asset. The *licensing position* it implies is the ADR's to state: `docs/adr/market-data-sourcing.md`. |
+| Explore is a FOSS viewer over yfinance streams, not a redistribution product | `TRUE` | The mechanism is true and labelled on the page — `ui/src/components/Explore.jsx:416` tells the visitor which cards are oracle-priced and which come from yfinance, and `ui/src/components/AssetModal.jsx:22` labels the source per asset. The licensing position is stated in `docs/adr/market-data-sourcing.md` (landed with #1627): split sourcing, no commercial redistribution of yfinance data, Tiingo Business named as the mainnet prerequisite. |
 | Paid analysis runs on licensed data | `PENDING ADR MERGE` | A statement of policy, not of current state, and the ledger must not launder one into the other. The vendor seam exists on both sides — `analytics-engine/src/archimedes_analytics_engine/market_data.py:96` and `backend/archimedes/services/market_data_provider.py:358` (a real Tiingo provider) — and one `MARKET_DATA_PROVIDER` value selects across both. **The default on both seams is still `yfinance`**, so today the paid path and the free path read the same source. |
 | yfinance is an unlicensed commercial dependency on the critical path | `TRUE` | #1218's own finding, unchanged: `analytics-engine/src/archimedes_analytics_engine/market_data.py:32` imports it and `:96` makes it the default, and every strategy pulls its declared universe through it. |
 
@@ -202,5 +202,4 @@ one worth acting on: it is a live machine-readable contract that under-publishes
      Paths cited above that do not exist in this tree yet. The guard asserts each one is
      STILL absent, so the exemption retires itself: when the file lands, the guard goes
      red and the row above must be re-pointed at real evidence rather than a promise.
-docs/adr/market-data-sourcing.md
 -->

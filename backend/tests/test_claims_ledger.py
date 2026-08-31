@@ -247,7 +247,29 @@ class TestPendingExemptionsRetireThemselves:
         )
 
     def test_the_pending_block_is_parsed(self):
-        assert _pending_paths(), "the pending-paths block parsed empty — the exemption check would be vacuous"
+        """Anti-vacuity for the PARSER, not for the content.
+
+        The original form asserted the live block was non-empty — right up
+        until the last promised path (docs/adr/market-data-sourcing.md, #1627)
+        actually landed and the exemption retired itself, at which point an
+        empty block is the CORRECT state, not a regex silently failing. The
+        parser's health is proven against a fixture instead, so a broken
+        _PENDING_BLOCK_RE can never again hide behind "well, it parsed to
+        empty"; the live block only has to exist.
+        """
+        fixture = "<!-- claims-ledger:pending-paths\n     prose the parser must skip\ndocs/adr/example.md\n-->"
+        m = _PENDING_BLOCK_RE.search(fixture)
+        assert m is not None, "the pending-paths regex no longer matches its own documented shape"
+        parsed = [
+            line.strip()
+            for line in m.group(1).splitlines()
+            if line.strip() and not line.strip().startswith(("Paths", "STILL", "red", "prose"))
+        ]
+        assert parsed == ["docs/adr/example.md"], f"parser mis-read the fixture block: {parsed}"
+        assert _PENDING_BLOCK_RE.search(LEDGER.read_text()), (
+            "the claims-ledger:pending-paths block is missing from the ledger — "
+            "it stays, empty or not, as the landing place for the next promised path"
+        )
 
 
 class TestLedgerRowsSayOnlyWhatTheyMay:
