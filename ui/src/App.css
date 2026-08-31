@@ -9314,11 +9314,13 @@ body:has(.public-site) {
    this product's surfaces are flat. It pulses opacity instead, the same idiom
    `@keyframes pulse` already uses above.
 
-   The pulse needs no `prefers-reduced-motion` rule of its own: the block at the
-   end of this file already zeroes `animation-duration` for every descendant of
-   `.app-site`, and the Library renders inside it (Layout.jsx `shell app-site`).
-   Verified by grep before relying on it — and the bars carry a visible flat
-   tint, so with animation disabled they still read as placeholders.
+   The pulse needs no `prefers-reduced-motion` rule of its own: the block at
+   line ~9281 above zeroes `animation-duration` for every descendant of
+   `.app-site` with `!important` (so source order does not matter), and the
+   Library renders inside it (Layout.jsx: `shell app-site`). Both checked by
+   grep before relying on them. The bars also carry a visible flat
+   `--surface-2` tint, so with animation disabled they still read as
+   placeholders rather than disappearing.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 .lib-skeleton-rows {
