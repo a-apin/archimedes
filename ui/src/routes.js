@@ -46,6 +46,28 @@ export function isAnonymousAppPage(page) {
   return ANON_APP_PAGES.has(page)
 }
 
+// Where the strategy passport's "Back to Library" control should resolve
+// (#1370). `library` is wallet-gated (not in ANON_APP_PAGES), so an
+// anonymous visitor — the passport is deliberately deep-link reachable
+// without a session (#1194 rev d) — hitting `onNavigate('library')`
+// unconditionally tripped App.jsx's anonymous-page redirect and bounced
+// them to /sign-in, signing out a visitor who was never signed in. Route
+// anonymous visitors to Explore (the anonymous-OK home) instead; signed-in
+// visitors keep going back to their Library.
+export function passportBackPage(user) {
+  return user == null ? 'explore' : 'library'
+}
+
+// The back button's own label must track passportBackPage(user) — a control
+// that reads "Back to Library" while it actually lands on Explore is a
+// mislabeled affordance, the same defect class #1370 fixed for the routing
+// itself. Keep this as a pure sibling function (not folded into
+// passportBackPage's return shape) so callers that only need the page still
+// get a plain string.
+export function passportBackLabel(user) {
+  return user == null ? '← Back to Explore' : '← Back to Library'
+}
+
 // True when `user` may navigate to `page` — signed in, always; anonymous,
 // only for the browsable ANON_APP_PAGES set above. Delegates to
 // isAnonymousAppPage so the two never drift (#1364): the onboarding tour's
@@ -189,8 +211,11 @@ export function postAuthPath(search = '') {
 // Nav ids an anonymous visitor should see: the browsable pages plus Generate,
 // which is the conversion path (clicking it routes to sign-in). Everything
 // else — portfolio, learnings, marketplace, account and friends — reads the
-// signed-in user's own state and is noise on a logged-out screen.
-const ANON_NAV_IDS = new Set(['landing', 'explore', 'corpus', 'architecture', 'leaderboard', 'generate'])
+// signed-in user's own state and is noise on a logged-out screen. 'architecture'
+// was dropped (#1370 item 4): Architecture is no longer a shell NAV item (see
+// Layout.jsx), so this entry has been unreachable dead config the same way the
+// CRUMB_MAP 'architecture' key was before this PR removed that one too.
+const ANON_NAV_IDS = new Set(['landing', 'explore', 'corpus', 'leaderboard', 'generate'])
 
 export function visibleNavigation(items, features, user = null) {
   return items.filter(

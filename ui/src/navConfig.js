@@ -10,14 +10,22 @@
 // adminProbeCache.js / insightsGate.js's "stays unit-testable under bare
 // `node --test`" discipline.
 //
-// Sidebar groups separate Home (anchor / landing) from the three product-state
-// bands. Empty group label is intentional for the Home entry — it renders as a
-// header-less section so Home reads as the top-of-shell anchor, not a peer of
-// the other groups. The three labelled groups split the remaining surfaces
+// Sidebar groups separate the marketing-site anchor (labelled "Marketing
+// site", NOT "Home" — the breadcrumb's Home crumb already owns that label for
+// the in-app anchor at Explore; two controls both reading "Home" ~40px apart
+// with different destinations was #1370 item 3) from the product-state
+// bands. Empty group label is intentional for that entry — it renders as a
+// header-less section so it reads as the top-of-shell anchor, not a peer of
+// the other groups. The five labelled groups split the remaining surfaces
 // along the gating boundary:
 //   DISCOVER — open to anonymous visitors (no wallet needed)
 //   STRATEGY — wallet-gated: generate + your saved strategies
-//   POSITION — wallet-gated: deployed vaults, on-chain audit, post-hoc review
+//   POSITION — wallet-gated: on-chain audit, post-hoc review (Portfolio and
+//     Learnings are ROADMAP_PAGES, hidden by default (#1266); Quant Lab
+//     defaults off separately via the backend `quant` feature flag — in the
+//     shipped build this group renders as a single item, Reasoning)
+//   MARKET — the strategy marketplace (ROADMAP_PAGES, hidden by default)
+//   OPS — insights + account
 // Item order inside DISCOVER (Explore → Corpus) follows the natural
 // user-onboarding read: browse the seed strategies first, see the substrate
 // they're drawn from second.
@@ -37,7 +45,9 @@
 export const NAV = [
 	{
 		group: null,
-		items: [{ id: "landing", label: "Home", icon: "i-lucide-home" }],
+		items: [
+			{ id: "landing", label: "Marketing site", icon: "i-lucide-home" },
+		],
 	},
 	{
 		group: "Discover",

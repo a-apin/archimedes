@@ -9,6 +9,12 @@ import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 
 import { apiGet, apiPost, apiDelete } from '../api'
 import { compactCostCell } from '../generationCost.js'
+import {
+  isUnknownRigorGateStatus,
+  warnUnknownRigorGateStatus,
+  UNKNOWN_RIGOR_LABEL,
+  UNKNOWN_RIGOR_TITLE,
+} from '../rigorGateStatus.js'
 import { signClass } from '../signClass.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
@@ -16,6 +22,27 @@ import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 // strategy's min_passing_level (from the live gate) and the user's strictness.
 function DeployabilityChip({ deploy, level }) {
   if (!deploy) return null
+  // #1358: a strategy the gate never scored (no persisted backtest data) is
+  // NOT the same claim as "fails the rigor gate even at the loosest level" —
+  // both used to collapse to min_passing_level == null below. Checked before
+  // blocked_by_floor too: a never-scored row can't have failed a floor it was
+  // never evaluated against. Neutral tag-muted, no "not deployable" wording.
+  if (deploy.pending) {
+    return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="Not yet evaluated — no backtest data for the rigor gate to score">pending</span>
+  }
+  // #1358 round-3: a zero-variance persisted series is the THIRD unevaluable
+  // case, and it was the loudest wrong one. A degenerate series leaves
+  // dsr_p_value and oos_sharpe at None, which trips blocked_by_floor — so this
+  // row arrived with blocked_by_floor === true and rendered "Fails an always-on
+  // correctness floor", asserting a measurement that never happened. Checked
+  // before blocked_by_floor for exactly the reason pending is: you cannot fail
+  // a floor nothing measured you against. Same neutral treatment as pending,
+  // with its own honest sentence (the wording chat_service.py:395 already gives
+  // this state when it hands it to the LLM) rather than borrowing pending's —
+  // "not yet evaluated" would be a second false claim, since the data IS here.
+  if (deploy.degenerate) {
+    return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation">unevaluable</span>
+  }
   if (deploy.blocked_by_floor) {
     return <span className="tag tag-negative" style={{ fontSize: '0.66rem' }} title="Fails an always-on correctness floor — cannot deploy at any level">blocked</span>
   }
@@ -156,6 +183,31 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   // and drift-boolean fields this used to read never existed in any API
   // response (#1361).
   const sharpeCI = s.sharpe_ci_lower != null && s.sharpe_ci_upper != null ? [s.sharpe_ci_lower, s.sharpe_ci_upper] : null
+  // #1358: a strategy with ZERO statistics computed must render as honestly
+  // unknown, never as a failed rigor gate. rigor_gate_status is the
+  // four-state badge curated/generated StrategyResponse rows carry
+  // ("pass"|"fail"|"pending"|"degenerate"); coerceGenerated's own rows don't
+  // set it at all but already encode the same "no verdict yet" case as
+  // passes_rigor_gate === null (see Strategies.jsx's coerceGenerated) — both
+  // checked so the same pending treatment applies on the Examples and
+  // Generated tabs alike. Checked BEFORE the true/false badge below so a
+  // pending row can never fall through to the "does not pass" X.
+  const isPending = s.rigor_gate_status === 'pending' || s.passes_rigor_gate == null
+  // #1358 round-3: "degenerate" is the fourth state, and it belongs in the same
+  // NEUTRAL bucket as pending — never the red "does not pass" X, because
+  // nothing was measurable to fail. It does NOT get pending's sentence: a
+  // degenerate row HAS persisted returns (they are just flat), so "no backtest
+  // data" would be a fresh lie. Kept as its own flag rather than folded into
+  // isPending so the two states cannot share a tooltip.
+  const isDegenerate = s.rigor_gate_status === 'degenerate'
+  // Exhaustiveness default. Four states are known; a fifth would otherwise fall
+  // through to the passes_rigor_gate booleans and render a confident verdict
+  // this build cannot justify. Em-dash + a dev-time warning instead, shared
+  // with StrategyPassport so both surfaces answer identically (#1358).
+  const unknownRigor = isUnknownRigorGateStatus(s.rigor_gate_status)
+  useEffect(() => {
+    if (unknownRigor) warnUnknownRigorGateStatus(s.rigor_gate_status, 'Strategies')
+  }, [unknownRigor, s.rigor_gate_status])
   const detailId = `lib-detail-${s.id}`
   // Absence is the point: a strategy nothing measured gets an em-dash and a
   // tooltip that says so, never a zero (#1326).
@@ -227,10 +279,15 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
                 reliably exposed — the rigor-gate verdict, the fact that
                 decides whether a strategy may be deployed, was sighted-only
                 (1.1.1). */}
-            {s.passes_rigor_gate === true && (
+            {unknownRigor ? (
+              <span role="img" aria-label="Rigor gate status unrecognised" className="mono text-[var(--text-4)]" title={UNKNOWN_RIGOR_TITLE}>{UNKNOWN_RIGOR_LABEL}</span>
+            ) : isDegenerate ? (
+              <span role="img" aria-label="Rigor gate could not evaluate — zero-variance return series" className="i-lucide-alert-circle w-3.5 h-3.5 text-[var(--text-4)]" title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation" />
+            ) : isPending ? (
+              <span role="img" aria-label="Rigor gate pending" className="i-lucide-clock w-3.5 h-3.5 text-[var(--text-4)]" title="Not yet evaluated — no backtest data for the rigor gate to score" />
+            ) : s.passes_rigor_gate === true ? (
               <span role="img" aria-label="Passes rigor gate" className="i-lucide-check w-3.5 h-3.5 text-[var(--positive)]" title="Passes rigor gate" />
-            )}
-            {s.passes_rigor_gate === false && (
+            ) : s.passes_rigor_gate === false && (
               <span role="img" aria-label="Does not pass rigor gate" className="i-lucide-x w-3.5 h-3.5 text-[var(--text-4)]" title="Does not pass rigor gate" />
             )}
             <DeployabilityChip deploy={deploy} level={level} />
@@ -245,7 +302,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
           )}
           {s.dsr_p_value != null && (
             <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }}>
-              (DSR p={s.dsr_p_value.toFixed(2)})
+              (DSR conf={s.dsr_p_value.toFixed(2)})
             </div>
           )}
         </td>
@@ -692,10 +749,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   const [publishedError, setPublishedError] = useState('')
   // Per-user rigor strictness (shared with the Passport slider via localStorage).
   const [level, setLevel] = useRigorStrictness()
-  // {strategy_id: {min_passing_level, blocked_by_floor}} from the live gate —
-  // strictness-independent, so we fetch once and re-annotate rows client-side as
-  // the slider moves. Curated strategies resolve here; generated ones fall back
-  // to their badge boolean (no chip).
+  // {strategy_id: {min_passing_level, blocked_by_floor, pending, degenerate}} from the live
+  // gate — strictness-independent, so we fetch once and re-annotate rows
+  // client-side as the slider moves. Curated strategies resolve here; generated
+  // ones fall back to their badge boolean (no chip).
   const [deployMap, setDeployMap] = useState({})
   // 'generated' is the first-class tab per product feedback — pushes user
   // toward Generate when empty. Published is a hidden roadmap surface
@@ -777,7 +834,23 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       if (gateRes.status === 'fulfilled') {
         const map = {}
         for (const r of gateRes.value.strategies || []) {
-          map[r.strategy_id] = { min_passing_level: r.min_passing_level, blocked_by_floor: r.blocked_by_floor }
+          map[r.strategy_id] = {
+            min_passing_level: r.min_passing_level,
+            blocked_by_floor: r.blocked_by_floor,
+            // #1358: the gate's own honest signal that this row had zero
+            // statistics computed (< 10 persisted returns) — distinct from a
+            // real "fails every strictness level" verdict, which also has
+            // min_passing_level === null. Without this, DeployabilityChip
+            // could not tell the two apart and rendered "not deployable" for
+            // both.
+            pending: r.pending,
+            // #1358 round-3: the gate's honest signal that this row's persisted
+            // series is zero-variance. Distinct from BOTH neighbours above:
+            // there is data (so not pending), and no floor ever measured it (so
+            // the blocked_by_floor === true this row also arrives with is not a
+            // claim the chip may repeat).
+            degenerate: r.degenerate,
+          }
         }
         setDeployMap(map)
       } else {
@@ -797,9 +870,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
 
   return (
     <div className="strategies-page">
+      {/* #1370 item 7: the heading must name the same place the nav item, the
+          tab title and the breadcrumb name — all three say "Library". */}
       <header className="app-page-heading">
         <p className="app-eyebrow">Evidence library</p>
-        <h1>Your strategies</h1>
+        <h1>Library</h1>
         <p>
           Your strategies, plus a clearly-separated set of example strategies
           drawn from published research so you can learn the metric format.
@@ -882,9 +957,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               </button>
             </div>
           ) : (() => {
-            // Split generated strategies by rigor verdict so the main table only
-            // shows what passed (the wedge: "the Library is a quality filter, not
-            // a junk drawer"). Rejected candidates stay accessible in a collapsed
+            // Split generated strategies by rigor verdict. The main table shows
+            // [...passing, ...pending] — cleared strategies plus candidates still
+            // awaiting a verdict, NOT "only what passed" (a stricter claim this
+            // file used to make; #1370 item 7 corrected copy and comment to match
+            // what's actually shown). Rejected candidates stay accessible in a collapsed
             // section below so the user can inspect *why* they failed — honest
             // rather than hidden, but visually de-prioritised.
             const passing = generated.filter(s => s.passes_rigor_gate === true)
@@ -911,8 +988,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                       backtest window is needed for DSR / PBO to score them).
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
-                      The Library is a quality filter — only strategies that pass DSR + PBO + chronological OOS
-                      + look-ahead audit are surfaced here. That's the wedge.
+                      This table holds strategies that passed the rigor gate (DSR + PBO +
+                      chronological OOS + look-ahead audit) plus candidates still awaiting a
+                      verdict — rejected strategies are the only ones filtered out, into the
+                      section below.
                     </p>
                   </div>
                 ) : (
@@ -921,12 +1000,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                     <p className="body" style={{ marginBottom: 10 }}>
                       Multi-paper fusion strategies you create from the{' '}
                       <a href="/app/generate" style={{ color: 'var(--accent)' }}>Generate</a> page will
-                      appear here once they've been backtested + cleared the rigor gate.
+                      appear here once they've been backtested; the rigor verdict (pass/fail) lands
+                      here after, once DSR / PBO / OOS scoring completes.
                     </p>
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
                       {ROADMAP_SURFACES_ENABLED
                         ? ROADMAP_COPY.emptyLibraryNoteRoadmap
-                        : 'Generations in flight show in the agent activity feed on Reasoning. They land in this table once the rigor gate clears.'}
+                        : 'Generations in flight show in the agent activity feed on Reasoning. They land in this table once backtesting finishes, verdict or not.'}
                     </p>
                   </div>
                 )
@@ -1000,6 +1080,12 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               emptyState={<p className="caption">No example strategies loaded.</p>}
             />
           )}
+          {examples.some(s => s.is_backtest_placeholder) && (
+            <div className="caption mt-4 text-[var(--text-4)]">
+              Pre-backtest hypothesis — empirical metrics pending evaluation. Real
+              numbers replace the placeholder once the analytics engine runs.
+            </div>
+          )}
         </>
       )}
 
@@ -1071,13 +1157,6 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             />
           )}
         </>
-      )}
-
-      {examples.some(s => s.is_backtest_placeholder) && (
-        <div className="caption mt-4 text-[var(--text-4)]">
-          * Pre-backtest hypothesis — empirical metrics pending evaluation. Real
-          numbers replace the placeholder once the analytics engine runs.
-        </div>
       )}
 
       {/* EfficientFrontier + CorrelationMatrix removed (Issue #383) — synthetic RNG data */}
