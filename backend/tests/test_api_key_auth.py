@@ -244,6 +244,35 @@ async def test_key_and_cookie_resolve_the_same_account_identity(app, monkeypatch
     assert by_key.json()["credential"] == "api_key"
 
 
+@pytest.mark.asyncio
+async def test_when_both_credentials_are_present_the_cookie_wins_deterministically(app, monkeypatch):
+    """Two credentials on one request must resolve to ONE identity, always the same one.
+
+    Not a security boundary — holding another account's session cookie is already
+    full compromise of that account — but ambiguity here would be resolved by
+    whichever branch a future refactor happened to run first, and a caller could
+    not predict which account it was acting as. The cookie wins because it is the
+    pre-existing behaviour and the browser majority; the key is attempted only
+    when the cookie produced no user. Pinned so the order is a decision rather
+    than an accident.
+    """
+    token = _mint_for("user-key-side")
+    _sign_in(monkeypatch, "user-cookie-side")
+
+    headers = {
+        "host": "archimedes-arc.com",
+        "cookie": "better-auth.session_token=opaque",
+        "authorization": f"Bearer {token}",
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test", headers=headers) as client:
+        response = await client.get("/whoami")
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "user-cookie-side"
+    assert response.json()["credential"] == "session"
+
+
 # ── A5 / A6: shown once, never again ──────────────────────────────────
 
 
