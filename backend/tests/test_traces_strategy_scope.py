@@ -37,13 +37,10 @@ implementation would have lied:
    never promises a row no offset will reach.
 
 6. **The match is exact, and scoped to traces that name strategies at all.**
-   ``strategies_referenced`` used to hold real strategy ids only on the agent's
-   DECISION traces; the construction writer put arXiv ids in the same field.
-   #1637 fixed that writer — it now records ``[strategy_id]`` and moves the
-   papers to ``consulted_paper_hashes`` — so ``construction`` joined the scope.
-   Inside the scope the match is element-exact: a bare string is not
-   substring-matched and a dict is not key-matched, which is what keeps an OLD
-   construction trace's arXiv ids from ever matching a strategy id.
+   ``strategies_referenced`` holds real strategy ids only on the agent's
+   DECISION traces; the two construction writers put arXiv ids and paper anchors
+   in the same field. Inside that scope the match is element-exact — a bare
+   string is not substring-matched and a dict is not key-matched.
 
 The ownership half of the trace gate (#1556 — who may read a row at all) is
 proved in ``tests/api/test_traces_ownership_gate.py``, including the guard on
@@ -566,45 +563,29 @@ async def test_every_row_the_total_promises_is_reachable_by_paging():
 # answer — the scope, and the exactness of the match inside it.
 
 
-def test_construction_traces_are_in_scope_now_that_they_name_strategies():
-    """#1637 fixed the construction writer, so the scope no longer has to
-    exclude it.
-
-    The exclusion existed because ``_run_fusion_job`` wrote
-    ``result.source_arxiv_ids`` into a field whose contract is strategy ids.
-    That writer now writes ``[strategy_id]`` and moves the papers into
-    ``consulted_paper_hashes``, which is the field that is for them — so a
-    passport can finally show the trace of its own construction, the thing this
-    exclusion made structurally impossible.
-
-    The match stays element-exact, which is what keeps admitting the decision
-    type from turning into a lie: an OLD construction trace that still carries
-    arXiv ids matches an arXiv id (truthfully — that string really is in the
-    field) and does not match any strategy id.
-    """
+def test_construction_traces_are_out_of_scope_because_they_name_papers():
+    """A construction trace's `strategies_referenced` is arXiv ids / paper
+    anchors, so matching a strategy id against it is a category error. Excluded
+    explicitly rather than left to fail silently, which reads as "this strategy
+    has no construction trace" instead of "this filter cannot see one"."""
     from archimedes.services.redis_state import trace_references_strategy
 
-    fixed = _trace("f1", strategies=[_SID], decision_type="construction")
-    assert trace_references_strategy(fixed, _SID) is True
+    fusion = _trace("f1", strategies=["2301.00001", "2405.09876"], decision_type="construction")
+    anchored = _trace("c1", strategies=["arxiv:2301.00001#momentum"], decision_type="construction")
 
-    legacy = _trace("f2", strategies=["2301.00001", "2405.09876"], decision_type="construction")
-    assert trace_references_strategy(legacy, _SID) is False
+    # Not even its own literal contents match, because the scope is the gate.
+    assert trace_references_strategy(fusion, "2301.00001") is False
+    assert trace_references_strategy(anchored, "arxiv:2301.00001#momentum") is False
+    assert trace_references_strategy(fusion, _SID) is False
 
 
 def test_every_agent_decision_type_is_in_scope():
     """The runner's four decision types all write real strategy ids, and all
     four belong on a strategy's passport — a skip is a decision about holding
-    it, and dropping skips would quietly present a filtered history.
-    ``construction`` joined them in #1637 (see the test above)."""
+    it, and dropping skips would quietly present a filtered history."""
     from archimedes.services.redis_state import STRATEGY_REFERENCE_DECISION_TYPES, trace_references_strategy
 
-    assert {
-        "construction",
-        "rebalance",
-        "rotation",
-        "regime_change",
-        "skip",
-    } == STRATEGY_REFERENCE_DECISION_TYPES
+    assert {"rebalance", "rotation", "regime_change", "skip"} == STRATEGY_REFERENCE_DECISION_TYPES
     for dt in STRATEGY_REFERENCE_DECISION_TYPES:
         assert trace_references_strategy(_trace("t", strategies=[_SID], decision_type=dt), _SID) is True
 
@@ -666,22 +647,18 @@ def test_a_tuple_or_set_of_ids_still_matches_exactly():
     assert trace_references_strategy(row, _SID) is False
 
 
-async def test_store_filter_returns_construction_traces_end_to_end():
-    """The scope is enforced by the store, not only by the pure predicate — and
-    a strategy's own construction trace now comes back with its decisions
-    (#1637). A trace whose ``strategies_referenced`` still holds arXiv ids is
-    still excluded, by the exact match rather than by the decision type."""
+async def test_store_filter_skips_construction_traces_end_to_end():
+    """The scope is enforced by the store, not only by the pure predicate."""
     from archimedes.services.redis_state import AgentStateStore
 
     rows = [
         _trace("decision", strategies=[_SID]),
         _trace("construction", strategies=[_SID], decision_type="construction"),
-        _trace("legacy_construction", strategies=["2301.00001"], decision_type="construction"),
     ]
     store = AgentStateStore()
     store._get_redis = AsyncMock(return_value=_fake_redis(rows))
 
     window, total = await store.list_traces(strategy_id=_SID)
 
-    assert sorted(t["id"] for t in window) == ["construction", "decision"]
-    assert total == 2
+    assert [t["id"] for t in window] == ["decision"]
+    assert total == 1

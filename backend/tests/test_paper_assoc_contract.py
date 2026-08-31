@@ -167,8 +167,14 @@ class TestAssocSchemaIsSingleShape:
         with pytest.raises(ValueError, match="schema tag"):
             assert_assoc(tampered)
 
-    def test_no_legacy_paper_shape_survives_at_the_four_writers(self):
+    def test_no_legacy_paper_shape_survives_at_any_writer(self):
         """GUARD over the writer sources, plus the input it must reject.
+
+        Three live writers remain — ``main.py`` (example seed),
+        ``debate_engine.py`` and ``generation_pipeline.py``. The fourth, the
+        fusion job's ``{arxiv_id, sha256: ""}``, went away with the route
+        itself in #1595; ``strategies_routes.py`` stays on this list anyway so
+        the shape cannot come back with it.
 
         A shape guard that only ran over the current tree would pass forever
         without anyone knowing whether it can fail, so the same predicate is
@@ -370,56 +376,85 @@ class TestTraceRecordsEveryCitedPaper:
         assert build_consulted_hashes([make_assoc("2301.1"), make_assoc("2301.1")]) == ["2301.1:"]
 
 
-class TestConstructionTraceCitesPapersInThePaperField:
-    """Acceptance 7. Papers out of ``strategies_referenced``, into
-    ``consulted_paper_hashes`` — which is what lets ``construction`` join the
-    strategy-reference filter without the filter starting to lie."""
+class TestPapersNeverLandInTheStrategyField:
+    """Acceptance 7, adjusted for what `main` now is.
 
-    def _trace(self, strategy_id="abcdef0123456789"):
-        from archimedes.services.source_tracker import build_consulted_hashes
+    The issue asked for the fusion job's construction trace to stop writing
+    arXiv ids into ``strategies_referenced``. **#1595 deleted that route
+    entirely** (and `test_sole_generation_route_guard.py` now fails if it comes
+    back), and ``services/construction_trace.py`` was deleted before that as a
+    zero-caller surface — so on current `main` *nothing writes a construction
+    trace at all*, and there is no writer left to fix.
 
-        assocs = [make_assoc("2301.00001"), make_assoc("2301.00002")]
-        return {
-            "decision_type": "construction",
-            "strategies_referenced": [strategy_id] if strategy_id else [],
-            "consulted_paper_hashes": build_consulted_hashes(assocs),
-        }
+    What survives from the criterion is the rule underneath it, which these
+    tests pin against every writer that does exist: **papers go in
+    ``consulted_paper_hashes``; ``strategies_referenced`` holds strategy ids.**
+    Widening ``STRATEGY_REFERENCE_DECISION_TYPES`` was deliberately NOT done —
+    see the rationale on that constant.
+    """
 
-    def test_construction_is_in_the_strategy_reference_scope(self):
+    def test_construction_stays_out_of_the_scope_while_nothing_writes_one(self):
         from archimedes.services.redis_state import STRATEGY_REFERENCE_DECISION_TYPES
 
-        assert "construction" in STRATEGY_REFERENCE_DECISION_TYPES
+        assert "construction" not in STRATEGY_REFERENCE_DECISION_TYPES
 
-    def test_a_construction_trace_now_joins_to_its_own_strategy(self):
-        from archimedes.services.redis_state import trace_references_strategy
+    def test_no_live_writer_puts_an_arxiv_id_in_strategies_referenced(self):
+        """GUARD over every module that writes a trace record, + its rejection.
 
-        trace = self._trace()
-        assert trace["consulted_paper_hashes"]
-        assert trace["strategies_referenced"] == ["abcdef0123456789"]
-        assert trace_references_strategy(trace, "abcdef0123456789") is True
-
-    def test_an_arxiv_id_in_the_strategy_field_still_matches_nothing(self):
-        """GUARD: admitting ``construction`` must not make arXiv ids match.
-
-        This is the adversarial input for the scope widening — a trace written
-        the OLD way, fed to the matcher that now sees construction traces.
+        The three live writers are ``chain/agent_runner.py`` (decision traces),
+        ``services/paper_trace.py`` (paper settles) and
+        ``api/_route_helpers.py``. Each must pass strategy ids to
+        ``strategies_referenced`` and papers to ``consulted_paper_hashes``.
         """
+
+        def arxiv_into_strategy_field(text: str) -> list[str]:
+            code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+            needles = (
+                "strategies_referenced=result.source_arxiv_ids",
+                '"strategies_referenced": result.source_arxiv_ids',
+                "strategies_referenced=source_arxiv_ids",
+                "strategies_referenced=arxiv_ids",
+            )
+            return [n for n in needles if n in code]
+
+        writers = [
+            "backend/archimedes/chain/agent_runner.py",
+            "backend/archimedes/services/paper_trace.py",
+            "backend/archimedes/api/_route_helpers.py",
+            "backend/archimedes/api/strategies_routes.py",
+        ]
+        for rel in writers:
+            text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            assert arxiv_into_strategy_field(text) == [], f"{rel} routes papers into the strategy field"
+
+        # Adversarial companion: the predicate fires on the deleted writer's
+        # actual line, verbatim from `_run_fusion_job` before #1595 removed it.
+        assert arxiv_into_strategy_field('"strategies_referenced": result.source_arxiv_ids,')
+
+    def test_every_trace_writer_carries_the_hashed_paper_field(self):
+        """``consulted_paper_hashes`` is in ``_HASH_FIELDS``: a writer that
+        drops it produces a record whose canonical bytes cannot be rebuilt.
+
+        ``api/_route_helpers.persist_trace_off_chain`` was doing exactly that
+        (#1637). It has no callers, which is why nobody noticed.
+        """
+        for rel in (
+            "backend/archimedes/chain/agent_runner.py",
+            "backend/archimedes/services/paper_trace.py",
+            "backend/archimedes/api/_route_helpers.py",
+        ):
+            text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            assert "consulted_paper_hashes" in text, rel
+
+    def test_an_arxiv_id_could_never_be_mistaken_for_a_strategy_id_anyway(self):
+        """Defence in depth: the matcher compares WHOLE strings, and a
+        ``strategy_store`` id is ``content_hash[:16]``. Even a non-conforming
+        publisher on ``POST /api/traces/publish`` records no match."""
         from archimedes.services.redis_state import trace_references_strategy
 
-        old_style = {
-            "decision_type": "construction",
-            "strategies_referenced": ["2301.00001", "2301.00002"],
-        }
-        assert trace_references_strategy(old_style, "2301.00001") is True  # exact id, honestly matched
-        assert trace_references_strategy(old_style, "abcdef0123456789") is False
-
-    def test_a_failed_persist_names_no_strategy_rather_than_inventing_one(self):
-        from archimedes.services.redis_state import trace_references_strategy
-
-        trace = self._trace(strategy_id=None)
-        assert trace["strategies_referenced"] == []
-        assert trace["consulted_paper_hashes"], "papers stay recorded even when the DB write failed"
-        assert trace_references_strategy(trace, "abcdef0123456789") is False
+        row = {"decision_type": "rebalance", "strategies_referenced": ["2301.00001", "2405.09876"]}
+        assert trace_references_strategy(row, "abcdef0123456789") is False
+        assert trace_references_strategy(row, "2301.0000") is False  # no substring match
 
 
 # ═══════════════════════════════════════════════════════════════════════════

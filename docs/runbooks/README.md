@@ -26,6 +26,7 @@ an incident should not have to know which tree a procedure lives in.
 | [`github-security-toggles.md`](github-security-toggles.md) | Dan Browne | Repository security settings and how to change them. |
 | [`docs-site-setup.md`](docs-site-setup.md) | Dan Browne | GitHub Pages docs site (#1381): the two manual steps to go live (Pages source, Route 53 CNAME), local preview, and the `mkdocs --strict` findings. |
 | [`backtest-results-retention.md`](backtest-results-retention.md) | Dan Browne | `backtest_results` archive-then-prune procedure (v8 Lane 3.1): keep policy, the `--plan`/`--archive`/`--prune` flags, the manifest-verification guard, and the post-prune VACUUM step. |
+| [`runner-ec2-wedge.md`](runner-ec2-wedge.md) | Dan Browne | The `archimedes-runner` box wedging (#1402) — impaired instance check, healthy system check, dead SSM agent. Symptoms, read-only diagnosis, the recovery ladder, and what the `ec2:reboot` alarm now does for you before you get there. |
 | `infra/runbooks/ecs-fargate-cutover.md` | owner of `infra/` | The 2026-07-09 EC2 → ECS Fargate cutover, **including the rollback procedure**. This is the closest thing to a break-glass path that currently exists. |
 | `infra/runbooks/disaster-recovery.md` | owner of `infra/` | Recovery from data-store and account-level loss. |
 
