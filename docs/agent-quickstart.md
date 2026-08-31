@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-30
+> **updated:** 2026-08-31
 
 You are an autonomous agent that has never seen this API. This page is the shortest
 deterministic path from "no account" to "a strategy running in a paper-trading ledger you
@@ -15,15 +15,19 @@ want the full surface** — the wallet-link handshake in detail, the real on-cha
 the marketplace, the `agent_journey.py` reference harness. This page is narrower: nothing
 below creates a vault or puts capital on-chain.
 
-**It is not free.** Generation sits behind a live x402 paywall in production:
-`GET /api/generate/quote` answers `payment_required: true`, `dry_run: false`,
-`price: "$2.000000"` — so step 6 charges **$2.00 testnet USDC per run and settles for
-real**, from a wallet you link and fund first (steps 6a–6b). The code *defaults* are the
-opposite of that — the paywall is off and dry-run is on unless a deploy turns them on —
-so a local checkout is free while production is not, and **step 1 against the host you
-are actually calling is the only thing that tells you which one you are on.** One step is
-not autonomous: funding the wallet goes through Circle's faucet, which today needs a
-human.
+**Your first three generations are free; after that it is not.** An account is required
+for every generation and there is no wallet-only path, but a **wallet is not required for
+the first `FREE_GENERATIONS_PER_ACCOUNT` (default 3) generations on that account**,
+lifetime (#1643 — this reverses the 2026-08-19 "wallet before the first generation"
+directive earlier revisions of this page documented). From generation #4, generation sits
+behind a live x402 paywall in production: `GET /api/generate/quote` answers
+`payment_required: true`, `dry_run: false`, `price: "$2.000000"` — so step 6 then charges
+**$2.00 testnet USDC per run and settles for real**, from a wallet you link and fund first
+(steps 6a–6b). The code *defaults* are the opposite of that — the paywall is off and
+dry-run is on unless a deploy turns them on — so a local checkout never charges while
+production does, and **step 1 against the host you are actually calling is the only thing
+that tells you which one you are on.** One step is not autonomous: funding the wallet goes
+through Circle's faucet, which today needs a human.
 
 Conventions used below:
 
@@ -48,9 +52,9 @@ Conventions used below:
 | 2 | Create an account | `POST /api/auth/sign-up/email` | none |
 | 3 | Sign in (get the cookie) | `POST /api/auth/sign-in/email` | none |
 | 4 | Confirm the session | `GET /api/auth/get-session` | cookie |
-| 5 | Check your quota | `GET /api/account/usage` | cookie |
+| 5 | Check your quota + free generations left | `GET /api/account/usage` | cookie |
 | 6 | Submit the brief | `POST /api/generate/start` | cookie |
-| 6a | Link a wallet — once, if step 1 said `true` | `POST /api/wallets/challenge` then `POST /api/wallets/verify` | cookie |
+| 6a | Link a wallet — once, after the free generations run out | `POST /api/wallets/challenge` then `POST /api/wallets/verify` | cookie |
 | 6b | Pay the $2 and retry | `POST /api/generate/start` + `Payment-Signature` | cookie + wallet |
 | 7 | Watch it run | `GET /api/generate/stream/{job_id}` | cookie |
 | 7b | …or poll instead | `GET /api/generate/jobs/{job_id}` | cookie |
@@ -114,10 +118,25 @@ whether the rest of the journey costs money.
 host you asked*:
 
 - **`payment_required: true`** (production today) — step 6 needs a linked, funded wallet
-  and a signed payment. Unlinked → `409 wallet_link_required`; linked but unsigned →
-  `402`. Steps 6a and 6b are that path, and **`dry_run: false` means the $2 settles for
+  and a signed payment **once your account's free generations are used up** (see the box
+  below). Unlinked and out of free runs → `409 wallet_link_required`; linked but unsigned
+  → `402`. Steps 6a and 6b are that path, and **`dry_run: false` means the $2 settles for
   real** rather than being waved through unverified.
 - **`payment_required: false`** — step 6 needs no wallet and no payment; skip 6a and 6b.
+
+> **Your first few generations are free, wallet or not (#1643).** An *account* is required
+> for every generation — there is no wallet-only-without-account path — but a **wallet is
+> not**, for the first `FREE_GENERATIONS_PER_ACCOUNT` (default **3**) generations on that
+> account, lifetime. So against production the sequence is: sign up (step 2), sign in
+> (step 3), then step 6 works immediately, three times, with no wallet and no payment.
+> Steps 6a/6b apply from generation #4 onward, unchanged.
+>
+> This **reverses** the 2026-08-19 directive that earlier revisions of this page
+> documented ("a wallet is required before the first generation"). Read your remaining
+> allowance from `GET /api/account/usage` (step 5) rather than counting locally — that
+> endpoint reads the same ledger the gate enforces. `free_generations_remaining: null`
+> there means *unknown* (the ledger could not be read), never *zero*; retry rather than
+> assuming you are locked out.
 
 Do not carry an answer over from another host or from the source. The code *defaults* are
 `GENERATION_PAYMENT_REQUIRED` unset (paywall off) and `PAYMENTS_DRY_RUN=true` (nothing
@@ -182,7 +201,10 @@ curl -sS -b /tmp/agora.jar $BASE/api/account/usage
   "user_id": "…",
   "user": { "used": 0, "cap": 10, "unlimited": false, "remaining": 10, "error": null },
   "ip":   { "used": 0, "cap": 25, "unlimited": false, "remaining": 25, "error": null },
-  "quote": { "payment_required": true, "…": "the same object step 1 returned" }
+  "quote": { "payment_required": true, "…": "the same object step 1 returned" },
+  "free_generations_allowance": 3,
+  "free_generations_remaining": 3,
+  "free_generations_error": null
 }
 ```
 
@@ -191,8 +213,18 @@ Both caps must pass. `used: null` with `error: "quota_backend_unavailable"` is a
 increments anything.
 
 The caps are stacked **underneath** the paywall and enforced **before** it, so a
-quota-blocked caller is refused `429` without ever being asked to pay. Passing them is not
-a free run: on a `payment_required: true` host you still owe the $2 at step 6.
+quota-blocked caller is refused `429` without ever being asked to pay.
+
+**`free_generations_*` is a different axis from the two caps above and neither replaces
+the other.** `user`/`ip` are *daily* volume caps that reset every UTC day;
+`free_generations_remaining` is your account's *lifetime* allowance of generations that
+need no wallet and no payment at all (#1643). Both apply: with free generations left you
+are still refused `429` once the daily cap is hit. `free_generations_remaining: null` with
+`free_generations_error` set is the same honest unknown as `used: null` — it is not a
+zero, so do not treat it as "locked out"; retry.
+
+Once `free_generations_remaining` reaches `0` on a `payment_required: true` host, step 6
+starts costing $2 and steps 6a/6b become mandatory.
 
 ### 6. Submit the brief
 
@@ -215,20 +247,23 @@ control characters. `model` is optional and defaults to the server's free model 
 premium model without an entitlement is a **402**, and the request is refused rather than
 silently downgraded.
 
-**HTTP 202 is only what a `payment_required: false` host returns here.** Against
-production, this exact call answers `409 wallet_link_required` (no wallet on the account)
-or `402` (wallet linked, nothing signed) — those are the paywall, not an error in your
-request, and your brief was not run. Steps 6a and 6b clear them; the body above is
-unchanged and gets replayed verbatim at 6b.
+**On a `payment_required: true` host, this call returns 202 for your account's first three
+generations and starts refusing afterwards** — `409 wallet_link_required` (no wallet on the
+account) or `402` (wallet linked, nothing signed). Those are the paywall, not an error in
+your request, and your brief was not run. Steps 6a and 6b clear them; the body above is
+unchanged and gets replayed verbatim at 6b. On a `payment_required: false` host every call
+is 202 and no allowance is spent at all. `GET /api/account/usage` (step 5) is how you tell
+which side of the gate you are on before submitting.
 
 The server refuses in a deliberate order, so read the status before reacting: `429` for the
 daily cap, then `429 generation_queue_full`, then `409`, then `402`. **You are never asked
 to pay for a slot that does not exist, and a quota-blocked or queue-blocked call takes no
 money** — the `generation_queue_full` body says so in as many words.
 
-### 6a. Link a wallet — once per account, if step 1 said `true`
+### 6a. Link a wallet — once per account, after the free generations run out
 
-Skip this entirely when `payment_required` is `false`. You need a wallet you control the
+Skip this entirely when `payment_required` is `false`, and skip it until step 5 reports
+`free_generations_remaining: 0`. You need a wallet you control the
 key for; `provider: "headless"` is the one of the four an API caller can use.
 
 ```bash
@@ -475,7 +510,7 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 | **429** | `{"detail": {"reason": "generation_daily_cap", "scope": "user", "cap": 10, "message": "…"}}` | Daily generation cap hit, per account (`scope: "user"`) or per IP (`scope: "ip"`) | Wait for the daily reset. Call step 5 **before** step 6 to see this coming; the caps it reports are the caps enforced. |
 | **429** | `{"detail": {"reason": "generation_queue_full", "message": "… No payment was taken. …"}}` | The generation wait queue is full | Retry in a few minutes. No payment was taken — admission control runs before the paywall. |
 | **429** | `{"detail": "Rate limit exceeded. Please slow down and try again later."}` + `X-RateLimit-*` | Per-route request-rate limit (`/api/generate/start` 5/min, `/api/paper/deployments` 10/min) | Back off. This is requests-per-minute, distinct from the daily cap above — same status, different `detail` shape, different fix. |
-| **409** | `{"detail": {"reason": "wallet_link_required", "message": "…"}}` | Payment is required but your account has no linked wallet | **Expected on production** — do step 6a: `POST /api/wallets/challenge` → `POST /api/wallets/verify` ([`agent-api.md`](agent-api.md#optional-eip-4361-wallet-link)). Funding the wallet currently needs a human at the faucet, so linking an empty one only moves you to the 402. |
+| **409** | `{"detail": {"reason": "wallet_link_required", "message": "…"}}` | Your account's free generations are used up (#1643) and it has no linked wallet | **Expected on production from generation #4** — do step 6a: `POST /api/wallets/challenge` → `POST /api/wallets/verify` ([`agent-api.md`](agent-api.md#optional-eip-4361-wallet-link)). Funding the wallet currently needs a human at the faucet, so linking an empty one only moves you to the 402. Check `free_generations_remaining` at step 5 first: if it is `null` the ledger was unreadable, not exhausted. |
 | **404** | `{"detail": "Strategy not found"}` / `{"detail": "Paper deployment not found"}` | Missing **or** not yours — the two are deliberately indistinguishable | Confirm the id came from a call made with this same session. Existence is private; a 404 here is not proof the id is wrong. |
 | **503** | `{"detail": {"reason": "payment_config_missing", "message": "…"}}` | Payments are enabled but not fully configured server-side | Not caller-fixable. Retry later; it fails closed rather than letting the request through free. |
 

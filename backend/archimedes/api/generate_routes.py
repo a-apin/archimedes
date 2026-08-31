@@ -47,7 +47,7 @@ from archimedes.api.generate_schemas import (
 )
 from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
-from archimedes.services import generation_credits, generation_payment
+from archimedes.services import free_generations, generation_credits, generation_payment
 from archimedes.services.generation_quota import enforce_generation_quota
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
@@ -454,66 +454,104 @@ async def start_generation(
     # job_id exists).
     payment = None
     credit_id = None
+    free_grant_id = None
     if generation_payment.payment_required():
-        if not linked_wallet:
-            # The wallet-connection precondition. 409 (not 402): the blocker is
-            # account state, not a missing payment. NOTE the faucet is the one
-            # human-only step (#1294) — an agent hitting this must have its
-            # wallet funded by a human before payment can succeed.
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "reason": "wallet_link_required",
-                    "message": (
-                        "Generation requires a linked, funded wallet. Link a wallet to your account "
-                        "(POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC "
-                        "(the faucet currently requires a human), then retry. "
-                        "See GET /api/generate/quote for the price."
-                    ),
-                },
-            )
-        payment, credit_id = await _paywall_with_credit(request, linked_wallet, user.id)
-        if payment is not None:
-            # Surface the settlement receipt (PAYMENT-RESPONSE) to the payer.
-            for name, value in (payment.response_headers or {}).items():
-                response.headers[name] = value
+        # FREE PATH (#1643 — the owner's 2026-08-31 product review REVERSES the
+        # 2026-08-19 "no free path" directive). An account is still required for
+        # every generation, free or paid — `require_current_user` above is
+        # unconditional and there is deliberately no wallet-only path — but the
+        # first FREE_GENERATIONS_PER_ACCOUNT (default 3) runs on that account
+        # need no wallet and no payment. The slot is claimed BEFORE the gate it
+        # opens, so N concurrent first-generation calls cannot each be granted
+        # one (services/free_generations.py, and the unique constraint behind
+        # it). Everything from grant #4 onward is byte-for-byte the behaviour
+        # below, unchanged.
+        #
+        # The claim lives INSIDE this flag branch on purpose: under flag-off
+        # nothing is gated and nothing is charged, so burning a lifetime
+        # allowance there would silently spend a user's free runs during a
+        # period when generation was free for everyone anyway.
+        free_grant_id = free_generations.claim(user.id)
+        if free_grant_id is None:
+            if not linked_wallet:
+                # The wallet-connection precondition. 409 (not 402): the blocker is
+                # account state, not a missing payment. NOTE the faucet is the one
+                # human-only step (#1294) — an agent hitting this must have its
+                # wallet funded by a human before payment can succeed.
+                # Funnel (#1643): this is the exhausted-the-free-tier boundary —
+                # the transition the conversion instrument most needs to see.
+                await record_funnel(request, "wallet_gate_shown")
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "wallet_link_required",
+                        "message": (
+                            "Your free generations are used up. Generation now requires a linked, funded "
+                            "wallet. Link a wallet to your account "
+                            "(POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC "
+                            "(the faucet currently requires a human), then retry. "
+                            "See GET /api/generate/quote for the price."
+                        ),
+                    },
+                )
+            payment, credit_id = await _paywall_with_credit(request, linked_wallet, user.id)
+            if payment is not None:
+                # Surface the settlement receipt (PAYMENT-RESPONSE) to the payer.
+                for name, value in (payment.response_headers or {}).items():
+                    response.headers[name] = value
 
-    # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
-    # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a
-    # non-entitled premium request is rejected (HTTP 402) without burning any
-    # work — and is NOT silently downgraded to the free default model. Free
-    # models (and the unset/default case) always pass.
-    # Normal account use and free models need no wallet.
-    enforce_model_entitlement(req.model, linked_wallet)
+    # From here to the enqueue, a claimed free slot is at risk: the entitlement
+    # gate can raise 402 and the enqueue can error, and either would leave the
+    # allowance spent on a generation that never ran. Same shape, and the same
+    # reason, as _paywall_with_credit's `except BaseException: void; raise`.
+    try:
+        # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
+        # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a
+        # non-entitled premium request is rejected (HTTP 402) without burning any
+        # work — and is NOT silently downgraded to the free default model. Free
+        # models (and the unset/default case) always pass.
+        # Normal account use and free models need no wallet. A free-tier caller
+        # is NOT exempt: the free allowance buys the default model, not premium.
+        enforce_model_entitlement(req.model, linked_wallet)
 
-    store = get_job_store()
-    # Free-tier selection (defense in depth — the UI also restricts this).
-    # Runs AFTER the entitlement gate above: a non-entitled premium request has
-    # already been rejected with 402, so this only ever sees an allowlisted free
-    # model, an entitled premium id, junk, or None. Only an allowlisted free-tier
-    # id is honored for the pipeline; everything else (incl. entitled premium,
-    # which cannot serve until Bedrock activation — roadmap T3.8) falls back to
-    # the env default, so behavior is UNCHANGED when no valid free model is picked.
-    selected_model = req.model if is_allowed_model(req.model) else None
-    if req.model and selected_model is None:
-        logger.info("generate: ignoring non-allowlisted model %r; using env default", sanitize_log_value(req.model))
-    # Canonical Better Auth ownership is server-derived and follows the job
-    # through persistence. Wallet provenance stays optional.
-    job_id = await store.enqueue(
-        job_type="generate",
-        payload={
-            "brief": req.brief.model_dump(),
-            "n_candidates": req.n_candidates,
-            "owner_user_id": user.id,
-            "owner_wallet": linked_wallet,
-            # The allowlist-filtered model the pipeline will actually use (None →
-            # env default). enforce_model_entitlement (above) has already rejected
-            # a non-entitled premium request with 402, so anything reaching here is
-            # either an allowlisted free model or None — auditable provenance for
-            # the tier the run was authorized for.
-            "model": selected_model,
-        },
-    )
+        store = get_job_store()
+        # Free-tier selection (defense in depth — the UI also restricts this).
+        # Runs AFTER the entitlement gate above: a non-entitled premium request has
+        # already been rejected with 402, so this only ever sees an allowlisted free
+        # model, an entitled premium id, junk, or None. Only an allowlisted free-tier
+        # id is honored for the pipeline; everything else (incl. entitled premium,
+        # which cannot serve until Bedrock activation — roadmap T3.8) falls back to
+        # the env default, so behavior is UNCHANGED when no valid free model is picked.
+        selected_model = req.model if is_allowed_model(req.model) else None
+        if req.model and selected_model is None:
+            logger.info("generate: ignoring non-allowlisted model %r; using env default", sanitize_log_value(req.model))
+        # Canonical Better Auth ownership is server-derived and follows the job
+        # through persistence. Wallet provenance stays optional.
+        job_id = await store.enqueue(
+            job_type="generate",
+            payload={
+                "brief": req.brief.model_dump(),
+                "n_candidates": req.n_candidates,
+                "owner_user_id": user.id,
+                "owner_wallet": linked_wallet,
+                # The allowlist-filtered model the pipeline will actually use (None →
+                # env default). enforce_model_entitlement (above) has already rejected
+                # a non-entitled premium request with 402, so anything reaching here is
+                # either an allowlisted free model or None — auditable provenance for
+                # the tier the run was authorized for.
+                "model": selected_model,
+            },
+        )
+    except BaseException:
+        if free_grant_id is not None:
+            free_generations.release(free_grant_id)
+        raise
+
+    # The free slot is bound to its generation only now, once the job is queued
+    # — the same "spend only what was delivered" point at which a paid credit is
+    # consumed below.
+    if free_grant_id is not None:
+        free_generations.stamp_job(free_grant_id, job_id=job_id)
 
     # Payment receipt (Dan's directive: "we must provide people with their
     # receipts"). Only when a real settled PaymentInfo exists — flag-off and
@@ -545,6 +583,12 @@ async def start_generation(
     # Conversion funnel (#787): a generation actually started for this visitor —
     # the key "tried the product" transition. Fail-safe; never blocks the response.
     await record_funnel(request, "generation_started")
+    # …and, when it was one of the account's free runs (#1643), which side of
+    # the new gate it fell on. Emitted here rather than at claim time so a
+    # released slot (the except above) is never counted as a free generation
+    # the visitor actually received.
+    if free_grant_id is not None:
+        await record_funnel(request, "free_generation_used")
     emit_identity_event(
         wallet=linked_wallet,
         event_type="generation_started",
