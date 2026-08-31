@@ -217,6 +217,7 @@ blocks and what does not**:
 | `import-guard.yml` | **YES** | Runs on every PR. Catches imports that resolve locally but not in a clean environment. |
 | `contracts-test.yml` | no | `forge build` + `forge test`. **Path-filtered to `contracts/**`, so it must not be made a required check** until an always-runs fallback job reports the same check name — see the boxed comment in `scripts/setup-branch-protection.sh`. |
 | `docs-gate.yml` | no | Link resolution and index completeness across `docs/` and root markdown; staleness reported but never blocking. **Path-filtered — same constraint as `contracts-test.yml`, and the same warning is boxed at the top of the workflow.** Run it locally with `make docs-check`. |
+| `infra-gate.yml` | no | `terraform fmt -check -recursive` + `init -backend=false` + `validate`, as a matrix over the two Terraform roots (`infra/`, `company-site/infra/`). No credentials, no `plan`, never reads S3 state. **Path-filtered — same constraint as `contracts-test.yml`/`docs-gate.yml`, same boxed warning at the top of the workflow.** Note that quality-gate's "Infra — user-data size guard" row is a byte-count on `infra/user-data.sh` and parses no `.tf` file; this is the row that does. |
 | `deploy.yml` · `release-tag.yml` | n/a | Build → ECR → roll Fargate (superseded runs auto-cancel); semver tag per merged PR. |
 | `deploy-runners.yml` | n/a | `workflow_dispatch` only — the `push` trigger is deliberately commented out. Oracle + agent EC2 and the KB scheduled Fargate task. |
 
