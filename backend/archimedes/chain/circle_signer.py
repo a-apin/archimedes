@@ -31,6 +31,14 @@ _TERMINAL = {"COMPLETE", "FAILED", "DENIED", "CANCELLED"}
 _POLL_INTERVAL = 2.0  # seconds
 _MAX_POLLS = 60  # 2 minutes max
 
+# Bounded wall-clock ceiling on the wallet-address lookup (#1412). This runs
+# inside the agent tick's reveal-reconciliation pass, so an unbounded read
+# against a hung Circle endpoint would stall the tick. aiohttp's own default is
+# 5 minutes; a lookup that has not answered in 10s is not going to answer
+# usefully, and "no answer" has a correct, safe meaning here (None = could not
+# confirm).
+_WALLET_LOOKUP_TIMEOUT = 10.0  # seconds
+
 
 def _encrypt_entity_secret(entity_secret_hex: str, public_key_pem: str) -> str:
     """Encrypt entity secret with Circle's RSA public key (OAEP/SHA-256)."""
@@ -67,10 +75,87 @@ class CircleSigner:
         self._entity_secret: str = os.getenv("CIRCLE_ENTITY_SECRET", "")
         self._wallet_id: str = os.getenv("WALLET_ID", "")
         self._circle_public_key: str | None = None
+        self._wallet_address: str | None = None
 
     @property
     def is_configured(self) -> bool:
         return bool(self._api_key and self._entity_secret and self._wallet_id)
+
+    async def get_wallet_address(self) -> str | None:
+        """The EVM address WALLET_ID actually signs with, asked of Circle itself.
+
+        ``GET /wallets/{WALLET_ID}`` returns Circle's own record of the wallet
+        this signer submits every transaction through, so the answer is derived
+        from the same identifier that does the signing — not from
+        ``WALLET_ADDRESS``, a separate env var that an operator maintains BY
+        HAND and that nothing re-derives from the wallet (see
+        ``.env.example`` and ``ChainExecutor.backend_signer_address``). That
+        distinction is the whole point of this method: a caller that acts
+        irreversibly on a signer mismatch (#1353's reveal-reconciliation
+        pre-check) can trust this and must not trust the mirror.
+
+        Returns:
+            The wallet's EVM address, or ``None`` when it could not be
+            established — unconfigured credentials, a non-200 from Circle, a
+            payload without an address, a timeout, or any transport error.
+
+        ``None`` means "could not confirm", never "confirmed absent" and never
+        "confirmed unchanged". Callers must treat it as *no information*: the
+        pre-check skips itself and falls through to the ordinary (reversible)
+        retry path rather than terminaling on a guess. Consequently this method
+        must never raise and must never substitute a plausible-looking value
+        for a failed lookup — a fail-soft guess here would permanently kill
+        recoverable dangling reveals (CLAUDE.md § fail-soft).
+
+        The successful answer is cached for the process lifetime, same as
+        ``_get_public_key``: a Circle wallet's address is immutable for a given
+        wallet ID, and re-reading it on every reconciliation pass would add a
+        network round-trip to each agent tick. Failures are deliberately NOT
+        cached, so a transient outage does not pin "unconfirmable" forever.
+        """
+        if self._wallet_address:
+            return self._wallet_address
+        if not self.is_configured:
+            return None
+
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=_WALLET_LOOKUP_TIMEOUT)) as session,
+                session.get(
+                    f"{CIRCLE_API_BASE}/wallets/{self._wallet_id}",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                ) as resp,
+            ):
+                if resp.status != 200:
+                    logger.error(
+                        "Circle wallet address lookup failed for wallet %s: HTTP %d",
+                        self._wallet_id,
+                        resp.status,
+                    )
+                    return None
+                body = await resp.json()
+        except (TimeoutError, aiohttp.ClientError, ValueError) as e:
+            # TimeoutError covers asyncio.TimeoutError (its alias since 3.11) and
+            # so aiohttp's ServerTimeoutError; ValueError covers a non-JSON body.
+            logger.error(
+                "Circle wallet address lookup errored for wallet %s: %r — reporting 'could not confirm'",
+                self._wallet_id,
+                e,
+            )
+            return None
+
+        data = body.get("data") or {} if isinstance(body, dict) else {}
+        wallet = data.get("wallet") or {} if isinstance(data, dict) else {}
+        address = wallet.get("address") if isinstance(wallet, dict) else None
+        if not address:
+            logger.error(
+                "Circle wallet address lookup for wallet %s returned no address field",
+                self._wallet_id,
+            )
+            return None
+
+        self._wallet_address = str(address)
+        return self._wallet_address
 
     async def _get_public_key(self, session: aiohttp.ClientSession) -> str | None:
         """Fetch Circle's RSA public key (cached)."""
