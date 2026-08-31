@@ -119,26 +119,27 @@ class TestTheSuiteDatabaseIsNotInTheWorkingTree:
     made the same code pass 41 in one directory and fail 6 in another.
     """
 
-    def test_database_url_is_set_and_is_not_the_in_tree_default(self):
+    def test_database_url_is_pinned_away_from_the_in_tree_default(self):
+        """Deliberately string-level and backend-agnostic. A teammate running
+        the suite with ``DATABASE_URL`` exported to Postgres must not see this
+        guard misfire — CI green / local red is itself a bug (CLAUDE.md)."""
         url = os.environ.get("DATABASE_URL")
         assert url, "conftest must pin DATABASE_URL so the in-tree default can never be reached"
         assert url != archimedes_db._default_database_url()
+        repo_root = str(archimedes_db._BACKEND_DIR.parent.resolve())
+        assert repo_root not in url, f"the suite's database sits inside the checkout: {url}"
 
-    def test_the_live_engine_is_not_bound_to_the_repo_local_sqlite(self):
-        """Assert on the engine, not just the env var: ``archimedes.db`` reads
+    def test_the_live_engine_is_not_bound_to_the_in_tree_sqlite_file(self):
+        """Assert on the engine, not only the env var: ``archimedes.db`` reads
         ``DATABASE_URL`` once at import, so the engine is what actually decides
-        which file the loader's DB branch reads."""
-        bound = archimedes_db.engine.url.database
-        assert bound is not None
-        in_tree_default = archimedes_db._BACKEND_DIR / "archimedes_chat.db"
-        assert Path(bound).resolve() != in_tree_default.resolve()
+        which file the loader's DB branch reads.
 
-    def test_no_test_database_lives_under_the_repo(self):
-        """The broader property, so a *different* in-repo default would also
-        trip this: nothing the suite is bound to sits inside the checkout."""
-        repo_root = archimedes_db._BACKEND_DIR.parent.resolve()
-        bound = Path(archimedes_db.engine.url.database).resolve()
-        assert repo_root not in bound.parents
+        Compared as an exact string against the one path that carries the bug.
+        ``Path(...).resolve()`` would be wrong here: on a Postgres URL
+        ``url.database`` is a bare database *name*, and resolving it against the
+        CWD would manufacture a repo-relative path and fail for no reason."""
+        in_tree_default = archimedes_db._BACKEND_DIR / "archimedes_chat.db"
+        assert archimedes_db.engine.url.database != str(in_tree_default)
 
 
 # ── Fix 2: an explicit manifest path outranks whatever the DB holds ──────────
