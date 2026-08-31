@@ -1,25 +1,40 @@
 # Docs Site Setup — GitHub Pages via mkdocs-material
 
-> **Status:** runbook. **Owner:** Dan Browne. **Updated:** 2026-08-20.
+> **Status:** runbook. **Owner:** Dan Browne. **Updated:** 2026-08-31.
 
-`docs/` is built into a static site by [`mkdocs.yml`](../../mkdocs.yml) (theme:
-mkdocs-material) and published by
-[`.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml) to
-GitHub Pages. This is issue #1381, Dan's decision: **option B, GitHub
+`docs/` **and the agent-generated `openwiki/` tree** are built into a static
+site by [`mkdocs.yml`](../../mkdocs.yml) (theme: mkdocs-material) and published
+by [`.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml)
+to GitHub Pages. This is issue #1381, Dan's decision: **option B, GitHub
 Pages** — migrate to something else later only if we outgrow it.
 
-The workflow is **inert as merged** — see its own header comment. Both of
-its jobs are gated on the repo variable `DOCS_SITE_ENABLED == "true"` (the
-same pattern as `deploy-runners.yml`'s `RUNNER_DEPLOY_ENABLED`), so until
-step 3 below it simply **skips** (grey, not red) on every qualifying push.
-If the variable is flipped before Pages is enabled, the deploy job fails
-harmlessly at `actions/deploy-pages`: no partial deploy, no site, nothing
-outside the workflow run's own red X.
+`openwiki/` lives at the repository root, outside `docs_dir`, so mkdocs cannot
+see it by itself; [`.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py)
+mounts it at `/openwiki/` and stamps the agent-generated banner on each page.
+The section index, with the full provenance note, is
+[`../agent-wiki.md`](../agent-wiki.md).
+
+## Which half is live and which is still gated
+
+The workflow's two jobs have **different** gates, and only one of them is inert:
+
+- **`build`** runs on every qualifying push to `main` and on every PR that
+  touches a docs path. It is a real check — `mkdocs build --strict` fails on a
+  link into `docs/` or `openwiki/` that names a file which does not exist. It
+  needs no repo settings and no DNS, so nothing below blocks it. (It used to be
+  gated too, which meant the site could rot unnoticed for as long as the
+  variable stayed unset.)
+- **`deploy`** is gated on the repo variable `DOCS_SITE_ENABLED == "true"` (the
+  same pattern as `deploy-runners.yml`'s `RUNNER_DEPLOY_ENABLED`) and never runs
+  from a pull request, so until step 3 below it simply **skips** (grey, not
+  red). If the variable is flipped before Pages is enabled, the deploy job fails
+  harmlessly at `actions/deploy-pages`: no partial deploy, no site, nothing
+  outside the workflow run's own red X.
 
 ## Dan's three manual steps to go live
 
-Neither of these can be done by a workflow or from the CLI with the access
-this repo's automation has — both are one-time, human, console actions.
+None of these can be done by a workflow or from the CLI with the access this
+repo's automation has — all three are one-time, human, console actions.
 
 ### 1. Repo Settings → Pages
 
@@ -63,8 +78,9 @@ GitHub → `a-apin/archimedes` → **Settings → Secrets and variables → Acti
 → Variables** → New repository variable: `DOCS_SITE_ENABLED` = `true`.
 Then run the workflow once (**Actions → Docs Site (GitHub Pages) → Run
 workflow**) rather than waiting for the next docs push. Until this variable
-exists and equals `true`, both workflow jobs skip — that's the safety that
-lets the scaffold merge before steps 1–2 are done.
+exists and equals `true`, the **deploy** job skips — that's the safety that
+lets this merge before steps 1–2 are done. The **build** job runs either way;
+if it is green, everything except the three steps on this page is done.
 
 ### Why there's no `docs/CNAME` file
 
@@ -87,60 +103,77 @@ mkdocs serve
 ```
 
 Serves at `http://127.0.0.1:8000` with live reload on any `docs/**` or
-`mkdocs.yml` edit. `mkdocs build` (what CI runs) writes the static site to
-`site/` (or `_site/` — CI passes `--site-dir _site` to match
+`mkdocs.yml` edit. `mkdocs build --strict` (what CI runs) writes the static
+site to `site/` (or `_site/` — CI passes `--site-dir _site` to match
 `upload-pages-artifact`'s expected path); either is gitignored-equivalent
 scratch output, not something to commit.
 
-## `mkdocs --strict` findings
+`mkdocs serve` watches `docs_dir` and `mkdocs.yml` and nothing else by
+default, so `mkdocs.yml` adds `watch: [openwiki]` to pick up wiki edits too.
+Editing the hook itself still needs a **restart**, not just a save: mkdocs
+`lru_cache`s hook modules for the life of the process.
 
-`mkdocs build --strict` was run against the full `docs/` tree while building
-this scaffold (2026-08-20, mkdocs-material 9.7.7) and is **not** clean: 315
-warnings, which `--strict` promotes to a hard failure. `mkdocs.yml` and
-`docs-site.yml` both run plain `mkdocs build` (no `--strict`) deliberately,
-for the reasons below — re-run the command yourself before changing that:
+## `mkdocs --strict` is the gate
+
+`mkdocs build --strict` is what `docs-site.yml` runs, and it is clean. Run it
+yourself before changing anything about the build:
 
 ```bash
 mkdocs build --strict
 ```
 
-**305 of the 315 — pre-existing, correct, out-of-tree links (not a docs
-bug).** `docs_dir: docs` means mkdocs only ever sees files under `docs/`.
-This repo's own convention (`architecture.md`: *"Every claim is a link to a
-file"*) has many docs link out to source and to repo-root files —
-`../CLAUDE.md`, `../SETUP.md`, `../README.md`, `../AGENTS.md`, and paths into
-`backend/`, `ui/`, `contracts/`, `analytics-engine/`, `infra/`,
-`submodules/`, `cli/`, plus this runbook's own links to
-[`../../mkdocs.yml`](../../mkdocs.yml) and the two `.github/workflows/*.yml`
-files below. Every one of those resolves correctly on GitHub (where these
-docs are actually read day to day) and is already the thing
-`docs-gate.yml`'s `docs_links.py` blocks PRs on, against the real repo tree —
-not this site's. mkdocs, scoped to `docs_dir`, cannot resolve any of them and
-warns on all 305 (47 unique targets, repeated across the files that link
-them). Rewriting ~47 links across dozens of files to work around a
-site-generator limitation, when they're correct as written and already
-gated elsewhere, was judged not worth doing — see
-`docs/CONVENTIONS.md` if that tradeoff should be revisited.
+It was not always clean, and the history is worth keeping because it explains
+the hook. On the 2026-08-20 scaffold the same command produced **315
+warnings**, and on `main` at 2026-08-31 it produced **371** — every single one
+of them the same shape:
 
-**10 of the 315 — `docs/api/*.md` nav entries, pending a branch merge.**
-`mkdocs.yml`'s "API Reference" section names the files that
-`dbrowneup/api-reference-docs` (issue: separate PR, may land before or after
-this one) adds under `docs/api/`. Until that branch merges, those files
-don't exist yet on `main`, so mkdocs warns "not found" on each nav entry.
-Non-strict, this is silent-safe: the section just doesn't populate. No
-change needed here once that branch merges — the nav entries already point
-at the right paths.
+```
+WARNING - Doc file 'X.md' contains a link '../../backend/…', but the target
+          '../backend/…' is not found among documentation files.
+```
 
-Everything else in the `--strict` output is `INFO`-level (in-page anchor
-links that don't match a heading slug, and a couple of directory-style
-relative links) — `INFO` never escalates under `--strict`; only `WARNING`
-does, and the two categories above account for all 315 of those.
+`docs_dir: docs` means mkdocs only ever sees files under `docs/`. This repo's
+own convention (`architecture.md`: *"Every claim is a link to a file"*) has
+many docs link out to source and to repo-root files — `../CLAUDE.md`,
+`../SETUP.md`, `../README.md`, `../AGENTS.md`, and paths into `backend/`,
+`ui/`, `contracts/`, `analytics-engine/`, `infra/`, `submodules/`, `cli/`,
+plus this runbook's own links to [`../../mkdocs.yml`](../../mkdocs.yml) and
+the `.github/workflows/*.yml` files below. Every one resolves correctly on
+GitHub — where these docs are read day to day, and where `docs-gate.yml`'s
+`docs_links.py` already blocks PRs on them against the real repo tree. But on
+the *published site* they resolve to nothing: 371 links that would have
+served a 404 to anyone who clicked them.
+
+The scaffold's answer was to drop `--strict` and live with the noise. The
+answer now is [`.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py),
+which rewrites those targets **at build time** to
+`https://github.com/a-apin/archimedes/blob/main/<path>` (preserving `#Lnn`
+line anchors, and using `/tree/` for directories). No committed markdown was
+touched — the ~47 unique out-of-tree targets stay exactly as written, correct
+on GitHub, and now also correct on the site.
+
+**What the hook deliberately does *not* rewrite, and why that matters.** A
+link whose target lands *inside* `docs/` or `openwiki/` and names a file that
+exists nowhere in the repository is left exactly as written. Laundering it
+into a GitHub URL would convert a broken link into a plausible-looking one
+that still 404s, and would silence the only check on it. Left alone, mkdocs
+warns and `--strict` fails the build. That branch is covered by
+`backend/tests/test_docs_site.py::test_broken_in_site_link_is_left_for_strict_to_catch`.
+
+**Known remaining noise: 20 `INFO`-level anchor mismatches** (in-page `#…`
+links whose slug does not exist on the target page, mostly in `archive/`).
+`INFO` never escalates under `--strict`, so they do not fail the build. They
+are real, small, and a separate cleanup — raising `validation.links.anchors`
+to `warn` is the change that would force it.
 
 ## Related files
 
 | File | Purpose |
 |---|---|
-| [`../../mkdocs.yml`](../../mkdocs.yml) | Site config: theme, nav, repo/site URLs. |
-| [`../../.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml) | Build + deploy workflow. Inert until step 1 above is done. |
+| [`../../mkdocs.yml`](../../mkdocs.yml) | Site config: theme, nav, repo/site URLs, hooks. |
+| [`../../.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py) | Mounts `openwiki/` into the build, stamps its provenance banner, and repoints out-of-`docs_dir` links at GitHub. |
+| [`../../.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml) | Build + deploy workflow. The build always runs; the deploy is inert until steps 1–3 above are done. |
+| [`../agent-wiki.md`](../agent-wiki.md) | Provenance note for the agent-generated section, and the section's index page. |
+| [`../../backend/tests/test_docs_site.py`](../../backend/tests/test_docs_site.py) | Drift guard: nav ↔ tree, the provenance label, the workflow's `paths:` filter and `--strict` flag, and the link rewriter's behaviour. |
 | [`../CONVENTIONS.md`](../CONVENTIONS.md) | Where a new doc goes — unchanged by this scaffold; the site just publishes what's already there. |
 | [`../../.github/workflows/docs-gate.yml`](../../.github/workflows/docs-gate.yml) | The blocking link/index checker this runbook defers to for `docs/**`'s real (in-repo) links. |
