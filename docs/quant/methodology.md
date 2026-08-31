@@ -577,9 +577,18 @@ architectural, not optional:
    reports no mechanical Sharpe/CAGR, and the only performance claim we stand
    behind is the post-gate one measured on our own data.
 
-The risk-free rate is a single shared constant (`_RF_ANNUAL = 0.05`, the
-2024–2025 Fed-funds environment) used consistently across DSR, OOS Sharpe, Kelly,
-and the optimizer, so every excess-return figure is computed on the same basis.
+**Risk-free rate (updated 2026-08-20, issue #1409):** `_RF_ANNUAL = 0.05` is now the
+**fallback** convention only, not the sole rate — DSR, OOS Sharpe, and in-sample Sharpe
+can instead be graded against the actual historical 3-month U.S. Treasury bill series
+(FRED `DGS3MO`), per-bar aligned, when a caller threads dates through; the choice is
+disclosed per result via `rf_convention`. See
+[`rigor-methods.md` §1a](../rigor-methods.md#1a-the-risk-free-rate-behind-excess-issue-1409)
+for the full methodology, including which live callers do and don't thread dates today.
+**Not every consumer moved together** — Kelly (`compute_kelly_fraction`, `rf_annual:
+float = 0.05` above) and the portfolio optimizer still take only the flat constant, so
+"every excess-return figure is computed on the same basis" is no longer accurate as a
+blanket claim: DSR/OOS/in-sample Sharpe can diverge from Kelly/the optimizer's basis
+whenever the former are graded on the historical series.
 
 ---
 

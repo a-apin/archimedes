@@ -58,15 +58,20 @@ Corrected here.)
 | [`chainlink-primary-oracle.md`](chainlink-primary-oracle.md) | Accepted | 2026-07-01 | Dan Browne (reviewer: Bogdan Sivochkin) | Why on-chain prices are **Chainlink-primary** with a thin, bounded admin fallback that **degrades (not reverts)** on feed outage (#724) |
 | [`ec2-to-ecs-fargate-cutover.md`](ec2-to-ecs-fargate-cutover.md) | Accepted | 2026-07-09 | Dan Browne | Why the serving tier moved from one docker-compose EC2 box to an **ECS Fargate** service behind the existing ALB (#1039, #1056–#1059) |
 | [`debate-society-sole-generation-pipeline.md`](debate-society-sole-generation-pipeline.md) | Accepted | 2026-07-09 | Dan Browne | Why the **debate society is the only generation path** — no routing tree, no flag, no silent fallback (#1064/#1074) |
-| [`num-trials-self-containment.md`](num-trials-self-containment.md) | **Accepted, pending quant sign-off** | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1` |
+| [`num-trials-self-containment.md`](num-trials-self-containment.md) | Accepted (ratified 2026-08-31, #1555) | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1` |
 | [`aurora-postgres-alembic-datastore.md`](aurora-postgres-alembic-datastore.md) | Accepted | 2026-07-28 | Dan Browne | Why **Aurora PostgreSQL Serverless v2 (18.3)** is the system of record, **Alembic** the only schema-change mechanism, **Redis 7.1** ephemeral-only |
 | [`strategy-dsl-hardening-over-lean4.md`](strategy-dsl-hardening-over-lean4.md) | Accepted | 2026-08-30 | Dan Browne | Why the generator's emission target stays the **closed-enum JSON DSL, hardened**, and **not Lean 4** — the no-generated-code property is already structural; a restricted sandbox is reserved for shapes the DSL cannot express |
 
 ### Open review debt
 
-- [`num-trials-self-containment.md`](num-trials-self-containment.md) is live in code but the
-  portfolio-math sign-off named in two code comments has never been obtained. It is the
-  largest outstanding rigor risk in the tree: it loosens a statistical control.
+- ~~The `num-trials-self-containment.md` portfolio-math sign-off~~ — **resolved
+  2026-08-31**: ratified by Önder Akkaya
+  ([#1555](https://github.com/a-apin/archimedes/issues/1555), outcome 3), with four
+  corrections folded into the ADR. Residual from the same review, upgraded by a prod
+  pull: the served board-level BH FDR (`compute_board_level_fdr`) currently
+  **disagrees with the per-strategy gate on every strategy** (min adjusted p 0.319
+  board-wide) and no `ui/src` file reads it. Open item = the product decision on what
+  the ranking surface says — wanted before the badge is leaned on as a public claim.
 
 ## When to add an ADR
 

@@ -1,4 +1,14 @@
-"""Reasoning trace endpoints — /api/traces/*."""
+"""Reasoning trace endpoints — /api/traces/*.
+
+Every READ route here is ownership-gated (#1556). Before that issue the four
+read routes carried no auth dependency at all and ``vault_address`` was a
+filter, not a gate — omitting it enumerated every trace on the platform, and
+``/canonical`` returned the full hashed body including holdings. The predicate
+lives in ``services.trace_visibility`` and is never re-implemented here; these
+routes only decide the *status code* for a denial, which is uniformly **404**,
+matching the #850 ownership contract in ``strategies_routes``: a caller who may
+not read a trace must not learn that it exists.
+"""
 
 from __future__ import annotations
 
@@ -69,60 +79,133 @@ def _anchored_only_trace(trace_id: str, detail: dict) -> TraceResponse:
     )
 
 
+def _caller_identity(request: Request) -> tuple[str | None, str | None]:
+    """``(user_id, linked_wallet)`` for the caller — both ``None`` if anonymous.
+
+    Anonymous is a normal outcome, not an error: the public proof pages read
+    this API without a session and are entitled to the house-public traces.
+    The wallet lookup is a DB read (``get_linked_wallet_address``) and is
+    wrapped because its failure must degrade the caller to "no wallet" — which
+    can only ever *reduce* what they can see — never 500 a read route.
+    """
+    from archimedes.api.account_auth import get_current_user
+
+    user = get_current_user(request)
+    try:
+        from archimedes.api.auth_siwe import get_verified_wallet
+
+        wallet = get_verified_wallet(request)
+    except Exception:
+        logger.warning("trace read: linked-wallet resolution failed — treating caller as wallet-less", exc_info=True)
+        wallet = None
+    return (user.id if user else None), wallet
+
+
+def _offchain_trace_response(t: dict, fallback_id: str = "") -> TraceResponse:
+    """Project a stored off-chain trace record onto the wire schema."""
+    return TraceResponse(
+        id=t.get("id", fallback_id),
+        vault_address=t.get("vault_address", ""),
+        decision_type=t.get("decision_type", "unknown"),
+        trigger=t.get("trigger", "unknown"),
+        timestamp=t.get("timestamp", ""),
+        reasoning=t.get("reasoning", ""),
+        confidence=t.get("confidence", 0.0),
+        trace_hash=t.get("trace_hash", ""),
+        arc_tx_hash=t.get("arc_tx_hash"),
+        is_verified=t.get("is_verified", False),
+        regime_at_decision=t.get("market_context", {}).get("regime"),
+        trades_executed=t.get("trades_executed", []),
+        strategies_referenced=t.get("strategies_referenced", []),
+        commit_tx_hash=t.get("commit_tx_hash"),
+        commit_block_number=t.get("commit_block_number"),
+        reveal_tx_hash=t.get("reveal_tx_hash"),
+        reveal_block_number=t.get("reveal_block_number"),
+        trade_tx_hash=t.get("trade_tx_hash"),
+        trade_block_number=t.get("trade_block_number"),
+        temporal_binding_valid=t.get("temporal_binding_valid"),
+        temporal_binding_source=t.get("temporal_binding_source", "none"),
+    )
+
+
+def _assert_can_read(trace: dict, request: Request) -> None:
+    """404 unless the caller may read this trace (#1556).
+
+    404 rather than 403 deliberately: a 403 on someone else's trace id
+    confirms the id exists, which is half of the enumeration the gate is here
+    to prevent.
+    """
+    from fastapi import HTTPException
+
+    from archimedes.services.trace_visibility import can_read_trace
+
+    caller_user_id, caller_wallet = _caller_identity(request)
+    if not can_read_trace(trace, caller_wallet, caller_user_id=caller_user_id):
+        raise HTTPException(status_code=404, detail="Trace not found")
+
+
 @traces_router.get("/", response_model=TraceListResponse)
 async def list_traces(
+    request: Request,
     vault_address: str | None = None,
     decision_type: str | None = Query(None, pattern="^(construction|rebalance|rotation|regime_change|skip)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List reasoning traces -- merges on-chain IDs with off-chain metadata."""
+    """List reasoning traces -- merges on-chain IDs with off-chain metadata.
+
+    Scoped to what the caller may read (#1556): house-public traces for an
+    anonymous caller, plus their own for a signed-in one. ``vault_address``
+    stays a *filter* — it narrows the visible set, it never widens it — so
+    dropping it can no longer enumerate the platform.
+    """
     from archimedes.services.redis_state import AgentStateStore
+    from archimedes.services.trace_visibility import (
+        MAX_TRACE_SCAN,
+        is_trace_visible,
+        safe_resolve_vault_owners,
+        trace_owner_view,
+    )
+
+    caller_user_id, caller_wallet = _caller_identity(request)
 
     state = AgentStateStore()
     try:
         try:
-            off_chain_traces, total = await state.list_traces(
+            # Fetch the whole candidate set and window AFTER filtering. Windowing
+            # first would return short pages whose length leaks how many of
+            # somebody else's traces were skipped.
+            off_chain_traces, _ = await state.list_traces(
                 vault_address=vault_address,
                 decision_type=decision_type,
-                limit=limit,
-                offset=offset,
+                limit=MAX_TRACE_SCAN,
+                offset=0,
             )
         except Exception:
             logger.warning("list_traces: Redis unavailable — falling back to on-chain-only listing", exc_info=True)
-            off_chain_traces, total = [], 0
+            off_chain_traces = []
 
         if off_chain_traces:
-            traces = []
-            for t in off_chain_traces:
-                if t.get("trigger") == "empty_vault":
-                    continue
-                traces.append(
-                    TraceResponse(
-                        id=t.get("id", ""),
-                        vault_address=t.get("vault_address", ""),
-                        decision_type=t.get("decision_type", "unknown"),
-                        trigger=t.get("trigger", "unknown"),
-                        timestamp=t.get("timestamp", ""),
-                        reasoning=t.get("reasoning", ""),
-                        confidence=t.get("confidence", 0.0),
-                        trace_hash=t.get("trace_hash", ""),
-                        arc_tx_hash=t.get("arc_tx_hash"),
-                        is_verified=t.get("is_verified", False),
-                        regime_at_decision=t.get("market_context", {}).get("regime"),
-                        trades_executed=t.get("trades_executed", []),
-                        strategies_referenced=t.get("strategies_referenced", []),
-                        commit_tx_hash=t.get("commit_tx_hash"),
-                        commit_block_number=t.get("commit_block_number"),
-                        reveal_tx_hash=t.get("reveal_tx_hash"),
-                        reveal_block_number=t.get("reveal_block_number"),
-                        trade_tx_hash=t.get("trade_tx_hash"),
-                        trade_block_number=t.get("trade_block_number"),
-                        temporal_binding_valid=t.get("temporal_binding_valid"),
-                        temporal_binding_source=t.get("temporal_binding_source", "none"),
-                    )
-                )
-            return TraceListResponse(traces=traces, total=total)
+            # One batched ownership lookup for the whole page, and only for rows
+            # that lack an on-record stamp — a stamped row needs no DB at all.
+            owners = safe_resolve_vault_owners(
+                {
+                    str(t.get("vault_address") or "")
+                    for t in off_chain_traces
+                    if not (t.get("owner_user_id") or t.get("owner_wallet"))
+                }
+            )
+            visible = [
+                t
+                for t in off_chain_traces
+                if t.get("trigger") != "empty_vault"
+                and is_trace_visible(trace_owner_view(t, owners), caller_wallet, caller_user_id=caller_user_id)
+            ]
+            total = len(visible)
+            return TraceListResponse(
+                traces=[_offchain_trace_response(t) for t in visible[offset : offset + limit]],
+                total=total,
+            )
 
         from archimedes.chain.trace_publisher import trace_publisher
 
@@ -140,6 +223,7 @@ async def list_traces(
             start = max(1, total_count - offset - limit + 1)
             end = max(1, total_count - offset)
 
+            on_chain_details: list[tuple[int, dict]] = []
             for trace_id in range(end, start - 1, -1):
                 detail = await trace_publisher.get_trace_by_id(trace_id)
                 if detail is None:
@@ -148,6 +232,17 @@ async def list_traces(
                 if vault_address and detail["vault"].lower() != vault_address.lower():
                     continue
 
+                on_chain_details.append((trace_id, detail))
+
+            # The registry-only projection carries no reasoning body, but it
+            # still names the vault and the anchor — gate it on exactly the
+            # same predicate so a caller cannot enumerate another user's
+            # vault's trace ids by taking Redis out of the picture.
+            owners = safe_resolve_vault_owners({str(d["vault"]) for _, d in on_chain_details})
+            for trace_id, detail in on_chain_details:
+                view = trace_owner_view({"vault_address": detail["vault"]}, owners)
+                if not is_trace_visible(view, caller_wallet, caller_user_id=caller_user_id):
+                    continue
                 traces.append(_anchored_only_trace(str(trace_id), detail))
         except Exception:
             logger.debug("on-chain trace listing failed", exc_info=True)
@@ -158,8 +253,12 @@ async def list_traces(
 
 
 @traces_router.get("/{trace_id}", response_model=TraceResponse)
-async def get_trace(trace_id: str):
-    """Get a single reasoning trace by ID (on-chain or off-chain hash)."""
+async def get_trace(trace_id: str, request: Request):
+    """Get a single reasoning trace by ID (on-chain or off-chain hash).
+
+    Ownership-gated (#1556): a non-owner gets 404, whether the trace resolves
+    off-chain or only from the registry.
+    """
     from fastapi import HTTPException
 
     from archimedes.chain.trace_publisher import trace_publisher
@@ -173,29 +272,8 @@ async def get_trace(trace_id: str):
             logger.warning("get_trace: Redis unavailable — falling back to on-chain-only lookup", exc_info=True)
             off_chain = None
         if off_chain:
-            return TraceResponse(
-                id=off_chain.get("id", trace_id),
-                vault_address=off_chain.get("vault_address", ""),
-                decision_type=off_chain.get("decision_type", "unknown"),
-                trigger=off_chain.get("trigger", "unknown"),
-                timestamp=off_chain.get("timestamp", ""),
-                reasoning=off_chain.get("reasoning", ""),
-                confidence=off_chain.get("confidence", 0.0),
-                trace_hash=off_chain.get("trace_hash", ""),
-                arc_tx_hash=off_chain.get("arc_tx_hash"),
-                is_verified=off_chain.get("is_verified", False),
-                regime_at_decision=off_chain.get("market_context", {}).get("regime"),
-                trades_executed=off_chain.get("trades_executed", []),
-                strategies_referenced=off_chain.get("strategies_referenced", []),
-                commit_tx_hash=off_chain.get("commit_tx_hash"),
-                commit_block_number=off_chain.get("commit_block_number"),
-                reveal_tx_hash=off_chain.get("reveal_tx_hash"),
-                reveal_block_number=off_chain.get("reveal_block_number"),
-                trade_tx_hash=off_chain.get("trade_tx_hash"),
-                trade_block_number=off_chain.get("trade_block_number"),
-                temporal_binding_valid=off_chain.get("temporal_binding_valid"),
-                temporal_binding_source=off_chain.get("temporal_binding_source", "none"),
-            )
+            _assert_can_read(off_chain, request)
+            return _offchain_trace_response(off_chain, fallback_id=trace_id)
 
         try:
             int_id = int(trace_id)
@@ -206,6 +284,7 @@ async def get_trace(trace_id: str):
         if detail is None:
             raise HTTPException(status_code=404, detail="Trace not found")
 
+        _assert_can_read({"vault_address": detail["vault"]}, request)
         return _anchored_only_trace(trace_id, detail)
     finally:
         await state.close()
@@ -216,6 +295,12 @@ async def publish_trace(req: TracePublishRequest, _: None = Depends(require_inte
     """Publish a reasoning trace: compute hash, anchor on Arc, persist off-chain.
 
     Internal-only: requires X-Internal-Agent-Key header.
+
+    Ownership (#1556) is stamped onto the stored record by
+    ``AgentStateStore.save_trace``, resolved from the vault this trace is for.
+    It is done there rather than here on purpose: this route is one of five
+    trace write paths, and the guarantee that matters is "every persisted trace
+    knows its owner", which only a single choke point can make true.
     """
     import uuid
     from datetime import datetime
@@ -313,8 +398,14 @@ async def publish_trace(req: TracePublishRequest, _: None = Depends(require_inte
 
 @traces_router.get("/{trace_id}/verify", response_model=TraceVerifyResponse)
 @limiter.exempt
-async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slowapi @limiter.exempt inspects param name
-    """Verify a reasoning trace against its on-chain anchor."""
+async def verify_trace(trace_id: str, request: Request):
+    """Verify a reasoning trace against its on-chain anchor.
+
+    Ownership-gated (#1556) on the same predicate as the display routes: the
+    response names the vault, the agent and the anchor timestamp, so an
+    ungated verify is an enumeration oracle even though it carries no
+    reasoning body.
+    """
     from fastapi import HTTPException
 
     from archimedes.chain.trace_publisher import trace_publisher
@@ -347,6 +438,7 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
             if not detail:
                 raise HTTPException(status_code=404, detail="Trace not found")
 
+            _assert_can_read({"vault_address": detail["vault"]}, request)
             return TraceVerifyResponse(
                 trace_id=int_id,
                 trace_hash=detail["trace_hash"],
@@ -357,6 +449,8 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
                 on_chain_timestamp=detail["timestamp"],
                 details="Hash is anchored on-chain — no off-chain trace body was stored, so no hashes were compared",
             )
+
+        _assert_can_read(off_chain, request)
 
         trace_hash = off_chain.get("trace_hash", "")
         is_verified = False
@@ -415,8 +509,14 @@ async def verify_trace(trace_id: str, request: Request):  # noqa: ARG001 — slo
 
 
 @traces_router.get("/{trace_id}/canonical")
-async def get_trace_canonical(trace_id: str):
-    """Get the canonical JSON used to compute the trace hash."""
+async def get_trace_canonical(trace_id: str, request: Request):
+    """Get the canonical JSON used to compute the trace hash.
+
+    The most sensitive of the four reads and the reason #1556 was filed
+    CRITICAL: the canonical body is the FULL hashed record —
+    ``portfolio_before`` / ``portfolio_after`` (holdings) and
+    ``market_context`` — so it is ownership-gated like the rest.
+    """
     from fastapi import HTTPException
     from fastapi.responses import PlainTextResponse
 
@@ -434,6 +534,8 @@ async def get_trace_canonical(trace_id: str):
             raise HTTPException(status_code=503, detail="Trace store temporarily unavailable — retry.") from None
         if not off_chain:
             raise HTTPException(status_code=404, detail="Trace not found")
+
+        _assert_can_read(off_chain, request)
 
         trace = ReasoningTrace(
             id=off_chain["id"],
