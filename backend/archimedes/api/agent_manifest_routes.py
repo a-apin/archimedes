@@ -133,11 +133,19 @@ async def get_agent_manifest():
     """
     return {
         "name": "Archimedes",
+        # Byte-identical to .well-known/agent.json's `description` — the two are
+        # the same sentence served two ways, and #1650 was filed because an agent
+        # reading either one was told strategies execute on-chain today. Pinned by
+        # tests/test_agent_manifest_static_consistency.py so the pair cannot drift
+        # again, in either direction.
         "blurb": (
             "Agentic trading, grounded in research — settled on Arc. Turns a "
             "natural-language investment intent into a research-grounded, "
-            "rigor-gated portfolio strategy, executed in a non-custodial USDC "
-            "vault on the Arc testnet (chain ID 5042002)."
+            "rigor-gated portfolio strategy and paper-trades it, "
+            "commit-revealing the reasoning trace on the Arc testnet "
+            "(chain ID 5042002) when anchoring succeeds — read `arc_tx_hash` "
+            "rather than assuming it did. Executing strategies in "
+            "non-custodial USDC vaults on Arc is roadmap, not shipped."
         ),
         "docs": {
             "llms_txt": "/llms.txt",
