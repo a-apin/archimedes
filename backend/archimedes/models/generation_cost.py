@@ -85,6 +85,9 @@ class GenerationCostRecord(Base):
     __table_args__ = (
         UniqueConstraint("job_id", "strategy_id", name="uq_generation_costs_job_strategy"),
         Index("ix_generation_costs_strategy", "strategy_id"),
+        # Schema-relations Phase 1: cost-over-time is a core owner metric;
+        # only strategy_id and (job_id, strategy_id) were indexed before this.
+        Index("ix_generation_costs_recorded_at", "recorded_at"),
     )
 
     # ── Readout ──────────────────────────────────────────────────────────

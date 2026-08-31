@@ -1407,16 +1407,15 @@ def _owned_generated_strategy_responses(
     Deliberately narrower than ``_generated_strategy_responses`` (published-
     by-anyone ∪ owned-by-caller): here the question is "is this MINE", not
     "am I allowed to see this", so another user's published strategy must
-    NOT appear just because it is public. Reuses ``is_strategy_visible`` (the
-    single #850 predicate — never re-implement ownership matching at a call
-    site) for the two-tier owner_user_id/owner_wallet check, but pins
-    ``is_published`` False in the row_view fed to it so a stranger's
-    published row can never ride that predicate's publish-visibility clause
-    onto this caller's board. Curated (``is_example``) rows have no owner and
-    are never returned here — they are the separate "curated" scope.
+    NOT appear just because it is public. Asks ``owns_strategy`` — the single
+    two-tier owner_user_id/owner_wallet match (#1557 named what this used to
+    express by pinning ``is_published`` False in a hand-built row_view fed to
+    ``is_strategy_visible``; same rule, one implementation, never
+    re-implemented at a call site). Curated (``is_example``) rows have no owner
+    and are never returned here — they are the separate "curated" scope.
     """
     from archimedes.services.passport_loader import list_passports
-    from archimedes.services.strategy_visibility import is_strategy_visible
+    from archimedes.services.strategy_visibility import owns_strategy
 
     if not caller_user_id and not caller_wallet:
         return []
@@ -1425,16 +1424,7 @@ def _owned_generated_strategy_responses(
     if not records:
         return []
 
-    owned = []
-    for r in records:
-        row_view = {
-            "is_example": False,
-            "is_published": False,  # ownership only — publish state is irrelevant to "own"
-            "owner_user_id": r.owner_user_id,
-            "owner_wallet": r.owner_wallet,
-        }
-        if is_strategy_visible(row_view, caller_wallet, caller_user_id=caller_user_id):
-            owned.append(r)
+    owned = [r for r in records if owns_strategy(r, caller_wallet, caller_user_id=caller_user_id)]
     return _passport_responses(owned, session)
 
 
@@ -1445,8 +1435,20 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     Response schema: {strategy_id, source: "persisted_backtest", start, end,
     n, daily_returns: [...]}
 
-    404 when the strategy does not exist (or is private and the caller is not
-    the owner — 404-hides-existence per the #850 ownership gating contract).
+    **The per-day series is REASONING, not card content, and gates on
+    OWNERSHIP (#1557).** Curated / ``is_example`` strategies stay fully public
+    (house demo content; ``/quant`` fetches exactly this for every curated
+    library row with no session). For a generated row the series is 404 unless
+    the caller OWNS it — a published row is NOT enough, because a full
+    day-by-day return series lets a reader reconstruct positions and clone the
+    strategy. The HEADLINE stats derived from it (``sharpe_ratio``, ``cagr``,
+    ``max_drawdown``, the rigor verdict) remain on the public card served by
+    ``GET /api/strategies/{id}`` and the leaderboard — publishing shares the
+    result, not the derivation. See the matrix in
+    ``services/strategy_visibility.py``.
+
+    404 when the strategy does not exist (or the caller is not entitled to its
+    reasoning — 404-hides-existence per the #850 ownership gating contract).
     404 with body ``{"detail": "no persisted returns"}`` when the strategy
     exists but has no BacktestResultRecord row. Never synthesizes data from
     fixture metrics; only real persisted run data is returned (#passport-honesty).
@@ -1456,7 +1458,7 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     """
     from fastapi import HTTPException
 
-    # ── 1. Existence + ownership gate (mirrors get_strategy) ────────────────
+    # ── 1. Existence + OWNERSHIP gate ──────────────────────────────────────
     # Curated strategies (in LocalStrategyProvider) are always public.
     strat = strategy_provider().get_strategy(strategy_id)
     is_curated = strat is not None
@@ -1465,7 +1467,7 @@ async def get_strategy_returns(strategy_id: str, request: Request):
         from archimedes.api.auth_siwe import get_verified_wallet
         from archimedes.db import get_session
         from archimedes.models.strategy_store import StrategyRecord
-        from archimedes.services.strategy_visibility import is_strategy_visible
+        from archimedes.services.strategy_visibility import is_strategy_reasoning_visible
 
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
@@ -1474,7 +1476,7 @@ async def get_strategy_returns(strategy_id: str, request: Request):
             # get_verified_wallet, not get_linked_wallet_address.
             caller = get_verified_wallet(request)
             user = get_current_user(request)
-            if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
+            if not is_strategy_reasoning_visible(row, caller, caller_user_id=user.id if user else None):
                 raise HTTPException(status_code=404, detail="Strategy not found")
 
     # ── 2. Load persisted daily returns from backtest_results ────────────────
@@ -1520,36 +1522,48 @@ async def get_strategy_debate(strategy_id: str, request: Request):
     Response shape: ``{strategy_id, generation_id, candidate_id, created_at,
     transcript: [{role, round, verdict, claims}, ...]}``.
 
-    Auth mirrors ``GET /api/strategies/{id}/returns`` and the plain detail
-    route exactly: curated strategies are always public; a generated
-    strategy's transcript is 404 unless the caller owns the row (existence
-    stays hidden either way — never a 403).
+    **This route is PURE REASONING and gates on OWNERSHIP, not on card-level
+    visibility (#1557).** Curated / ``is_example`` strategies are always public
+    (house demo content — in practice they carry no transcript at all, the
+    debate society never ran for them). For a generated row the transcript is
+    404 unless the caller OWNS it — a published row is NOT enough. Existence
+    stays hidden either way: 404, never 403.
+
+    Until #1557 this docstring claimed exactly that contract while the code
+    asked ``is_strategy_visible``, which returns True on ``is_published`` — so
+    an anonymous GET on any published strategy returned its full generation
+    debate. The claim was false; the predicate is now the one that makes it
+    true. Publishing consents to sharing the strategy, not the multi-agent
+    argument that produced it (same reasoning as ``brief_intent`` on the detail
+    route, and ``_redact_owner_wallet`` for the owner's wallet).
 
     404 with ``{"detail": "no debate transcript"}`` when the strategy exists
-    and is visible but no transcript was ever persisted for it — every
-    strategy generated before this table existed, every curated strategy
-    (the debate society never ran for those), and any run whose debate step
-    genuinely produced nothing (no LLM backend reachable). Never fabricates a
-    transcript.
+    and the caller is entitled to its reasoning but no transcript was ever
+    persisted for it — every strategy generated before this table existed,
+    every curated strategy, and any run whose debate step genuinely produced
+    nothing (no LLM backend reachable). Never fabricates a transcript.
     """
     from fastapi import HTTPException
 
     from archimedes.db import get_session
 
-    # ── 1. Existence + ownership gate (mirrors get_strategy / get_strategy_returns) ──
+    # ── 1. Existence + OWNERSHIP gate ─────────────────────────────────────
+    # Deliberately NOT the same gate as `get_strategy` (the card): see the
+    # matrix in services/strategy_visibility.py. The card of a published
+    # strategy is public; its debate transcript is not.
     strat = strategy_provider().get_strategy(strategy_id)
     is_curated = strat is not None
 
     if not is_curated:
         from archimedes.api.auth_siwe import get_verified_wallet
         from archimedes.models.strategy_store import StrategyRecord
-        from archimedes.services.strategy_visibility import is_strategy_visible
+        from archimedes.services.strategy_visibility import is_strategy_reasoning_visible
 
         with get_session() as session:
             row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
             caller = get_verified_wallet(request)
             user = get_current_user(request)
-            if not is_strategy_visible(row, caller, caller_user_id=user.id if user else None):
+            if not is_strategy_reasoning_visible(row, caller, caller_user_id=user.id if user else None):
                 raise HTTPException(status_code=404, detail="Strategy not found")
 
     # ── 2. Load the persisted transcript ──────────────────────────────────
@@ -1576,6 +1590,20 @@ async def get_strategy(strategy_id: str, request: Request):
     Private-until-published: non-public row is 404 unless canonical user owns it,
     with linked-wallet fallback for legacy rows. 404 prevents existence probing.
     Curated strategies (provider path / is_example rows) stay fully public.
+
+    **This route is MIXED and stays CARD-gated (#1557).** Everything the
+    response carries for a generated row is card content — name, papers,
+    methodology writeup, headline metrics, the rigor badge — which is exactly
+    what a published strategy is published FOR, so a published row 200s for
+    anonymous callers and the public detail page keeps working. The one
+    REASONING field on the schema, ``brief_intent``, is stripped for non-owners
+    below rather than 404ing the whole route (the strip-don't-404 rule for
+    mixed routes; the purely-reasoning siblings ``/{id}/debate`` and
+    ``/{id}/returns`` 404 instead). Audited field by field against
+    ``_passport_to_strategy_response``: ``brief_intent`` is the only reasoning
+    field it can populate — ``equity_curve`` is never set on this path, and the
+    rigor/display metrics are aggregates, not derivation. See the matrix in
+    ``services/strategy_visibility.py``.
     """
     from fastapi import HTTPException
 
@@ -1587,7 +1615,7 @@ async def get_strategy(strategy_id: str, request: Request):
     from archimedes.db import get_session
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import get_passport
-    from archimedes.services.strategy_visibility import is_strategy_visible
+    from archimedes.services.strategy_visibility import is_strategy_visible, owns_strategy
 
     with get_session() as session:
         row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
@@ -1615,24 +1643,16 @@ async def get_strategy(strategy_id: str, request: Request):
             # row, but the brief is the user's own words, and publishing a
             # strategy consents to sharing the STRATEGY, not the sentence its
             # owner typed to ask for it (same reasoning as
-            # `_redact_owner_wallet` for owner_wallet). So the same #850
-            # predicate is re-asked in ownership-only form — `is_example` and
-            # `is_published` pinned False in the row_view so neither
-            # public-visibility clause can grant it — which is exactly the
-            # shape `_owned_generated_strategy_responses` uses for the
-            # leaderboard's "own" scope. Never re-implement the owner match
-            # at a call site; ask the one predicate. Non-owners and anonymous
-            # callers keep the schema default (None).
-            if row is not None and is_strategy_visible(
-                {
-                    "is_example": False,
-                    "is_published": False,
-                    "owner_user_id": row.owner_user_id,
-                    "owner_wallet": row.owner_wallet,
-                },
-                caller,
-                caller_user_id=user.id if user else None,
-            ):
+            # `_redact_owner_wallet` for owner_wallet). Non-owners and
+            # anonymous callers keep the schema default (None).
+            #
+            # `owns_strategy` (#1557) is the named form of what this used to
+            # express by calling `is_strategy_visible` with `is_example` and
+            # `is_published` pinned False in a hand-built row_view. Same rule,
+            # same single implementation — but a reader can no longer mistake
+            # the pinned-flags trick for an accident, and the ownership match
+            # is not re-implemented at a call site.
+            if row is not None and owns_strategy(row, caller, caller_user_id=user.id if user else None):
                 resp.brief_intent = row.brief_intent
             return resp
 
@@ -2036,6 +2056,17 @@ async def _run_fusion_job(job_id: str) -> None:
                     {
                         "id": str(uuid.uuid4()),
                         "vault_address": "",
+                        # #1556: this trace has NO vault, so the vault-owner
+                        # lookup in save_trace cannot resolve it — and its
+                        # `reasoning` is the user's private strategy thesis,
+                        # which was world-readable through GET /api/traces/.
+                        # Stamp the generating account here, the only place
+                        # that knows it. Present-but-None is deliberate for a
+                        # legacy job payload with no owner: it suppresses the
+                        # vault guess and leaves the row visible to nobody,
+                        # which is the correct way to fail on private content.
+                        "owner_user_id": payload.get("owner_user_id"),
+                        "owner_wallet": payload.get("owner_wallet"),
                         "decision_type": "construction",
                         "trigger": "fusion_generation",
                         "timestamp": datetime.now(UTC).isoformat(),

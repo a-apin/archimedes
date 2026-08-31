@@ -65,6 +65,12 @@ class MarketplaceAgent(Base):
             postgresql_where=text("role = 'subscriber'"),
             sqlite_where=text("role = 'subscriber'"),
         ),
+        # Schema-relations Phase 1: both wallet columns already carry a FK to
+        # wallet_identities but Postgres does not auto-index FK columns, and
+        # the partial uniques above all lead with `role` so neither serves a
+        # plain wallet lookup.
+        Index("ix_marketplace_agents_subscriber_wallet", "subscriber_wallet"),
+        Index("ix_marketplace_agents_creator_wallet", "creator_wallet"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -152,6 +158,13 @@ class MarketplaceAgent(Base):
 class SubscriberLiability(Base):
     __tablename__ = "subscriber_liabilities"
 
+    # Schema-relations Phase 1: this table carried NO indices at all — a
+    # money table (amount_owed_usdc) that seq-scanned on every lookup.
+    __table_args__ = (
+        Index("ix_subscriber_liabilities_sub", "sub_id"),
+        Index("ix_subscriber_liabilities_strategy_created", "strategy_id", "created_at"),
+    )
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     sub_id: Mapped[str] = mapped_column(String(66), nullable=False)
     strategy_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -229,6 +242,11 @@ class SettlementIntent(Base):
             "step",
             unique=True,
         ),
+        # Schema-relations Phase 1: the unique index above leads with
+        # strategy_id, so it serves neither "settlements for subscriber X"
+        # nor "revenue over time" without a seq scan.
+        Index("ix_settlement_intents_sub", "sub_id"),
+        Index("ix_settlement_intents_status_created", "status", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
