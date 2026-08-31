@@ -393,3 +393,73 @@ class TestAuthorLegGuard:
             papers_routes.list_papers(page=1, page_size=20, category=None, search='", "', processed_only=True)
         )
         assert result["total"] == 0, "a JSON-structural term matched the serialisation of every author list"
+
+
+class TestAuthorLegGuardIsScopedToTheAuthorLeg:
+    """The guard must reject a term *for the author leg only*.
+
+    `_author_search_pattern` returning ``None`` means "do not add the author
+    leg", never "do not search". A guard applied one level too high — dropping
+    the whole predicate, or short-circuiting the `if search:` block — would
+    satisfy every test in :class:`TestAuthorLegGuard` while silently killing
+    prose search for short and punctuated terms.
+
+    That property was asserted in a code comment and in the PR description but
+    nothing enforced it: `TestAuthorSearch.test_title_and_abstract_legs_are_unchanged`
+    only searches "momentum", a 7-character term the guard never rejects, so it
+    passes either way. These two tests use terms the guard *does* reject.
+    """
+
+    def test_a_short_term_still_searches_title_and_abstract(self, session, monkeypatch):
+        """A 2-character term is refused by the author leg but must still match prose.
+
+        Real cost if this regresses: short surnames ("Xu", "Ho") and tickers
+        stop matching titles they literally appear in.
+        """
+        from archimedes.api import papers_routes
+
+        # "Xu" is in the TITLE of one row and in nobody's author list, so only
+        # the title leg can produce this hit.
+        _add_paper(session, "2601.50001", authors=["Ada Lovelace"], title="Xu estimator revisited", abstract="Zeta.")
+        _add_paper(session, "2601.50002", authors=["Alan Turing"], title="Unrelated work", abstract="Zeta.")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="Xu", processed_only=True)
+        )
+        assert result["total"] == 1, "the minimum-length guard leaked out of the author leg and broke prose search"
+        assert result["papers"][0]["arxiv_id"] == "2601.50001"
+
+    def test_a_structural_term_still_searches_title_and_abstract(self, session, monkeypatch):
+        """A comma is a JSON structural character, and also ordinary prose.
+
+        "Lopez de Prado, M. (2018)" is how an abstract cites a paper, so a
+        comma-bearing term is a real query — the author leg skips it (correctly:
+        a bare comma is a substring of every multi-author serialisation) while
+        the abstract leg must still find it.
+        """
+        from archimedes.api import papers_routes
+
+        _add_paper(
+            session,
+            "2601.50003",
+            authors=["Ada Lovelace"],
+            title="Zeta",
+            abstract="Following Lopez de Prado, M. (2018) we deflate the Sharpe ratio.",
+        )
+        _add_paper(session, "2601.50004", authors=["Alan Turing"], title="Eta", abstract="Unrelated.")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        assert papers_routes._author_search_pattern("Prado, M") is None, (
+            "precondition: the author leg refuses this term"
+        )
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=20, category=None, search="Prado, M", processed_only=True)
+        )
+        assert result["total"] == 1, (
+            "the structural-character guard leaked out of the author leg and broke prose search"
+        )
+        assert result["papers"][0]["arxiv_id"] == "2601.50003"

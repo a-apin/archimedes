@@ -26,7 +26,10 @@ papers_router = APIRouter(prefix="/api/papers", tags=["papers"])
 #
 # Neither applies to the title/abstract legs, which are free prose, so the
 # guard is scoped to the author leg only: a short or structural term still
-# searches title and abstract exactly as it did before.
+# searches title and abstract exactly as it did before. That scoping is the
+# easy thing to get wrong (drop the term from the whole predicate instead of
+# from one leg) and is enforced by
+# `test_papers_routes.py::TestAuthorLegGuardIsScopedToTheAuthorLeg`.
 AUTHOR_SEARCH_MIN_LEN = 3
 _JSON_STRUCTURAL_CHARS = frozenset('[]{}",\\')
 
