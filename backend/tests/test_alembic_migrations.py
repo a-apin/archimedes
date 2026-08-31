@@ -756,29 +756,37 @@ def _seed_phase1_fixture(db_path: Path) -> None:
                 updated_at=now,
             )
         )
-        session.add(
-            PaperDeployment(
-                id="pd-healthy",
-                strategy_id=_REAL_STRATEGY,
-                owner_wallet=_REAL_WALLET,
-                owner_user_id="user-1",
-                spec_json="{}",
-                deployed_at=date(2026, 1, 1),
-                status="active",
-                created_at=now,
-            )
-        )
-        session.add(
-            PaperDeployment(
-                id="pd-orphan",
-                strategy_id=_ORPHAN_STRATEGY,
-                owner_wallet=_ORPHAN_WALLET,
-                owner_user_id="user-1",
-                spec_json="{}",
-                deployed_at=date(2026, 1, 1),
-                status="active",
-                created_at=now,
-            )
+        # Core inserts, not ORM adds, for the one table later migrations keep
+        # growing: the ORM's executemany pads the INSERT with every mapped
+        # nullable column, and this fixture's schema is pinned at phase1's
+        # down_revision — a column the model gains in a LATER revision (first
+        # bitten by e41c7a9b2d63's position_cache_json) gets named against a
+        # table that predates it. Core emits only the columns listed here,
+        # all of which exist at the pinned revision.
+        pd_common = {
+            "spec_json": "{}",
+            "deployed_at": date(2026, 1, 1),
+            "status": "active",
+            "created_at": now,
+        }
+        session.execute(
+            sa.insert(PaperDeployment.__table__),
+            [
+                {
+                    "id": "pd-healthy",
+                    "strategy_id": _REAL_STRATEGY,
+                    "owner_wallet": _REAL_WALLET,
+                    "owner_user_id": "user-1",
+                    **pd_common,
+                },
+                {
+                    "id": "pd-orphan",
+                    "strategy_id": _ORPHAN_STRATEGY,
+                    "owner_wallet": _ORPHAN_WALLET,
+                    "owner_user_id": "user-1",
+                    **pd_common,
+                },
+            ],
         )
         session.commit()
     engine.dispose()
@@ -1600,6 +1608,10 @@ def test_alembic_paper_marks_matches_a_fresh_create_all_schema(tmp_path):
         # able to resolve before it will emit ANY DDL.
         "from archimedes.models.identity import WalletIdentity\n"
         "from archimedes.models.paper_store import PaperDeployment, PaperMark\n"
+        # StrategyRecord completes the FK graph: phase1 (fb8d0bae8112) gave
+        # paper_deployments a strategy_id -> strategy_store FK, so create_all
+        # refuses to emit DDL without the target table's metadata imported.
+        "from archimedes.models.strategy_store import StrategyRecord\n"
         f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
         "Base.metadata.create_all(bind=engine)\n"
     )
