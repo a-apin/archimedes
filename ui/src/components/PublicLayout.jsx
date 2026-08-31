@@ -47,6 +47,19 @@ export default function PublicLayout({ user, children }) {
 						<a href="/architecture" className="public-nav__link">
 							Architecture
 						</a>
+						{/* The documentation site, served from our own infra
+						    (docs-site/infra/main.tf, #1634). External host, so it
+						    opens in a new tab and carries rel="noreferrer" like the
+						    footer's off-site links. Guarded by
+						    ui/test/docs-link.test.js. */}
+						<a
+							href="https://docs.archimedes-arc.com/"
+							className="public-nav__link"
+							target="_blank"
+							rel="noreferrer"
+						>
+							Docs
+						</a>
 						<button
 							type="button"
 							className="public-theme-toggle"
