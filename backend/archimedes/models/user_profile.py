@@ -28,8 +28,13 @@ class UserProfile(Base):
     wallet_address = Column(
         String(42), ForeignKey("wallet_identities.wallet_address"), primary_key=True
     )  # 0x-prefixed EVM address
+    # CASCADE, not SET NULL (issue #1367, D3): this is the row that matters
+    # most for privacy — it holds the Fernet-encrypted email (see the module
+    # docstring). SET NULL would detach ownership but leave the encrypted
+    # address sitting in the database forever, which is not what "delete my
+    # account" means. Deleting the owner deletes the whole row.
     owner_user_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("auth_users.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
+        String(64), ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=True, unique=True, index=True
     )
     display_name = Column(String(128), nullable=True)
     email = Column(String(256), nullable=True)

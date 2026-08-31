@@ -10,8 +10,11 @@ implementation would have lied:
    statement about X, and generated strategies are private-until-published
    (#850). An ungated scoped listing turns a 404-on-detail strategy into a
    discoverable one by counting rows. So the scope runs the same
-   ``assert_strategy_visible`` gate the detail and ``/debate`` routes run, and
-   returns **404, never 403** (a 403 confirms the id exists).
+   ``assert_strategy_visible`` gate ``GET /api/strategies/{id}`` runs — the
+   card tier, because existence is card content — and returns **404, never
+   403** (a 403 confirms the id exists). ``/debate`` and ``/returns`` sit one
+   tier tighter on ``is_strategy_reasoning_visible`` (#1557); this scope
+   deliberately does not.
 
 2. **The on-chain fallback must not answer a strategy-scoped question.** The
    registry entry is ``(agent, vault, hash, timestamp)`` and records no

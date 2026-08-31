@@ -197,10 +197,13 @@ async def list_traces(
     Reporting "0 traces" vs "3 traces" for an id is an existence oracle for the
     *strategy*, and generated strategies are private-until-published (#850). So
     the scoped listing runs ``assert_strategy_visible`` first and 404s exactly
-    as ``GET /api/strategies/{id}`` and ``/debate`` do — same gate, one
-    implementation, never a 403 (which would confirm the id). The #1556 per-row
-    filter still runs afterwards: passing the strategy gate grants no read on a
-    trace you do not own.
+    as ``GET /api/strategies/{id}`` does — same card-level gate, one
+    implementation, never a 403 (which would confirm the id). Card-level is the
+    right tier: existence is card content, so a published strategy is scopeable
+    by anyone, while ``/debate`` and ``/returns`` gate one tier tighter on
+    ``is_strategy_reasoning_visible`` (#1557) because they disclose the
+    derivation. The #1556 per-row filter still runs afterwards: passing the
+    strategy gate grants no read on a trace you do not own.
     """
     from archimedes.services.redis_state import AgentStateStore
     from archimedes.services.trace_visibility import (

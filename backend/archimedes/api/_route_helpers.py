@@ -42,13 +42,24 @@ def strategy_provider() -> LocalStrategyProvider:
 
 
 def assert_strategy_visible(strategy_id: str, request) -> None:
-    """Raise 404 unless ``strategy_id`` is readable by this caller.
+    """Raise 404 unless the caller may learn that ``strategy_id`` EXISTS.
 
-    THE gate for every per-strategy read surface — the detail route,
-    ``/returns``, ``/debate``, and the strategy-scoped trace listing on
-    ``/api/traces``. Curated strategies (the provider path) are always public.
-    A generated strategy is **404, never 403**, when the caller doesn't own it,
-    so existence stays hidden either way; a 403 would confirm the id is real.
+    THE **card-level** existence gate, shared by ``GET /api/strategies/{id}``
+    and the strategy-scoped trace listing on ``/api/traces``. It asks
+    ``is_strategy_visible``, so a published row is readable by anyone —
+    correct, because both surfaces answer a card-level question (the detail
+    route serves card content; "does id X exist" is card-level too).
+
+    **Not for reasoning surfaces.** ``GET /{id}/returns``, ``GET /{id}/debate``
+    and ``_spec_for_strategy`` gate on ``is_strategy_reasoning_visible``
+    instead — publishing consents to sharing the result, not the derivation
+    (#1557). Adding one of them to this helper's call sites re-opens that hole.
+    Read the matrix in ``services/strategy_visibility.py`` before wiring a new
+    surface to either one.
+
+    Curated strategies (the provider path) are always public. A generated
+    strategy is **404, never 403**, when the caller may not read it, so
+    existence stays hidden either way; a 403 would confirm the id is real.
 
     It lives here rather than in each router because this codebase's
     characteristic defect is a rule being fixed in the one function the current

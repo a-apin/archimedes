@@ -8,11 +8,37 @@ import { apiGet } from '../api'
 // transparent conviction score (real rigor gate + backtest). Signed out (or
 // explicitly toggled): shows the curated seed library as an honestly-labeled
 // REFERENCE set, never framed as competition. Nothing here is fabricated:
-// validation metrics are real passport fields; the forward axis (per-strategy
-// StockBench + live paper-P&L) is not scored yet and is called out as
-// "pending" in its own section, not rendered per row. Never auth-gated — public browse stays;
+// validation metrics are real passport fields. Never auth-gated — public browse stays;
 // see backend's `scope` field (own|curated), which reports what was actually
 // served, not just what was requested.
+//
+// TWO BOARDS, NEVER BLENDED (Lane 3.4). The conviction board is entirely
+// BACKTEST-ERA — gate, DSR, OOS and PBO are all measured on history the
+// strategy was fitted and graded against — so it lives behind the "Research"
+// tab and every one of its rows states the window it was measured over. The
+// "Live paper trading" tab is a genuinely different surface fed by a
+// different endpoint (/api/leaderboard/live-paper): rows only for deployments
+// that are actually running forward, ranked on realised return compounded
+// from the append-only paper ledger. There is no combined score and no code
+// path here that makes one — a blend would let a strong backtest carry a
+// strategy that has traded forward for a handful of days.
+//
+// The load-bearing UI rule, guarded in ui/test/leaderboard-boards.test.js:
+// the live tab renders ONLY from `liveData.entries`. It must never fall back
+// to the research payload, and it must never synthesise a row for a
+// deployment with no ledger data — the backend already withholds those, and
+// the empty state below says so plainly instead of showing a zeroed row.
+
+const RESEARCH_BOARD = 'research'
+const LIVE_BOARD = 'live'
+
+const BOARDS = [
+  { id: RESEARCH_BOARD, label: 'Research (backtest conviction)' },
+  { id: LIVE_BOARD, label: 'Live paper trading' },
+]
+
+// The one honest thing to say when the forward ledger is thin or empty.
+const LIVE_EMPTY_MESSAGE = 'No strategies are live paper trading yet'
 
 const SORT_OPTIONS = [
   { id: 'conviction_score', label: 'Conviction' },
@@ -37,6 +63,68 @@ function fmt(v, d = 2) {
 }
 function fmtPct(v, d = 1) {
   return v != null ? `${(v * 100).toFixed(d)}%` : '—'
+}
+// Signed, so a forward return never reads as a bare magnitude.
+function fmtSignedPct(v, d = 2) {
+  if (v == null) return '—'
+  const pct = v * 100
+  return `${pct >= 0 ? '+' : '−'}${Math.abs(pct).toFixed(d)}%`
+}
+
+// ── Provenance labelling ────────────────────────────────────────────────────
+// Every number this page displays carries the basis it was measured on. The
+// two bases are the ONLY two the product measures, they mean different things,
+// and a reader who sees a figure without one has been told less than the truth.
+// Copy is keyed off the backend's `performance_basis` string so the label can
+// never drift from what the API actually said.
+const BASIS_COPY = {
+  backtest_research: {
+    short: 'Backtest',
+    title: 'Backtest research: measured on historical data the strategy was fitted and graded against — not forward performance.',
+    color: 'var(--text-3)',
+  },
+  live_paper: {
+    short: 'Live paper',
+    title: 'Live paper trading: compounded from the append-only forward ledger since this deployment went live. Simulated — no funds move.',
+    color: 'var(--accent)',
+  },
+}
+
+function BasisBadge({ basis }) {
+  const copy = BASIS_COPY[basis]
+  if (!copy) return null
+  return (
+    <span
+      title={copy.title}
+      style={{
+        fontSize: 10,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        padding: '1px 5px',
+        borderRadius: 3,
+        border: `1px solid ${copy.color}`,
+        color: copy.color,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {copy.short}
+    </span>
+  )
+}
+
+// The backtest window a research row's numbers were measured over. Missing
+// dates say so explicitly — an unlabelled number would read as if it applied
+// to now, which is the misreading this whole split exists to prevent.
+function WindowLabel({ start, end }) {
+  const known = start && end
+  return (
+    <span
+      style={{ fontSize: 11, color: 'var(--text-3)' }}
+      title={known ? 'The historical window these metrics were computed over' : 'This row is not stamped with a backtest window'}
+    >
+      {known ? `${start} → ${end}` : 'window not recorded'}
+    </span>
+  )
 }
 
 function rigorBadge(entry) {
@@ -70,9 +158,17 @@ function ScoreBar({ components, weights }) {
 
 export default function Leaderboard() {
   const { user } = useAuth()
+  const [board, setBoard] = useState(RESEARCH_BOARD)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  // The forward board is a SEPARATE payload from a separate endpoint. Kept in
+  // its own state deliberately: there is no shape in which a research entry
+  // could stand in for a live row, so there must be no variable either one
+  // could be read out of by accident.
+  const [liveData, setLiveData] = useState(null)
+  const [liveLoading, setLiveLoading] = useState(false)
+  const [liveError, setLiveError] = useState(null)
   const [sortBy, setSortBy] = useState('conviction_score')
   const [order, setOrder] = useState('desc')
   const [minRigor, setMinRigor] = useState(false)
@@ -101,6 +197,21 @@ export default function Leaderboard() {
 
   useEffect(() => { load() }, [load])
 
+  const loadLive = useCallback(() => {
+    setLiveLoading(true)
+    apiGet('/api/leaderboard/live-paper?limit=100')
+      .then(d => { setLiveData(d); setLiveError(null) })
+      .catch(e => setLiveError(e.message || 'Failed to load the live paper board'))
+      .finally(() => setLiveLoading(false))
+  }, [])
+
+  // Fetched only when the forward tab is actually opened, and re-fetched when
+  // the session changes (the board is owner-scoped, so signing in/out changes
+  // what it legitimately contains).
+  useEffect(() => {
+    if (board === LIVE_BOARD) loadLive()
+  }, [board, loadLive, user?.id])
+
   const engine = data?.scoring_engine
   const sb = engine?.stockbench_global
   // The scope actually served (may differ from scopeParam — an anonymous
@@ -124,27 +235,66 @@ export default function Leaderboard() {
   const evaluatedCount = gradedEntries ? gradedEntries.length : null
   const passingCount = gradedEntries ? gradedEntries.filter((e) => e.passes_rigor_gate).length : null
 
+  const isResearch = board === RESEARCH_BOARD
+  const isLive = board === LIVE_BOARD
+  // The forward board's rows, read ONLY out of its own payload. Nothing below
+  // may derive a live row from `data` — see the header comment.
+  const liveEntries = liveData?.entries ?? []
+
   return (
     <div className="leaderboard-page" style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 18 }}>
         <h2 className="serif" style={{ fontSize: '2rem', marginBottom: 8 }}>
           {isOwn ? 'Your Strategy Leaderboard' : 'Strategy Leaderboard'}
         </h2>
-        <p className="body" style={{ maxWidth: 760 }}>
-          {isOwn
-            ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
-                from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
-                it carries to mainnet.</>
-            : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
-                rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
-        </p>
+
+        {/* Board switch. Two surfaces, two bases, never averaged — the labels
+            say which is which before a single number is read. */}
+        <div role="tablist" aria-label="Leaderboard board" style={{ display: 'flex', gap: 6, margin: '10px 0 12px' }}>
+          {BOARDS.map(b => (
+            <button
+              key={b.id}
+              type="button"
+              role="tab"
+              aria-selected={board === b.id}
+              onClick={() => setBoard(b.id)}
+              className={`tag-tab ${board === b.id ? 'tag-accent' : 'tag-muted'}`}
+              style={{ cursor: 'pointer', border: 'none', borderRadius: 14, fontSize: 12 }}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+
+        {isResearch && (
+          <p className="body" style={{ maxWidth: 760 }}>
+            {isOwn
+              ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
+                  from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
+                  it carries to mainnet.</>
+              : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
+                  rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
+            {' '}
+            <strong>Every figure on this tab is backtest-era</strong> — measured on history the strategy was fitted
+            and graded against, over the window stamped on each row. Nothing here is forward performance.
+          </p>
+        )}
+
+        {isLive && (
+          <p className="body" style={{ maxWidth: 760 }}>
+            Strategies you have <strong>actually deployed to paper trading</strong>, ranked by the return each one has
+            realised since it went live — compounded from its append-only forward ledger, never annualised and never
+            mixed with a backtest number. A deployment that has not produced an observation yet is withheld rather
+            than shown at zero.
+          </p>
+        )}
 
         {/* Headline selectivity aggregate — see the derivation comment above
             (evaluatedCount / passingCount). Guarded identically to the
             table's non-empty state further down so a zero-over-zero claim
             never renders while loading, on error, degraded, or before any
             strategies exist. */}
-        {!loading && !error && data && !data.degraded && evaluatedCount > 0 && (
+        {isResearch && !loading && !error && data && !data.degraded && evaluatedCount > 0 && (
           <div
             role="status"
             style={{
@@ -189,9 +339,19 @@ export default function Leaderboard() {
             }}
           >
             <span>
-              <strong style={{ color: 'var(--accent)' }}>Sign in to rank your strategies.</strong>{' '}
-              What you're seeing below is the curated library — reference rows, not strategies you're
-              competing against.
+              {isLive ? (
+                <>
+                  <strong style={{ color: 'var(--accent)' }}>Sign in to see your live paper trades.</strong>{' '}
+                  A paper track record is private to the account that deployed it, so there is nothing to show
+                  here while signed out — this board never displays someone else's deployments.
+                </>
+              ) : (
+                <>
+                  <strong style={{ color: 'var(--accent)' }}>Sign in to rank your strategies.</strong>{' '}
+                  What you're seeing below is the curated library — reference rows, not strategies you're
+                  competing against.
+                </>
+              )}
             </span>
             <a
               className="btn-primary"
@@ -203,7 +363,7 @@ export default function Leaderboard() {
           </div>
         )}
 
-        {user && (
+        {isResearch && user && (
           <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center' }}>
             <button type="button" onClick={() => setScopeParam('own')}
               className={`tag-tab ${isOwn ? 'tag-accent' : 'tag-muted'}`}
@@ -236,7 +396,7 @@ export default function Leaderboard() {
             false and is retired) — hence the single-caveat banner below,
             scoped to the own view; curated rows are reference-only backtests,
             all verified fresh. */}
-        {isOwn && (
+        {isResearch && isOwn && (
           <div
             role="status"
             style={{
@@ -256,25 +416,43 @@ export default function Leaderboard() {
             current engine.
           </div>
         )}
-        {engine?.disclaimer && (
+        {isResearch && engine?.disclaimer && (
           <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid var(--accent)', background: 'var(--accent-muted)', borderRadius: 4, fontSize: 13, color: 'var(--text-2)' }}>
             <strong style={{ color: 'var(--accent)' }}>Testnet — paper/simulated.</strong> {engine.disclaimer}
           </div>
         )}
+
+        {isLive && liveData?.disclaimer && (
+          <div style={{ marginTop: 10, padding: '8px 12px', borderLeft: '3px solid var(--accent)', background: 'var(--accent-muted)', borderRadius: 4, fontSize: 13, color: 'var(--text-2)' }}>
+            <strong style={{ color: 'var(--accent)' }}>Testnet — paper/simulated.</strong> {liveData.disclaimer}
+          </div>
+        )}
       </div>
 
-      {/* Scoring engine: weights + methodology + the one real StockBench datum, as honest context */}
+      {/* RESEARCH-BOARD:BEGIN — everything between these sentinels renders the
+          BACKTEST board and reads from `data` only. The guard in
+          ui/test/leaderboard-boards.test.js slices on them. */}
+      {isResearch && (
+      <>
+      {/* Scoring engine: weights + the one-line methodology sentence + the one
+          real StockBench datum, as honest context. The methodology line is the
+          board's own statement of how conviction is computed — it comes from
+          the API's engine metadata, never restated by hand here, so it cannot
+          drift from the formula the backend actually ran. */}
       {engine && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 18, padding: 14, background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--glass-border)' }}>
           <div style={{ flex: '1 1 320px' }}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6 }}>Scoring engine · validation axis (live)</div>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+              How this board is scored <BasisBadge basis={data?.performance_basis} />
+            </div>
             <div style={{ fontSize: 13, color: 'var(--text-2)' }}>{engine.methodology}</div>
           </div>
           <div style={{ flex: '1 1 260px' }}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6 }}>Forward axis (pending)</div>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6 }}>Benchmark context</div>
             <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
-              Per-strategy <strong>StockBench</strong> + <strong>live paper-P&L</strong> pair into this engine next.
-              StockBench today is a single whole-pipeline run (honest, not per-strategy):{' '}
+              Realised forward results now have their own tab — see <strong>Live paper trading</strong>; they are never
+              folded into the score above. <strong>StockBench</strong> today is a single whole-pipeline run (honest, not
+              per-strategy):{' '}
               {sb && <span title={`${sb.window} · ${sb.source}`}>Sortino {fmt(sb.sortino)}, return {sb.return_pct}%, rank {sb.rank}</span>}.
             </div>
           </div>
@@ -381,6 +559,14 @@ export default function Leaderboard() {
                         : (e.creator === 'Archimedes' ? 'Archimedes (curated)' : `by ${e.creator.slice(0, 6)}…${e.creator.slice(-4)}`)}
                       {e.regime_tag && e.regime_tag !== 'regime_neutral' ? ` · ${e.regime_tag}` : ''}
                     </div>
+                    {/* Per-row basis + measurement window. Every number in this
+                        row was produced over exactly this span of history; a
+                        row that never recorded one says so rather than
+                        implying the numbers are current. */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                      <BasisBadge basis={e.performance_basis} />
+                      <WindowLabel start={e.backtest_start} end={e.backtest_end} />
+                    </div>
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     <div style={{ fontWeight: 600, color: 'var(--accent)' }}>{fmt(e.conviction_score, 1)}</div>
@@ -412,6 +598,138 @@ export default function Leaderboard() {
           </table>
         </div>
       )}
+      </>
+      )}
+      {/* RESEARCH-BOARD:END */}
+
+      {/* LIVE-BOARD:BEGIN — the FORWARD board. Everything between these
+          sentinels reads from `liveData` and nothing else. Two rules the
+          guard enforces by slicing on these markers:
+            1. no reference to `data` (the research payload) — a research
+               entry must never be able to stand in for a live row;
+            2. no row may be rendered without ledger-derived fields, and the
+               table only renders when liveEntries.length > 0 — the backend
+               already withholds ledger-less deployments, and this block must
+               not re-add them from any other source. */}
+      {isLive && (
+      <>
+      {liveData && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 18, padding: 14, background: 'var(--surface-2)', borderRadius: 8, border: '1px solid var(--glass-border)' }}>
+          <div style={{ flex: '1 1 380px' }}>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+              How this board is measured <BasisBadge basis={liveData.performance_basis} />
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-2)' }}>{liveData.methodology}</div>
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-3)', marginBottom: 6 }}>Ledger as of</div>
+            <div style={{ fontSize: 13, color: 'var(--text-2)' }}>
+              {liveData.as_of || 'no observations recorded yet'}
+              {liveData.withheld_no_ledger > 0 && (
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+                  Deployments awaiting their first observation and therefore not shown:{' '}
+                  <strong>{liveData.withheld_no_ledger}</strong>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {liveLoading && <div className="body" style={{ color: 'var(--text-3)' }}>Loading the live paper board…</div>}
+      {liveError && (
+        <div className="tag-warning" style={{ display: 'inline-block', padding: '6px 10px' }}>
+          Couldn’t load the live paper board: {liveError}
+        </div>
+      )}
+
+      {!liveLoading && !liveError && liveData?.degraded && (
+        <div role="status" className="tag-warning" style={{ display: 'block', padding: '10px 14px', marginBottom: 14, borderRadius: 4 }}>
+          <strong>Forward board data is degraded.</strong>{' '}
+          {liveData.degraded_reason || 'The paper ledger could not be read.'}{' '}
+          <button type="button" className="btn btn-sm btn-outline" onClick={loadLive} style={{ marginLeft: 4 }}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* The honest empty state. A thin or empty ledger is not an error and
+          not a degradation — it is the true statement that nothing has traded
+          forward yet. It must never be replaced by a zeroed row, and it is
+          pre-empted by the degraded banner above, which is a different claim. */}
+      {!liveLoading && !liveError && liveData && !liveData.degraded && liveEntries.length === 0 && (
+        <div className="body" style={{ color: 'var(--text-3)', padding: 20, textAlign: 'center', border: '1px dashed var(--glass-border)', borderRadius: 8 }}>
+          {liveData.scope === 'anonymous' ? (
+            <>This board ranks your own live paper deployments — sign in to see yours.</>
+          ) : (
+            <>
+              {LIVE_EMPTY_MESSAGE}.
+              {liveData.scope === 'own' && (
+                <>
+                  {' '}Deploy one to paper trading from its strategy page, and its forward track record starts here the
+                  day it produces its first observation.
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {!liveLoading && !liveError && liveEntries.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-3)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                <th style={{ padding: '8px 10px' }}>#</th>
+                <th style={{ padding: '8px 10px' }}>Strategy</th>
+                <th style={{ padding: '8px 10px' }} title="Compounded from every observation in the deployment's forward ledger">Return since inception</th>
+                <th style={{ padding: '8px 10px' }} title="Ledger observations appended so far — not calendar days since inception">Observations</th>
+                <th style={{ padding: '8px 10px' }}>Inception</th>
+                <th style={{ padding: '8px 10px' }} title="The date of the last ledger observation — what the return reflects">As of</th>
+                <th style={{ padding: '8px 10px' }}>Ledger</th>
+              </tr>
+            </thead>
+            <tbody>
+              {liveEntries.map(row => (
+                <tr key={row.deployment_id} style={{ borderTop: '1px solid var(--glass-border)' }}>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap', fontWeight: 600 }}>{row.rank}</td>
+                  <td style={{ padding: '10px', maxWidth: 280 }}>
+                    <div style={{ color: 'var(--text-1)', fontWeight: 500 }}>{row.name}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                      <BasisBadge basis={row.performance_basis} />
+                      <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                        since {row.inception_date}
+                      </span>
+                    </div>
+                  </td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontWeight: 600, color: row.cumulative_return >= 0 ? 'var(--accent)' : 'var(--negative)' }}>
+                      {fmtSignedPct(row.cumulative_return)}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>realised, not annualised</div>
+                  </td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{row.days_live}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{row.inception_date}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{row.as_of}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                    {row.drift_detected
+                      ? <span className="tag-warning" title="A fresh replay disagreed with rows already written. The ledger is append-only and was NOT rewritten — the discrepancy is surfaced, not hidden.">Drift flagged</span>
+                      : <span className="tag-muted" title="Append-only forward ledger; no replay disagreement recorded">Append-only</span>}
+                    {row.last_updated && (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="When the last ledger row was appended">
+                        updated {String(row.last_updated).slice(0, 10)}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      </>
+      )}
+      {/* LIVE-BOARD:END */}
     </div>
   )
 }
