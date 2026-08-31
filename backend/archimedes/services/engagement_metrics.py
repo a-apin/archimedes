@@ -51,11 +51,21 @@ assumed):**
   is a real, durable table with a ``status`` column that reaches
   ``"settled"``/``"failed"`` via ``marketplace/service.py``'s
   ``_finalize_settlement_intent``), but because its ``amount_usdc`` column is
-  declared and **never written** anywhere in this codebase (verified:
-  ``grep -rn amount_usdc backend/archimedes/`` returns only the column
-  declaration itself) — so ``sum(amount_usdc) WHERE status='settled'`` would
-  be a real query returning a meaningless ``NULL`` even against live rows,
-  not a "no table to query" gap. ``PAYMENTS_DRY_RUN`` gates every settlement
+  declared and **never written** by any code path. Verified structurally, not
+  by grep — the string ``amount_usdc`` also appears as an unrelated dict key
+  in ``services/revenue_sweep.py`` and in this module's own prose, so a raw
+  hit count proves nothing. What proves it: ``SettlementIntent`` is
+  constructed in exactly one place (``marketplace/service.py``'s
+  ``_claim_settlement_intent``, which passes only ``strategy_id`` /
+  ``tick_id`` / ``sub_id`` / ``step`` / ``status``), and the only code that
+  mutates an existing row is ``_finalize_settlement_intent``, which assigns
+  only ``status`` and ``settled_at``. Neither ever touches ``amount_usdc``,
+  and nothing else imports the model to write it (re-check with
+  ``grep -rn 'SettlementIntent' backend/archimedes/``, then read the two
+  write sites — that is the check, not the column-name grep). So
+  ``sum(amount_usdc) WHERE status='settled'`` would be a real query returning
+  a meaningless ``NULL`` even against live rows, not a "no table to query"
+  gap. ``PAYMENTS_DRY_RUN`` gates every settlement
   path before an intent is even claimed (``services/generation_payment.py``),
   which is a second, independent reason no volume exists yet — either one
   alone would already block this metric. The response says ``dry_run`` and
