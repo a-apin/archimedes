@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from aiohttp import ClientError, ClientTimeout
 from eth_account import Account
@@ -22,6 +23,8 @@ from web3 import AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
 from web3.providers.rpc.utils import ExceptionRetryConfiguration
+
+from archimedes.deadline import run_with_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +369,60 @@ def rpc_retry_policy(
     return per_attempt, attempts
 
 
+class BoundedAsyncHTTPProvider(AsyncHTTPProvider):
+    """``AsyncHTTPProvider`` with a hard ceiling on EVERY request (#1592).
+
+    The aiohttp ``ClientTimeout`` below bounds *the HTTP request*. It does not
+    bound *the call*, and the gap between those two is what wedged production on
+    2026-08-31: with the Arc RPC unreachable from inside the VPC, ``/health``
+    hung past the ALB's 5s check, no new task ever turned healthy, and the
+    rollout sat at 1/2 for its full 1200s budget while the serving task's event
+    loop starved every other route.
+
+    What lives in that gap, in ``web3`` 7.16, on the path of every single async
+    RPC (``HTTPSessionManager.async_get_response_from_post_request`` →
+    ``async_cache_and_return_session``)::
+
+        async with async_lock(self.session_pool, self._lock):   # ← before any timeout
+
+    ``async_lock`` is ``await loop.run_in_executor(thread_pool, lock.acquire)``
+    over a **class-level ``threading.Lock``** and a **5-worker**
+    ``ThreadPoolExecutor``. ``lock.acquire`` is uninterruptible once it is in a
+    worker thread, it runs entirely before the request timeout is armed, and
+    five stalled acquires exhaust the pool so every later RPC in the process
+    queues behind them. One dark endpoint therefore starves a whole event loop
+    instead of failing one call — and it does so *outside* the timeout the
+    settings promise.
+
+    #1507 bounded one call (``rpc_timeout_seconds`` split across attempts so
+    web3's retry loop could not multiply it). This bounds the CLIENT: the
+    documented total budget becomes a wall-clock ceiling on every request that
+    leaves this provider, whichever layer inside web3 stalls. On expiry the call
+    raises :class:`TimeoutError`, which every caller already treats as a failed
+    read — ``ChainClient.is_connected`` maps it to ``False``, ``oracle_health``
+    records it as a read error. No caller learns a *different* answer than it
+    would have; it just learns one in bounded time.
+    """
+
+    def __init__(self, *args: Any, total_budget_seconds: float, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._total_budget_seconds = total_budget_seconds
+
+    async def make_request(self, method: Any, params: Any) -> Any:
+        return await run_with_deadline(
+            super().make_request(method, params),
+            self._total_budget_seconds,
+            label=f"eth-rpc {method}",
+        )
+
+    async def make_batch_request(self, batch_requests: Any) -> Any:
+        return await run_with_deadline(
+            super().make_batch_request(batch_requests),
+            self._total_budget_seconds,
+            label=f"eth-rpc batch({len(batch_requests)})",
+        )
+
+
 class ChainClient:
     """Singleton Web3 client for all on-chain interactions."""
 
@@ -378,8 +435,13 @@ class ChainClient:
         # path, which requires an actual ClientTimeout instance (see N2).
         per_attempt, attempts = rpc_retry_policy(self.settings.rpc_timeout_seconds, self.settings.rpc_retries)
         self.w3 = AsyncWeb3(
-            AsyncHTTPProvider(
+            # BoundedAsyncHTTPProvider, not AsyncHTTPProvider: the aiohttp timeout
+            # below is the inner bound and total_budget_seconds is the outer one
+            # that holds even when the stall is in web3's own session-manager
+            # lock, outside aiohttp entirely. See the class docstring (#1592).
+            BoundedAsyncHTTPProvider(
                 self.settings.arc_rpc_url,
+                total_budget_seconds=self.settings.rpc_timeout_seconds,
                 request_kwargs={"timeout": ClientTimeout(total=per_attempt)},
                 # Passed explicitly, never left to default: web3's default is five
                 # attempts, which multiplies rpc_timeout_seconds by five and breaks
