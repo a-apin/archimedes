@@ -312,10 +312,12 @@ class TestSingleStrategyGateRunCount:
     second path is memoized in ``services.rigor_cache``, so a warm cache still
     paid a full cohort recompute on every request forever.
 
-    Both assertions below are call-count spies on ``run_rigor_gate``, the unit of
-    work the page's latency is made of. They are deliberately stated in units of
-    ``len(library)`` rather than a literal, so the guard does not go quiet if the
-    curated library grows or shrinks.
+    The first test's two assertions are call-count spies on ``run_rigor_gate``,
+    the unit of work the page's latency is made of. They are deliberately stated
+    in units of ``len(library)`` rather than a literal, so the guard does not go
+    quiet if the curated library grows or shrinks. The other two tests pin the
+    shape (one batch, one result object) and the fail-closed contract, which a
+    count alone would not catch.
 
     Revert-demo (transcript in the PR body): restoring the two-call form in
     ``_to_strategy_response`` makes the cold assertion read ``68 != 34`` and the
