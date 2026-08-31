@@ -244,9 +244,10 @@ export default function Leaderboard() {
   return (
     <div className="leaderboard-page" style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 18 }}>
-        <h2 className="serif" style={{ fontSize: '2rem', marginBottom: 8 }}>
-          {isOwn ? 'Your Strategy Leaderboard' : 'Strategy Leaderboard'}
-        </h2>
+        <header className="app-page-heading">
+          <p className="app-eyebrow">Transparent ranking</p>
+          <h1>{isOwn ? 'Your strategy leaderboard' : 'Strategy leaderboard'}</h1>
+        </header>
 
         {/* Board switch. Two surfaces, two bases, never averaged — the labels
             say which is which before a single number is read. */}

@@ -66,7 +66,18 @@ def _make_indicator(
 
     Must be called from within a Strategy.__init__ so that backtrader's
     auto-discovery wires the indicator's _owner correctly.
+
+    The ``period < 1`` guard below is load-bearing for the look-ahead proof, not
+    defensive tidiness. ``momentum`` compiles to ``data_line(-period)``; with
+    ``period = -1`` that is ``data_line(1)`` — bar *t+1*, a read of the future.
+    ``dsl_lookahead_audit`` proves the interpreter never reads forward by an AST
+    pass over this file, and the only way to prove ``-period <= 0`` *locally* is
+    for the function to be unable to run with a negative ``period``. Deleting
+    this guard therefore does not merely loosen an input check: it makes the
+    offset unprovable and the whole structural audit fails closed.
     """
+    if period < 1:
+        raise DSLError(f"indicator period must be >= 1, got {period!r} for indicator {name!r}")
     if name == "sma":
         return bt.indicators.SimpleMovingAverage(data_line, period=period)
     if name == "ema":

@@ -34,10 +34,10 @@ the review named in the code has not happened.
 
 ## Index
 
-Twenty records. Status and date are authoritative in each ADR's front-matter block;
+Twenty-one records. Status and date are authoritative in each ADR's front-matter block;
 this table mirrors them. (The count read "eighteen" while the table already held nineteen —
 the `generation-payment-credit-not-refund` row landed 2026-08-29 without a count bump.
-Corrected here.)
+Corrected here, and bumped again for `lambda-generation-offload` on 2026-08-30.)
 
 | ADR | Status | Date | Owner | Decision |
 |---|---|---|---|---|
@@ -51,7 +51,7 @@ Corrected here.)
 | [`aws-account-migration.md`](aws-account-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why prod moved to Dan's own AWS account (`037613907429`/`us-east-1`) post-Agora |
 | [`generation-payment-credit-not-refund.md`](generation-payment-credit-not-refund.md) | Accepted | 2026-08-29 | Önder Akkaya | Why an undelivered generation is repaid as a **durable credit, never a refund**, and why the idempotency claim is taken before the money moves (#1441) |
 | [`glm-to-bedrock-llm-migration.md`](glm-to-bedrock-llm-migration.md) | Accepted | 2026-06-24 | Dan Browne | Why the live LLM moved from **GLM to AWS Bedrock** (Nova Micro default, Converse backend) (#717) |
-| [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md) | Accepted | 2026-06-26 | Dan Browne | Why vaults separate **owner (withdrawal)** from **agent (rebalance-only)** so a compromised agent key can't drain (#731) |
+| [`non-custodial-vault-owner-agent.md`](non-custodial-vault-owner-agent.md) | Accepted | 2026-06-26 | Dan Browne | Why vaults separate **owner (withdrawal)** from **agent (rebalance-only)** so a compromised agent key can't drain (#731). **Amended 2026-08-31**: decision unchanged and contracts deployed, but the user-facing vault journey is roadmap, not shipped product (#1266/#1354/#1469) |
 | [`portfolio-constructor-consolidation.md`](portfolio-constructor-consolidation.md) | Accepted | 2026-06-26 | Önder Akkaya | Why legacy constructors were retired and a **dual-signal** (regime × consensus) sizer activated (#131, #662) |
 | [`rigor-gate-unification.md`](rigor-gate-unification.md) | Accepted | 2026-06-26 | Dan Browne | Why the four selection-bias controls run through **one** authoritative gate, surfaced honestly (post-#710) |
 | [`fusion-primary-generation.md`](fusion-primary-generation.md) | **Superseded-by-debate-society-sole-generation-pipeline** | 2026-06-26 | Dan Browne | Why strategy generation was **fusion-primary** (paper-grounded), not free-form LLM (#751). Routing tree retired 2026-07-09 |
@@ -61,6 +61,7 @@ Corrected here.)
 | [`num-trials-self-containment.md`](num-trials-self-containment.md) | Accepted (ratified 2026-08-31, #1555) | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1` |
 | [`aurora-postgres-alembic-datastore.md`](aurora-postgres-alembic-datastore.md) | Accepted | 2026-07-28 | Dan Browne | Why **Aurora PostgreSQL Serverless v2 (18.3)** is the system of record, **Alembic** the only schema-change mechanism, **Redis 7.1** ephemeral-only |
 | [`strategy-dsl-hardening-over-lean4.md`](strategy-dsl-hardening-over-lean4.md) | Accepted | 2026-08-30 | Dan Browne | Why the generator's emission target stays the **closed-enum JSON DSL, hardened**, and **not Lean 4** — the no-generated-code property is already structural; a restricted sandbox is reserved for shapes the DSL cannot express |
+| [`lambda-generation-offload.md`](lambda-generation-offload.md) | **Proposed — verdict DEFER** | 2026-08-30 | Dan Browne | Why generation does **not** move to Lambda yet, measured on a real VPC-attached container built from the production image: no dependency or size blocker, but a **13.6 s** steady-state / **51 s** post-deploy cold start on a ~48 s job. Adopts the lane-agnostic worker entrypoint + the measured-cost model, and corrects the quote seam from `quote()` to `_price()` (#1411, feeds #1217) |
 
 ### Open review debt
 

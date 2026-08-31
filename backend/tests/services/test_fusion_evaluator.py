@@ -36,6 +36,19 @@ from archimedes.services.strategy_dsl import FABER_2007_SPEC, validate_strategy_
 _SPY_FIXTURE = Path(__file__).parent.parent / "fixtures" / "spy_ohlcv_2004_2026.csv"
 
 
+def _audited_spec():
+    """A spec that clears the structural look-ahead audit.
+
+    ``apply_rigor_gate``'s look-ahead leg is a REAL audit now
+    (``services/dsl_lookahead_audit.py``): with no spec to verify it returns
+    ``passed_declared_only``, which is deliberately NOT a pass. Tests below that
+    exercise the OTHER legs (provenance, OOS, PBO) pass this so the look-ahead
+    leg is satisfied honestly rather than by a bypass. Tests that are ABOUT the
+    look-ahead leg live in test_dsl_lookahead_audit.py.
+    """
+    return validate_strategy_spec(FABER_2007_SPEC)
+
+
 def _noisy_variant_curve(curve: list[float], seed: int = 42, noise_sigma: float = 0.002) -> list[float]:
     """Build a second equity curve from the same per-bar drift as ``curve`` plus
     independent Gaussian noise, for use as a non-identical CSCV variant.
@@ -95,6 +108,10 @@ def _make_high_sharpe_metrics(data_source: str = "csv:test.csv") -> BacktestMetr
         backtest_start=None,
         backtest_end=None,
         data_source=data_source,
+        # Stands in for a real cerebro run: the broker cheat-on-close/open check
+        # ran and passed. Without it the look-ahead audit is incomplete and
+        # cannot reach passed_structural (that is the point of the None default).
+        broker_cheat_check_passed=True,
     )
 
 
@@ -421,7 +438,11 @@ class TestDataProvenanceGate:
         # 06-14, Q4: pbo_score=None now fails closed) — see _two_variant_set.
         curve = _make_high_sharpe_metrics(data_source="csv:spy_ohlcv_2004_2026.csv").equity_curve
         metrics = _make_high_sharpe_metrics(data_source="csv:spy_ohlcv_2004_2026.csv")
-        verdict = apply_rigor_gate(metrics, variants_metrics=_two_variant_set(curve, data_source="csv:spy.csv"))
+        verdict = apply_rigor_gate(
+            metrics,
+            variants_metrics=_two_variant_set(curve, data_source="csv:spy.csv"),
+            spec=_audited_spec(),
+        )
         assert verdict.pbo_score is not None and verdict.pbo_score < 0.5
         assert verdict.passing is True
         assert verdict.admissible is True
@@ -434,7 +455,9 @@ class TestDataProvenanceGate:
         curve = _make_high_sharpe_metrics(data_source="csv:spy_ohlcv_2004_2026.csv").equity_curve
         metrics = _make_high_sharpe_metrics(data_source="csv:spy_ohlcv_2004_2026.csv")
         variants = _two_variant_set(curve, data_source="csv:spy.csv")
-        as_synthetic = apply_rigor_gate(metrics, variants_metrics=variants, data_source="synthetic")
+        as_synthetic = apply_rigor_gate(
+            metrics, variants_metrics=variants, data_source="synthetic", spec=_audited_spec()
+        )
         assert as_synthetic.passing is True
         assert as_synthetic.admissible is False
 
@@ -475,6 +498,9 @@ def _metrics_from_curve(curve: list[float], data_source: str = "csv:test.csv") -
         monthly_returns=[],
         backtest_start=None,
         backtest_end=None,
+        # See _make_high_sharpe_metrics: stands in for a real cerebro run whose
+        # broker cheat-on-close/open check ran and passed.
+        broker_cheat_check_passed=True,
         data_source=data_source,
     )
 
@@ -507,7 +533,9 @@ class TestFusionGateEnforcesOosSharpe:
         curve = [100_000.0]
         for i in range(800):
             curve.append(curve[-1] * (1.003 if i % 2 == 0 else 1.001))
-        verdict = apply_rigor_gate(_metrics_from_curve(curve), variants_metrics=_two_variant_set(curve))
+        verdict = apply_rigor_gate(
+            _metrics_from_curve(curve), variants_metrics=_two_variant_set(curve), spec=_audited_spec()
+        )
         assert verdict.pbo_score is not None and verdict.pbo_score < 0.5
         assert verdict.oos_sharpe is not None and verdict.oos_sharpe > 0.0
         assert verdict.passing is True

@@ -58,7 +58,10 @@ test("an anonymous visitor is never bounced off the policy pages", () => {
 			`${path} must not be an /app route — those bounce anonymous visitors to /sign-in`,
 		);
 	}
-	assert.match(app, /if \(route\.kind !== 'app' \|\| route\.anonymousOk \|\| authLoading \|\| user\) return/);
+	// Main's guard gained the insights carve-out (#1437) and the rebrand's
+	// quote style; the pinned invariant is unchanged — only kind === "app"
+	// routes ever bounce.
+	assert.match(app, /if \(route\.kind !== "app" \|\| route\.anonymousOk \|\| route\.page === "insights" \|\| authLoading \|\| user\)/);
 });
 
 // featureEnabled() is applied to app routes only, but a future edit could
@@ -78,10 +81,11 @@ test("pageToPath round-trips both policy pages", () => {
 });
 
 test("App.jsx renders both policy pages in the public shell", () => {
-	assert.match(app, /import Privacy from '\.\/components\/Privacy'/);
-	assert.match(app, /import Terms from '\.\/components\/Terms'/);
-	assert.match(app, /privacy: <Privacy \/>/);
-	assert.match(app, /terms: <Terms \/>/);
+	assert.match(app, /import Privacy from "\.\/components\/Privacy"/);
+	assert.match(app, /import Terms from "\.\/components\/Terms"/);
+	// The rebrand replaced the publicPages map with an if-chain; same render.
+	assert.match(app, /route\.page === "privacy"\) content = <Privacy \/>/);
+	assert.match(app, /route\.page === "terms"\) content = <Terms \/>/);
 });
 
 // ── The draft banner and the un-dated date ──────────────────────────────
@@ -160,8 +164,13 @@ test("every internal link on the policy pages and in both footers resolves", () 
 		for (const [, href] of source.matchAll(INTERNAL_HREF)) {
 			// Query/template hrefs (e.g. Layout's `/sign-in?next=...`) are built at
 			// runtime; take the path half, which is what resolveRoute needs.
-			const path = href.split("?")[0];
+			// Hash anchors (e.g. the header's /#product) resolve on the page the
+			// path half names — strip both suffixes before asking resolveRoute.
+			const path = href.split("?")[0].split("#")[0] || "/";
 			if (path.includes("${")) continue;
+			// Static files (llms.txt, .well-known/agent.json) are nginx-served,
+			// not SPA routes — resolveRoute cannot vouch for them.
+			if (/\.[a-z]+$/i.test(path) || path.startsWith("/.well-known")) continue;
 			const route = resolveRoute(path);
 			assert.notEqual(route.kind, "not-found", `${name}: dead internal link ${href}`);
 			checked += 1;

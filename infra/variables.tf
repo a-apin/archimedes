@@ -211,3 +211,9 @@ variable "dmarc_rua_address" {
   type        = string
   default     = "dmarc-reports@archimedes-arc.com"
 }
+
+variable "public_trace_vaults" {
+  description = "Comma-separated house/demo vault addresses whose ownerless reasoning traces form the public proof surface (backend/archimedes/services/trace_visibility.py, #1556). Public on-chain addresses, not secrets. The default is the five house vaults observed in the live trace store on 2026-08-31; ownerless traces from any other vault go private once this is applied."
+  type        = string
+  default     = "0x88F284e6667947d66949528dB209b2a50bf2f612,0x99120A79f54F83f6729E1E1e2B1f536952BF3574,0x9d4530e874D712d3F0f65c49F9355403bf232e66,0xA3b077e16C208cD794581db46b559FDC9619ada7,0xcdd47c6D16a206f2C69B6D533Ac98b56Db3CeF52"
+}

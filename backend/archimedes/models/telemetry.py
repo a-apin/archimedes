@@ -44,11 +44,13 @@ class MetricsResponse(BaseModel):
     human_count: int = Field(..., description="Human-UA REQUESTS (cumulative, site traffic — NOT users).")
     agent_count: int = Field(..., description="Agent/bot REQUESTS (cumulative, site traffic — NOT users).")
     total_requests: int = Field(..., description="human_count + agent_count (cumulative requests — NOT users).")
-    real_users: int = Field(
-        default=0,
+    real_users: int | None = Field(
+        default=None,
         description=(
             "Distinct real users = canonical Better Auth accounts. "
-            "Linked-wallet and profile counts are separate metrics."
+            "Linked-wallet and profile counts are separate metrics. "
+            "None (not 0) means the account-count query failed — a loud absence, "
+            "never a fabricated measured zero (round 4 fix)."
         ),
     )
     epoch_started_at: str | None = Field(
