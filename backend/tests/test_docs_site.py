@@ -31,7 +31,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,7 +75,7 @@ def _wiki_section(nav) -> list:
     for item in nav:
         if isinstance(item, dict) and WIKI_SECTION in item:
             return item[WIKI_SECTION]
-    pytest.fail(f"mkdocs.yml nav has no '{WIKI_SECTION}' section — the openwiki tree is unpublished again.")
+    raise AssertionError(f"mkdocs.yml nav has no '{WIKI_SECTION}' section — the openwiki tree is unpublished again.")
 
 
 def _source_path(nav_target: str) -> Path:
