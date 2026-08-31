@@ -1,4 +1,5 @@
 import { createPublicClient, createWalletClient, custom, http } from 'viem'
+import { arcExecutionChain, EXECUTION_CHAIN_HEX } from './chain-config'
 import {
   connectCirclePasskey,
   clearCircleSession,
@@ -6,12 +7,9 @@ import {
   rehydrateSmartAccount,
 } from './circle-wallet'
 
-const arcTestnet = {
-  id: 5042002,
-  name: 'Arc Testnet',
-  nativeCurrency: { name: 'USD Coin', symbol: 'USDC', decimals: 18 },
-  rpcUrls: { default: { http: ['https://rpc.testnet.arc.network'] } },
-}
+// Chain identity lives in chain-config.js so the EOA path, the passkey path
+// and the switch-chain hex cannot drift apart (#1240).
+const arcTestnet = arcExecutionChain
 
 export const publicClient = createPublicClient({
   chain: arcTestnet,
@@ -377,7 +375,8 @@ export async function reconnectWallet() {
   }
 }
 
-const ARC_CHAIN_HEX = '0x4cef52'  // 5042002
+// Derived from the chain id, never written twice — see chain-config.js.
+const ARC_CHAIN_HEX = EXECUTION_CHAIN_HEX
 
 // MetaMask returns -32002 when a wallet_requestPermissions / eth_requestAccounts
 // is already pending — usually because the user dismissed the popup without

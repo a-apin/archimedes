@@ -27,6 +27,7 @@ import math
 import numpy as np
 import pytest
 from archimedes.services._rigor_helpers import (
+    _RF_DAILY,
     _dsr_from_stats,
     _sharpe_per_col,
     benjamini_hochberg_fdr,
@@ -1683,10 +1684,11 @@ class TestDsrCorrelationRelaxesPenalty:
         )
 
     def test_full_correlation_collapses_to_single_effective_trial(self):
-        # ρ=1 under the effective-N model means N_eff = 1: all trials are the
-        # same test, so there is no selection bias to deflate. The DSR must
-        # equal the N=1 (no-penalty) result — not vanish via an undocumented
-        # sqrt(1−ρ) factor.
+        # ρ=1 means every trial is the same test, so there is no selection
+        # bias to deflate and the DSR must equal the N=1 (no-penalty) result.
+        # Note this endpoint does NOT discriminate between formulas: √(1−ρ) and
+        # the old N_eff form both vanish here, which is part of why #1558 went
+        # unnoticed. The interior is pinned in TestEquicorrelatedExpectedMax.
         rng = np.random.default_rng(9)
         rets = list(rng.normal(0.0012, 0.01, 600))
         fully_correlated = compute_dsr(rets, num_trials=25, average_correlation=1.0)
@@ -1715,6 +1717,147 @@ class TestDsrCorrelationRelaxesPenalty:
 
 
 # ─── CPCV wiring into run_rigor_gate ─────────────────────────────────
+
+
+class TestEquicorrelatedExpectedMax:
+    """#1558: the correlated-trials E[max] must be the equicorrelated one.
+
+    For N standard normals with equicorrelation ρ ≥ 0, the one-factor form
+    ``X_i = √ρ·Z + √(1−ρ)·ε_i`` makes the common term factor out of the maximum:
+
+        E[max_i X_i] = √(1−ρ) · E[max of N iid]
+
+    The prior implementation instead converted N to an effective count
+    ``N_eff = N/(1 + (N−1)ρ)`` (the Kish design effect) and pushed that through
+    the quantile approximation, which under-deflated by 2×–10× over
+    ρ ∈ [0.3, 0.9] and let the null gate admit noise at up to 29%.
+
+    Every test in this class FAILS against that prior implementation. The three
+    tests in ``TestDsrCorrelationRelaxesPenalty`` do not: they pin the ρ=0 and
+    ρ=1 endpoints (where the two formulas agree exactly) and monotonicity in
+    between (which both satisfy), so the whole file passed against either one.
+    """
+
+    ANNUALIZATION = 252
+    EULER = 0.5772156649
+
+    @classmethod
+    def _a_n(cls, n: int) -> float:
+        """Bailey-LdP two-quantile E[max of n iid standard normals]."""
+        from scipy.stats import norm
+
+        return float((1.0 - cls.EULER) * norm.ppf(1.0 - 1.0 / n) + cls.EULER * norm.ppf(1.0 - 1.0 / (n * math.e)))
+
+    @classmethod
+    def _recover_e_max(cls, sr_hat: float, t: int, n: int, rho: float) -> float:
+        """Back E_max_N out of the returned deflated Sharpe.
+
+        ``dsr = (SR_hat − SR_zero)·√252`` and ``SR_zero = √(1/(T−1))·E_max_N``,
+        so E_max_N is recoverable exactly from the public return value. Reading
+        it this way keeps the test on the observable output rather than on a
+        private intermediate, so it still bites if the block is refactored.
+        """
+        dsr, _ = _dsr_from_stats(sr_hat, t, 0.0, 3.0, n, rho)
+        assert dsr is not None
+        return (sr_hat - dsr / math.sqrt(cls.ANNUALIZATION)) * math.sqrt(t - 1)
+
+    @pytest.mark.parametrize("n", [4, 8, 16])
+    @pytest.mark.parametrize("rho", [0.0, 0.3, 0.5, 0.7, 0.9])
+    def test_expected_max_matches_the_equicorrelated_closed_form(self, n: int, rho: float) -> None:
+        """The interior, pinned by value — this is what the old tests left free."""
+        recovered = self._recover_e_max(0.03, 756, n, rho)
+        expected = math.sqrt(1.0 - rho) * self._a_n(n)
+        assert recovered == pytest.approx(expected, abs=1e-3), (
+            f"N={n}, rho={rho}: E[max] is {recovered:.4f}, equicorrelated closed form is "
+            f"{expected:.4f} (ratio {recovered / expected:.2f}x)"
+        )
+
+    @pytest.mark.parametrize(("n", "rho"), [(4, 0.5), (8, 0.7), (16, 0.5), (16, 0.9)])
+    def test_correlation_shrinkage_factor_matches_monte_carlo(self, n: int, rho: float) -> None:
+        """Independent of the closed form: simulate the maximum directly.
+
+        Draws from a Cholesky factor of Σ = (1−ρ)I + ρ·11ᵀ rather than the
+        one-factor construction, so the simulation does not assume the identity
+        under test. Seeded, so it cannot go flaky.
+
+        Compares the RATIO E[max](ρ)/E[max](0) on both sides rather than the
+        levels. The two-quantile approximation to E[max of N iid] is itself
+        ~2–3% high (at ρ=0 as much as anywhere), and that bias is common to
+        numerator and denominator, so taking the ratio cancels it and leaves
+        exactly the correlation factor this test is about. Comparing levels
+        would fold a pre-existing approximation error into a correlation test.
+        """
+        rng = np.random.default_rng(1558)
+        cov = np.full((n, n), rho) + np.eye(n) * (1.0 - rho)
+        chol = np.linalg.cholesky(cov).T
+        correlated = float((rng.standard_normal((200_000, n)) @ chol).max(axis=1).mean())
+        independent = float(rng.standard_normal((200_000, n)).max(axis=1).mean())
+        simulated_factor = correlated / independent
+
+        recovered_factor = self._recover_e_max(0.03, 756, n, rho) / self._recover_e_max(0.03, 756, n, 0.0)
+        assert recovered_factor == pytest.approx(simulated_factor, abs=0.01), (
+            f"N={n}, rho={rho}: correlation shrinks E[max] by {recovered_factor:.4f}, "
+            f"simulation says {simulated_factor:.4f} (closed form: {math.sqrt(1 - rho):.4f})"
+        )
+
+    def test_correlated_deflation_keeps_growing_with_trial_count(self) -> None:
+        """Shape in N, not just scale.
+
+        ``N_eff = N/(1 + (N−1)ρ)`` tends to 1/ρ, so the old form's penalty
+        SATURATED: at ρ=0.7 it was 0.203 at N=16 and 0.222 at N=1000, a 9% rise
+        across a 60-fold larger search. The true term grows like √(1−ρ)·√(2 ln N).
+        A large correlated sweep must be charged more than a small one.
+        """
+        small = self._recover_e_max(0.03, 756, 16, 0.7)
+        large = self._recover_e_max(0.03, 756, 1000, 0.7)
+        assert large > 1.5 * small, (
+            f"E[max] barely moved from N=16 ({small:.4f}) to N=1000 ({large:.4f}) — "
+            "the multiple-testing penalty is saturating in N"
+        )
+
+    @pytest.mark.parametrize("n", [2, 4, 16, 100])
+    def test_independent_trial_deflation_is_unchanged(self, n: int) -> None:
+        """Regression guard on the ρ=0 path, which #1558 must not move.
+
+        ρ=0 was already correct and is the only case ``test_dsr_parity`` can
+        reach (the analytics-engine mirror takes no correlation argument), so
+        pin it against the closed form directly.
+        """
+        assert self._recover_e_max(0.03, 756, n, 0.0) == pytest.approx(self._a_n(n), abs=1e-3)
+
+    def test_null_gate_does_not_admit_noise_above_the_nominal_rate(self) -> None:
+        """Calibration, which is the reason any of this matters.
+
+        Every trial is drifted at exactly ``_RF_DAILY`` so its true EXCESS Sharpe
+        is zero, matching the excess convention ``compute_dsr`` grades on (#547).
+        Getting this wrong hides the defect: drifting at zero instead makes every
+        trial underperform cash by 5%/yr, a far harsher null under which even the
+        broken form scores a respectable 10.3%.
+
+        The winner is then picked by in-sample Sharpe, which is precisely the
+        selection event the DSR exists to correct, so a gate at ``dsr_p >= 0.90``
+        should admit about 10%. The pre-#1558 form admitted 25.5% here.
+
+        Seeded and bounded at 600 runs to stay fast. Binomial noise on a 10% rate
+        at n=600 is ~1.2pp, so the 0.16 threshold sits ~5σ above the true rate and
+        ~8σ below the broken one: it cannot flake in either direction.
+        """
+        rng = np.random.default_rng(1558)
+        n, rho, t, runs = 16, 0.5, 756, 600
+        cov = np.full((n, n), rho) + np.eye(n) * (1.0 - rho)
+        chol = np.linalg.cholesky(cov).T
+        false_passes = 0
+        for _ in range(runs):
+            paths = (rng.standard_normal((t, n)) @ chol) * 0.01 + _RF_DAILY
+            in_sample = (paths.mean(axis=0) - _RF_DAILY) / paths.std(axis=0, ddof=1)
+            best = paths[:, int(np.argmax(in_sample))]
+            _, p_value = compute_dsr(best.tolist(), num_trials=n, average_correlation=rho)
+            false_passes += p_value is not None and p_value >= 0.90
+        rate = false_passes / runs
+        assert rate < 0.16, (
+            f"the gate admitted {rate:.1%} of pure-noise winners at N={n}, rho={rho}; "
+            "a calibrated gate at dsr_p >= 0.90 admits about 10%"
+        )
 
 
 class TestRunRigorGateCpcvWiring:

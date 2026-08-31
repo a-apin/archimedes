@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 
 import { disconnectWallet, reconnectWallet } from "./config";
+import { EXECUTION_CHAIN_ID } from "./chain-config";
 import { checkLegacyWallet, listLinkedWallets } from "./linked-wallets";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Layout from "./components/Layout";
@@ -80,7 +81,7 @@ export default function AuthenticatedApp({
 					wallets.some(
 						(wallet) =>
 							wallet.address === result.address.toLowerCase() &&
-							wallet.chain_id === 5042002,
+							wallet.chain_id === EXECUTION_CHAIN_ID,
 					)
 				) {
 					setWalletAddr(result.address);

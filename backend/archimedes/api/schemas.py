@@ -171,6 +171,18 @@ class StrategyResponse(BaseModel):
     id: str
     papers: list[PaperRefResponse] = []
     methodology_summary: str
+    # The user's own free-text ask that produced this strategy (v8 Lane 3.3),
+    # read from strategy_store.brief_intent — distinct from
+    # methodology_summary, which is the DERIVED writeup. Populated ONLY by
+    # the single-strategy detail route (``get_strategy``), and there only for
+    # the row's OWNER — publishing a strategy shares the strategy, not the
+    # sentence its owner typed to ask for it. The shared
+    # ``_passport_to_strategy_response``/``_passport_responses`` helpers that
+    # also back Library and the public leaderboard never set it, so it never
+    # reaches those list payloads. None = not the caller's row, a curated
+    # strategy (no brief), or a legacy generated row the backfill migration
+    # could not resolve.
+    brief_intent: str | None = None
     asset_universe: list[str]
     # Provenance of the asset_universe pick (#857): "user" | "model" | "full",
     # or None for rows written before this field existed (curated strategies,
@@ -597,6 +609,17 @@ class ChatPostResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 
+class ChainEndpointResponse(BaseModel):
+    """One chain a client may need to talk to."""
+
+    chain_id: int
+    rpc_url: str
+    # False means this chain was inherited from the single-chain configuration
+    # rather than chosen for this role. A client that must not guess — anything
+    # about to move real money — can tell a decision from a default.
+    explicit: bool
+
+
 class ContractAddressesResponse(BaseModel):
     """All deployed contract addresses. Frontend needs these for direct on-chain calls."""
 
@@ -620,9 +643,23 @@ class ContractAddressesResponse(BaseModel):
     # Vault addresses. Same None-vs-{} distinction as `pools`.
     vaults: dict[str, str] | None  # symbol → address, e.g. {"vMOMENTUM": "0x..."}
 
-    # Chain info
+    # Chain info.
+    #
+    # These two keep their original meaning: the chain the contract addresses
+    # above are deployed on, i.e. the EXECUTION chain. Existing clients read
+    # them and stay correct. New clients should prefer the explicit blocks
+    # below, which say which chain they mean instead of leaving it implied.
     chain_id: int
     rpc_url: str
+
+    # Two-chain split (#1240). Payments and execution are the same chain today
+    # and diverge at the Arc mainnet cutover. Serving both unconditionally —
+    # rather than only once they differ — means a client never has to infer a
+    # missing block, and `split` says outright whether a wallet flow needs
+    # chain switching.
+    payments_chain: ChainEndpointResponse
+    execution_chain: ChainEndpointResponse
+    split_chain: bool
 
 
 # ═══════════════════════════════════════════════════════════════

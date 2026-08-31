@@ -374,3 +374,177 @@ class TestPushConfirmation:
         session.get = MagicMock(return_value=get_cm)
 
         assert await updater._poll_circle_tx(session, "tx-905") == "TIMEOUT"
+
+
+# ── Circle 200-with-terminal-state must not be logged as an error (#1525) ──
+
+
+@pytest.mark.usefixtures("circle_creds")
+class TestSubmissionResponseParsing:
+    """Circle's create-transaction call can validly return a 200 (not just
+    201) carrying an already-terminal state — e.g. a fast testnet tx, or an
+    idempotency-key dedup landing on an already-resolved tx. Before #1525,
+    grading solely on `resp.status == 201` sent every one of those into the
+    error branch: `Circle API error for sBTC (200): {'data': {'id': ...,
+    'state': 'COMPLETE'}}` — logged every cycle for a push that had already
+    succeeded, burying genuine failures under bogus ones."""
+
+    def _updater_with_response(self, status: int, body: dict):
+        updater = OracleUpdater()
+        updater._circle_public_key = "cached-pem"
+        resp = MagicMock(status=status)
+        resp.json = AsyncMock(return_value=body)
+        return updater, _mock_aiohttp_session(post_response=resp)
+
+    async def test_200_complete_is_treated_as_success_not_logged_as_error(self, caplog):
+        # The exact shape from the issue's live log line, at the exact status.
+        updater, (session_cm, session) = self._updater_with_response(
+            200, {"data": {"id": "tx-dup", "state": "COMPLETE"}}
+        )
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="COMPLETE")),
+            caplog.at_level(logging.ERROR, logger="archimedes.chain.oracle_updater"),
+        ):
+            result = await updater.push_prices_on_chain([good])
+
+        assert result == "tx-dup"
+        assert updater._last_pushed_price_int["sSPY"] == _int6(110.0)
+        error_messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert not any("Circle API error" in m for m in error_messages), error_messages
+
+    async def test_200_confirmed_is_also_treated_as_success(self, caplog):
+        updater, (session_cm, session) = self._updater_with_response(
+            200, {"data": {"id": "tx-conf", "state": "CONFIRMED"}}
+        )
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="CONFIRMED")),
+            caplog.at_level(logging.ERROR, logger="archimedes.chain.oracle_updater"),
+        ):
+            result = await updater.push_prices_on_chain([good])
+
+        assert result == "tx-conf"
+        error_messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert not any("Circle API error" in m for m in error_messages), error_messages
+
+    async def test_genuine_terminal_failure_state_still_logs_error_named(self, caplog):
+        # Adversarial/guard-rejects-something check: a REAL failure — Circle
+        # accepted the call but the tx itself is already DENIED — must still
+        # be caught, named, and NOT silently treated as submitted.
+        updater, (session_cm, session) = self._updater_with_response(200, {"data": {"id": "tx-bad", "state": "DENIED"}})
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            caplog.at_level(logging.ERROR, logger="archimedes.chain.oracle_updater"),
+        ):
+            result = await updater.push_prices_on_chain([good])
+
+        assert result is None
+        assert "sSPY" not in updater._last_pushed_price_int
+        error_messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("DENIED" in m for m in error_messages), error_messages
+
+    async def test_malformed_response_with_no_data_still_logs_error(self, caplog):
+        # A genuinely broken/unrecognized response (no "data"/"id" at all)
+        # must still be caught — the guard must not be relaxed into silence.
+        updater, (session_cm, session) = self._updater_with_response(400, {"code": 123, "message": "bad request"})
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            caplog.at_level(logging.ERROR, logger="archimedes.chain.oracle_updater"),
+        ):
+            result = await updater.push_prices_on_chain([good])
+
+        assert result is None
+        error_messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("Circle API error" in m for m in error_messages), error_messages
+
+
+# ── Wedged-tx abandonment (#1525) ──────────────────────────────────────────
+
+
+@pytest.mark.usefixtures("circle_creds")
+class TestWedgedTxAbandonment:
+    """A tx id Circle keeps handing back unresolved (same id, TIMEOUT every
+    cycle) must be abandoned after a bounded number of cycles rather than
+    re-polled forever — the observed production symptom: sSPY re-polling the
+    same Circle tx id every cycle for days."""
+
+    def _updater_with_response(self, tx_id: str = "tx-wedged"):
+        updater = OracleUpdater()
+        updater._circle_public_key = "cached-pem"
+        resp = MagicMock(status=201)
+        resp.json = AsyncMock(return_value={"data": {"id": tx_id}})
+        return updater, _mock_aiohttp_session(post_response=resp)
+
+    async def _push_once(self, updater, session_cm, tx_id: str, poll_state: str):
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value=poll_state)),
+        ):
+            return await updater.push_prices_on_chain([good])
+
+    async def test_below_threshold_keeps_repolling_the_same_id_quietly(self, caplog):
+        # Guard-rejects-something's negative control: BELOW the cap, no
+        # abandonment fires — proves the test below is actually exercising
+        # the threshold, not something that always fires.
+        updater, (session_cm, _session) = self._updater_with_response("tx-wedged")
+        updater._tx_max_repolls = 10
+        for _ in range(9):
+            result = await self._push_once(updater, session_cm, "tx-wedged", "TIMEOUT")
+        assert result is None
+        assert updater._wedge_tracking["sSPY"] == ("tx-wedged", 9)
+        assert updater._tx_retry_salt.get("sSPY", 0) == 0
+
+    async def test_exceeding_threshold_abandons_with_warning_and_forces_fresh_key(self, caplog):
+        updater, (session_cm, _session) = self._updater_with_response("tx-wedged")
+        updater._tx_max_repolls = 10
+        with caplog.at_level(logging.WARNING, logger="archimedes.chain.oracle_updater"):
+            # 10 cycles land the tracked count at 10 (== cap); the 11th cycle
+            # sees count>=cap BEFORE submitting and abandons.
+            for _ in range(11):
+                await self._push_once(updater, session_cm, "tx-wedged", "TIMEOUT")
+
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("abandoning" in m and "tx-wedged" in m for m in warnings), warnings
+        # The abandonment cleared tracking and bumped the salt so the NEXT
+        # idempotency key for this symbol is guaranteed to differ.
+        assert updater._tx_retry_salt["sSPY"] == 1
+
+    async def test_a_terminal_success_clears_wedge_tracking(self):
+        # Anti-goal: a tx that eventually resolves must not leave stale
+        # tracking behind to falsely trigger abandonment later.
+        updater, (session_cm, _session) = self._updater_with_response("tx-wedged")
+        await self._push_once(updater, session_cm, "tx-wedged", "TIMEOUT")
+        assert "sSPY" in updater._wedge_tracking
+        await self._push_once(updater, session_cm, "tx-wedged", "COMPLETE")
+        assert "sSPY" not in updater._wedge_tracking
+
+    async def test_a_different_tx_id_resets_the_count_instead_of_accumulating(self):
+        # A genuinely new submission (different id — e.g. price moved) must
+        # not inherit a previous id's repoll count.
+        updater = OracleUpdater()
+        updater._circle_public_key = "cached-pem"
+        resp = MagicMock(status=201)
+        resp.json = AsyncMock(side_effect=[{"data": {"id": "tx-a"}}, {"data": {"id": "tx-b"}}])
+        session_cm, _session = _mock_aiohttp_session(post_response=resp)
+
+        await self._push_once(updater, session_cm, "tx-a", "TIMEOUT")
+        assert updater._wedge_tracking["sSPY"] == ("tx-a", 1)
+
+        await self._push_once(updater, session_cm, "tx-b", "TIMEOUT")
+        assert updater._wedge_tracking["sSPY"] == ("tx-b", 1)
