@@ -45,7 +45,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`api/vaults-and-chain.md`](api/vaults-and-chain.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/*`, `/api/traces/*`, `/api/swap/*`, `/api/config/contracts`, and the health/root endpoints. |
 | [`api/chat.md`](api/chat.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/{address}/chat*` — per-vault chat: public reads, linked-wallet writes, internal-only system events. |
 | [`api/leaderboard-and-metrics.md`](api/leaderboard-and-metrics.md) | current | Dan Browne | 2026-08-20 | `/api/leaderboard` and the public, PII-free `/api/metrics/*` traction surface. |
-| [`api/admin-private.md`](api/admin-private.md) | current | Dan Browne | 2026-08-20 | `/api/metrics/private/*` — the platform-admin-gated cost/ops dashboard and per-wallet identity roster. |
+| [`api/admin-private.md`](api/admin-private.md) | current | Dan Browne | 2026-08-31 | `/api/metrics/private/*` — the platform-admin-gated cost/ops dashboard (incl. the measured `$/generation`) and per-wallet identity roster. |
 | [`api-surface-status.md`](api-surface-status.md) | current | Dan Browne | 2026-08-20 | Census of every router `backend/archimedes/main.py` registers: prefix, auth model, status, and whether a detailed doc above covers it (15/30 do). Backed by a completeness test that fails CI if a registered router has no row. |
 
 ## Product
@@ -82,7 +82,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`generation-cost-instrumentation.md`](generation-cost-instrumentation.md) | current | Dan Browne | 2026-08-20 | What one generation actually consumes: per-job token counts, per-stage wall/CPU seconds, peak RSS, row writes. Raw measurement only — the quote seam stays `flat_v1`. |
+| [`generation-cost-instrumentation.md`](generation-cost-instrumentation.md) | current | Dan Browne | 2026-08-31 | What one generation actually consumes: per-job token counts, per-stage wall/CPU seconds, peak RSS, row writes — plus the measured `$/generation` those counts price to on the admin-only cost endpoint. The customer-facing quote seam stays `flat_v1`. |
 | [`corpus-architecture.md`](corpus-architecture.md) | target-state | Dan Browne | 2026-08-20 | 10,000 arXiv preprints (not peer-reviewed), metadata + abstracts only. **Describes embeddings/clusters/KG as built; in prod none of the three exist** (#778). Selection is a **keyword filter** and only that candidate set is re-scored at request time — nothing is precomputed; `/health` `paper_rag` names the live scorer, and the graph/KG endpoints 503 or return empty. |
 | [`specs/multi-agent-debate-spec.md`](specs/multi-agent-debate-spec.md) | shipped | Dan Browne | 2026-07-28 | The debate society — the sole generation pipeline. |
 | [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Dan Browne | 2026-07-28 | Multi-paper synthesis feeding the debate proposals. |
