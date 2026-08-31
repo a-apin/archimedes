@@ -56,6 +56,13 @@ class StrategyRecord(Base):
     # Strategy definition
     strategy_name = Column(String(256), nullable=False, default="")
     thesis = Column(Text, nullable=False, default="")
+    # The user's own free-text ask that produced this strategy (v8 Lane 3.3) —
+    # distinct from `thesis`, which is the DERIVED methodology. Sourced from
+    # `GenerateBrief.intent` at generation time (`_persist_candidate`'s
+    # `_do_persist`). NULL for curated/example rows (which have no brief) and
+    # for legacy generated rows this column's migration could not resolve
+    # (see that migration's docstring for the backfill's honest boundary).
+    brief_intent = Column(Text, nullable=True)
     asset_universe = Column(Text, nullable=False, default="[]")  # JSON list
     risk_profile = Column(String(32), nullable=False, default="moderate")
     # Raw validated DSL spec JSON (rebalancer decouple, Part A #1 of
@@ -236,6 +243,7 @@ def upsert_strategy(
     owner_wallet: str | None = None,
     owner_user_id: str | None = None,
     strategy_spec: dict | None = None,
+    brief_intent: str | None = None,
 ) -> StrategyRecord:
     """Idempotent upsert: same content → same row, no duplicates.
 
@@ -248,8 +256,20 @@ def upsert_strategy(
     content-hash match it is backfilled onto a row that lacks one, the same
     never-overwrite rule as ownership; an existing non-null spec is never
     replaced.
+
+    ``brief_intent`` is the user's own free-text ask (v8 Lane 3.3) — plain
+    text, left NULL otherwise. Same never-overwrite backfill rule: a
+    content-hash match only fills a NULL, never replaces an existing value.
+    Normalized once here (stripped; empty-or-whitespace → NULL) so BOTH write
+    branches below store the same thing: a blank brief has nothing to show,
+    and a row holding ``"   "`` would render an empty "Your brief" card on the
+    passport instead of no card at all.
     """
     owner_wallet = owner_wallet.lower() if owner_wallet else None
+    # Normalize before either branch reads it — see the docstring. Doing it in
+    # one place is what keeps the new-row branch and the backfill branch from
+    # disagreeing about what "no brief" means.
+    brief_intent = (brief_intent or "").strip() or None
     content_hash = _compute_content_hash(
         generation_method,
         strategy_name,
@@ -272,6 +292,13 @@ def upsert_strategy(
         # that's already there.
         if strategy_spec is not None and not existing.strategy_spec:
             existing.strategy_spec = json.dumps(strategy_spec)
+            existing.updated_at = datetime.now(UTC)
+            session.flush()
+        # Same never-overwrite backfill rule for the user's brief. `brief_intent`
+        # is already stripped-or-None at this point (top of the function), so a
+        # whitespace-only ask cannot backfill over a genuine NULL either.
+        if brief_intent and not existing.brief_intent:
+            existing.brief_intent = brief_intent
             existing.updated_at = datetime.now(UTC)
             session.flush()
         # Update status/verdict if provided, but don't duplicate
@@ -311,6 +338,11 @@ def upsert_strategy(
         # bare truthiness check would silently drop an explicitly-provided
         # empty dict ({}) by storing NULL instead of the serialized "{}".
         strategy_spec=json.dumps(strategy_spec) if strategy_spec is not None else None,
+        # Already stripped-or-None at the top of the function (unlike
+        # strategy_spec above, where {} is a meaningful distinct value from
+        # "absent" and truthiness would be wrong): an empty or whitespace-only
+        # brief has nothing to show, so it is stored as NULL, not as blanks.
+        brief_intent=brief_intent,
     )
     if rigor_verdict:
         # Same transition rule as the upsert-existing branch above

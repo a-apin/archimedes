@@ -3,7 +3,7 @@ import AssetModal from './AssetModal'
 import AssetGroupModal from './AssetGroupModal'
 import AssetGroupIcon from './AssetGroupIcon'
 import { groupMeta } from '../assetGroups'
-import { median } from '../statUtils'
+import { median, changeWindowLabel, groupChangeWindowLabel } from '../statUtils'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -229,6 +229,9 @@ export default function Explore() {
               const vals = g.members.map(a => a.change_24h_pct).filter(v => v != null && !Number.isNaN(v))
               return median(vals)
             })()
+            // Null when the members' windows disagree — a group spanning a
+            // holiday genuinely has no single true window (#1378).
+            const medianWindow = groupChangeWindowLabel(g.members)
             return (
               <button
                 key={g.assetClass}
@@ -296,7 +299,7 @@ export default function Explore() {
                     {fmtPct(medianChange)}
                   </span>
                   <span className="caption" style={{ color: 'var(--text-4)', fontSize: '0.65rem' }}>
-                    median 24h
+                    {medianWindow ? `median ${medianWindow}` : 'median change'}
                   </span>
                 </div>
               </button>
@@ -390,8 +393,16 @@ export default function Explore() {
                 >
                   {fmtPct(a.change_24h_pct)}
                 </span>
-                <span className="caption" style={{ color: 'var(--text-4)', fontSize: '0.65rem' }}>
-                  24h
+                <span
+                  className="caption"
+                  style={{ color: 'var(--text-4)', fontSize: '0.65rem' }}
+                  title={
+                    a.change_window_hours != null
+                      ? `Change over the ${a.change_window_hours.toFixed(0)}h between the last two bars`
+                      : 'Change since the previous close; the elapsed window could not be determined'
+                  }
+                >
+                  {changeWindowLabel(a)}
                 </span>
               </div>
             </button>

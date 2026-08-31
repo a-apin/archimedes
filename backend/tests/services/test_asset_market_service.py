@@ -28,6 +28,8 @@ from archimedes.services.asset_market_service import (
     _CRYPTO_TRADING_DAYS_PER_YEAR,
     _EQUITY_TRADING_DAYS_PER_YEAR,
     AssetMarketService,
+    _bar_timestamp,
+    _change_window,
     _explanations_for,
     _explore_universe,
     _is_24_7_asset_class,
@@ -1041,3 +1043,202 @@ class TestBudgetedHistoryFetch:
             histories = await service._fetch_histories_budgeted(["sAAA", "sBBB"])
 
         assert set(histories) == {"sBBB"}
+
+
+# ── #1378: "24h" was a misnomer across weekends and feed gaps ────────────────
+#
+# `change_24h_pct` is `_pct_change(prices, 1)` — a ONE-BAR change. On a 24/7
+# crypto feed one bar is 24 hours. On an equity feed the Friday-to-Monday pair
+# spans 72 hours and a mid-week holiday spans 48, and every one of those was
+# labelled "24h" in the UI. These tests pin the measured window, not the label
+# text, so they fail if the window stops being derived from the data.
+#
+# Mutation each test must fail against is named in its own docstring.
+
+
+class TestChangeWindowMeasurement:
+    def test_consecutive_daily_bars_are_a_24h_window(self):
+        """Control. Fails if _change_window stops returning "24h" for the
+        ordinary case, which would make the weekend assertions vacuous."""
+        hours, label = _change_window(["2026-08-27", "2026-08-28"])
+        assert hours == 24.0
+        assert label == "24h"
+
+    def test_a_weekend_gap_is_reported_as_three_days_not_24h(self):
+        """The defect itself. Fails against any implementation that returns a
+        constant "24h", including the pre-fix behaviour of having no window at
+        all and letting the UI hardcode the string."""
+        hours, label = _change_window(["2026-08-28", "2026-08-31"])  # Fri -> Mon
+        assert hours == 72.0
+        assert label == "3d"
+
+    def test_a_midweek_holiday_gap_is_two_days(self):
+        """Fails if the label is derived from a weekday calculation rather than
+        elapsed time — a Tue->Thu gap has no weekend in it."""
+        hours, label = _change_window(["2026-08-25", "2026-08-27"])
+        assert hours == 48.0
+        assert label == "2d"
+
+    def test_a_long_weekend_is_four_days(self):
+        hours, label = _change_window(["2026-08-28", "2026-09-01"])  # Fri -> Tue
+        assert hours == 96.0
+        assert label == "4d"
+
+    def test_pandas_timestamps_are_handled_not_just_iso_strings(self):
+        """The live path is a pd.Series with a DatetimeIndex; only the dict
+        fallback carries ISO strings. Fails if _bar_timestamp only parses str,
+        which would make every other test here pass while production got None."""
+        pd = pytest.importorskip("pandas")
+        idx = list(pd.to_datetime(["2026-08-28", "2026-08-31"]))
+        hours, label = _change_window(idx)
+        assert hours == 72.0
+        assert label == "3d"
+
+    def test_an_unknown_window_is_none_and_never_defaults_to_24h(self):
+        """The load-bearing one. A guess of "24h" here would reintroduce the
+        exact false claim, so absence must stay absent. Fails if any branch
+        returns a default label."""
+        assert _change_window([]) == (None, None)
+        assert _change_window(["2026-08-30"]) == (None, None)
+        assert _change_window(["not-a-date", "also-not"]) == (None, None)
+
+    def test_an_out_of_order_index_reports_nothing_rather_than_a_negative_window(self):
+        """Fails if the delta is taken as an absolute value, which would invent
+        a plausible-looking window from an index we cannot actually trust."""
+        assert _change_window(["2026-08-31", "2026-08-28"]) == (None, None)
+
+    def test_mixed_tz_aware_and_naive_bars_do_not_raise(self):
+        """Subtracting an aware from a naive datetime raises TypeError, and the
+        two shapes co-occur here (pandas Timestamps carry a tz, bare ISO dates
+        do not). Fails if the normalisation is dropped."""
+        from datetime import UTC, datetime
+
+        aware = datetime(2026, 8, 31, tzinfo=UTC)
+        naive = datetime(2026, 8, 28)
+        hours, label = _change_window([naive, aware])
+        assert hours == 72.0
+        assert label == "3d"
+
+    def test_bar_timestamp_parses_each_shape_the_feed_emits(self):
+        from datetime import date as _date
+        from datetime import datetime as _dt
+
+        assert _bar_timestamp("2026-08-28") == _dt(2026, 8, 28)
+        assert _bar_timestamp(_date(2026, 8, 28)) == _dt(2026, 8, 28)
+        assert _bar_timestamp(_dt(2026, 8, 28, 13, 30)) == _dt(2026, 8, 28, 13, 30)
+        assert _bar_timestamp(None) is None
+        assert _bar_timestamp(object()) is None
+
+
+class TestServedItemCarriesItsChangeWindow:
+    @pytest.mark.asyncio
+    async def test_an_equity_over_a_weekend_is_served_as_3d_not_24h(self):
+        """End-to-end on the served item. Fails if the service computes the
+        window but does not put it on AssetExploreItem, which is the shape the
+        UI actually reads."""
+        service = AssetMarketService()
+        mock_histories = {
+            "sSPY": {
+                "close": [540.0, 548.0],
+                "dates": ["2026-08-28", "2026-08-31"],  # Fri -> Mon
+            }
+        }
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        spy = next(a for a in resp.assets if a.symbol == "sSPY")
+        # The value is unchanged — it was always a correct one-bar change.
+        assert spy.change_24h_pct is not None
+        # What changes is that the item now says what window that covers.
+        assert spy.change_window_hours == 72.0
+        assert spy.change_window_label == "3d"
+
+    @pytest.mark.asyncio
+    async def test_a_crypto_feed_still_says_24h(self):
+        """Control against over-correction: 24/7 feeds genuinely do have a 24h
+        window, and relabelling those would be a new false claim in the other
+        direction."""
+        service = AssetMarketService()
+        mock_histories = {
+            "sBTC": {
+                "close": [60000.0, 61000.0],
+                "dates": ["2026-08-29", "2026-08-30"],
+            }
+        }
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sBTC"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sBTC": ("BTC-USD", "BTC", "crypto", "Coinbase")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        btc = next(a for a in resp.assets if a.symbol == "sBTC")
+        assert btc.change_window_hours == 24.0
+        assert btc.change_window_label == "24h"
+
+    @pytest.mark.asyncio
+    async def test_a_nan_bar_does_not_misalign_the_window_from_the_price(self):
+        """The subtle one. The close list is filtered for NaN before the change
+        is computed; if the date list is not filtered in step, the window gets
+        measured between two bars the change was NOT computed from.
+
+        Here the last close is NaN, so the change is taken across 08-24/08-28
+        — a 4-day window. An unfiltered index would measure 08-28 to 08-31 and
+        report 3d. Fails against zipping the raw index with the filtered closes."""
+        pd = pytest.importorskip("pandas")
+        series = pd.Series(
+            [100.0, 105.0, float("nan")],
+            index=pd.to_datetime(["2026-08-24", "2026-08-28", "2026-08-31"]),
+        )
+        service = AssetMarketService()
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch(
+                "archimedes.services.strategy_signal_evaluator._fetch_price_histories",
+                return_value={"sSPY": series},
+            ),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        spy = next(a for a in resp.assets if a.symbol == "sSPY")
+        assert spy.change_window_hours == 96.0, "window must follow the bars the change used"
+        assert spy.change_window_label == "4d"
+
+    @pytest.mark.asyncio
+    async def test_a_history_with_no_dates_serves_a_null_window_not_24h(self):
+        """The dict fallback shape carries no dates. The item must say it does
+        not know, so the UI renders "prev close" rather than the old "24h"."""
+        service = AssetMarketService()
+        mock_histories = {"sSPY": {"close": [540.0, 548.0]}}
+        with (
+            patch.object(service, "_read_oracle_prices", return_value={}),
+            patch("archimedes.services.strategy_signal_evaluator._fetch_price_histories", return_value=mock_histories),
+            patch("archimedes.services.asset_market_service._explore_universe", return_value=["sSPY"]),
+            patch(
+                "archimedes.services.strategy_signal_evaluator.GLOBAL_ASSETS",
+                {"sSPY": ("SPY", "SPY", "us_equity_etf", "NYSE")},
+            ),
+        ):
+            resp = await service.list_assets()
+
+        spy = next(a for a in resp.assets if a.symbol == "sSPY")
+        assert spy.change_24h_pct is not None
+        assert spy.change_window_hours is None
+        assert spy.change_window_label is None
