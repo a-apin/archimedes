@@ -13,19 +13,21 @@ import { roadmapSurfaceHidden } from '../featureFlags.js'
 
 // `group: null` means "no intermediate label" — breadcrumb reads "Home / <page>".
 // Group labels, when used, must be current navConfig.js NAV sections
-// (Discover, Strategy, Position, Market, Ops). Every key must exist in
+// (Strategy, Position, Market, Ops — "Discover" was dissolved into Strategy
+// by #1641, and the allowed-label test moved with it). Every key must exist in
 // routes.js (#1194 moved routing out of App.jsx's PAGE_TO_PATH) — subset
 // invariant enforced by backend/tests/test_breadcrumbs.py (prevents a fifth
 // stale-map occurrence).
 //
 // Deliberately excluded:
 //   - landing — it *is* Home; breadcrumb would be circular.
-//   - explore — it *is* the Home crumb's own target below. Discover has no
-//     landing page distinct from Home/Explore, so it gets no group entry
-//     either (#1370: a "Discover" mid-crumb pointing at the same page as
-//     "Home" repeated a stop, and on /app/explore itself "Home" and the
-//     current-page crumb both named 'explore' — the same page listed twice
-//     in one trail either way).
+//   - explore — it *is* the Home crumb's own target below. Its section has
+//     no landing page distinct from Home/Explore, so it gets no group entry
+//     either (#1370: the then-"Discover" mid-crumb pointed at the same page
+//     as "Home" and repeated a stop, and on /app/explore itself "Home" and
+//     the current-page crumb both named 'explore' — the same page listed
+//     twice in one trail either way. Explore moved into Strategy in #1641;
+//     the reasoning is unchanged, Strategy has no landing page either).
 //   - architecture — moved out of the shell nav (#1370, see Layout.jsx); it
 //     renders under PublicLayout, which never mounts Breadcrumbs, so a
 //     CRUMB_MAP entry for it was unreachable dead config.
@@ -57,17 +59,22 @@ import { roadmapSurfaceHidden } from '../featureFlags.js'
 // gets a route, a nav-less identity of its own, and these entries can name
 // it without tripping the guard.
 export const CRUMB_MAP = {
-  // Discover — open to anonymous visitors
+  // Comment headers below mirror navConfig.js's sections as of #1641; they
+  // are reader orientation only. The `group`/`groupPage` fields are what the
+  // renderer and the tests read, and every one of them is still null (#1405).
+  // Write no value literal in a comment inside this block: the parsers in
+  // test_breadcrumbs.py match on the whole block text, so a commented-out
+  // field counts as a real one and the entry/field tallies diverge.
+  // Strategy — find and build one (explore is excluded above, it is Home)
   corpus:       { group: null, groupPage: null },
-  // Strategy — wallet-gated, owns the primary generation path
   generate:     { group: null, groupPage: null },
   library:      { group: null, groupPage: null },
+  // Position — act on one and review the result
   paper:        { group: null, groupPage: null },
+  reasoning:    { group: null, groupPage: null },
   leaderboard:  { group: null, groupPage: null },
-  // Position — wallet-gated deployed-state surfaces
   portfolio:    { group: null, groupPage: null },
   quant:        { group: null, groupPage: null },
-  reasoning:    { group: null, groupPage: null },
   learnings:    { group: null, groupPage: null },
   // Market — strategy marketplace
   marketplace:  { group: null, groupPage: null },
