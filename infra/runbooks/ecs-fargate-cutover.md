@@ -652,7 +652,8 @@ such a run — pass or fail — as evidence about this change.
 `/nginx-health` (`nginx/nginx.conf`) returns a literal `200 "ok"` straight from
 nginx: it proves nginx is listening with a validly-rendered config, and
 nothing whatsoever about backend or auth. `/health` (the chain-disconnected
-branch of the handler in `backend/archimedes/main.py`, around L559-575)
+branch of the handler in `backend/archimedes/main.py` — grep
+`HEALTH_CHAIN_DISCONNECTED`, cited by name because line numbers drift)
 returns **200 while degraded, by design** — when the Arc RPC is unreachable
 it logs `HEALTH_CHAIN_DISCONNECTED` and still answers 200, deliberately, so a
 transient RPC blip cannot cascade the whole ECS service down (#1039 N2). That
