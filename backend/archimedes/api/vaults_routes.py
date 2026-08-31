@@ -1,4 +1,4 @@
-"""Vault endpoints — /api/vaults/* (excluding chat, which lives in chat_routes.py)."""
+"""Vault endpoints — /api/vaults/*."""
 
 from __future__ import annotations
 
@@ -450,8 +450,9 @@ async def store_vault_metadata(
     user = require_current_user(request)
 
     # Casing fix (issue #1028): the on-chain vault address is EIP-55
-    # checksummed (mixed case); chat_messages.vault_address is always stored
-    # lowercase (chat_service.py), so the two could never join without this.
+    # checksummed (mixed case); chat_messages.vault_address was always stored
+    # lowercase by the (since-deleted) chat service, so the two could never join
+    # without this.
     # Normalize once, use everywhere below — the on-chain call is
     # case-insensitive so this doesn't change chain behavior.
     vault_address = req.vault_address.lower()

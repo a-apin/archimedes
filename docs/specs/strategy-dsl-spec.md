@@ -36,7 +36,6 @@ marked as such rather than described in the present tense.
   "exit": { "<condition tree>": "..." },
   "position_sizing": { "type": "<sizing type>" },
   "source_arxiv_ids": ["arxiv id", "..."],
-  "look_ahead_safe": true,
   "parameter_variants": { "<indicator alias>": [1, 2, "…2-8 numbers"] }
 }
 ```
@@ -178,10 +177,17 @@ calendar weeks or months. The live evaluator replays the same table
 (`dsl_to_backtrader.rebalance_period_bars`) so the two interpreters cannot drift
 on cadence (audit F3).
 
-### `look_ahead_safe`
+### `look_ahead_safe` (retired, #1599)
 
-Must be `true`. A spec with `look_ahead_safe: false` is rejected by the
-validator, not merely flagged.
+No longer part of the schema. The field was the generating model grading its
+own homework; the LEAK verdict is now derived structurally by the platform
+(`dsl_lookahead_audit` — the AST proof over the interpreter plus the spec
+walk, #1566) and nothing the model claims about its own safety is read. For
+backward compatibility a spec that still carries the key is accepted and the
+key is ignored (`strategy_dsl.LEGACY_IGNORED_FIELDS`) — including
+`look_ahead_safe: false`, which is deliberately not honoured (see the
+docstring there for why re-honouring it would let a model veto its own
+audit).
 
 ## Validation rules
 
@@ -200,7 +206,7 @@ validator, not merely flagged.
    `inverse_vol` rejects a `reference_vol_annual` that is present but not a
    positive number.
 8. `source_arxiv_ids` a list of non-empty strings.
-9. `look_ahead_safe` must be boolean **and** `true`.
+9. `look_ahead_safe`, if present, is ignored (retired, #1599 — see above).
 10. `parameter_variants` keys must reference an alias used in `entry`/`exit`;
     values must be lists of 2–8 numbers.
 
@@ -217,7 +223,9 @@ The reference spec, verbatim from `strategy_dsl.FABER_2007_SPEC`:
   "exit": {"lt": ["close", "sma_200"]},
   "position_sizing": {"type": "full_invested_when_in_market"},
   "source_arxiv_ids": ["0706.1497"],
-  "look_ahead_safe": true
+  "parameter_variants": {
+    "sma_200": [150, 175, 200, 225, 250]
+  }
 }
 ```
 
@@ -237,8 +245,7 @@ The reference spec, verbatim from `strategy_dsl.FABER_2007_SPEC`:
     {"gt": ["realized_vol_20", 0.35]}
   ]},
   "position_sizing": {"type": "inverse_vol", "reference_vol_annual": 0.15},
-  "source_arxiv_ids": ["0706.1497", "1704.03022"],
-  "look_ahead_safe": true
+  "source_arxiv_ids": ["0706.1497", "1704.03022"]
 }
 ```
 
