@@ -587,6 +587,46 @@ def _no_store_headers() -> dict[str, str]:
     return {"Cache-Control": _NO_STORE, "Pragma": "no-cache"}
 
 
+# ── /health's outbound budget (issue #1592) ───────────────────────────────
+# INCIDENT 2026-08-31: the two outbound probes below were awaited with no
+# deadline of their own. With the Arc RPC unreachable from inside the VPC they
+# parked; /health blew the ALB's 5s check and ECS's container HEALTHCHECK; no
+# new task ever turned healthy; the rollout wedged at 1/2 for its full 1200s
+# budget while the serving task's event loop starved every other route. The
+# same RPC answered in 0.1s from outside the VPC — nothing was slow, the calls
+# were unbounded.
+#
+# Both probes now run CONCURRENTLY under hard budgets, so the bounded outbound
+# section costs max(these two), not their sum. See services/health_cache.py for
+# the last-known-value contract and archimedes/deadline.py (plus
+# chain/client.py's BoundedAsyncHTTPProvider) for why a plain asyncio.wait_for
+# was not enough.
+#
+# WHY 1.2s AND NOT THE 5s THE ALB ALLOWS. The budget has to cover the probe AND
+# leave room for the rest of this handler, and the case that matters is a COLD
+# task — the one whose failing check wedges a rollout. Measured on this
+# handler's first call in a fresh process (corpus load, strategy-file scan,
+# risk-data probe): ~0.5s of non-outbound work, ~0.15s once warm. 1.2 + 0.5 is
+# comfortably inside the 2s the endpoint promises and the 5s the ALB and the
+# ECS container HEALTHCHECK both cut at, and it is still ~12x the 0.1s the live
+# Arc RPC answers in. Raising these numbers is how the promise gets lost, so
+# the guard in backend/tests/test_health_always_answers.py asserts the 2s.
+_CHAIN_PROBE_BUDGET_SECONDS = 1.2
+# The outer backstop for the oracle probe. Deliberately LARGER than the inner
+# budget below so the inner, better answer wins the race: oracle_health already
+# knows how to report its own deadline overrun as an honest `probe_timeout`
+# reason with the probed/universe counts intact. This outer bound exists only
+# for stalls the probe's own wait_for cannot see — contract-loader
+# construction, push-set derivation, or web3's uncancellable session-manager
+# lock (the incident's actual shape).
+_ORACLE_PROBE_BUDGET_SECONDS = 1.2
+# Passed INTO oracle_health, replacing its default 1.5s. That default was sized
+# against a /health that spent up to 3s on is_connected() before the probe even
+# started; probes now run concurrently, so the oracle's slice is smaller and
+# has to leave the outer backstop above room to be the backstop.
+_ORACLE_INNER_BUDGET_SECONDS = 0.9
+
+
 @app.get("/health")
 @app.get("/api/health")
 @limiter.exempt
@@ -594,15 +634,69 @@ async def health(response: Response):
     """Health check — used by Docker healthcheck and CI/CD.
 
     Reports corpus state so silent degradation is visible.
+
+    **This endpoint reports what we know; it does not go and find out.** Every
+    outbound probe is bounded and falls back to its last-known value, labelled
+    with age and reason (#1592). No field's MEANING changed — only how long the
+    handler is willing to wait to compute it.
     """
     _no_store(response)
 
     from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
     from archimedes.chain.client import chain_client
     from archimedes.services.corpus_service import get_corpus_meta, get_paper_count
+    from archimedes.services.health_cache import health_probe_cache
     from archimedes.services.llm_backend import make_llm_backend
 
-    connected = await chain_client.is_connected()
+    async def _oracle_probe():
+        # Imported at call time, not module scope, so tests keep patching
+        # ``services.oracle_health.oracle_health`` the way they already do.
+        from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
+
+        return await _oracle_health_probe(budget_seconds=_ORACLE_INNER_BUDGET_SECONDS)
+
+    # Concurrent + bounded. return_exceptions keeps one broken probe from
+    # taking the other down: a raised probe is still a health verdict, it is
+    # just a "we could not read it" one, and that is what gets reported.
+    chain_outcome, oracle_outcome = await asyncio.gather(
+        health_probe_cache.probe(
+            "chain_connected",
+            chain_client.is_connected,
+            budget_seconds=_CHAIN_PROBE_BUDGET_SECONDS,
+            absent=False,
+        ),
+        health_probe_cache.probe(
+            "oracle_health",
+            _oracle_probe,
+            budget_seconds=_ORACLE_PROBE_BUDGET_SECONDS,
+            absent=None,
+        ),
+        return_exceptions=True,
+    )
+
+    # ── chain connectivity ───────────────────────────────────────────────
+    chain_probe_fields: dict[str, object] = {}
+    chain_probe_live = False
+    if isinstance(chain_outcome, BaseException):
+        # ChainClient.is_connected() already maps every chain-side failure to
+        # False, so an exception here is a defect in the probe plumbing rather
+        # than a verdict about the chain. Report it as its own state instead of
+        # letting it masquerade as either a live reading or a timeout.
+        logger.warning(
+            "chain health probe raised %s — reporting chain_connected=false",
+            type(chain_outcome).__name__,
+        )
+        connected = False
+        chain_probe_fields = {
+            "chain_probe_state": "probe_error",
+            "chain_probe_age_s": None,
+            "chain_probe_reason": f"chain probe_error: {chain_outcome}",
+        }
+    else:
+        connected = bool(chain_outcome.value)
+        chain_probe_live = chain_outcome.is_live
+        chain_probe_fields = chain_outcome.payload_fields("chain")
+
     if not connected:
         # N2 (infra #1039): /health's status code is deliberately unchanged (still
         # 200 — see the module docstring above and infra/runbooks) so a transient
@@ -681,23 +775,49 @@ async def health(response: Response):
     # as "oracles are healthy" system-wide. A chain-read failure reports
     # oracle_fresh=false with an explicit marker (never fail-soft "assume
     # fresh") — see services/oracle_health.py's module docstring.
+    #
+    # The probe itself ran CONCURRENTLY with the chain check at the top of this
+    # handler, under its own hard budget (#1592). What is left here is only the
+    # rendering of whatever that bounded probe produced — three cases, and none
+    # of them may report "fresh" without a completed read behind it.
     oracle_fresh = False
     oracle_oldest_age_s: int | None = None
     oracle_probed_count = 0
     oracle_universe_count = 0
-    # oracle_reason needs no initializer: the try body and the except handler
-    # both assign it unconditionally before any use.
-    try:
-        from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
-
-        _oracle_diag = await _oracle_health_probe()
-        oracle_fresh = _oracle_diag.oracle_fresh
-        oracle_oldest_age_s = _oracle_diag.oracle_oldest_age_s
-        oracle_probed_count = _oracle_diag.oracle_probed_count
-        oracle_universe_count = _oracle_diag.oracle_universe_count
-        oracle_reason = _oracle_diag.reason
-    except Exception as exc:
-        oracle_reason = f"oracle_health probe_error: {exc}"
+    oracle_probe_fields: dict[str, object] = {}
+    # oracle_reason needs no initializer: every branch below assigns it
+    # unconditionally before any use.
+    if isinstance(oracle_outcome, BaseException):
+        # The probe raised. Same wording as before this change, so the existing
+        # `probe_error` contract (and the test that asserts it) is untouched.
+        oracle_reason = f"oracle_health probe_error: {oracle_outcome}"
+        oracle_probe_fields = {
+            "oracle_probe_state": "probe_error",
+            "oracle_probe_age_s": None,
+            "oracle_probe_reason": oracle_reason,
+        }
+    else:
+        oracle_probe_fields = oracle_outcome.payload_fields("oracle")
+        _oracle_diag = oracle_outcome.value
+        if _oracle_diag is None:
+            # probe_timeout with nothing ever cached: there is no reading to
+            # report. oracle_fresh stays False and the counts stay 0 — a loud
+            # absence, never a fabricated "fresh" or a borrowed count.
+            oracle_reason = oracle_outcome.reason
+        else:
+            oracle_fresh = _oracle_diag.oracle_fresh
+            oracle_oldest_age_s = _oracle_diag.oracle_oldest_age_s
+            oracle_probed_count = _oracle_diag.oracle_probed_count
+            oracle_universe_count = _oracle_diag.oracle_universe_count
+            oracle_reason = _oracle_diag.reason
+            if oracle_outcome.state == "stale_cached":
+                # Served from cache. The values above are a real past reading,
+                # so they keep their meaning — but the reason string has to say
+                # out loud that they are not current, because oracle_reason is
+                # the field an operator actually reads.
+                oracle_reason = (
+                    f"{oracle_outcome.reason}; last completed read {oracle_outcome.age_s}s ago: {oracle_reason}"
+                )
 
     if not oracle_fresh:
         # Loud, greppable marker — infra/cloudwatch.tf's metric filter keys off
@@ -873,13 +993,26 @@ async def health(response: Response):
         logger.debug("reveal reconciliation counts read failed", exc_info=True)
 
     return {
-        "status": "ok" if connected else "degraded",
+        # "ok" requires BOTH a connected chain and a LIVE reading of it (#1592).
+        # A cached `connected: true` served because the fresh probe timed out is
+        # not evidence of a connected chain, and reporting "ok" off it would be
+        # exactly the plausible-substitute failure this codebase treats as its
+        # primary defect class. This can only ever widen "degraded" — it never
+        # calls something healthy that was previously degraded — and the HTTP
+        # status stays 200 for the ALB/ECS reason documented above.
+        "status": "ok" if connected and chain_probe_live else "degraded",
         "service": "archimedes-backend",
         # Build provenance (issue #1039): the git SHA stamped in at image-build
         # time (deploy.yml --build-arg GIT_SHA). "Which code is live?" in one glance
         # — the question that turned the Fargate cutover into an hour of forensics.
         "version": os.getenv("ARCHIMEDES_GIT_SHA", "dev"),
         "chain_connected": connected,
+        # Bounded-probe provenance for chain_connected (#1592). `chain_probe_state`
+        # is always present ("live" | "stale_cached" | "probe_timeout" |
+        # "probe_error"); `chain_probe_age_s` + `chain_probe_reason` appear ONLY
+        # when the fresh probe missed, so their presence IS the signal and their
+        # absence is the all-clear. Same shape for the oracle block below.
+        **chain_probe_fields,
         # human_count / agent_count are cumulative per-request tallies (site
         # traffic, NOT users). real_users is the honest distinct-user count.
         "human_count": human_count,
@@ -926,6 +1059,7 @@ async def health(response: Response):
         "oracle_probed_count": oracle_probed_count,
         "oracle_universe_count": oracle_universe_count,
         "oracle_reason": oracle_reason,
+        **oracle_probe_fields,
         # Strategy-library presence (issue #1039) — 0 means the image is missing
         # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
         "strategy_count": strategy_count,

@@ -63,8 +63,14 @@ test("security page separates verified controls from known limits", () => {
 	assert.match(security, /Security is enforced boundaries, not a guarantee/i);
 	assert.match(security, /Better Auth/);
 	assert.match(security, /five-minute/i);
-	assert.match(security, /Agent may mis-rebalance/i);
-	assert.match(security, /cannot withdraw/i);
+	// Post-scrub (2026-08-30): the known-limits list must still lead with the
+	// two limits that matter most on a page with no execution behind it —
+	// that Archimedes does not trade, and that a passed gate is not a
+	// judgement guarantee. These replace the old "Agent may mis-rebalance …
+	// cannot withdraw" pair, which pinned a custody claim the page no longer
+	// makes.
+	assert.match(security, /does not trade with\s+capital today/);
+	assert.match(security, /Model risk:/);
 	assert.match(security, /No independent security audit/i);
 	assert.match(security, /Arc public testnet/i);
 	assert.match(security, /<main className="security-page">/);
@@ -95,11 +101,14 @@ test("landing has complete evidence-led conversion narrative", () => {
 	assert.match(landing, /EvidenceLedger/);
 	assert.match(landing, /RigorMatrix/);
 	assert.match(landing, /AuthorityBoundary/);
-	assert.match(
-		landing,
-		/\{ROADMAP_SURFACES_ENABLED && <AuthorityBoundary \/>\}/,
-	);
-	assert.match(landing, /WORKFLOW\.slice\(0, 3\)/);
+	// Post-scrub (2026-08-30): AuthorityBoundary no longer describes an
+	// execution-authority split, so it is no longer flag-gated — it renders
+	// unconditionally and describes the admission boundary that is live. The
+	// WORKFLOW roadmap tail is gone with it, so there is nothing left to
+	// slice: every step in WORKFLOW describes a path that runs today.
+	assert.match(landing, /^\t\t\t<AuthorityBoundary \/>$/m);
+	assert.doesNotMatch(landing, /ROADMAP_SURFACES_ENABLED/);
+	assert.doesNotMatch(landing, /WORKFLOW\.slice\(/);
 	assert.match(landing, /Deflated Sharpe Ratio/);
 	assert.match(landing, /Probability of Backtest Overfitting/);
 	assert.match(landing, /Walk-forward out-of-sample/);
@@ -129,10 +138,6 @@ test("landing uses a bespoke product theatre instead of register-template motifs
 	);
 	assert.match(
 		css,
-		/\.public-proof-deck article\s*\{[^}]*position:\s*sticky;/s,
-	);
-	assert.match(
-		css,
 		/\.public-landing\s*\{[^}]*overflow:\s*visible;[^}]*background:\s*var\(--canvas\);/s,
 	);
 	assert.match(
@@ -153,14 +158,104 @@ test("landing uses a bespoke product theatre instead of register-template motifs
 	);
 });
 
-test("proof deck exits its sticky phase as one complete card", () => {
-	assert.match(
+test("proof deck shows all four checks at once instead of stacking them", () => {
+	// The deck used to be a sticky card stack: every article `position: sticky`
+	// at a staggered `top`, 340px tall, so scrolling buried each panel under the
+	// next and the four checks could only ever be flipped through, never
+	// compared. The four-panel comparison is the differentiator the owner asked
+	// to restore, and a stack is the one layout that cannot show it — so the
+	// stacking mechanics must stay gone, not merely be overridden further down
+	// the sheet where a later rule could quietly reinstate them.
+	assert.doesNotMatch(
 		css,
-		/\.public-proof-deck article\s*\{[^}]*position:\s*sticky;[^}]*height:\s*340px;/s,
+		/\.public-proof-deck article[^{]*\{[^}]*position:\s*sticky;/s,
+		"the proof deck must not reintroduce sticky stacking — it hides three of the four checks",
+	);
+	assert.doesNotMatch(
+		css,
+		/\.public-proof-deck article[^{]*\{[^}]*height:\s*340px;/s,
+		"the fixed 340px card height belonged to the sticky stack; a grid panel sizes to its content",
 	);
 	assert.match(
 		css,
-		/@media \(max-width: 760px\)[^{]*\{[\s\S]*?\.public-proof-deck article,[\s\S]*?\.public-proof-deck article:nth-child\(4\)\s*\{[^}]*position:\s*static;[^}]*height:\s*auto;/s,
+		/\.public-proof-deck\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
+		"the deck must be a two-column grid so all four checks are legible at rest",
+	);
+	// One column on a phone: two columns of a 26ch headline is unreadable.
+	assert.match(
+		css,
+		/@media \(max-width: 760px\)[^{]*\{[\s\S]*?\.public-proof-deck\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s,
+	);
+	// The board-level card and the verdict rule are full-width rows under the
+	// four panels, not a fifth cell in the two-column flow.
+	assert.match(css, /\.public-proof-deck__board\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
+	assert.match(css, /\.public-proof-deck__rule\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
+});
+
+test("each rigor panel states its own limit, and the deck names all four verdict states", () => {
+	// The differentiator is not that four checks run — it is that each one says
+	// what it does NOT prove, in the same card, and that the gate reports four
+	// verdicts rather than a pass/fail boolean. Both are load-bearing claims
+	// quoted from the code that computes them, so both get pinned here.
+	//
+	// Every `limit` below is traceable: DSR → rigor_profiles.py's own
+	// "'deflated-Sharpe evidence at the 0.90 level', not 'statistically proven'"
+	// note (level-1 dsr_p_min = 0.90); PBO → compute_pbo's "Known limitations"
+	// (a selection-set property, a neighbour can flip it); OOS →
+	// compute_oos_sharpe's "a single chronological hold-out, NOT a rolling
+	// walk-forward re-estimation ... no purge/embargo gap"; LEAK →
+	// generation_pipeline.py persisting look_ahead_audit_source="self_attested"
+	// while the AST audit runs only on cited library source.
+	const criteria = landing.slice(
+		landing.indexOf("const RIGOR_CRITERIA = ["),
+		landing.indexOf("const BOARD_FDR = {"),
+	);
+	assert.equal(
+		(criteria.match(/\t\tlimit:/g) ?? []).length,
+		4,
+		"every one of the four rejection checks must carry its own honest limit",
+	);
+	assert.match(criteria, /0\.90 level/);
+	assert.match(criteria, /selection set, not one strategy/);
+	assert.match(criteria, /not a rolling refit/);
+	assert.match(criteria, /self-attested, not source-audited/);
+	assert.match(landing, /className="public-proof-deck__limit"/);
+
+	// Four states, verbatim from services/live_rigor_gate.py. "pending" and
+	// "degenerate" are the two a two-state UI would silently round into a fail
+	// or a pass; naming them is the whole point of the strip.
+	const states = landing.slice(
+		landing.indexOf("const VERDICT_STATES = ["),
+		landing.indexOf("export default function Landing"),
+	);
+	for (const state of ["pass", "fail", "pending", "degenerate"]) {
+		assert.match(states, new RegExp(`state: "${state}"`));
+	}
+	assert.match(landing, /Four verdicts, not two\./);
+});
+
+test("board-level FDR is described without hard-coding today's count", () => {
+	// The correction is real and served: GET /api/selection-bias/gate returns
+	// board_level_fdr {fdr_level, n_tested, n_significant}, recomputed over the
+	// exact cohort each response serves (selection_bias_routes.py), at
+	// DEFAULT_BOARD_FDR_LEVEL = 0.05, and compute_board_level_fdr's docstring
+	// pins it as ADVISORY — deliberately not wired into passes_all at any level.
+	// All three of those are asserted below.
+	const board = landing.slice(
+		landing.indexOf("const BOARD_FDR = {"),
+		landing.indexOf("const VERDICT_STATES = ["),
+	);
+	assert.match(board, /Benjamini–Hochberg/);
+	assert.match(board, /α = 0\.05/);
+	assert.match(board, /never flips a gate verdict/);
+	// How many strategies clear the correction is a LIVE number. This copy is
+	// static, so quoting one would ship a claim that goes stale silently — the
+	// same defect the census figcaption above refuses by fetching instead of
+	// caching. A bare digit anywhere in this block is that mistake.
+	assert.doesNotMatch(
+		board,
+		/\b(?:no|none|zero|one|two|three|[0-9]+)\s+(?:of\s+\d+\s+)?strategies\b/i,
+		"do not hard-code how many strategies currently clear board-level FDR — it is served live on /api/selection-bias/gate",
 	);
 });
 
@@ -279,9 +374,15 @@ test("dark landing preserves atmospheric contrast and semantic accents", () => {
 		/\.public-site\s*\{[^}]*--canvas:\s*#15131d;[^}]*--glass-border:\s*#484155;[^}]*--accent-on:\s*#17151f;/s,
 	);
 	assert.match(css, /--accent-on-muted:\s*rgba\(23, 21, 31, 0\.82\);/);
+	// The light half of this pair used to be rgba(255,255,255,0.9). It is drawn
+	// on --accent (#625cf6), whose contrast ceiling with PURE white is 4.79:1 —
+	// so a 0.9 alpha landed at 4.21:1 and the closing panel's disclaimer failed
+	// 1.4.3. There is no headroom to mute against this accent; the paragraph
+	// takes its lower prominence from size instead. Pinned opaque so a future
+	// edit cannot quietly reintroduce an alpha here.
 	assert.match(
 		css,
-		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--accent-on-muted:\s*rgba\(255, 255, 255, 0\.9\);/s,
+		/:root\[data-theme="light"\] \.public-site\s*\{[^}]*--accent-on-muted:\s*#ffffff;/s,
 	);
 	assert.match(
 		css,
@@ -402,6 +503,61 @@ test("landing does not claim the OOS gate rolls its window forward", () => {
 	assert.match(landing, /held-?out/);
 });
 
+test("landing does not claim a failed gate is unoverridable, or that a generation run anchors on Arc", () => {
+	// Two false claims retracted 2026-08-30, both verified against the code
+	// rather than reasoned about, and both pinned here so a rewrite cannot
+	// reintroduce them:
+	//
+	// 1. "A failed gate is not overridable." POST /api/paper/deployments
+	//    (api/paper_routes.py:85-125) is the act-on step a visitor can actually
+	//    reach, and it checks ownership of the source strategy plus that the
+	//    stored spec still validates — nothing else. There is no rigor
+	//    precondition on it; StrategyPassport.jsx:381-382 says exactly that in
+	//    the code ("no wallet, no rigor precondition, free by design"). The
+	//    owner has deployed a gate-failing strategy to paper himself. The
+	//    server-side deploy gate that DOES fail closed (vaults_routes
+	//    ._deployable_levels) guards a path this surface no longer describes.
+	//
+	// 2. "…content-hashed and anchored on Arc" / "Anchor its reasoning on Arc
+	//    before it reports a verdict." A generation run computes a keccak
+	//    provenance hash and persists it on the strategy row — and
+	//    generation_pipeline._persist_candidate's own docstring says that
+	//    identifier is "mirrored on-chain in v1.5", i.e. not today. The only
+	//    code that writes to ReasoningTraceRegistry is the agent rebalance tick
+	//    (chain/agent_runner._commit_trace / _reveal_trace), which no
+	//    generation run reaches.
+	assert.doesNotMatch(landing, /not overridable/i);
+	assert.doesNotMatch(landing, /anchored on Arc/i);
+	assert.doesNotMatch(landing, /Anchor its reasoning/i);
+
+	// The replacement invariant must still be an invariant, not a softening:
+	// the verdict is not the user's to move, even though running a failing idea
+	// in simulation is allowed.
+	assert.match(landing, /A failing strategy stays a failing strategy\./);
+	assert.match(landing, /Paper-trading one is allowed\. Relabelling one is not/);
+	assert.match(landing, /paper-trade a failing candidate — simulated, no capital/);
+
+	// Anti-vacuity: the exact pre-scrub literals must trip the predicates above,
+	// so a future edit that neuters them fails here instead of passing silently.
+	for (const [claim, pattern] of [
+		["<strong>A failed gate is not overridable.</strong>", /not overridable/i],
+		[
+			"the gate verdict — content-hashed and anchored on Arc.",
+			/anchored on Arc/i,
+		],
+		[
+			"<li>Anchor its reasoning on Arc before it reports a verdict</li>",
+			/Anchor its reasoning/i,
+		],
+	]) {
+		assert.match(
+			claim,
+			pattern,
+			`the guard no longer rejects the retracted claim ${JSON.stringify(claim)} — it is guarding nothing`,
+		);
+	}
+});
+
 test("protocols panel describes V_check by the checks it performs", () => {
 	// v_check.py does arithmetic on a weights dict (sum == 10000 bps, max
 	// concentration, and an optional cost-benefit floor no live caller
@@ -493,4 +649,148 @@ test("honesty ledger's rebalance row does not tie the full commit/trade/reveal m
 		rebalanceRow.indexOf(") : ("),
 	);
 	assert.match(liveBranch, /heartbeat/i);
+});
+
+// ── Type scale, controls and link affordance ──────────────────────────────
+//
+// Owner review of the rebrand: "a lot of blank space and small text… make
+// things a bit bigger, easier to read, links more obvious, buttons look
+// better." The measured cause was a ~10x spread on one screen — a 96px
+// section heading over a 9.6px footer, with running prose at 0.74rem — so the
+// fix was a scale expressed as tokens rather than ~40 tuned literals. These
+// guard the scale and, more importantly, the two mechanisms that let a
+// sub-floor size reach the screen in the first place.
+
+const TYPE_FLOOR_REM = 0.8125; // 13px
+
+// App.css carries TWO `.public-site {` blocks — a legacy one and the rebrand
+// layer at the end of the sheet. They have identical specificity, so the LAST
+// one is the one that renders; a helper that grabbed the first would assert
+// against a palette no visitor ever sees.
+function publicSiteBlock() {
+	const blocks = [...css.matchAll(/\n\.public-site \{([\s\S]*?)\n\}/g)];
+	assert.ok(blocks.length, ".public-site block not found");
+	return blocks.at(-1)[1];
+}
+
+test("the public type scale and control tokens exist, and the scale bottoms out at 13px", () => {
+	const block = publicSiteBlock();
+	for (const name of [
+		"fs-display",
+		"fs-title",
+		"fs-lede",
+		"fs-body",
+		"fs-ui",
+		"fs-meta",
+		"fs-micro",
+		"control-h",
+		"control-h-lg",
+		"control-pad",
+		"control-radius",
+	]) {
+		assert.match(
+			block,
+			new RegExp(`--${name}:`),
+			`the public token set is missing --${name}`,
+		);
+	}
+	// --fs-micro is the floor every other public size is measured against. If
+	// it drops, every call site that resolves it drops with it, silently.
+	const micro = /--fs-micro:\s*([^;]+);/.exec(block)[1].trim();
+	assert.ok(
+		micro.endsWith("rem") && Number.parseFloat(micro) >= TYPE_FLOOR_REM,
+		`--fs-micro is ${micro}; the public floor is ${TYPE_FLOOR_REM}rem (13px)`,
+	);
+});
+
+test("no live public selector resolves to a sub-13px font size", () => {
+	// The footer rendered at 9.6px for a reason worth guarding: a LEGACY
+	// `.public-footer { font-size: 0.6rem }` earlier in the sheet, and a
+	// rebrand rule for the same selector that declared no font-size at all —
+	// so the legacy literal won and nothing in the rebrand layer looked wrong.
+	// Equal specificity means the LAST declaration wins, so "some rule sets a
+	// good value" is not a sufficient check; this resolves the winner the way
+	// the cascade does and inspects that one.
+	const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+	const winner = new Map();
+	let m;
+	while ((m = ruleRe.exec(css))) {
+		const selector = m[1]
+			.replace(/\/\*[\s\S]*?\*\//g, "")
+			.trim()
+			.split("\n")
+			.map((s) => s.trim())
+			.join(" ");
+		if (!/^\.public-[\w-]/.test(selector)) continue;
+		const fs = /font-size:\s*([^;]+);/.exec(m[2]);
+		if (fs) winner.set(selector, fs[1].trim());
+	}
+	assert.ok(winner.size > 10, "found no .public-* font-size rules to check");
+	const offenders = [];
+	for (const [selector, value] of winner) {
+		const rem = /^([0-9.]+)rem$/.exec(value);
+		if (rem && Number.parseFloat(rem[1]) < TYPE_FLOOR_REM) {
+			offenders.push(`${selector} → ${value}`);
+		}
+	}
+	assert.deepEqual(
+		offenders,
+		[],
+		`public selectors resolving under ${TYPE_FLOOR_REM}rem (13px):\n${offenders.join("\n")}`,
+	);
+});
+
+test("links carry their affordance at rest, not only on hover", () => {
+	// A hover-only underline is not an affordance: keyboard and touch users
+	// never produce a hover. Public links that are not shaped like buttons
+	// underline at rest, in a colour mixed from currentColor so the rule stays
+	// correct on the light canvas, the dark canvas and the theatre panels.
+	assert.match(
+		css,
+		/\.public-site\s*\n\ta:where\([\s\S]{0,400}?\)\s*\{[^}]*text-decoration:\s*underline;[^}]*text-decoration-color:\s*color-mix\(in srgb, currentColor \d+%, transparent\)/s,
+		"public links must underline at rest, derived from currentColor",
+	);
+	// The header's links opt out of the resting underline (five underlines in a
+	// row would fight the wordmark), so they must gain one on FOCUS as well as
+	// hover — otherwise a keyboard user gets no affordance at all.
+	assert.match(
+		css,
+		/\.public-nav__link:focus-visible[\s\S]{0,240}?\{[^}]*text-decoration-color:\s*currentColor;/s,
+		"header nav links must show their underline on keyboard focus, not just hover",
+	);
+});
+
+test("muted ink is never applied over the accent, which has no headroom for it", () => {
+	// The light theme's accent is #625cf6: its contrast ceiling is 4.79:1 with
+	// pure white and 4.38:1 with pure black, so ANY alpha reduction on an
+	// accent-backed surface drops the text under 4.5:1. The deck's secondary
+	// text was muted with a bare `opacity` and measured 3.93–4.09:1 on the
+	// accent card — the honest "what this check does NOT prove" caveat was the
+	// least readable text in the section. The reduction now routes through
+	// --ink-muted so accent-backed surfaces opt out of it entirely.
+	assert.match(
+		css,
+		/\.public-proof-deck article\s*\{[^}]*--ink-muted:\s*0\.88;/s,
+	);
+	assert.match(
+		css,
+		/\.public-proof-deck article:nth-child\(2\)\s*\{[^}]*--ink-muted:\s*1;/s,
+		"the accent-backed deck card must opt out of opacity muting",
+	);
+	assert.match(
+		css,
+		/\.public-use-case-scenes \.is-rigor\s*\{[^}]*--ink-muted:\s*1;/s,
+		"the accent-backed use-case card must opt out of opacity muting",
+	);
+	// And no deck rule may go back to a bare literal, which would bypass the
+	// opt-out entirely.
+	const deck = css.slice(
+		css.indexOf(".public-proof-deck article {"),
+		css.indexOf(".public-proof-deck__board"),
+	);
+	assert.doesNotMatch(
+		deck,
+		/^\topacity:\s*0\.\d+;$/m,
+		"a proof-deck rule sets a bare opacity literal instead of var(--ink-muted)",
+	);
 });
