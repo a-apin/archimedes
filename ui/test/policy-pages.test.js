@@ -248,10 +248,12 @@ test("the privacy policy discloses the payment records the paywall creates", () 
 	assert.match(receipts, /wallet address that paid/i);
 	assert.match(receipts, /settlement reference/i);
 	assert.match(receipts, /not an on-chain transaction hash/i, "settlement_ref is a Circle ref, not a tx hash");
-	// There is no generation_credits table anywhere in this repo. Naming one
-	// would be exactly the kind of plausible-sounding invention these pages
-	// exist to not contain.
-	assert.doesNotMatch(privacy, /generation_credits/, "no such table exists — do not disclose an invented one");
+	// generation_credits (#1441) is the second record a charge creates, and it
+	// holds an idempotency key the payer's own client supplied. Both tables get
+	// named; a page that discloses the receipt but not the ledger deciding what
+	// you are owed has disclosed the comfortable half.
+	assert.match(receipts, /generation_credits/, "the credit ledger must be named too");
+	assert.match(receipts, /idempotency key/i, "the client-supplied key stored on the credit must be disclosed");
 });
 
 // #1429 makes user_profiles CASCADE on account deletion: the row holding the
@@ -339,6 +341,26 @@ test("the terms disclose the real generation charge without over-claiming the ma
 	// the payments section.
 	const limits = sectionBody(terms, "Limits and fair use");
 	assert.match(limits, /\$2\.00 in testnet USDC/, "the fair-use section must name the price too");
+});
+
+// Once the page says you are really charged, what happens when the thing you
+// paid for does not arrive stops being an implementation detail. The shipped
+// answer is a credit, decided in docs/adr/generation-payment-credit-not-refund.md
+// and implemented in services/generation_credits.py — explicitly NOT a refund,
+// because settlement runs one way through Circle and the outbound path is
+// blocked on the custody migration (#975). Saying "refund" here would be a
+// promise the code cannot keep.
+test("the terms describe repayment as a credit and never promise a refund", () => {
+	assert.match(terms, /repaid\s+as\s+a\s+credit,\s+not\s+as\s+a\s+refund/i, "the credit position must be stated");
+	assert.match(terms, /Credits\s+do\s+not\s+expire/i);
+	// Scoped to PROMISES. The page legitimately uses the words "refund" and
+	// "money-back guarantee" to deny them, so a bare /refund/ would forbid the
+	// honest sentence along with the dishonest one.
+	assert.doesNotMatch(
+		terms,
+		/(we will refund|we can refund|refund your|a full refund|refunded to you)/i,
+		"no refund promise — the outbound transfer path does not exist today",
+	);
 });
 
 // Governing law was the owner's call, and he made it (2026-08-21): Illinois.

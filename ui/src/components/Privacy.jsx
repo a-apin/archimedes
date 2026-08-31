@@ -151,6 +151,17 @@ export default function Privacy() {
 					</li>
 				</ul>
 				<p>
+					A second record, <code>generation_credits</code>, is the ledger that
+					decides what you are owed. A settled payment buys a credit and a
+					generation spends it, so that a run which takes your money and then
+					fails leaves the credit with you rather than leaving you out of pocket.
+					Alongside the payment details above, a credit row holds its state
+					(claimed, available, spent, or voided), the times it changed hands,
+					which generation spent it, and — if your client sent one — the
+					idempotency key it used, which is how a retried request is recognised
+					as the same charge instead of becoming a second one.
+				</p>
+				<p>
 					You can read your own receipts back in the app, and no other account
 					can see them. These rows have no expiry date — they persist until your
 					account is deleted, and removing them is part of the deletion process

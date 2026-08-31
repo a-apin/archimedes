@@ -83,6 +83,19 @@ export default function Terms() {
 					own schedule.
 				</p>
 				<p>
+					<strong>
+						If a generation you paid for does not deliver, you are repaid as a
+						credit, not as a refund.
+					</strong>{" "}
+					A settled payment buys a credit, and a generation spends it; if the run
+					fails, crashes, or never starts, the credit stays yours and your next
+					attempt spends it instead of charging you again. Credits do not expire.
+					We are being direct that this is not a money-back guarantee: settlement
+					runs one way through our payment provider, so we cannot send test USDC
+					back to you today, and promising a refund we cannot execute would be
+					worse than telling you plainly what you get.
+				</p>
+				<p>
 					The <em>other</em> payment path is the one that is switched off. Buying
 					or subscribing to a strategy in the marketplace runs end to end so it
 					can be tested — a price quote, a payment header, a receipt — but in
