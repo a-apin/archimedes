@@ -458,8 +458,10 @@ resource "aws_iam_role_policy" "cost_kill_switch" {
 # and AWS refuses any reservation that would leave fewer than 100 unreserved —
 # so setting it, however sensible it looks, makes `terraform apply` fail. The
 # duplicate-invocation concern it would have addressed is handled instead by the
-# handler being idempotent: every step reads current state and no-ops if the
-# resource is already where the kill switch wants it.
+# handler being idempotent: the autoscaling and ECS steps read current state and
+# skip the write; the EC2 step re-issues StopInstances and lets AWS no-op it
+# (deliberate — reading first would force the EC2 IAM statement to "*"; see the
+# IDEMPOTENT section of the Lambda docstring).
 
 resource "aws_lambda_function" "cost_kill_switch" {
   function_name = local.cost_kill_switch_name
