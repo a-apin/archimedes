@@ -81,13 +81,26 @@ def _hits(pattern: re.Pattern[str]) -> list[str]:
 # 'unestablished', not a number." Three strategies reported passing were later
 # found to be grading equity-like series through a data-feed fallback, so the
 # corrected count is not established. Two findings notes stated one anyway.
+#
+# Tense and synonym coverage is load-bearing, not incidental. An adversarial pass
+# over the first draft of this pattern found it caught "three strategies pass the
+# gate" but missed "three strategies passed all four gates" — the past tense, and
+# the phrasing CLAUDE.md's rule names most directly. `clear` is covered for the
+# same reason: "three strategies clear the gate" states the same forbidden count.
+# The `(?<![\d.])` on the numeric alternative keeps a decimal fragment from
+# reading as a count — without it, "0.930 clears both thresholds" matches on
+# "930 clears" and the guard fires on correct prose about a single strategy.
+# The verb suffix stays MANDATORY in the first branch: making it optional matches
+# the bare noun in "one pass-count phrasing was retracted", which is exactly the
+# annotation style this module's docstring requires.
 _PASS_COUNT = re.compile(
     r"""(?ix)
-    \b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)
-    [\s\-]+ (?:gate[\s\-]*)? pass(?:es|ers?|ing)\b
+    \b(?:one|two|three|four|five|six|seven|eight|nine|ten|(?<![\d.])\d+)
+    [\s\-]+ (?:gate[\s\-]*)? (?: pass(?:es|ed|ers?|ing) | clear(?:s|ed|ing) )\b
     |
-    \b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)
-    \s+ (?:\w+\s+){0,3}? pass(?:es)? \s+ (?:all\s+)? (?:the\s+)? (?:four\s+)? gates?\b
+    \b(?:one|two|three|four|five|six|seven|eight|nine|ten|(?<![\d.])\d+)
+    \s+ (?:\w+\s+){0,3}? (?: pass(?:es|ed)? | clear(?:s|ed)? )
+    \s+ (?:all\s+)? (?:the\s+)? (?:four\s+)? (?:gates?|admission)\b
     """
 )
 
@@ -119,6 +132,58 @@ class TestForbiddenClaims:
             "A curated-library pass count is quoted in docs/quant/. The corrected "
             "count is UNESTABLISHED (CLAUDE.md) — say so, do not give a number:\n  " + "\n  ".join(hits)
         )
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # The two phrasings #1598 actually retracted, verbatim from origin/main.
+            "both hold a ~0.77 median OOS rank quantile when selected — the two-passers",
+            "The two gate-passers (Moreira-Muir, MOP TSMOM) and LIVE-status Faber",
+            # Present tense, spelled and numeric.
+            "Two strategies pass the gate today.",
+            "2 strategies pass the gate today.",
+            # Past tense — MISSED by the first draft of this pattern, and the
+            # phrasing CLAUDE.md's rule names most directly.
+            "Only three passed the gate on the 2026-06-11 pull.",
+            "Three strategies passed all four gates.",
+            "Two of the 22 strategies passed admission.",
+            # The synonym that states the same count without the word "pass".
+            "three strategies clear the gate",
+            "Two strategies cleared the gate.",
+        ],
+    )
+    def test_pass_count_guard_rejects_a_forbidden_phrasing(self, line: str):
+        """The guard is shown to reject bad input, not assumed to (CLAUDE.md rule 4).
+
+        A negative guard that never fires is indistinguishable from a guard with a
+        hole in it, and this one had a real hole: the first draft matched
+        "three strategies pass the gate" but not "three strategies passed all four
+        gates". These cases are the adversarial probe, kept executable so the next
+        edit to the pattern cannot quietly narrow it again.
+        """
+        assert _PASS_COUNT.search(line), f"_PASS_COUNT does not match a forbidden pass count: {line!r}"
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # The retraction style this module's docstring requires: describe the
+            # old claim, do not reproduce it. Must NOT trip the guard.
+            "One pass-count phrasing was retracted in place on 2026-08-31.",
+            "Two pass-count phrasings were retracted; the corrected count is unestablished.",
+            "The corrected pass count is unestablished.",
+            # A decimal that must not read as a count (conflict 5's own prose).
+            "an always-on floor of `> 0` and a cliff of `OOS/IS ≥ 0.5` — and 0.930 clears both",
+            "the `num_trials = 22` row at p = 0.941 clears 0.90",
+        ],
+    )
+    def test_pass_count_guard_admits_correct_prose(self, line: str):
+        """The other half of rule 4: a guard that rejects everything is also useless.
+
+        Each line is real prose from this PR's own annotations. If the pattern is
+        ever broadened, these are what stop it from swallowing the correction
+        style the docstring mandates.
+        """
+        assert not _PASS_COUNT.search(line), f"_PASS_COUNT false-positives on correct prose: {line!r}"
 
     def test_no_library_sized_num_trials(self):
         """`num_trials = len(...)` was reversed on 2026-07-09 and is now ADR-forbidden.
