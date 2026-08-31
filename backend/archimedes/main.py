@@ -827,11 +827,27 @@ async def health(response: Response):
 
     # Reveal-reconciliation observability (issue #1353, hardening #1352's
     # audit-G9 pass). Both counts come off the durable index (SCARD is O(1),
-    # not a scan). "terminal" is the alertable state — should sit at/near
-    # zero in steady state; a sustained rise means dangling reveals are
-    # accumulating faster than the pass resolves them. Fail-safe like every
-    # other Redis-backed field on this endpoint: a Redis outage reports 0
-    # rather than 500ing the whole health check.
+    # not a scan). Fail-safe like every other Redis-backed field on this
+    # endpoint: a Redis outage reports 0 rather than 500ing the whole health
+    # check.
+    #
+    # HOW TO READ "terminal" (#1403 review): it is a CUMULATIVE lifetime
+    # counter, not a level. Members are never removed from the terminal set,
+    # so the number only ever goes up for the life of the Redis keyspace and
+    # one historical give-up pins it above zero permanently. Watch the RATE OF
+    # INCREASE between samples; a static threshold on the value would fire once
+    # and stay fired. "pending" is the true level gauge — it goes up and down
+    # as commitments dangle and resolve.
+    #
+    # WHAT IS AND ISN'T WIRED (#1403 review): this publishes the SURFACE only.
+    # No alerting consumes these two fields — infra/cloudwatch.tf has no metric
+    # filter and no alarm over them, and unlike the HEALTH_CHAIN_DISCONNECTED
+    # and HEALTH_ORACLE_STALE literals this same handler logs elsewhere,
+    # nothing here emits a greppable literal a metric filter could key on
+    # (those two are the repo's only working log-literal ->
+    # aws_cloudwatch_log_metric_filter -> alarm pairs). Calling either field
+    # "alertable" would
+    # overstate what exists today; they are readable, not paging.
     #
     # MIGRATION CAVEAT (#1403 review): ``reveal_reconcile_pending`` under-counts
     # any dangling record written before this index existed and not yet
@@ -913,9 +929,11 @@ async def health(response: Response):
         # Strategy-library presence (issue #1039) — 0 means the image is missing
         # analytics-engine/strategies (the Fargate-cutover regression). CI gates on > 0.
         "strategy_count": strategy_count,
-        # Reveal-reconciliation gauges (issue #1353). "pending" = currently
-        # dangling commitments awaiting a retry; "terminal" = permanently
-        # gave up (countable/alertable — should stay near zero).
+        # Reveal-reconciliation gauges (issue #1353). "pending" = a level:
+        # commitments currently dangling and awaiting a retry, up and down.
+        # "terminal" = a CUMULATIVE lifetime counter of permanent give-ups
+        # (never decreases — alert on its rate of increase, not its value).
+        # Nothing consumes either field yet; see the block above the return.
         "reveal_reconcile_pending": reveal_reconcile_pending,
         "reveal_reconcile_terminal": reveal_reconcile_terminal,
     }

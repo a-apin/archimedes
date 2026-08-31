@@ -2173,9 +2173,13 @@ class StrategyRunner:
 
         The failure mode this exists to prevent is an infinite silent retry
         loop. Terminal is a STATE, not a deletion: the trace stays persisted
-        exactly as it was, honestly unverified, and becomes countable/alertable
-        via ``reveal_reconcile_state == "terminal"`` — which is also what stops
+        exactly as it was, honestly unverified, and becomes COUNTABLE via
+        ``reveal_reconcile_state == "terminal"`` — which is also what stops
         ``_needs_reveal_reconciliation`` from ever picking it up again.
+        Countable, not yet alerted on: the ERROR below is loud in the log and
+        the count is published on ``/health``, but no metric filter or alarm
+        consumes either (#1403 review — see
+        ``AgentStateStore.get_reveal_reconcile_terminal_count``).
 
         The durable index close (#1403 review) runs FIRST and independently
         of the trace blob save below: ``mark_reveal_reconcile_terminal`` is

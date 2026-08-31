@@ -455,7 +455,7 @@ class TestRevealReconcileIndex:
     async def test_ordinary_non_reconciliation_trace_never_touches_the_terminal_set(self) -> None:
         """GUARD DEMO: a plain SKIP/error trace (no commit/trade hashes at
         all) must never land in the terminal set — it was never dangling, so
-        it must not inflate the alertable terminal count."""
+        it must not inflate the cumulative terminal count."""
         store, fake = await _store_with_fake_redis()
         await store.save_trace({"id": "skip-1", "trace_hash": "0xskip", "timestamp": "2026-08-20T00:00:00+00:00"})
 
@@ -503,8 +503,8 @@ class TestRevealReconcileIndex:
     async def test_list_dangling_reveal_traces_prune_is_loud_and_marks_terminal(self, caplog) -> None:
         """Round-2 review finding: an orphan prune with no log and no terminal
         SADD is a silent, untelemetered vanish from BOTH /health gauges — in a
-        PR whose stated purpose is making dangling-reveal state countable and
-        alertable. The prune must (a) log at WARNING with the trace hash and
+        PR whose stated purpose is making dangling-reveal state countable.
+        The prune must (a) log at WARNING with the trace hash and
         (b) SADD the member into the terminal set, since a blob-less member
         can never be revealed again."""
         store, fake = await _store_with_fake_redis()
@@ -532,6 +532,64 @@ class TestRevealReconcileIndex:
         fake.scard.return_value = 7
         assert await store.get_reveal_reconcile_terminal_count() == 7
         fake.scard.assert_awaited_once_with(KEY_TRACE_RECONCILE_TERMINAL)
+
+    @pytest.mark.asyncio
+    async def test_terminal_set_is_cumulative_no_path_ever_removes_a_member(self) -> None:
+        """The terminal gauge's documented reading (#1403 review) is "CUMULATIVE
+        counter — alert on rate of increase, not level", and that is only true
+        if NO code path removes a member. This drives every AgentStateStore
+        path that touches the three reconcile keys and asserts none of them
+        ever issues a removal against KEY_TRACE_RECONCILE_TERMINAL — so the
+        moment someone adds an SREM/DEL there (making the count a level that
+        can fall back), the docs and /health's comment become wrong and this
+        fails."""
+        store, fake = await _store_with_fake_redis()
+
+        base = {"timestamp": "2026-08-20T00:00:00+00:00"}
+        # 1. a dangling save (enters the pending index)
+        await store.save_trace(
+            {**base, "id": "a", "trace_hash": "0xa", "commit_tx_hash": "0xc", "trade_tx_hash": "0xt"}
+        )
+        # 2. the same record resolved (leaves pending, not terminal)
+        await store.save_trace(
+            {
+                **base,
+                "id": "a",
+                "trace_hash": "0xa",
+                "commit_tx_hash": "0xc",
+                "trade_tx_hash": "0xt",
+                "reveal_tx_hash": "0xr",
+                "reveal_reconcile_state": "reconciled",
+            }
+        )
+        # 3. a record saved in the terminal state (enters the terminal set)
+        await store.save_trace(
+            {
+                **base,
+                "id": "b",
+                "trace_hash": "0xb",
+                "commit_tx_hash": "0xc",
+                "trade_tx_hash": "0xt",
+                "reveal_reconcile_state": "terminal",
+            }
+        )
+        # 4. the direct, blob-independent terminal close
+        await store.mark_reveal_reconcile_terminal("0xb")
+        # 5. the orphan prune inside the index read
+        fake.smembers.return_value = ["0xgone"]
+        fake.get = AsyncMock(return_value=None)
+        await store.list_dangling_reveal_traces()
+        # 6. the independent first-seen seed
+        await store.seed_reveal_reconcile_first_seen("0xa")
+
+        removal_targets = [c.args[0] for c in fake.srem.await_args_list] + [
+            c.args[0] for c in fake.hdel.await_args_list
+        ]
+        assert KEY_TRACE_RECONCILE_TERMINAL not in removal_targets
+        # ...and the paths that DO write it only ever add.
+        assert [c.args[0] for c in fake.sadd.await_args_list] == [KEY_TRACE_RECONCILE_PENDING] + [
+            KEY_TRACE_RECONCILE_TERMINAL
+        ] * 3
 
     @pytest.mark.asyncio
     async def test_get_reveal_reconcile_first_seen_parses_iso(self) -> None:

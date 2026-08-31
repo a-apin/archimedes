@@ -54,9 +54,18 @@ KEY_SIWE_NONCE_PREFIX = "archimedes:auth:nonce:"
 #                                   scan regardless of how much trace history
 #                                   has accumulated — unlike the bounded scan.
 #   KEY_TRACE_RECONCILE_TERMINAL — SET of trace_hash that gave up for good.
-#                                   Never removed (terminal is a state, not a
-#                                   deletion); SCARD is an O(1) countable,
-#                                   alertable gauge for /health.
+#                                   Members are NEVER removed (terminal is a
+#                                   state, not a deletion), which makes SCARD
+#                                   of it a CUMULATIVE lifetime counter, not a
+#                                   level: it only ever goes up for the life of
+#                                   the Redis keyspace, and a single historical
+#                                   give-up pins it above zero permanently.
+#                                   Read its RATE OF INCREASE, never its
+#                                   absolute value. O(1) to read and published
+#                                   on /health — see the honesty note on
+#                                   ``get_reveal_reconcile_terminal_count`` for
+#                                   what "alertable" does and does not mean
+#                                   here today.
 #   KEY_TRACE_RECONCILE_FIRST_SEEN — HASH trace_hash -> ISO timestamp of the
 #                                   FIRST save_trace call that observed the
 #                                   record dangling, written with HSETNX (set
@@ -492,8 +501,10 @@ class AgentStateStore:
             await r.srem(KEY_TRACE_RECONCILE_PENDING, trace_hash)
             await r.hdel(KEY_TRACE_RECONCILE_FIRST_SEEN, trace_hash)
             if trace_data.get("reveal_reconcile_state") == "terminal":
-                # Never removed — terminal is a state, not a deletion, and this
-                # set is the O(1)-countable, alertable surface for it.
+                # Never removed — terminal is a state, not a deletion. That
+                # makes SCARD of this set a CUMULATIVE lifetime counter (read
+                # its rate of increase, not its level) — see
+                # ``get_reveal_reconcile_terminal_count``.
                 await r.sadd(KEY_TRACE_RECONCILE_TERMINAL, trace_hash)
 
         logger.debug("Saved trace %s to Redis", trace_hash[:16])
@@ -615,7 +626,22 @@ class AgentStateStore:
         the on-chain state says — that IS terminal, not a no-op. Without the
         SADD here, a dangling record whose blob got evicted simply vanished
         from BOTH ``/health`` gauges with zero telemetry, in a PR whose stated
-        purpose is making exactly this state countable and alertable.
+        purpose is making exactly this state countable.
+
+        KNOWN LIMIT — this read is UNBOUNDED (#1403 review, follow-up):
+        ``SMEMBERS`` returns the whole pending set and this then issues one
+        ``GET`` per member, so both the round-trip count and the peak memory
+        scale linearly with however many commitments are dangling at once,
+        with no cap. That is acceptable at today's volumes (the pending set is
+        empty on a healthy system and the per-tick retry budget is
+        ``REVEAL_RECONCILE_MAX_PER_TICK``, currently 5 — so a large pending
+        set costs reads, not writes), but a pathological run that dangles
+        thousands of commitments would make each tick's index read
+        proportionally expensive. Deliberately not capped in this PR: a cap
+        here re-introduces exactly the "aged past the window, never retried"
+        blind spot the durable index exists to remove, so the right fix is
+        ``SSCAN`` with a cursor plus an ``MGET`` batch, tracked as follow-up
+        rather than bolted on late.
         """
         r = await self._get_redis()
         hashes = await r.smembers(KEY_TRACE_RECONCILE_PENDING)
@@ -643,10 +669,24 @@ class AgentStateStore:
         return await r.scard(KEY_TRACE_RECONCILE_PENDING)
 
     async def get_reveal_reconcile_terminal_count(self) -> int:
-        """O(1) count of permanently-given-up reveals — the alertable gauge.
+        """O(1) CUMULATIVE count of permanently-given-up reveals.
 
-        Should stay at/near zero in steady state; a sustained rise means
-        dangling reveals are accumulating faster than they resolve.
+        Members are never removed from ``KEY_TRACE_RECONCILE_TERMINAL``, so
+        this is a monotonically non-decreasing lifetime total, NOT a level that
+        falls back once the underlying problem is fixed: one historical give-up
+        pins it at 1 forever. Interpret the RATE OF INCREASE (the delta between
+        two samples) — an absolute-value threshold on this number would fire
+        once and then stay fired, and "steady state is near zero" is only true
+        of a keyspace that has never had a terminal reveal at all.
+
+        Honesty note on "alertable" (#1403 review): the SURFACE exists — this
+        count is O(1) to read and is published on ``GET /health`` — but NO
+        alerting is wired to it. ``infra/cloudwatch.tf`` defines no metric
+        filter and no alarm over it, and unlike ``HEALTH_CHAIN_DISCONNECTED`` /
+        ``HEALTH_ORACLE_STALE`` (this repo's two working log-literal →
+        ``aws_cloudwatch_log_metric_filter`` → alarm pairs) nothing emits a
+        greppable literal a filter could key on. Wiring a pager to this is
+        follow-up work, not something this code does today.
         """
         r = await self._get_redis()
         return await r.scard(KEY_TRACE_RECONCILE_TERMINAL)
