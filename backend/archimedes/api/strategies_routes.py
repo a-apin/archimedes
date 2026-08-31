@@ -1839,7 +1839,11 @@ async def generate_strategy(
     asset_classes: str = "",
     risk_appetite: str = "moderate",
     strategic_direction: str = "",
-    max_papers: int = 4,
+    # == strategy_fusion.DEFAULT_MAX_PAPERS (#1636). A literal, not an import:
+    # this module resolves strategy_fusion lazily inside the handlers to keep
+    # import weight off the route table. The drift guard that pins this
+    # literal to the constant is test_generate_schemas_depth_drift.py.
+    max_papers: int = 8,
     user: CurrentUser = Depends(require_current_user),
 ):
     """Queue a strategy generation job. Returns 202 + job_id immediately.
@@ -1958,6 +1962,7 @@ async def get_generation_job(job_id: str, user: CurrentUser = Depends(require_cu
 async def _run_fusion_job(job_id: str) -> None:
     """Background worker: runs fusion and updates job status."""
     from archimedes.agents.strategy_fusion import (
+        DEFAULT_MAX_PAPERS,
         FusionBrief,
         default_fusion,
     )
@@ -1982,7 +1987,7 @@ async def _run_fusion_job(job_id: str) -> None:
             asset_classes=payload.get("asset_classes", []),
             risk_appetite=rp,
             strategic_direction=payload.get("strategic_direction", ""),
-            max_papers=payload.get("max_papers", 4),
+            max_papers=payload.get("max_papers", DEFAULT_MAX_PAPERS),
             market_context=payload.get("market_context", {}),
         )
 

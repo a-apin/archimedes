@@ -413,3 +413,31 @@ test("the passport mounts the panel unconditionally", () => {
 		/<StrategyReasoning strategyId=\{strategyId\} onNavigate=\{onNavigate\} \/>/,
 	);
 });
+
+// ── #1636: debate claims carry paper attribution, in two shapes ────────────
+
+test("StrategyReasoning renders BOTH claim shapes — the legacy string and the attributed dict", () => {
+	// Claims used to be plain strings; since the debate carries paper
+	// attribution they are `{claim, candidate_id, arxiv_ids}` dicts. Rows
+	// persisted before the change are still strings and still render, so the
+	// panel must read the text through a helper rather than interpolating the
+	// claim directly — `{claim}` on a dict renders as a React child error.
+	const panel = src("components/StrategyReasoning.jsx");
+	assert.match(panel, /function claimText/);
+	assert.match(panel, /typeof claim === "string"/);
+	assert.match(panel, /claimText\(claim\)/);
+	assert.ok(
+		!/<li key=\{j\}>\{claim\}<\/li>/.test(panel),
+		"the raw-claim interpolation cannot survive the dict shape",
+	);
+});
+
+test("StrategyReasoning says so when a claim is attributed to no listed paper", () => {
+	// An empty arxiv_ids array is meaningful data, not missing data: the
+	// backend guard keeps an unattributable claim rather than deleting it, so
+	// the panel must show that it was unattributed instead of rendering it
+	// indistinguishably from a grounded one.
+	const panel = src("components/StrategyReasoning.jsx");
+	assert.match(panel, /not attributed to a listed paper/);
+	assert.match(panel, /arXiv:\$\{id\}/);
+});
