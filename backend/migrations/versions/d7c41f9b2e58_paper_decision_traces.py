@@ -21,7 +21,7 @@ opt-in to on-chain anchoring — see the design doc §6 on consent),
 published; the trace is never rewritten, the disagreement is stamped).
 
 Revision ID: d7c41f9b2e58
-Revises: 85ca5310b7a1
+Revises: e41c7a9b2d63
 Create Date: 2026-08-30 21:00:00.000000
 
 SEQUENCING: authored against 85ca5310b7a1, verified the single head at write
@@ -36,7 +36,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d7c41f9b2e58"
-down_revision: str | Sequence[str] | None = "85ca5310b7a1"
+down_revision: str | Sequence[str] | None = "e41c7a9b2d63"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from archimedes.models.paper_store import STATUS_ACTIVE, PaperDailyReturn, PaperDeployment
@@ -59,6 +60,76 @@ class PaperTraceCoverageError(RuntimeError):
 #: report the SAME distinctive string, and so a test can assert on it rather
 #: than on prose someone may reword.
 COVERAGE_BROKEN_LOG = "paper: TRACE COVERAGE IDENTITY BROKEN"
+
+
+@dataclass(frozen=True)
+class PositionSet:
+    """What the DAILY replay last established, for the marks loop to price.
+
+    This is the read-only input to intraday mark-to-market (intraday design
+    §4.1). It is written once per daily advance and never by the marks loop —
+    the one-way arrow is the entire safety argument for marks: re-pricing a
+    position more often is a display change; re-DECIDING it more often is a
+    different strategy from the one the rigor gate graded (§1.3, divergence
+    audit F3).
+
+    ``weights`` are the dollar-sleeve weights ``replay_spec`` already computes
+    on its way to a portfolio return — each symbol runs as an independently
+    capitalized sleeve, so a sleeve's share of total equity IS its weight.
+    They sum to 1.0.
+
+    ``ref_prices`` is the close each weight was struck at, on ``as_of``. A
+    mark is ``Σ wᵢ · (Pᵢ_now / Pᵢ_ref)``, so both halves have to come from the
+    same bar or the ratio is measuring the wrong interval.
+
+    **The disclosed approximation.** v1 values every sleeve at its own asset's
+    move since ``as_of``. A sleeve the strategy currently holds in CASH is
+    still valued that way, because ``replay_spec`` returns dated portfolio
+    returns and not a per-sleeve invested/flat vector, and inferring one from
+    the return series would be a guess dressed as a measurement. The
+    consequence is bounded and one-directional: an out-of-market sleeve's
+    intraday contribution is overstated in magnitude (in either direction)
+    until the next daily advance re-settles it against the ledger, which is
+    the authoritative number. This is why marks are labelled an *unsettled*
+    view and why ``paper_daily_returns`` — never a mark — is the track record.
+    Closing the gap needs a position vector out of the graded engine; that is
+    scoped work, not a v1 constant.
+    """
+
+    as_of: date
+    weights: dict[str, float]
+    ref_prices: dict[str, float]
+
+    def to_json(self, equity_index: float) -> str:
+        return json.dumps(
+            {
+                "as_of": self.as_of.isoformat(),
+                "equity_index": equity_index,
+                "weights": self.weights,
+                "ref_prices": self.ref_prices,
+            },
+            sort_keys=True,
+        )
+
+
+class ReplayResult(dict):
+    """``dict[date, float]`` of portfolio returns, with ``.positions`` attached.
+
+    Subclasses ``dict`` deliberately. ``advance_deployment``'s ``replay=``
+    parameter is a seam many callers and tests satisfy with a plain dict, and
+    the ledger append only ever needs the mapping — so widening the return
+    type would break every one of them, and adding a SECOND replay call to
+    fetch positions would double the most expensive thing the daily advance
+    does (§4.1: the position set is cached once per day precisely because
+    re-running a replay every 15 minutes would be slow and pointless).
+
+    Attaching the position set as an attribute means one replay produces both
+    outputs, while a plain-dict replay stub stays valid and simply refreshes
+    no cache — ``getattr(result, "positions", None)`` is None and the advance
+    proceeds untouched.
+    """
+
+    positions: PositionSet | None = None
 
 
 def _sleeve_initial_cash() -> float:
@@ -147,6 +218,13 @@ def _sleeve_dated_returns(
     return dict(zip(idx[-len(rets) :], rets, strict=True)), legs
 
 
+def _dated_closes(frame) -> dict[date, float]:
+    """``{bar date: close}`` for one sleeve's frame — the reference prices the
+    dollar-sleeve weights were struck at."""
+    idx = [d.date() if hasattr(d, "date") else d for d in frame.index]
+    return {d: float(v) for d, v in zip(idx, frame["Close"], strict=True)}
+
+
 def _replay(spec_dict: dict, deployed_at: date, *, decisions: bool) -> tuple[dict[date, float], dict[date, dict]]:
     """Shared body of :func:`replay_spec` / :func:`replay_decisions`.
 
@@ -220,7 +298,7 @@ def _replay(spec_dict: dict, deployed_at: date, *, decisions: bool) -> tuple[dic
     # Equity-weighted dollar sleeves: each sleeve compounds independently from
     # equal initial capital; the portfolio return is total-equity ratio.
     equities = dict.fromkeys(sleeves, 1.0)
-    out: dict[date, float] = {}
+    out = ReplayResult()
     for d in common:
         total_before = sum(equities.values())
         for sym in sleeves:
@@ -228,16 +306,22 @@ def _replay(spec_dict: dict, deployed_at: date, *, decisions: bool) -> tuple[dic
         total_after = sum(equities.values())
         if d >= deployed_at and total_before > 0:
             out[d] = total_after / total_before - 1.0
+    out.positions = _position_set(panel, equities, common[-1])
     return out, dated_decisions
 
 
-def replay_spec(spec_dict: dict, deployed_at: date) -> dict[date, float]:
+def replay_spec(spec_dict: dict, deployed_at: date) -> ReplayResult:
     """Full-history replay of a deployment's spec; returns {date: portfolio_return}
     for dates >= ``deployed_at``.
 
     Dollar-sleeve aggregation, faithful to the graded path: each symbol runs
     as an independently-capitalized sleeve; the portfolio return on a date is
     the equity-weighted combination of that date's sleeve returns.
+
+    The return is a ``ReplayResult`` — a ``dict`` in every way that matters
+    to the ledger append, plus ``.positions`` for the marks loop (§4.1);
+    ``positions`` is None rather than an error when reference closes cannot
+    be read, so a missing cache costs marks, never a ledger row.
     """
     return _replay(spec_dict, deployed_at, decisions=False)[0]
 
@@ -265,6 +349,32 @@ def replay_decisions(spec_dict: dict, deployed_at: date) -> dict[date, dict]:
 def replay_spec_with_decisions(spec_dict: dict, deployed_at: date) -> tuple[dict[date, float], dict[date, dict]]:
     """Both halves of one replay — what the settle path calls."""
     return _replay(spec_dict, deployed_at, decisions=True)
+
+
+def _position_set(panel, equities: dict[str, float], as_of: date) -> PositionSet | None:
+    """The sleeve weights + reference closes on ``as_of``, or None.
+
+    Best-effort by design (see ``replay_spec``): a sleeve whose frame has no
+    bar on the shared last date, or a non-positive total equity, yields no
+    cache rather than a cache that is quietly wrong about what is held. The
+    marks loop reads "no cache" as "nothing to mark yet", which renders as the
+    honest no-marks-yet em-dash — never as a fabricated flat line.
+    """
+    total = sum(equities.values())
+    if total <= 0:
+        return None
+    weights: dict[str, float] = {}
+    ref_prices: dict[str, float] = {}
+    for sym, equity in equities.items():
+        frame = panel.frames.get(sym)
+        if frame is None:
+            return None
+        close = _dated_closes(frame).get(as_of)
+        if close is None or close <= 0:
+            return None
+        weights[sym] = equity / total
+        ref_prices[sym] = close
+    return PositionSet(as_of=as_of, weights=weights, ref_prices=ref_prices)
 
 
 def create_deployment(
@@ -585,7 +695,39 @@ def advance_deployment(session, dep: PaperDeployment, *, replay=None, decision_r
             drift,
         )
     session.flush()
+    _refresh_position_cache(session, dep, getattr(replayed, "positions", None))
     return {"appended": appended, "drift": drift, **trace_result}
+
+
+def _refresh_position_cache(session, dep: PaperDeployment, positions: PositionSet | None) -> None:
+    """Stamp the position set the marks loop will price (intraday design §4.1).
+
+    Called at the end of every advance, with whatever the replay produced.
+    A ``None`` (a plain-dict replay stub, or a replay that could not read
+    reference closes) leaves ANY EXISTING CACHE IN PLACE rather than clearing
+    it: a stale-by-one-day cache still prices the position the ledger last
+    settled, whereas a cleared one makes a working deployment's live value
+    vanish. Neither can corrupt the ledger — this function only ever writes
+    the two cache columns.
+
+    The equity index is computed from the ledger, not from the replay, so the
+    intraday value is anchored to the SAME number ``deployment_summary``
+    renders as the settled total return. A mark is that anchor times the
+    weighted price move; if the two disagreed, the intraday line would appear
+    to jump at every daily advance.
+    """
+    if positions is None:
+        return
+    equity = 1.0
+    for row in (
+        session.query(PaperDailyReturn)
+        .filter(PaperDailyReturn.deployment_id == dep.id, PaperDailyReturn.date <= positions.as_of)
+        .order_by(PaperDailyReturn.date.asc())
+    ):
+        equity *= 1.0 + row.daily_return
+    dep.position_cache_json = positions.to_json(equity)
+    dep.position_cache_at = datetime.now(UTC)
+    session.flush()
 
 
 def advance_all(session) -> dict:
@@ -711,6 +853,16 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
     for row in rows:
         equity *= 1.0 + row.daily_return
         series.append({"date": row.date.isoformat(), "daily_return": row.daily_return, "equity_index": equity})
+    # The latest intraday mark rides along so the ledger card can render a
+    # live value without a second round trip per deployment. It is ALWAYS a
+    # separate key from `total_return`, never folded into it: `total_return`
+    # is the settled track record and a mark is an unsettled decoration with a
+    # TTL. `None` when this deployment has no mark yet — a real state (a
+    # deployment created between ticks, or one on SPY before the open), and
+    # the UI must render it as an em-dash with a reason rather than +0.00%.
+    from archimedes.services.paper_marks import latest_mark, mark_to_dict
+
+    newest = latest_mark(session, dep.id)
     return {
         "deployment_id": dep.id,
         "strategy_id": dep.strategy_id,
@@ -725,6 +877,7 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
         # not have.
         "trace_coverage": trace_coverage(session, dep),
         "series": series,
+        "latest_mark": mark_to_dict(newest) if newest is not None else None,
     }
 
 

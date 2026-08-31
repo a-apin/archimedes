@@ -153,6 +153,15 @@ def _fake_ev(*, cagr, dsr=1.5, passing=True, oos=1.2, num_trials=5):
         oos_sharpe=oos,
         in_sample_sharpe=1.3,
         look_ahead_clean=True,
+        # Mirrors a RigorVerdict that cleared the real structural look-ahead
+        # audit (services/dsl_lookahead_audit.py): the three-state field is what
+        # _rigor_verdict_dict now carries, and `declared` is the LLM's demoted
+        # self-declaration kept only as a record.
+        look_ahead_audit="passed_structural",
+        # The rendering axis, distinct from the gating one on purpose.
+        look_ahead_render_state="passed",
+        look_ahead_declared=True,
+        look_ahead_reasons=(),
         look_ahead_label="clean",
         num_trials=num_trials,
         passing=passing,

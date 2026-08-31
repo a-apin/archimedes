@@ -25,6 +25,7 @@ from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.db import get_session, init_db
 from archimedes.models.paper_store import STATUS_STOPPED, PaperDeployment
+from archimedes.services.paper_marks import list_marks, mark_to_dict
 from archimedes.services.paper_trading import (
     COVERAGE_BROKEN_LOG,
     PaperTraceCoverageError,
@@ -163,6 +164,58 @@ async def get_paper_deployment(
     with get_session() as session:
         dep = _owned_deployment(session, deployment_id, user.id)
         return deployment_summary(session, dep)
+
+
+@paper_router.get("/deployments/{deployment_id}/marks")
+async def get_paper_deployment_marks(
+    request: Request,  # noqa: ARG001 — route signature parity
+    deployment_id: str,
+    limit: int = 500,
+    user: CurrentUser = Depends(require_current_user),
+):
+    """Intraday marks for one owned deployment, oldest first.
+
+    Same ``_owned_deployment`` gate as every other route here — a mark is
+    still the caller's private track-record decoration, and a wrong-owner
+    lookup 404s exactly like an unknown id.
+
+    Marks are the UNSETTLED view: ``paper_daily_returns`` (the ``series`` on
+    the deployment summary) is the append-only track record that carries to
+    mainnet, and a mark is a decoration with a TTL that the retention job
+    deletes past 90 days. A client must render the two distinguishably; it
+    must never present a mark as a settled return.
+
+    **A mark cannot see cash — the disclosed v1 limitation.** A mark
+    re-prices the strategy's ASSET BASKET (the sleeve weights the last daily
+    settle established) by applying each asset's move since that settle. It
+    does NOT know whether the strategy is currently invested or flat:
+    ``replay_spec`` returns dated portfolio returns, not a per-sleeve
+    invested/flat vector, so v1 has no position vector to read and inferring
+    one from the return series would be a guess dressed as a measurement.
+
+    Concretely: a strategy sitting in CASH still shows a live value that moves
+    with the assets it would hold — a settled ``+0.00%`` day can carry a
+    ``+10.00%`` mark if the underlying rose 10%
+    (``test_a_cash_sleeve_is_still_marked_as_if_invested`` pins exactly that).
+    The error never touches the ledger and the next daily advance re-settles
+    the anchor, so it is bounded to one session and cannot accumulate — but a
+    client must DISCLOSE it at the point of render, not bury it. The settled
+    daily return is the honest number. Closing the gap needs a position vector
+    out of the graded engine: the marks-v2 follow-up.
+
+    ``limit`` is clamped to the same bound the storage tier is designed for
+    (a day of raw crypto marks is 96 rows, a week is 672) so a client cannot
+    ask for an unbounded scan; the newest ``limit`` rows are returned.
+    """
+    init_db()
+    with get_session() as session:
+        dep = _owned_deployment(session, deployment_id, user.id)
+        rows = list_marks(session, dep.id, limit=max(1, min(limit, 2000)))
+        return {
+            "deployment_id": dep.id,
+            "marks": [mark_to_dict(row) for row in rows],
+            "latest": mark_to_dict(rows[-1]) if rows else None,
+        }
 
 
 @paper_router.post("/deployments/{deployment_id}/stop")

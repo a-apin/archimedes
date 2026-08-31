@@ -1502,3 +1502,147 @@ def test_brief_intent_backfill_migration_upgrade_is_idempotent(tmp_path):
     assert second_up.returncode == 0, f"second upgrade head failed:\n{second_up.stderr}"
 
     assert _snapshot() == after_first, "re-running the brief_intent backfill changed already-resolved data"
+
+
+def test_alembic_paper_marks_table_added_and_removed(tmp_path):
+    """Intraday marks v1: ``paper_marks`` and the two ``paper_deployments``
+    position-cache columns land on upgrade, are gone on downgrade, and come
+    back on re-upgrade — the per-migration up/down/idempotent contract
+    exercised directly.
+
+    Same derived-target discipline as the tests above: the downgrade target is
+    this revision's OWN ``down_revision``, never a hardcoded hash or a
+    relative ``-1``, so it keeps testing this migration however many revisions
+    later land on top of it.
+    """
+    db_path = tmp_path / "paper_marks.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _paper_deployment_columns() -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute("PRAGMA table_info(paper_deployments)")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("e41c7a9b2d63").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "paper_marks" in _table_names(db_path)
+    assert {"position_cache_json", "position_cache_at"} <= _paper_deployment_columns()
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "paper_marks" not in _table_names(db_path)
+    assert not ({"position_cache_json", "position_cache_at"} & _paper_deployment_columns())
+    # The ledger the marks decorate is NOT collateral damage of a rollback:
+    # paper_daily_returns predates this revision and must survive it.
+    assert "paper_daily_returns" in _table_names(db_path)
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "paper_marks" in _table_names(db_path)
+    assert {"position_cache_json", "position_cache_at"} <= _paper_deployment_columns()
+
+    reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade_again.returncode == 0, reupgrade_again.stderr
+
+
+def test_paper_marks_unique_constraint_actually_rejects_a_duplicate(tmp_path):
+    """The constraint that makes a re-run of the daily rollup a no-op instead
+    of a duplicate. A constraint nobody has seen reject anything is a comment,
+    not a guard — so this inserts the conflicting row and asserts the DB
+    refuses it.
+
+    Demonstrated to reject: dropping ``uq_paper_marks_dep_ts_gran`` from the
+    migration makes the second INSERT succeed and this test fail.
+    """
+    db_path = tmp_path / "paper_marks_uq.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{db_path}")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO paper_deployments (id, strategy_id, spec_json, deployed_at, status, created_at) "
+            "VALUES ('dep1', 's1', '{}', '2026-08-30', 'active', '2026-08-30T00:00:00')"
+        )
+        row = (
+            "INSERT INTO paper_marks "
+            "(deployment_id, ts, prices_json, portfolio_value, source, is_delayed, granularity) "
+            "VALUES ('dep1', '2026-08-30 14:45:00', '{}', 1.0, 'yfinance', 1, 'raw')"
+        )
+        cur.execute(row)
+        con.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            cur.execute(row)
+            con.commit()
+    finally:
+        con.close()
+
+
+def test_alembic_paper_marks_matches_a_fresh_create_all_schema(tmp_path):
+    """Column parity for ``paper_marks`` and ``paper_deployments`` between the
+    two schema-management paths — the ORM's ``PaperMark`` (create_all: every
+    hermetic test and local dev) and this migration's ``create_table``
+    (Alembic: CI/prod).
+
+    Divergence here is a live-in-one-environment defect of exactly the kind
+    this repo has already paid for: the marks loop writes ``is_delayed`` and
+    ``granularity`` by name and the retention job filters on ``granularity``,
+    so a column present on one path and absent on the other means the live
+    value silently stops rendering — or the prune job silently stops pruning —
+    in precisely one environment.
+    """
+    create_all_db = tmp_path / "create_all_paper_marks.db"
+    script = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        # Same metadata-graph completion the generation_costs parity test needs:
+        # unrelated tables in Base.metadata carry FKs that create_all() must be
+        # able to resolve before it will emit ANY DDL.
+        "from archimedes.models.identity import WalletIdentity\n"
+        "from archimedes.models.paper_store import PaperDeployment, PaperMark\n"
+        # StrategyRecord completes the FK graph: phase1 (fb8d0bae8112) gave
+        # paper_deployments a strategy_id -> strategy_store FK, so create_all
+        # refuses to emit DDL without the target table's metadata imported.
+        "from archimedes.models.strategy_store import StrategyRecord\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    alembic_db = tmp_path / "alembic_built_paper_marks.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{alembic_db}")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    def _columns(db_path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    for table in ("paper_marks", "paper_deployments"):
+        assert _columns(create_all_db, table) == _columns(alembic_db, table), (
+            f"{table} columns differ between create_all() and alembic upgrade head"
+        )
