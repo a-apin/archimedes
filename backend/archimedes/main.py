@@ -846,8 +846,8 @@ async def health(response: Response):
     # nothing here emits a greppable literal a metric filter could key on
     # (those two are the repo's only working log-literal ->
     # aws_cloudwatch_log_metric_filter -> alarm pairs). Calling either field
-    # "alertable" would
-    # overstate what exists today; they are readable, not paging.
+    # "alertable" would overstate what exists today: they are readable, not
+    # paging.
     #
     # MIGRATION CAVEAT (#1403 review): ``reveal_reconcile_pending`` under-counts
     # any dangling record written before this index existed and not yet
