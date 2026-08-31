@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-20
+> **updated:** 2026-08-30
 
 Two surfaces bundled together because they answer the same question — "how
 is the platform doing?" — at two different scopes: `/api/leaderboard` ranks
@@ -24,6 +24,18 @@ completeness but the detail lives there.
 
 ## Leaderboard
 
+**Two boards, never blended.** `GET /api/leaderboard` is the RESEARCH board:
+its conviction score is built entirely from backtest-era passport fields
+(rigor gate, DSR, OOS, PBO), so every row now carries
+`performance_basis: "backtest_research"` plus the `backtest_start` /
+`backtest_end` window the metrics were measured over.
+`GET /api/leaderboard/live-paper` is the FORWARD board: rows only for active
+paper deployments that have actually produced ledger observations, ranked on
+realised return, each carrying `performance_basis: "live_paper"` and an
+inception date. **No endpoint returns a combined score**, and the forward
+board never renders a deployment with an empty ledger — see its section
+below.
+
 ### GET /api/leaderboard
 Rank strategies by a transparent, real-data-only conviction score. |
 **Auth**: anonymous — never 401s; scope is resolved from whether a session
@@ -36,7 +48,7 @@ reports what was actually served, which may differ from what was asked for),
 `sort_by: "conviction_score"|"sharpe_ratio"|"cagr"|"sortino_ratio"|"calmar_ratio"|"deflated_sharpe_ratio"|"dsr_p_value"|"out_of_sample_sharpe"|"pbo_score" = "conviction_score"`,
 `order: "asc"|"desc" = "desc"`, `regime_tag: "bull"|"bear"|"regime_neutral"|null`,
 `min_rigor: bool = false`, `limit: int(1..200) = 50`.
-Response (`LeaderboardResponse`): `{entries: [LeaderboardEntry], total: int, sort_by: str, order: str, scope: str, scoring_engine: LeaderboardScoringEngine, degraded: bool=false, degraded_reason: str=""}` — see [Response shape](#response-shape) below. `degraded` is `true` when the underlying strategy provider raised, or the curated cohort came back empty for a reason other than a legitimate filter (e.g. `"strategy corpus not found in build"`, `"curated strategy cohort is empty"`) — the UI must never render "No strategies match these filters yet." while `degraded` is `true` (#1356).
+Response (`LeaderboardResponse`): `{entries: [LeaderboardEntry], total: int, performance_basis: "backtest_research", sort_by: str, order: str, scope: str, scoring_engine: LeaderboardScoringEngine, degraded: bool=false, degraded_reason: str=""}` — see [Response shape](#response-shape) below. `degraded` is `true` when the underlying strategy provider raised, or the curated cohort came back empty for a reason other than a legitimate filter (e.g. `"strategy corpus not found in build"`, `"curated strategy cohort is empty"`) — the UI must never render "No strategies match these filters yet." while `degraded` is `true` (#1356).
 Errors: none — a data-source failure degrades to an empty board with the
 scoring-engine metadata intact, never a 5xx (module docstring: "the page must
 never hard-fail, for either scope").
@@ -76,8 +88,13 @@ better — despite the legacy "p_value" name**), `pbo_score,
 out_of_sample_sharpe, passes_rigor_gate: bool, is_backtest_placeholder: bool,
 forward: {stockbench_status: "pending", stockbench_sortino: float|null,
 live_pnl_status: "pending", live_pnl_pct: float|null}` (per-strategy
-StockBench and live paper-P&L are not wired yet — always `"pending"`, shown
-honestly rather than hidden or fabricated), `regime_tag, return_source,
+StockBench and live paper-P&L are not scored INTO this board — always
+`"pending"` here; realised forward performance has its own endpoint, see
+[live-paper](#get-apileaderboardlive-paper)), `performance_basis:
+"backtest_research"`, `backtest_start: str|null, backtest_end: str|null`
+(the ISO window these metrics were computed over — `null` on rows that were
+never stamped with one, which the UI renders as "window not recorded" rather
+than leaving the numbers unqualified), `regime_tag, return_source,
 status, papers: [PaperRef]`.
 
 `scoring_engine`: `{weights: dict[str,float], oos_target: float, methodology:
@@ -91,6 +108,43 @@ about any individual entry.
 **The response's `scope` field is authoritative, not the request's `?scope=`
 param** — always read it back rather than assuming the server honored what
 was asked for.
+
+### GET /api/leaderboard/live-paper
+The FORWARD board: the caller's own active paper deployments, ranked by the
+return each has actually realised since it went live. | **Auth**: anonymous —
+never 401s, same contract as the conviction board
+
+Request: query `limit: int(1..200) = 50`.
+Response (`LivePaperLeaderboardResponse`): `{entries: [LivePaperEntry], total: int, performance_basis: "live_paper", scope: "own"|"anonymous", sort_by: "cumulative_return", order: "desc", as_of: str|null, withheld_no_ledger: int, methodology: str, disclaimer: str, degraded: bool=false, degraded_reason: str=""}`.
+`LivePaperEntry`: `{rank, deployment_id, strategy_id, name, performance_basis: "live_paper", cumulative_return: float, days_live: int(≥1), inception_date: str, as_of: str, last_updated: str|null, drift_detected: bool}`.
+Errors: none — a DB failure degrades to an empty board with
+`degraded_reason: "paper deployments unavailable"`, never a 5xx.
+
+```bash
+curl -s --cookie "better-auth.session_token=…" \
+  "https://archimedes-arc.com/api/leaderboard/live-paper?limit=50"
+```
+
+Four contract points that are load-bearing rather than incidental:
+
+- **A deployment with an empty ledger is never an entry.** Not as a `0.0%`
+  row, not as a placeholder holding a rank — it is dropped and counted into
+  `withheld_no_ledger`, so the omission is a visible absence rather than a
+  silence. `days_live` therefore has a floor of 1 by construction.
+- **`cumulative_return` is `∏(1 + daily_return) − 1` over the whole ledger.**
+  Never annualised and never extrapolated: over a handful of days an
+  annualised figure is a fiction. `as_of` is the LAST ledger observation's
+  date — what the number actually reflects — not today.
+- **Ownership is `owner_user_id` only** (#850 — a paper track record is
+  private). There is no curated or cross-user cohort here; an anonymous
+  caller gets `scope: "anonymous"` with `entries: []`, which is an honest
+  empty state and distinct from both `degraded` and a signed-in caller with
+  nothing deployed.
+- **`drift_detected`** mirrors `paper_deployments.drift_detected_at`: a
+  replay that disagreed with already-written rows stamps the deployment
+  rather than rewriting the append-only ledger, and a drifted track record
+  reads as drifted on the board too. See
+  [`paper-trading.md`](paper-trading.md).
 
 ## Metrics (public, PII-free)
 

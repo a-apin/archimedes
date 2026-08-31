@@ -231,7 +231,11 @@ strategy-passport verdict uses. A bare series can only support two of the four c
 `passes` is `true` **iff** no evaluable check failed *and* at least one check was
 evaluable: an all-`not_evaluable` request (e.g. a too-short series) must never report
 `passes: true` by vacuous truth. `self_attested: true` is returned to keep the caller's
-declared `trials` count visible as the unverified input it is.
+declared `trials` count visible as the unverified input it is. The response also carries
+`rf_convention` (`excess_tbill_series` | `excess_flat_fallback`, #1409) — the `date`s
+above already resolve against the historical 3-month T-bill series when they fall inside
+its vendored coverage, and DSR/OOS are computed against whichever rate that resolution
+used; see [`rigor-methods.md` §1a](rigor-methods.md#1a-the-risk-free-rate-behind-excess-issue-1409).
 
 ## Account authentication and optional wallet proof
 
