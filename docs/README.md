@@ -225,6 +225,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`team.md`](team.md) | current | Dan Browne | 2026-07-28 | Roster, lanes, review coverage, timezones, sync window. Extracted from `CLAUDE.md`. |
 | [`agent-gotchas.md`](agent-gotchas.md) | current | Dan Browne | 2026-07-28 | Character-limited message surfaces (`wc -m`, not `wc -c`) and zsh quoting traps. Both were paid for. |
 | [`submodules.md`](submodules.md) | current | Dan Browne | 2026-07-28 | The three submodules, what each is for, and the sticky-config one-liner a fresh clone needs. |
+| [`decisions/tooling-adoptions-2026-08.md`](decisions/tooling-adoptions-2026-08.md) | current | Dan Browne | 2026-08-31 | Register of developer tooling adopted in August 2026 and what each one cost and produced. Holds the standard "run it against a real corpus slice and record what it cost and what it produced, or remove it — installed is not a resting state," plus the OpenWiki row: the Bedrock blocker (Anthropic use-case form not submitted for the account), the `docs/quant/` run, and its verdict. **Placement is off-convention** — a closed-off decision belongs in [`adr/`](adr/README.md); this file sits at the path it was named at, and folding it into an ADR is open follow-up. |
 
 ---
 
