@@ -126,10 +126,32 @@ class PaperDeployment(Base):
     deployed_at: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=STATUS_ACTIVE)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
-    # Set when a replay disagrees with already-written ledger rows (upstream
-    # data restatement). The ledger is never rewritten; this flags that a
-    # fresh replay would tell a different story — surfaced, not hidden.
+    # Set when a replay disagrees with already-written ledger rows AND the
+    # disagreement is ATTRIBUTABLE to the data, not to us: the row carries the
+    # same grading-engine version the replay just ran under, so the only thing
+    # left that can have moved is upstream history (#1449). The ledger is never
+    # rewritten; this flags that a fresh replay would tell a different story —
+    # surfaced, not hidden.
+    #
+    # Narrower than it was before #1449, deliberately. It used to fire on ANY
+    # disagreement, which meant a grading-side cost-model change (#1379's
+    # slippage floor) would stamp every open deployment at once and tell every
+    # user their track record had restated — a claim about THEM for a change
+    # that was ours. Those cases now land on ``engine_regrade_at`` instead.
     drift_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when a replay disagrees with already-written ledger rows and the
+    # cause is the GRADING ENGINE, not the data (#1449). Two ways in:
+    #
+    #   1. the disagreeing row carries a grading-engine version different from
+    #      the one this replay ran under — an expected, disclosed re-grade;
+    #   2. the row carries NO version at all (written before ``engine_version``
+    #      existed), so the disagreement cannot be attributed either way.
+    #
+    # Case 2 is annotated rather than alarmed for the same reason case 1 is:
+    # calling it a data restatement would assert something we cannot show. Both
+    # are still counted, logged, and reported on the deployment payload — what
+    # is withheld is the attribution, never the fact.
+    engine_regrade_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Opt-in on-chain anchoring for this deployment's reasoning traces (#1575
     # §6). Default false, and PER DEPLOYMENT rather than a global switch,
     # because the commit-reveal `reveal()` puts `portfolio_before/after` —
@@ -181,6 +203,18 @@ class PaperDailyReturn(Base):
     date: Mapped[date] = mapped_column(Date, nullable=False)
     daily_return: Mapped[float] = mapped_column(Float, nullable=False)
     appended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    # WHICH GRADING ENGINE produced this number (#1449) —
+    # ``fusion_evaluator.GRADING_ENGINE_VERSION`` at append time. The row is
+    # append-only like every other column here, so this is the durable record of
+    # the cost basis and replay semantics the user was actually shown.
+    #
+    # Nullable, and NEVER backfilled: rows written before this column existed
+    # were graded by a build that did not record its own version, and stamping
+    # them with today's string would be inventing provenance to make a
+    # comparison come out clean — the exact class of claim this ledger exists to
+    # oppose. NULL means "unrecorded", and ``paper_trading.classify_drift`` gives
+    # it its own bucket rather than folding it into either answer.
+    engine_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("deployment_id", "date", name="uq_paper_daily_returns_dep_date"),
