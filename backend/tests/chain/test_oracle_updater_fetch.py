@@ -72,25 +72,37 @@ class TestFetchYfinance:
         assert by_symbol["sTSLA"] == 250.0
         assert by_symbol["sSPY"] == 500.0
 
-    def test_price_carries_the_upstream_bar_time_not_the_poll_time(self, updater):
-        """The honesty gap the widened batch seam closes (intraday design §2).
+    def test_stamps_the_poll_time_unchanged_by_the_widened_batch_seam(self, updater):
+        """ON-CHAIN BEHAVIOR IS UNCHANGED by the paper-marks batch-seam widening.
 
-        `_validate_for_push` computes `age_s` as `now - price.timestamp`. While
-        this leg stamped the POLL time, that gate compared now against now and
-        could not reject a stale bar — on the one leg where the staleness cap
-        (DEFAULT_MAX_UPSTREAM_STALENESS_SECONDS) is doing user-visible work.
+        `get_intraday_quotes_batch` now returns `(price, bar_ts)` because the
+        paper-marks loop cannot be honest without an upstream observation
+        time. This leg unpacks that tuple and DISCARDS `bar_ts`: the
+        `AssetPrice` still carries the poll time, so `_validate_for_push`'s
+        `age_s` — and therefore which prices get pushed on-chain — is bit-for-
+        bit what it was before this branch.
 
-        Demonstrated to reject: restoring `timestamp=timestamp` in
-        `_fetch_yfinance` makes this test fail (the stamp becomes `poll_time`)
-        while `test_parses_multi_ticker_close` above still passes — i.e. the
-        price was right and the *time* was the lie.
+        This is a REGRESSION PIN, not an endorsement. Stamping `bar_ts` here
+        is a real improvement (it makes the staleness gate able to reject a
+        stale bar at all) AND it silently stops every off-hours equity push,
+        because a Friday-close bar is hours older than the 900s cap. That
+        trade is split out to `dbrowneup/oracle-bar-time-stamp` with its own
+        off-hours test. A paper-trading PR must not change what gets written
+        on-chain at the weekend, and this test is what makes that visible.
+
+        Demonstrated to reject: changing `timestamp=timestamp` back to
+        `timestamp=bar_ts or timestamp` in `_fetch_yfinance` makes this test
+        fail (the stamp becomes `_BAR_TS`), while
+        `test_parses_multi_ticker_close` above still passes — the prices stay
+        right and only the *time* moves, which is exactly why the price test
+        alone could never have caught it.
         """
         poll_time = datetime(2026, 8, 30, 23, 59, tzinfo=UTC)
         fake_yf = _fake_yfinance_multi({"SPY": 500.0})
         with patch.dict(sys.modules, {"yfinance": fake_yf}):
             results = updater._fetch_yfinance({"sSPY": "SPY"}, poll_time)
-        assert results[0].timestamp == _BAR_TS
-        assert results[0].timestamp != poll_time
+        assert results[0].timestamp == poll_time
+        assert results[0].timestamp != _BAR_TS, "the bar time is available here and deliberately not used (yet)"
 
     def test_import_error_returns_empty(self, updater):
         # Force the `import yfinance as yf` inside to raise (no mock object needed —
