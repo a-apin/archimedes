@@ -144,8 +144,9 @@ headline claim is "`num_trials` is self-contained," deliberately not "the gate i
   **exists, is served, and is answering**: a board-level Benjamini–Hochberg FDR
   ([`compute_board_level_fdr`, `rigor_evaluator.py:405`](../../backend/archimedes/services/rigor_evaluator.py))
   ships `board_fdr_significant` / `board_fdr_adjusted_p` / `board_fdr_confidence` per
-  strategy plus `n_tested` / `n_significant` as a top-level key on every
-  `/api/selection-bias/gate` response, with BH the right method under the positive
+  row plus `n_tested` / `n_significant` as a top-level key on every
+  `/api/leaderboard` response (it rode `/api/selection-bias/gate` until #1564 moved it —
+  see below), with BH the right method under the positive
   dependence of strategies sharing a universe. And it **currently disagrees with the
   per-strategy gate on every strategy**: pulled from prod 2026-08-30, the minimum
   `board_fdr_adjusted_p` across the whole board is **0.319** — nothing clears a
@@ -162,14 +163,20 @@ headline claim is "`num_trials` is self-contained," deliberately not "the gate i
   (Evidence: [Önder's prod pull](https://github.com/a-apin/archimedes/issues/1555#issuecomment-5471987448),
   #1555 thread; no pass count quoted, per the standing rule — the point stands on the
   adjusted p-values, a property of the correction rather than of the return data.)
-  **Placement half decided by the owner (2026-08-31, tracked in
-  [#1564](https://github.com/a-apin/archimedes/issues/1564)):** the passport carries only
-  per-strategy information; the Leaderboard is the one cross-strategy surface. The
-  `board_fdr_*` fields (and, pending #1564's call, `library_pbo`) move off the
-  per-strategy gate response onto the leaderboard, riding its existing cache semantics —
-  which brings the API shape into line with Decision #3 itself. The rendering half (what
-  the board says when the correction disqualifies every row the badge approves) remains
-  open.
+  **Both halves decided by the owner and shipped in
+  [#1564](https://github.com/a-apin/archimedes/issues/1564) (2026-08-31).**
+  *Placement:* the passport carries only per-strategy information; the Leaderboard is the
+  one cross-strategy surface. The `board_fdr_*` fields moved off the per-strategy gate
+  response onto `GET /api/leaderboard`, riding its existing cache semantics — which brings
+  the API shape into line with Decision #3 itself. `library_pbo` **stays** on the passport:
+  it is byte-identical across the selection set, so it is a disclosure rather than a
+  per-strategy verdict, and it is the scope label for the `pbo_score` the same response
+  already shows (rationale + guards in
+  [`../specs/selection-bias-corrections-spec.md`](../specs/selection-bias-corrections-spec.md) §6.1).
+  *Rendering:* the board says it plainly — a per-row column plus, while nothing clears,
+  "not yet distinguishable from selection noise at board level". An uncorrected row renders
+  an em-dash, never a verdict. The forward experiment that could eventually clear it is the
+  live paper ledger ([#1563](https://github.com/a-apin/archimedes/issues/1563)).
 - **Two conventions exist in the historical record.** Verdicts computed before 2026-07-09
   used formula (A); `num_trials_convention` distinguishes them, but any longitudinal
   comparison of pass rates across that boundary is invalid.
