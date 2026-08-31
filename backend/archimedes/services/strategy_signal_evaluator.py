@@ -410,6 +410,59 @@ GLOBAL_ASSETS: dict[str, tuple[str, str, str, str]] = {
 }
 
 
+#: Declared-universe ticker → synth symbol. Lifted out of
+#: ``evaluate_strategies``'s body (it was a local dict) so the paper-execution
+#: pass can ask which synths a spec's ``asset_universe`` resolves to WITHOUT
+#: copying the table (#1410: the paper path and the vault path share the signal
+#: interpretation code, they do not each keep a version of it). Not derivable
+#: from ``GLOBAL_ASSETS``: this maps the loose ticker names a spec declares
+#: ("GOLD", "TREASURY") onto synths, while GLOBAL_ASSETS maps synths onto
+#: vendor tickers ("GC=F"), and the two are not inverses.
+TICKER_TO_SYNTH: dict[str, str] = {
+    "SPY": "sSPY",
+    "QQQ": "sQQQ",
+    "IWM": "sIWM",
+    "TSLA": "sTSLA",
+    "NVDA": "sNVDA",
+    "BTC": "sBTC",
+    "ETH": "sETH",
+    "GOLD": "sGOLD",
+    "SILVER": "sSI",
+    "COPPER": "sHG",
+    "OIL": "sOIL",
+    "BRENT": "sBRENT",
+    "NATGAS": "sNG",
+    "NIKKEI": "sNKY",
+    "TREASURY": "sBIL",
+    "BIL": "sBIL",
+    "DAX": "sDAX",
+    "FTSE": "sFTSE",
+    "CAC": "sCAC",
+    "BIST": "sBIST",
+    "TUR": "sTUR",
+}
+
+
+def synths_for_universe(tickers: list[str]) -> list[str]:
+    """Resolve a spec's declared ``asset_universe`` to synth symbols.
+
+    Order-preserving and de-duplicated, mirroring what ``evaluate_strategies``
+    does with the same map. A ticker that is already a synth symbol (a spec may
+    declare ``"sSPY"`` directly) passes through; an unmappable one is DROPPED
+    rather than guessed at — the evaluator's own fallback then decides what the
+    strategy sees, which is the behaviour that already exists for vault
+    strategies with unmappable universes.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for ticker in tickers:
+        synth = TICKER_TO_SYNTH.get(ticker) or (ticker if ticker in GLOBAL_ASSETS else None)
+        if synth and synth not in seen:
+            out.append(synth)
+            seen.add(synth)
+    return out
+
+
 def synth_display(synth: str) -> str:
     """Return the human-facing label for a synth symbol."""
     entry = GLOBAL_ASSETS.get(synth)
@@ -1511,29 +1564,7 @@ class StrategySignalEvaluator:
             return []
 
         # Map a strategy's declared asset_universe → synth symbols.
-        synth_map = {
-            "SPY": "sSPY",
-            "QQQ": "sQQQ",
-            "IWM": "sIWM",
-            "TSLA": "sTSLA",
-            "NVDA": "sNVDA",
-            "BTC": "sBTC",
-            "ETH": "sETH",
-            "GOLD": "sGOLD",
-            "SILVER": "sSI",
-            "COPPER": "sHG",
-            "OIL": "sOIL",
-            "BRENT": "sBRENT",
-            "NATGAS": "sNG",
-            "NIKKEI": "sNKY",
-            "TREASURY": "sBIL",
-            "BIL": "sBIL",
-            "DAX": "sDAX",
-            "FTSE": "sFTSE",
-            "CAC": "sCAC",
-            "BIST": "sBIST",
-            "TUR": "sTUR",
-        }
+        synth_map = TICKER_TO_SYNTH
 
         results: list[StrategySignals] = []
 
