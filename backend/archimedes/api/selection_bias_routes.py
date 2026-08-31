@@ -651,6 +651,31 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
     this caller" so the route 404s either way — existence must never leak to a
     non-owner via a different response shape.
 
+    **This is CARD-level and stays on ``is_strategy_visible`` — a deliberate
+    call, not an oversight (#1557).** #1557 moved the reasoning-disclosure
+    surfaces (debate transcript, full daily-return series, DSL spec) onto
+    ``is_strategy_reasoning_visible``, which ignores ``is_published``. This
+    route is not one of them, for two reasons that were checked rather than
+    assumed:
+
+      1. Every number it returns — ``dsr_p_value``, ``pbo_score``,
+         ``out_of_sample_sharpe``, ``deflated_sharpe_ratio``,
+         ``passes_rigor_gate`` — is ALREADY served anonymously for published
+         rows by ``strategies_routes._public_generated_strategy_responses`` on
+         ``GET /api/leaderboard``. Gating here would close nothing while the
+         identical values stayed public one route over — a guard that rejects
+         nothing real.
+      2. The rigor verdict is the CERTIFICATION of a public claim, not the
+         derivation behind it. A published card asserts "this passed the gate";
+         the product's whole positioning is that a reader can check that
+         assertion. Making the check owner-only would leave the claim standing
+         and the verification private.
+
+    The existing contract test ``test_generated_strategy_published_visible_to_
+    anonymous_caller`` pins this. If a future ticket decides the gate detail IS
+    private, it must also stop the leaderboard from publishing the same
+    numbers, or it changes nothing.
+
     Returns a MISSING-shaped result (mirroring the curated "no backtest data"
     branch above) when the strategy exists, is visible, but has fewer than 10
     persisted daily returns — the honest "Pending Backtest" case, not a 404.
