@@ -261,7 +261,8 @@ test("proof rail is flag-derived: 3 stages off, 5 on (explicit override, no impo
 });
 
 test("onboarding tour's paper card has no nav anchor — anon-bounce guard (#1354)", () => {
-	// No nav item carries data-tour="paper" (Layout.jsx's NAV has no 'paper'
+	// No nav item carries data-tour="paper" (the NAV array — extracted out of
+	// Layout.jsx into src/navConfig.js by PR #1437 — has no 'paper'
 	// entry), so an `anchor: 'paper'` here would make measure() always miss,
 	// which falls through to OnboardingTour.jsx's "not mounted yet" effect
 	// and calls setPage('paper') as a side effect. 'paper' is a page kind:

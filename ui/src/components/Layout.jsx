@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { fetchAdminProbe } from "../adminProbe.js";
+import { filterInsightsNavItem, resolveInsightsAdminState } from "../insightsGate.js";
+import { NAV } from "../navConfig.js";
 import WalletConnect from "./WalletConnect";
 import BrandMark from "./BrandMark";
 import Breadcrumbs from "./Breadcrumbs";
@@ -10,100 +13,12 @@ import { visibleNavigation } from "../routes";
 import { lockBodyScroll, unlockBodyScroll } from "../utils/scrollLock";
 import { getProofStages } from "../proofStages.js";
 
-// Sidebar groups separate the marketing-site anchor (labelled "Marketing
-// site", NOT "Home" — the breadcrumb's Home crumb already owns that label for
-// the in-app anchor at Explore; two controls both reading "Home" ~40px apart
-// with different destinations was #1370 item 3) from the product-state
-// bands. Empty group label is intentional for that entry — it renders as a
-// header-less section so it reads as the top-of-shell anchor, not a peer of
-// the other groups. The five labelled groups split the remaining surfaces
-// along the gating boundary:
-//   DISCOVER — open to anonymous visitors (no wallet needed)
-//   STRATEGY — wallet-gated: generate + your saved strategies
-//   POSITION — wallet-gated: on-chain audit, post-hoc review (Portfolio and
-//     Learnings are ROADMAP_PAGES, hidden by default (#1266); Quant Lab
-//     defaults off separately via the backend `quant` feature flag — in the
-//     shipped build this group renders as a single item, Reasoning)
-//   MARKET — the strategy marketplace (ROADMAP_PAGES, hidden by default)
-//   OPS — insights + account
-// Item order inside DISCOVER (Explore → Corpus) follows the natural
-// user-onboarding read: browse the seed strategies first, see the substrate
-// they're drawn from second. Architecture is deliberately NOT a shell nav
-// item (#1370) — `pageToPath('architecture')` resolves to the public
-// `/architecture` route (routes.js PUBLIC_PATHS), so a click here rendered it
-// inside PublicLayout instead: no sidebar, no breadcrumbs, sidebar destroyed.
-// Reachable from PublicLayout's own nav (public marketing pages only) and by
-// direct URL; see the anti-goal in #1370 against giving it a second, /app-side
-// route as a fix.
-const NAV = [
-	{
-		group: null,
-		items: [
-			{ id: "landing", label: "Marketing site", icon: "i-lucide-home" },
-		],
-	},
-	{
-		group: "Discover",
-		items: [
-			{ id: "explore", label: "Explore", icon: "i-lucide-compass" },
-			{ id: "corpus", label: "Corpus", icon: "i-lucide-library" },
-		],
-	},
-	{
-		group: "Strategy",
-		items: [
-			{ id: "generate", label: "Generate", icon: "i-lucide-sparkles" },
-			{ id: "library", label: "Library", icon: "i-lucide-line-chart" },
-			// Paper Trading lives in STRATEGY: it is the act-on step of the MVP
-			// spine (generate → verdict → paper) — simulated, account-owned, free.
-			{ id: "paper", label: "Paper Trading", icon: "i-lucide-trending-up" },
-			// Leaderboard lives in STRATEGY (#1077): it ranks the strategy library —
-			// discovery-friendly but strategy-native. (Quant Lab moved to Position.)
-			{ id: "leaderboard", label: "Leaderboard", icon: "i-lucide-trophy" },
-		],
-	},
-	{
-		group: "Position",
-		items: [
-			{
-				id: "portfolio",
-				label: "Portfolio",
-				icon: "i-lucide-layout-dashboard",
-			},
-			// Re-added (#1060 AC#3, Dan's call 2026-07-14): the livestream-era hiding
-			// (#1061) was for the synthetic-sample-data version; this PR wires the
-			// panels to live library/vault/trace data with per-section disclaimers.
-			// Lives in POSITION (Dan, 2026-07-14): its panels read the user's live
-			// vault/trace data, so it belongs with the deployed-state surfaces and is
-			// wallet-gated like them (see App.jsx).
-			{ id: "quant", label: "Quant Lab", icon: "i-lucide-flask-conical" },
-			{ id: "reasoning", label: "Reasoning", icon: "i-lucide-brain" },
-			{ id: "learnings", label: "Learnings", icon: "i-lucide-graduation-cap" },
-		],
-	},
-	{
-		group: "Market",
-		items: [
-			{
-				id: "marketplace",
-				label: "Marketplace",
-				icon: "i-lucide-shopping-bag",
-			},
-			{ id: "publish", label: "Publish", icon: "i-lucide-megaphone" },
-			{ id: "subscriptions", label: "Subscriptions", icon: "i-lucide-bell" },
-		],
-	},
-	{
-		group: "Ops",
-		items: [
-			{ id: "insights", label: "Insights", icon: "i-lucide-bar-chart-3" },
-			{ id: "account", label: "Account", icon: "i-lucide-user-round-cog" },
-		],
-	},
-];
+// NAV itself now lives in ../navConfig.js (round 4 review finding) — plain
+// JS, zero imports, so its own test can import the REAL array Layout renders
+// instead of a hand-built stand-in. See that file for the group rationale.
 
 export const PAGE_LABELS = {
-	landing: "Marketing site",
+	landing: "Home",
 	explore: "Explore",
 	leaderboard: "Leaderboard",
 	generate: "Generate",
@@ -154,6 +69,15 @@ export default function Layout({
 	const [theme, setTheme] = useState(getStoredTheme);
 	const [health, setHealth] = useState(null);
 	const [healthError, setHealthError] = useState(false);
+	// Ops nav item (Insights) renders only after a successful admin-gate
+	// probe — owner directive 2026-08-20, supersedes #1028 D8. Starts
+	// `false` (not `null`): the nav renders on first paint and an
+	// unresolved probe must not show the item even briefly, so "unknown"
+	// and "denied" read identically here (unlike the page gate in App.jsx,
+	// which distinguishes them to show a neutral loader instead of flashing
+	// content). Anonymous visitors never even attempt the probe — there is
+	// no account for PLATFORM_ADMIN_WALLETS to match against.
+	const [isInsightsAdmin, setIsInsightsAdmin] = useState(false);
 	const hamburgerRef = useRef(null);
 	const sidebarRef = useRef(null);
 	const closeButtonRef = useRef(null);
@@ -205,6 +129,41 @@ export default function Layout({
 			cancelled = true;
 		};
 	}, [page]);
+
+	// Ops nav item admin-gate probe. Keyed on the account id AND the linked
+	// wallet address (not `[]`, not `page`): re-probes on a real
+	// sign-in/sign-out transition, shares the cached result with App.jsx's
+	// own page-level probe within the TTL window (adminProbeCache.js) — so
+	// landing on /app/insights does not double-fire the request — and does
+	// NOT re-probe on every in-app navigation the way the /health effect
+	// above does, since admin membership does not change mid-session under
+	// normal use FOR A FIXED WALLET. It does change on a wallet swap,
+	// though: require_platform_admin (backend/archimedes/api/
+	// metrics_private_routes.py) checks PLATFORM_ADMIN_WALLETS membership
+	// against THIS wallet, read from the X-Wallet-Address header — so an
+	// account with more than one linked wallet, only one of them an admin
+	// wallet, gets a genuinely different whoami answer per wallet. A
+	// `[userId]`-only dependency left the Ops nav item's admin state (and
+	// the earlier-computed insights `isInsightsAdmin`) pinned to whatever
+	// the FIRST wallet on this account resolved to for the rest of the
+	// session, surviving a swap to a non-admin wallet even though
+	// AuthenticatedApp's wallet-changed handler correctly clears the shared
+	// probe cache — the cache clear only helps a FUTURE caller, and without
+	// this dependency there wasn't one (round-2 finding).
+	const userId = user?.id ?? null;
+	useEffect(() => {
+		if (!userId) {
+			setIsInsightsAdmin(false);
+			return;
+		}
+		let cancelled = false;
+		fetchAdminProbe().then((result) => {
+			if (!cancelled) setIsInsightsAdmin(resolveInsightsAdminState(result));
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [userId, walletAddr]);
 
 	// Lock body scroll while the mobile nav drawer is open — otherwise the
 	// page content underneath can still scroll behind the fixed overlay/drawer,
@@ -329,7 +288,17 @@ export default function Layout({
 						// the id list. Groups left empty by the filter are
 						// skipped entirely below so a logged-out sidebar never
 						// shows a bare "Position"/"Market" header over nothing.
-						items: visibleNavigation(group.items, features, user),
+						// Insights ("Ops" group) additionally requires a
+						// successful admin-gate probe (owner directive
+						// 2026-08-20, supersedes #1028 D8) — visibleNavigation
+						// has no notion of that server-truth check, so it is
+						// applied here as a second, narrower filter (
+						// filterInsightsNavItem, ../insightsGate.js) rather
+						// than widening that helper's contract for one item.
+						items: filterInsightsNavItem(
+							visibleNavigation(group.items, features, user),
+							isInsightsAdmin,
+						),
 					}))
 						.filter((group) => group.items.length > 0)
 						.map((group, gi) => (
