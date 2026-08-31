@@ -1,0 +1,44 @@
+# .openwikiignore — bounds what the OpenWiki bootstrap run reads/scans.
+# Written BEFORE the first `openwiki --init` per the bootstrap recon plan,
+# to keep the Bedrock token bill proportional to actual source, not vendored
+# deps, build output, or bulk data files.
+#
+# Syntax: gitignore-style (comments, blanks, *, **, dir rules, ! negation).
+# This is a read boundary for OpenWiki's own discovery — separate from
+# .gitignore, so entries here are explicit even where git already ignores
+# the same path.
+
+# --- dependencies / vendored code (not hand-authored source) ---
+node_modules/
+contracts/lib/
+
+# --- build output (regenerated, not a source of truth) ---
+ui/dist/
+
+# --- agent/session-local state (not repo documentation) ---
+.claude/
+
+# --- sibling git worktrees (this repo is worked in named worktrees off
+#     the main checkout; none live inside this tree today, but excluded
+#     defensively so a future in-tree worktree is never scanned) ---
+.git/worktrees/
+**/archimedes-wt-*/
+**/wt-*/
+
+# --- lockfiles (machine-generated, no narrative content) ---
+*.lock
+package-lock.json
+**/*.lock.hcl
+
+# --- test fixtures over 100KB (bulk sample data, not behavior) ---
+backend/tests/fixtures/spy_ohlcv_2004_2026.csv
+ui/test/fixtures/**
+
+# --- other bulk/generated data, same cost-bounding rationale as fixtures ---
+# 10k-paper corpus manifest (14MB); see docs — corpus is LEXICAL only,
+# no embeddings, so reading this file buys tokens without buying signal.
+data/corpus/manifest.jsonl
+# Timestamped analytics run artifacts and contract-deploy broadcast logs:
+# generated output, already .gitignore'd, present in some checkouts.
+analytics-engine/artifacts/**
+contracts/broadcast/**
