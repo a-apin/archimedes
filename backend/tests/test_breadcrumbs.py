@@ -352,3 +352,103 @@ def test_shell_nav_items_stay_inside_the_shell() -> None:
     nav_ids = [i for i in _extract_layout_nav_ids(nav_text) if i != "landing"]
     bad = sorted(set(nav_ids) - app_pages)
     assert not bad, f"sidebar nav items that route outside /app (shell disappears): {bad}"
+
+
+# ---------------------------------------------------------------------------
+# #1405 — the residual of #1370 item 1 that no existing invariant could see:
+# a group crumb wearing a section's name while linking to a sibling page.
+# ---------------------------------------------------------------------------
+
+
+def _extract_nav_sections(nav_text: str) -> dict[str, set[str]]:
+    """Section label -> the page ids navConfig.js lists as its sidebar items.
+
+    Same NAV block `_extract_layout_nav_ids` reads, but keeping the
+    section->items association instead of flattening it, because
+    `test_group_crumb_does_not_alias_a_sibling_nav_page` has to ask "is this
+    page a sibling *within this group*" — a question a flat id list cannot
+    answer. Each NAV element is `{ group: <label|null>, items: [...] }`, so
+    slicing the block at every `group:` marker puts each `id:` with its own
+    section; the unlabelled marketing-site entry (`group: null`) is dropped,
+    since a null section can never be named by a crumb.
+    """
+    m = re.search(r"const\s+NAV\s*=\s*\[(.*?)\n\];", nav_text, re.DOTALL)
+    assert m, "NAV block not found in navConfig.js"
+    block = m.group(1)
+    marks = list(re.finditer(r"""group:\s*(?:["']([^"']+)["']|null)""", block))
+    assert marks, "no `group:` markers found in navConfig.js NAV — parser is out of date"
+    sections: dict[str, set[str]] = {}
+    for i, mark in enumerate(marks):
+        label = mark.group(1)
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(block)
+        ids = set(re.findall(r"""id:\s*["']([a-z0-9_-]+)["']""", block[mark.end() : end]))
+        if label:
+            sections.setdefault(label, set()).update(ids)
+    return sections
+
+
+def test_group_crumb_does_not_alias_a_sibling_nav_page() -> None:
+    """#1405 (residual of #1370 item 1): a group crumb must not be a link to a
+    sibling page wearing a section's name.
+
+    `test_no_page_appears_twice_in_one_trail` cannot see this one. It fires
+    only when a trail lists the *same* page twice, which is what the Discover
+    instance did (Home and Discover both went to 'explore'). The three
+    instances left after #1400 were all distinct pages — 'Strategy' ->
+    generate, 'Position' -> portfolio, 'Market' -> marketplace — so the trail
+    was well-formed and the defect was purely that the crumb lied about where
+    it went: a control labelled with a section name whose destination is a
+    sidebar item with a different name and a different title.
+
+    The rule that separates an honest group crumb from an aliasing one: the
+    groupPage must not be a page navConfig.js already lists as a sidebar item
+    of that same section. A real section landing page — #1405's option 1, still
+    open — would be its own route with its own identity and would pass; a
+    sibling nav destination cannot.
+
+    Deliberately NOT "no entry may declare a group": that would ban the
+    feature instead of policing it, and would go green for the wrong reason
+    the day someone builds the landing page this test is meant to make room
+    for. Demonstrated in the PR body by pointing a group crumb at a
+    non-sidebar route and watching this test stay green.
+    """
+    text = BREADCRUMBS.read_text(encoding="utf-8")
+    keys = _extract_crumb_keys_ordered(text)
+    groups = _extract_crumb_groups(text)
+    group_pages = _extract_crumb_group_pages(text)
+    sections = _extract_nav_sections(NAV_CONFIG.read_text(encoding="utf-8"))
+    assert len(keys) == len(groups) == len(group_pages), (
+        f"CRUMB_MAP has {len(keys)} entries but {len(groups)} group: values and "
+        f"{len(group_pages)} groupPage: values — every entry must declare exactly one of each."
+    )
+
+    # group and groupPage are one setting in two fields; either half alone is a
+    # broken crumb, not a flat one. `group: 'X', groupPage: null` renders a
+    # button whose onClick calls setPage(null); `group: null, groupPage: 'x'`
+    # is unreachable config that reads like a live link to the next maintainer.
+    unpaired = {k: (g, gp) for k, g, gp in zip(keys, groups, group_pages, strict=True) if (g is None) != (gp is None)}
+    assert not unpaired, (
+        f"CRUMB_MAP entries declaring only half of a group crumb: {unpaired}. "
+        "group and groupPage must both be set (a named section with a real landing page) "
+        "or both be null (a flat 'Home / <page>' trail)."
+    )
+
+    aliases: dict[str, tuple[str, str | None]] = {}
+    for key, group, group_page in zip(keys, groups, group_pages, strict=True):
+        if group is None:
+            continue
+        siblings = sections.get(group)
+        assert siblings is not None, (
+            f"CRUMB_MAP entry '{key}' names group {group!r}, which is not a section in "
+            f"navConfig.js NAV (sections: {sorted(sections)}) — the crumb would label a "
+            "section the sidebar does not have."
+        )
+        if group_page in siblings:
+            aliases[key] = (group, group_page)
+    assert not aliases, (
+        "group crumbs that link to a sibling nav page instead of a section landing page: "
+        f"{aliases}. Each renders a mid-crumb labelled with a section name that navigates to "
+        "a page the sidebar lists under its own different name — the mislabel #1370 item 1 "
+        "named and #1405 closed. Either build the section landing page and point at that, or "
+        "flatten the entry to { group: null, groupPage: null }."
+    )

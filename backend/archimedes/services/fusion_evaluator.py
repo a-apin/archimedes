@@ -211,6 +211,28 @@ DEFAULT_SLIPPAGE_BPS = 5
 # analytics_engine.costs.cost_model_fingerprint (no per-symbol overrides here).
 DEFAULT_COST_MODEL_ID = f"cm1:d{_DEFAULT_TX_BPS:g}:s{DEFAULT_SLIPPAGE_BPS:g}"
 
+# Hand-bumped when this engine's REPLAY BEHAVIOR changes for a reason the cost
+# fingerprint above cannot see: interpreter semantics, indicator warmup, sleeve
+# capitalization, order timing. Bump it in the same commit as the behavior
+# change.
+#
+# It is manual on purpose, and the failure direction of a MISSED bump is the
+# safe one: a genuine engine change that nobody stamped looks like a data
+# restatement — loud and wrong — rather than being quietly absolved. A derived
+# alternative (hashing this module's source) would churn on every comment edit
+# and re-grade every open paper deployment for a typo fix, which is the
+# opposite failure and the worse one.
+_GRADING_SEMANTICS_REV = 1
+
+#: The version of the GRADED path, stamped on every paper ledger row this
+#: engine writes (#1449). ``paper_trading`` has no independent opinion on cost
+#: model by design, so a change HERE re-grades every open deployment's replayed
+#: history at once; the version string is what lets that re-grade be recognised
+#: as ours and annotated, instead of being reported to users as their strategy
+#: restating its own past. Note the cost half moves BY ITSELF: #1379 wiring the
+#: slippage leg took it from ``cm1:d10:s0`` to ``cm1:d10:s5`` with no edit here.
+GRADING_ENGINE_VERSION = f"{ENGINE_SINGLE_FEED}.r{_GRADING_SEMANTICS_REV}/{DEFAULT_COST_MODEL_ID}"
+
 # The only price-data provenance that is NOT admissible for Tier-1 rigor
 # certification. Everything else (real CSV, an explicitly provided feed) is
 # trusted to be real market data — the caller owns that contract.

@@ -14,6 +14,42 @@ logger = logging.getLogger(__name__)
 
 papers_router = APIRouter(prefix="/api/papers", tags=["papers"])
 
+# The author leg of catalog search (issue #1451). `PaperRecord.authors` is a
+# JSON-serialised list of names stored in a Text column, so an ilike over the
+# raw column is crude — but correct — substring name matching. It is crude in
+# two specific ways, and both are rejected rather than shipped:
+#
+#   * a 1-2 character term ("a") is a substring of nearly every author list, so
+#     the author leg would turn search into "return everything";
+#   * a term made of the JSON *serialisation* rather than a name ('", "', '["',
+#     '],') matches the punctuation every row shares, with the same effect.
+#
+# Neither applies to the title/abstract legs, which are free prose, so the
+# guard is scoped to the author leg only: a short or structural term still
+# searches title and abstract exactly as it did before. That scoping is the
+# easy thing to get wrong (drop the term from the whole predicate instead of
+# from one leg) and is enforced by
+# `test_papers_routes.py::TestAuthorLegGuardIsScopedToTheAuthorLeg`.
+AUTHOR_SEARCH_MIN_LEN = 3
+_JSON_STRUCTURAL_CHARS = frozenset('[]{}",\\')
+
+
+def _author_search_pattern(search: str) -> str | None:
+    """LIKE pattern for the author leg, or ``None`` when the term must not reach it.
+
+    Returns ``None`` for a term shorter than :data:`AUTHOR_SEARCH_MIN_LEN` or
+    containing any JSON structural character — see the note above. LIKE
+    wildcards inside an accepted term are escaped so a literal ``%`` searches
+    for a percent sign instead of matching every row.
+    """
+    term = search.strip()
+    if len(term) < AUTHOR_SEARCH_MIN_LEN:
+        return None
+    if any(c in _JSON_STRUCTURAL_CHARS for c in term):
+        return None
+    escaped = term.replace("%", r"\%").replace("_", r"\_")
+    return f"%{escaped}%"
+
 
 def _paper_row_to_dict(r) -> dict:
     """Shared DB-row → API-dict mapping so every read path (processed-only,
@@ -51,7 +87,16 @@ async def list_papers(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     category: str | None = None,
-    search: str | None = None,
+    search: str | None = Query(
+        None,
+        description=(
+            "Case-insensitive substring match over title, abstract and author "
+            "names. Lexical only — no embeddings, no ranking, no stemming. The "
+            f"author leg needs at least {AUTHOR_SEARCH_MIN_LEN} characters and is "
+            "skipped for terms built from JSON structural characters, which would "
+            "otherwise match the serialised author list of every row."
+        ),
+    ),
     processed_only: bool = Query(
         True,
         description=(
@@ -90,7 +135,14 @@ async def list_papers(
             query = query.filter(PaperRecord.categories.contains(category))
         if search:
             pattern = f"%{search}%"
-            query = query.filter((PaperRecord.title.ilike(pattern)) | (PaperRecord.abstract.ilike(pattern)))
+            predicate = (PaperRecord.title.ilike(pattern)) | (PaperRecord.abstract.ilike(pattern))
+            # `authors` is populated but was never searched, so the single most
+            # natural query for a research corpus — a researcher's name — only
+            # hit papers that happened to mention that name in prose (#1451).
+            author_pattern = _author_search_pattern(search)
+            if author_pattern is not None:
+                predicate = predicate | PaperRecord.authors.ilike(author_pattern, escape="\\")
+            query = query.filter(predicate)
 
         total = query.count()
         rows = query.order_by(PaperRecord.published.desc()).offset((page - 1) * page_size).limit(page_size).all()

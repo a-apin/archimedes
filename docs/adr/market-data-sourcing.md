@@ -1,0 +1,165 @@
+# ADR: Split market-data sourcing — Tiingo for paid analysis, yfinance for the free Explore viewer
+
+> **Audience:** Archimedes team (decision owner: Dan, strategy-engine + architecture owner)
+> **Status:** Accepted
+> **Date:** 2026-08-31
+> **Owner:** Dan Browne
+> **Supersedes:** —
+> **Superseded-by:** —
+> **Question being decided:** Now that [#1218](https://github.com/a-apin/archimedes/issues/1218) has priced yfinance as an unlicensed-for-commercial-redistribution dependency sitting on the MVP critical path, which surfaces move to a commercial vendor, which stay on yfinance, and what has to be true before real money touches either?
+> **Related issues/PRs:** [#1218](https://github.com/a-apin/archimedes/issues/1218) (the costing exercise this decides), [#1282](https://github.com/a-apin/archimedes/pull/1282) (the provider seam), [#1455](https://github.com/a-apin/archimedes/pull/1455) (the Tiingo adapter), [#1203](https://github.com/a-apin/archimedes/issues/1203) (per-strategy universes — the routing fix that put market-data volume on the critical path), [#775](https://github.com/a-apin/archimedes/issues/775) (yfinance as an oracle cross-check — different use, same dependency).
+
+## TL;DR
+
+**Source market data by surface, not by system.** Backtesting and any paid analysis run
+on **Tiingo**, reached through the existing `MARKET_DATA_PROVIDER` seam — starting on
+Tiingo's **Free tier, for testing only**. The free, ungated **Explore** viewer stays on
+**yfinance**, because Explore is a free open-source data viewer that sells and
+redistributes nothing, which is the posture yfinance's terms actually permit.
+
+Two things are flagged rather than assumed:
+
+1. **A Tiingo commercial (Business) plan is a mainnet prerequisite.** Free-tier data is
+   for testing. Before real money moves through anything derived from this data, the paid
+   path must be on licensed commercial terms. This is a gate, not a to-do.
+2. **The decision is reversible by build.** Both vendors sit behind one adapter
+   interface, so replacing yfinance everywhere later — or replacing Tiingo — is a config
+   flip plus one adapter class, not surgery across the codebase.
+
+## Context
+
+`yfinance` reaches Yahoo Finance through an unofficial interface. Its own README
+disclaims affiliation and points at Yahoo's terms, which do not permit commercial
+redistribution of the data. Today that is not a violation: Archimedes is a testnet
+product with no revenue. #1218's core observation is that **the posture changes at first
+revenue, not at first use** — the cost appears at exactly the moment the business does.
+
+Two things sharpened the problem after the issue was filed:
+
+- **#1203** routed every strategy to its own declared universe rather than a single
+  shared SPY feed, so market-data volume now scales with strategies × symbols × re-run
+  cadence.
+- There is no rate-limit SLA, no uptime guarantee and no support on the yfinance path. A
+  silent upstream change breaks every backtest at once.
+
+## Decision
+
+### 1. Backtesting and paid analysis → Tiingo
+
+Every path whose output could become something a user pays for — the generation-path
+fusion/debate panel, the portfolio backtester, the universe sweep that feeds them — moves
+to Tiingo when `MARKET_DATA_PROVIDER=tiingo`.
+
+**Starting on the Free tier, deliberately, and only for testing.** The purpose of the
+free tier here is to exercise the adapter against real vendor responses, real symbol
+routing and real error shapes before committing money. Free-tier accounts are metered;
+the adapter therefore (a) paces its own requests behind a politeness floor
+(`TIINGO_MIN_REQUEST_INTERVAL_S`, default 1.1 s) and (b) surfaces Tiingo's own HTTP 429
+as a distinct `TiingoRateLimitError` carrying the vendor's `Retry-After`.
+
+The published per-hour and per-day ceilings are **not** hardcoded anywhere in the code.
+They are account- and plan-dependent and they change; a number copied into a source file
+reads as verified when it is not. The vendor's own 429 is the authority.
+
+### 2. Explore → yfinance, with the reason stated on the page
+
+Explore is a **free, open-source data viewer over yfinance streams. Nothing on it is sold
+or commercially redistributed.** It exists to let someone look at prices and form an
+opinion. Paid analysis runs on separately licensed data, on a different feed, sourced
+independently on purpose.
+
+That paragraph is not decoration — it is the whole justification for keeping yfinance on
+this surface, so it is rendered on the page itself and pinned by
+`ui/test/explore-data-disclosure.test.js`, which fails both when the disclosure is
+removed and when the copy drifts into claiming a licence we do not hold.
+
+### 3. Never mix vendors inside one run
+
+Two guarantees, both enforced in code rather than described here:
+
+- **Flag on, no token → refuse loudly.** `MARKET_DATA_PROVIDER=tiingo` with no
+  `TIINGO_API_TOKEN` raises `TiingoAPIKeyMissingError` at provider construction. It does
+  not fall back to yfinance. A silent fallback would attach a "ran on licensed data"
+  provenance to a run that did not.
+- **A vendor's cache is not another vendor's cache.** `asset_daily_bars` rows record the
+  vendor that wrote them, and the cache reads now filter on it. Before this, flipping the
+  provider on a system with a warm cache — i.e. production — would have served yfinance
+  bars for cached symbols and Tiingo bars for uncached ones *inside a single backtest
+  panel*, with no error and no log line. The two vendors do not agree bar-for-bar. The
+  cost of the fix is a cold cache on the first run after a flip; that is the intended
+  trade.
+
+### 4. Credential naming
+
+`TIINGO_API_TOKEN` is canonical (Tiingo's own docs and its `Authorization: Token …`
+header call it a token). `TIINGO_API_KEY` — the name the adapter originally shipped with
+— is still read as a legacy alias so existing local `.env` files keep working; the
+canonical name wins when both are set. Prod: SSM SecureString at
+`/archimedes/prod/TIINGO_API_TOKEN`, owner-seeded.
+
+## The mainnet gate, stated explicitly
+
+> **A Tiingo commercial (Business) plan is a prerequisite for mainnet.** Free-tier data is
+> licensed for evaluation, not for a product that charges. Before real money moves —
+> before the first paid verdict, not "before general availability" — the paid analysis
+> path must be running on commercially licensed terms.
+
+This is deliberately written as a gate rather than a roadmap item, because the failure
+mode is silence: nothing breaks on the day we start charging, and the licensing posture
+changes with no signal from any system. The trigger is **first revenue**, and it is the
+same trigger #1218 identified.
+
+Not decided here, and honestly unresolved: the actual quoted number. #1218 asked for
+vendor comparisons (Polygon.io, Databento, Nasdaq Data Link) and volume math from the
+post-#1203 reality. **That costing exercise is not complete, and this ADR does not
+substitute a guess for it.** What this ADR settles is the *shape* — which surface uses
+which vendor, and what has to be true before money moves. The number remains #1218's
+open deliverable.
+
+## Reversible by build
+
+The point of doing this behind `MarketDataProvider` rather than by rewriting call sites:
+
+- A new vendor is **one class** implementing the interface plus **one row** in
+  `_VENDOR_PROVIDERS`.
+- Selecting it is **one env var** (`MARKET_DATA_PROVIDER`), read in one place.
+- Replacing yfinance on Explore too — the full migration this ADR deliberately does *not*
+  do today — is therefore a config change plus, at most, implementing the three methods
+  the Tiingo adapter currently declines (`get_intraday_quote`,
+  `get_intraday_quotes_batch`, `get_series`). No call site changes.
+
+So the split is a **position, not a commitment**. If Yahoo's terms tighten, if Explore
+starts monetising, or if maintaining two vendors costs more than one licence, collapsing
+to a single vendor is a small, bounded change — and this ADR should then be superseded
+rather than quietly ignored.
+
+## Alternatives considered
+
+| Option | Why not (today) |
+| --- | --- |
+| **Migrate everything to a commercial vendor now** | Pays for the Explore surface's volume — the largest symbol fan-out we have — to serve a page that generates no revenue. #1218's own anti-goal: don't migrate before the number and the revenue exist. |
+| **Stay entirely on yfinance until first revenue** | Leaves the adapter unexercised until the exact moment it is load-bearing. Free-tier testing now is how the vendor's real error shapes get discovered cheaply. |
+| **Polygon.io / Databento / Nasdaq Data Link instead of Tiingo** | Not evaluated against quoted tiers yet — that is #1218's open deliverable. Tiingo was implemented first because it was drafted (#1455) and has a usable free tier for exactly this testing purpose. The seam means this choice is not load-bearing. |
+| **Keep both vendors live and cross-check them** | That is #775's cross-check, a different mechanism for a different purpose (oracle guardrail). Using it as a general data path would double cost and force a reconciliation policy for two vendors that legitimately disagree. |
+
+## Consequences
+
+**Accepted:**
+
+- Two vendors to reason about, and a cache that cannot be shared between them.
+- A cold cache on the first run after any provider flip.
+- The Tiingo adapter covers daily bars only; intraday quotes and arbitrary-interval
+  series still require `MARKET_DATA_PROVIDER=yfinance`, so the live oracle push, the
+  VIX/S&P regime reads and the Explore history modal are **not** cutover-ready. They fail
+  loudly (`NotImplementedError`) rather than returning a plausible wrong number.
+- Tiingo has no endpoint for index (`^GSPC`, `^VIX`) or futures (`GC=F`, `CL=F`) tickers
+  on the families this adapter targets. Those symbols raise
+  `TiingoUnsupportedSymbolError` rather than silently falling back.
+
+**Gained:**
+
+- The licensing question has an answer per surface, and the answer is visible to users on
+  the surface it applies to.
+- The mainnet gate is written down where a future reader will look for it, rather than
+  living in one person's head.
+- Vendor choice stays cheap to revisit.

@@ -356,3 +356,214 @@ def test_latest_backtests_empty_ids_short_circuits() -> None:
         assert latest_backtests_by_strategy(session, []) == {}
     finally:
         session.close()
+
+
+# ── Query SHAPE: the hot read must not select artifact_json (issue #1543) ──
+#
+# The row-count tests above pin how MANY rows this reader hydrates. They say
+# nothing about how WIDE each row is, and that is the other half of the same
+# defect: the outer query selected every column of the winners, so each
+# returned row dragged its `artifact_json` blob (~349 KB/row by this repo's own
+# verified 2026-08-19 averages, quoted in scripts/archive_backtest_results.py)
+# across the wire on a path that never reads it. These tests pin the projection.
+
+
+def _capture_sql(engine) -> tuple[list[str], object]:
+    """Attach a before_cursor_execute listener; return (statements, detach)."""
+    statements: list[str] = []
+
+    def _on_exec(_conn, _cursor, statement, _params, _context, _executemany) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _on_exec)
+
+    def _detach() -> None:
+        event.remove(engine, "before_cursor_execute", _on_exec)
+
+    return statements, _detach
+
+
+def _selects_from_backtest_results(statements: list[str]) -> list[str]:
+    """The captured statements that are SELECTs against backtest_results."""
+    return [s for s in statements if s.lstrip().upper().startswith("SELECT") and "backtest_results" in s]
+
+
+def _seeded_session_with_artifacts(n_strategies: int, n_cycles: int, artifact_bytes: int = 4096):
+    """Like _seeded_session, but every row carries a non-empty artifact_json.
+
+    A NULL blob would make "the reader does not transfer it" trivially true, so
+    the fixture gives the deferred column real content to omit.
+    """
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    session = SessionLocal()
+    ids = [f"strat_{i:03d}" for i in range(n_strategies)]
+    blob = '{"results": [{"metrics": {"pad": "' + ("x" * artifact_bytes) + '"}}]}'
+    for cycle in range(n_cycles):
+        for sid in ids:
+            insert_backtest_if_missing(
+                session,
+                strategy_id=sid,
+                content_hash=f"{sid}-cycle-{cycle}",
+                result=_sample_result(sid, float(cycle)),
+                source_pipeline="run_backtests",
+                run_id=f"run-{cycle}",
+                artifact_json=blob,
+            )
+    session.commit()
+    return session, SessionLocal, ids
+
+
+def test_latest_backtests_does_not_select_artifact_json() -> None:
+    """THE GUARD (#1543): the hot read must not put artifact_json in its SELECT.
+
+    Reverting the `.options(defer(...))` in latest_backtests_by_strategy makes
+    this fail — the ORM renders `backtest_results.artifact_json` in the column
+    list again.
+    """
+    session, _SessionLocal, ids = _seeded_session_with_artifacts(n_strategies=6, n_cycles=3)
+    try:
+        session.expunge_all()
+        statements, detach = _capture_sql(session.get_bind())
+        try:
+            latest = latest_backtests_by_strategy(session, ids)
+        finally:
+            detach()
+
+        assert set(latest) == set(ids)
+
+        selects = _selects_from_backtest_results(statements)
+        # Non-vacuity: if the listener never fired (wrong engine, wrong event)
+        # the "artifact_json absent" assertion below would pass over an empty
+        # list and guard nothing. Pin that a real, recognisable ORM projection
+        # was observed before trusting its contents.
+        assert selects, "captured no SELECT against backtest_results — the listener did not fire"
+        assert any("backtest_results.sharpe_ratio" in s for s in selects), (
+            "captured no hydrating SELECT with a column list; "
+            f"the assertion below would be vacuous. statements={selects!r}"
+        )
+
+        offenders = [s for s in selects if "artifact_json" in s]
+        assert not offenders, (
+            "latest_backtests_by_strategy selected artifact_json "
+            f"(~349 KB/row) on a path that never reads it: {offenders!r}"
+        )
+    finally:
+        session.close()
+
+
+def test_sql_capture_detects_artifact_json_when_it_is_present() -> None:
+    """ADVERSARIAL CONTROL: feed the guard a query that SHOULD fail it.
+
+    The un-projected query below is exactly what latest_backtests_by_strategy
+    emitted before the fix. If `_selects_from_backtest_results` + the substring
+    check could not see artifact_json here, the test above would be a
+    tautology that passes against the unfixed code too.
+    """
+    session, _SessionLocal, ids = _seeded_session_with_artifacts(n_strategies=3, n_cycles=2)
+    try:
+        session.expunge_all()
+        statements, detach = _capture_sql(session.get_bind())
+        try:
+            # No .options(defer(...)) — the pre-fix shape.
+            session.query(BacktestResultRecord).filter(BacktestResultRecord.strategy_id.in_(ids)).all()
+        finally:
+            detach()
+
+        selects = _selects_from_backtest_results(statements)
+        assert selects, "captured no SELECT against backtest_results"
+        assert any("artifact_json" in s for s in selects), (
+            "the detector failed to see artifact_json in an un-projected SELECT, "
+            "so it cannot prove the projected one omits it"
+        )
+    finally:
+        session.close()
+
+
+def test_deferred_artifact_json_does_not_change_what_callers_read() -> None:
+    """Projection is a transfer-size change, not a data change.
+
+    Every field to_backtest_result() exposes must survive, equity_curve
+    (deliberately NOT deferred — api/risk_routes.py consumes it off the
+    provider cache) included, and reading them must emit no follow-up SQL.
+    """
+    session, _SessionLocal, ids = _seeded_session_with_artifacts(n_strategies=4, n_cycles=3)
+    try:
+        session.expunge_all()
+        latest = latest_backtests_by_strategy(session, ids)
+
+        statements, detach = _capture_sql(session.get_bind())
+        try:
+            results = {sid: row.to_backtest_result() for sid, row in latest.items()}
+        finally:
+            detach()
+
+        assert not _selects_from_backtest_results(statements), (
+            "to_backtest_result() triggered a lazy load — the deferred column "
+            "is being touched on the hot path after all"
+        )
+        for sid in ids:
+            res = results[sid]
+            assert res.strategy_id == sid
+            assert res.sharpe_ratio == 2.0  # newest cycle
+            assert res.equity_curve == [100000, 101000]
+            assert res.monthly_returns == [0.01]
+            assert res.backtest_engine == "backtrader"
+            assert res.backtest_start == date(2020, 1, 1)
+    finally:
+        session.close()
+
+
+def test_deferred_artifact_json_is_still_reachable_in_session() -> None:
+    """Deferral must not make the column unreadable — only unfetched by default.
+
+    `defer` (not `defer(..., raiseload=True)`) is the deliberate choice: a
+    caller that does touch the attribute inside the session gets one extra
+    SELECT rather than an exception that strategy_provider._load_backtests
+    would swallow into "no backtests at all".
+    """
+    session, _SessionLocal, ids = _seeded_session_with_artifacts(n_strategies=2, n_cycles=2)
+    try:
+        session.expunge_all()
+        latest = latest_backtests_by_strategy(session, ids)
+        row = latest[ids[0]]
+        assert row.artifact_json is not None
+        assert "results" in row.artifact_json
+    finally:
+        session.close()
+
+
+def test_provider_backtest_load_does_not_select_artifact_json(tmp_path, monkeypatch) -> None:
+    """The production hot path, not just the repository helper.
+
+    LocalStrategyProvider._load_backtests is what runs on every
+    default_provider() construction (issue #1543's amplifier). Mocked at the
+    DB boundary only — the session factory — so the real provider method,
+    the real repository query and the real ORM mapping all execute.
+    """
+    from archimedes.services import strategy_provider as sp
+
+    session, SessionLocal, ids = _seeded_session_with_artifacts(n_strategies=5, n_cycles=3)
+    engine = session.get_bind()
+    session.close()
+
+    monkeypatch.setattr(sp, "get_session", SessionLocal)
+
+    # A non-existent strategies dir makes refresh() return early without any DB
+    # access, so construction cannot pollute the capture below.
+    provider = sp.LocalStrategyProvider(tmp_path / "no-such-strategies-dir")
+
+    statements, detach = _capture_sql(engine)
+    try:
+        loaded = provider._load_backtests(ids)
+    finally:
+        detach()
+
+    assert set(loaded) == set(ids)
+    selects = _selects_from_backtest_results(statements)
+    assert selects, "provider hot path emitted no SELECT against backtest_results"
+    assert any("backtest_results.sharpe_ratio" in s for s in selects), f"no hydrating SELECT captured: {selects!r}"
+    assert not [s for s in selects if "artifact_json" in s], (
+        f"provider hot path still transfers artifact_json: {[s for s in selects if 'artifact_json' in s]!r}"
+    )

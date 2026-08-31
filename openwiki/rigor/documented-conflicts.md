@@ -28,6 +28,44 @@ generated: { by: "claude-code", at: "2026-08-31T05:55:43.566Z" }
 
 # Conflicts inside the quant docs
 
+> ## ⚠ RESOLVED 2026-08-31 — hand-annotated, not regenerated
+>
+> *This block is a human edit to a generated page, added by
+> [#1598](https://github.com/a-apin/archimedes/issues/1598). Everything below it is the
+> generator's output, preserved verbatim as the evidence record of what the 2026-08-31
+> 05:55 run found.*
+>
+> **All seven conflicts below have been reconciled in `docs/quant/`.** Each was resolved
+> against the live code and the ratified ADR
+> [`num-trials-self-containment.md`](../../docs/adr/num-trials-self-containment.md) — the
+> source-of-truth order is **live code > ratified ADR > newer doc** — and each fix is
+> annotated and dated where it lands in the source doc. In summary:
+>
+> | # | Resolution |
+> |---|---|
+> | 1 | **Methodology was right.** `passes_all` reads a `rigor_profiles._PROFILES` row, never a literal; 0.90 is the level-1 (Conservative) `dsr_p_min` and level 1 *is* the badge bar. `admission-criteria.md`'s table is relabelled as that rung and the always-on floors are separated from the adjustable ones. |
+> | 2 | **`num_trials = 1` on the curated path** — hard-coded at `selection_bias_routes.py:419`, generated path uses the debate pool size. `len(strategy_library)` was the #770 convention, reversed 2026-07-09. The promotion flow is corrected. |
+> | 3 | The sweep table now shows **both bars side by side**; the `num_trials = 22` row at p = 0.941 clears 0.90. The sweep is additionally moot for a curated strategy graded at `num_trials = 1`. |
+> | 4 | The three ✅/❌ headings are **removed**; the stranded Faber sentence is gone from the Moreira–Muir entry; a standing "a heading is not a verdict" rule was added. |
+> | 5 | **0.612 is a DSR p-value, not an OOS Sharpe.** Faber's OOS Sharpe on the same pull is 0.930, which clears both OOS thresholds (`> 0`, `OOS/IS ≥ 0.5`). The verdict stands; the reason was misattributed. |
+> | 6 | The two findings notes are **vintage-stamped** as 2026-06-11 / 22-of-23 measurements; the shelf's live-count instruction stands and is now the only count. |
+> | 7 | Both pass counts **retracted in place** — `CLAUDE.md`'s hard rule; the corrected count is **unestablished**. |
+>
+> **The machine claims file `openwiki/.claims/rigor/documented-conflicts.json` was NOT
+> updated and is now stale.** Its evidence anchors are content-addressed
+> (`repo-lines-v1:sha256:…`) over line ranges of the very files this PR changed, and its
+> `pageVersion` is a sha256 of this page. Hand-editing those hashes would produce a file
+> that *looks* verified and is not — worse than a stale one. It needs an OpenWiki
+> regeneration run, tracked as follow-up on #1598.
+>
+> **The "not resolvable from docs" note below is now answered, and its lesson is the
+> durable one:** items 1, 2 and 5 needed the implementing code, which the run's
+> `.openwikiignore` allow-list deliberately excluded. A doc-only slice can find that two
+> documents disagree; it cannot find that both are wrong. See Önder's eighth conflict on
+> #1598 — a stale `N_eff` formula that every doc in the slice reproduced *consistently*,
+> and which only a check against the code could catch (fixed separately in
+> [#1614](https://github.com/a-apin/archimedes/pull/1614)).
+
 This page exists so a reader does not resolve a contradiction by trusting whichever page
 they happened to open first. Everything below is a disagreement **inside this slice**,
 found by reading all eight documents together.
