@@ -97,16 +97,18 @@ test('the skeleton comes down without waiting for the deployability gate', () =>
     false,
     `the gate call must not be awaited before the rows paint; awaited: ${members.trim()}`,
   )
-  // The gate still runs, still lands, and still reports its own errors.
+  // The gate still runs, still lands, and still reports its own errors — this
+  // is a reordering, not a removal.
   assert.match(strategies, /apiGet\('\/api\/selection-bias\/gate'\)/)
-  // It still lands, and its in-flight flag is still cleared on BOTH outcomes —
-  // a rejected gate must show the error banner, never a permanent "checking…".
+  assert.match(strategies, /setGateError\(/)
+  // Its in-flight flag is cleared on BOTH outcomes: a rejected gate must reach
+  // the error banner, never leave every chip on a permanent "checking…". The
+  // `.catch` also stops a now-detached promise becoming an unhandled rejection.
   assert.match(strategies, /applyGate\s*\n?\s*\.catch\(/)
   assert.match(strategies, /\.finally\(\(\) => \{\s*\n\s*if \(current\(\)\) setGateLoading\(false\)/)
-  // And the rows' own skeleton is still released unconditionally — a throw in
-  // any of the three row handlers must not leave the skeleton up forever.
+  // And the rows' own skeleton is released unconditionally — a throw in any of
+  // the three row handlers must not leave the skeleton up forever.
   assert.match(strategies, /\} finally \{\s*\n\s*if \(current\(\)\) setLoading\(false\)/)
-  assert.match(strategies, /setGateError\(/)
 })
 
 // A late response from a superseded load() must not overwrite a newer one —
