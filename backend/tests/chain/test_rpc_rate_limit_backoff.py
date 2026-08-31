@@ -53,6 +53,7 @@ import yarl
 from aiohttp import ClientResponseError, RequestInfo
 from archimedes.chain.client import BoundedAsyncHTTPProvider, chain_client
 from archimedes.chain.rate_limit import (
+    MIN_BACKOFF_SECONDS,
     RateLimitBackoff,
     RpcRateLimited,
     retry_after_seconds,
@@ -174,6 +175,39 @@ class TestTheBackoffPolicy:
         clock.advance(5.0)
         assert backoff.remaining() == 0.0
 
+    def test_a_near_zero_jitter_draw_still_pauses(self):
+        """MUTATION: drop the MIN_BACKOFF_SECONDS floor.
+
+        ``random()`` is allowed to return ~0, and a full-jitter draw of ~0 on a
+        throttled endpoint is an immediate retry wearing a backoff's name — the
+        amplification this module exists to remove. The floor also makes a
+        misconfigured ``base_seconds=0`` degrade to slow rather than to hammer.
+        """
+        broken = RateLimitBackoff(base_seconds=0.0, max_seconds=0.0, clock=_FakeClock(), jitter=lambda: 0.0)
+        assert broken.note_rate_limited() >= MIN_BACKOFF_SECONDS
+
+        drew_zero = RateLimitBackoff(base_seconds=1.0, max_seconds=4.0, clock=_FakeClock(), jitter=lambda: 0.0)
+        assert drew_zero.note_rate_limited() >= MIN_BACKOFF_SECONDS
+
+    def test_a_long_outage_does_not_overflow_the_doubling(self):
+        """ADVERSARIAL: the input that SHOULD break the exponent.
+
+        ``consecutive`` only resets on a completed RESPONSE, so a sustained
+        throttling window drives it without bound. ``base * 2**consecutive``
+        computed before the cap raises ``OverflowError: int too large to convert
+        to float`` somewhere past 1024 — the backoff crashing the very call it
+        was added to protect, and only after a long outage, which is exactly
+        when nobody wants to discover it.
+        """
+        clock = _FakeClock()
+        backoff = RateLimitBackoff(base_seconds=0.25, max_seconds=4.0, clock=clock, jitter=lambda: 1.0)
+
+        for _ in range(5_000):
+            delay = backoff.note_rate_limited()
+
+        assert backoff.consecutive == 5_000
+        assert delay == pytest.approx(4.0), "the window escaped its cap"
+
     def test_only_a_completed_response_clears_the_backoff(self):
         """MUTATION: reset on any non-429 outcome.
 
@@ -210,6 +244,18 @@ class TestRetryAfterParsing:
 
     def test_a_past_date_is_zero_never_negative(self):
         assert retry_after_seconds({"Retry-After": self._HTTP_DATE}, now=self._HTTP_DATE_EPOCH + 600) == 0.0
+
+    @pytest.mark.parametrize("raw", ["inf", "-inf", "Infinity", "nan"])
+    def test_a_non_finite_delay_is_refused(self, raw):
+        """ADVERSARIAL: the header value that SHOULD fail the parser.
+
+        ``float("inf")`` parses. Honouring it would set a cooldown that never
+        expires, and every RPC in the process would fail fast FOREVER off one
+        malformed response header — a permanent self-inflicted outage from a
+        byte we do not control. ``nan`` is refused for the same reason: it
+        compares false against everything, so it would silently become 0.
+        """
+        assert retry_after_seconds({"Retry-After": raw}) is None
 
     @pytest.mark.parametrize("headers", [None, {}, {"Retry-After": "soon"}, {"X-Other": "5"}])
     def test_unparseable_or_absent_yields_none_not_a_guess(self, headers):

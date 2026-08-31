@@ -55,6 +55,7 @@ fleet from retrying on the same schedule.
 from __future__ import annotations
 
 import logging
+import math
 import random
 import time
 from collections.abc import Callable, Mapping
@@ -79,6 +80,19 @@ DEFAULT_BASE_BACKOFF_SECONDS = 0.25
 # would only ever be spent failing fast in the cooldown check rather than
 # actually waiting — the cap keeps the number meaningful.
 DEFAULT_MAX_BACKOFF_SECONDS = 4.0
+
+# Floor on any returned delay. A full-jitter draw near zero is a legitimate
+# outcome of the policy and an illegitimate thing to do to a throttled endpoint:
+# it is an immediate retry wearing a backoff's name. 10ms is far below anything
+# a caller notices and far above zero.
+MIN_BACKOFF_SECONDS = 0.01
+
+# Cap on the doubling exponent, applied before the multiply. Purely defensive
+# arithmetic: the window is capped at ``max_seconds`` anyway, but computing
+# ``base * 2**consecutive`` first would raise OverflowError once ``consecutive``
+# passes ~1024, and ``consecutive`` is unbounded during a long outage because
+# only a completed response resets it.
+_MAX_DOUBLINGS = 32
 
 
 class RpcRateLimited(ClientError):
@@ -113,9 +127,15 @@ def retry_after_seconds(headers: Mapping[str, Any] | None, *, now: float | None 
         return None
     text = str(raw).strip()
     try:
-        return max(0.0, float(text))
+        seconds = float(text)
     except ValueError:
-        pass
+        seconds = None
+    if seconds is not None:
+        # ``inf`` and ``nan`` parse as floats and are not delays. An infinite
+        # value would set a cooldown that never expires, and every RPC in this
+        # process would fail fast forever off one malformed header — a
+        # permanent self-inflicted outage from a byte we do not control.
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     try:
         when = parsedate_to_datetime(text)
     except (TypeError, ValueError):
@@ -173,12 +193,25 @@ class RateLimitBackoff:
         jittered increment, so we never come back earlier than we were told and
         never come back at the same instant as every other task that was told
         the same thing.
+
+        The returned delay is never below :data:`MIN_BACKOFF_SECONDS`. A full
+        jitter draw can legitimately land near zero, and a near-zero backoff on
+        a throttled endpoint is an immediate retry — the amplification this
+        module exists to remove. The floor also makes a misconfigured
+        ``base_seconds=0`` degrade to "slow" rather than to "hammer".
         """
         self._consecutive += 1
-        window = min(self._max_seconds, self._base_seconds * (2 ** (self._consecutive - 1)))
-        delay = self._jitter() * window
         if retry_after is not None:
             delay = retry_after + self._jitter() * self._base_seconds
+        else:
+            # The exponent is clamped before it reaches float arithmetic.
+            # ``consecutive`` only resets on a completed response, so a long
+            # throttling window drives it into the thousands, and
+            # ``base * 2**1024`` raises OverflowError rather than returning a
+            # large float — the backoff would crash the very call it protects.
+            window = min(self._max_seconds, self._base_seconds * (2 ** min(self._consecutive - 1, _MAX_DOUBLINGS)))
+            delay = self._jitter() * window
+        delay = max(MIN_BACKOFF_SECONDS, delay)
         self._cooldown_until = self._clock() + delay
         return delay
 
