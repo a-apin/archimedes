@@ -53,7 +53,9 @@ def _timed(label: str, fn) -> dict[str, Any]:
             "rss_mb": _rss_mb(),
             "detail": value,
         }
-    except BaseException as exc:
+    except Exception as exc:
+        # Exception, not BaseException: a probe step's failure is data, but
+        # KeyboardInterrupt/SystemExit must still tear the probe down.
         return {
             "step": label,
             "ok": False,
