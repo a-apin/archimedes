@@ -146,6 +146,32 @@ Each `mark`:
 | `granularity` | str | `raw` (a 15-minute mark) or `hourly` (a rolled-up survivor of the 7-day tier). |
 | `prices` | object | The prices **actually observed**, keyed by vendor ticker. A leg too stale to use is **absent** rather than carried at a stale price — so a partially-frozen mixed universe (a closed equity leg beside a live crypto one) stays recoverable instead of collapsing into one opaque number. |
 
+#### Known limitation: mixed-universe cadence, and a non-monotonic knob
+
+`ts` is both the honesty stamp *and* the row's dedupe key
+(`uq_paper_marks_dep_ts_gran`). On a MIXED equity+crypto universe those two
+jobs disagree: for as long as a frozen equity leg is still inside the staleness
+window it pins `ts = min(fresh_bar_times)` to its last bar, and every later
+tick dedupes against the row already written at that timestamp. Roughly **an
+hour of crypto marks is dropped at each equity close** (at the 60-minute
+default), after which the equity leg ages out and the cadence resumes.
+
+A dropped mark is a **gap**, never a wrong number — nothing stale is ever
+written — but a client charting a mixed-universe deployment will see the tail
+pause after each equity close, and should not read that as a fetch failure.
+
+The knob is therefore **non-monotonic** on a mixed universe: **raising**
+`PAPER_MARKS_MAX_STALENESS_MINUTES` produces **fewer** marks, because it widens
+the window in which the frozen leg pins the stamp. An operator reaching for the
+tolerance dial to fix stalled marks would make it worse. Pinned by
+`test_a_mixed_universe_loses_marks_while_a_frozen_leg_pins_the_stamp`.
+
+Splitting the dedupe key from the stamp needs a second timestamp column and a
+migration (the constraint is on the stored `ts`); stamping the *newest* leg
+instead is rejected — it would buy cadence by letting the portfolio claim to be
+as current as its freshest leg, which is the one thing `min` exists to prevent.
+Tracked as a marks-v2 follow-up.
+
 ```bash
 curl -s -b /tmp/session.jar \
   "https://archimedes-arc.com/api/paper/deployments/<deployment_id>/marks?limit=100"
