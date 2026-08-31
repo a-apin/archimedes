@@ -7,13 +7,23 @@ import PolicyBanner from "./PolicyBanner";
 // statement-to-file map. The two claims most likely to rot, and the code that
 // currently makes them true:
 //
-//   - "no real funds move" — PAYMENTS_DRY_RUN is pinned "true" in the live
-//     task definition (infra/ecs.tf) and defaults to "true" in code
-//     (backend/archimedes/main.py, services/generation_payment.py). If that
-//     flag is ever flipped, THIS PAGE IS PART OF THAT CHANGE.
-//   - the generation limits (10/account/day, 20/IP/day) — defaults in
-//     backend/archimedes/services/generation_quota.py and .env.example. The
-//     page says "currently" and names them as defaults rather than promising
+//   - the payment position, which is SPLIT and must stay split on the page.
+//     The generation paywall SETTLES FOR REAL: infra/ecs.tf pins
+//     GENERATION_PAYMENT_REQUIRED="true", GENERATION_PAYMENTS_DRY_RUN="false"
+//     and GENERATION_PRICE_USD="2.00" in the live task definition, so
+//     services/generation_payment.py runs its verify+settle path through
+//     Circle's facilitator and test USDC really moves. The MARKETPLACE rail is
+//     the one still switched off: PAYMENTS_DRY_RUN="true" (same file;
+//     backend/archimedes/main.py's default) keeps marketplace/settlement.py on
+//     dry_run_noop pending the custody migration (#975). An earlier draft of
+//     this page said settlement was off in production full stop — that was
+//     false the day GENERATION_PAYMENTS_DRY_RUN flipped, and it is exactly the
+//     claim a test now pins. If either flag moves, THIS PAGE IS PART OF THAT
+//     CHANGE.
+//   - the generation price and limits ($2.00; 10/account/day, 20/IP/day) —
+//     defaults in backend/archimedes/services/generation_payment.py and
+//     services/generation_quota.py, pinned in infra/ecs.tf. The page says
+//     "currently" and names them as operational settings rather than promising
 //     them, so a tuning change doesn't instantly make the page false.
 //
 // One deliberate non-claim: on-chain activity itself is NOT simulated.
@@ -50,17 +60,35 @@ export default function Terms() {
 			</section>
 
 			<section>
-				<h2>No real money changes hands</h2>
+				<h2>Test assets only — but generation is really charged</h2>
 				<p>
 					This is a testnet service. The assets are test assets with no monetary
 					value, obtained free from a faucet.
 				</p>
 				<p>
-					The payment flow you may encounter — a price quote, a payment header,
-					a receipt — runs end to end so it can be tested, but settlement is
-					switched off in production. Nothing is charged, nothing is collected,
-					and no balance is moved. If that ever changes, it will be an announced
-					change with this page updated first, not a silent flip.
+					<strong>
+						Generating a strategy is behind a paywall, and that paywall settles
+						for real.
+					</strong>{" "}
+					Each generation currently costs $2.00 in testnet USDC. You sign a
+					payment authorisation with the wallet linked to your account, we verify
+					it and settle it through Circle&rsquo;s payment facilitator, and the
+					test USDC leaves your wallet and arrives in ours. That is a real
+					transfer, not a simulated one, and we keep a receipt of it you can read
+					back in the app. Because the currency is test USDC you obtained free
+					from a faucet, nothing of monetary value leaves you — but do not read
+					&ldquo;testnet&rdquo; as &ldquo;the payment step is fake&rdquo;. The
+					reference on your receipt is Circle&rsquo;s settlement reference, not a
+					chain transaction hash; Circle performs the on-chain settlement on its
+					own schedule.
+				</p>
+				<p>
+					The <em>other</em> payment path is the one that is switched off. Buying
+					or subscribing to a strategy in the marketplace runs end to end so it
+					can be tested — a price quote, a payment header, a receipt — but in
+					production nothing is verified and nothing settles there, and no
+					balance moves. If that ever changes, it will be an announced change
+					with this page updated first, not a silent flip.
 				</p>
 				<p>
 					One thing that is <em>not</em> simulated: transactions on the testnet
@@ -121,11 +149,21 @@ export default function Terms() {
 			<section>
 				<h2>Limits and fair use</h2>
 				<p>
-					Generation costs us real compute, so it is capped. Currently the
-					defaults are ten generations per account per day and twenty per network
-					address per day, and individual endpoints are rate limited on top of
-					that. These numbers are operational settings, not entitlements — we may
-					change them, and we will not treat a limit as a promise.
+					Generation costs us real compute, so it is both priced and capped.{" "}
+					<strong>
+						Each generation currently costs $2.00 in testnet USDC, charged to
+						your linked wallet before the work starts.
+					</strong>{" "}
+					The price is an operational setting we may change; when we do, the
+					quote you are shown before you pay is the price that applies.
+				</p>
+				<p>
+					On top of the price there are caps. Currently the defaults are ten
+					generations per account per day and twenty per network address per day,
+					and individual endpoints are rate limited as well. These numbers are
+					operational settings, not entitlements — we may change them, and we
+					will not treat a limit as a promise. A request that is over the cap is
+					refused before you are asked to pay, never after.
 				</p>
 				<p>
 					Do not try to get around the limits: creating extra accounts for that
@@ -261,8 +299,16 @@ export default function Terms() {
 			<section>
 				<h2>Contact</h2>
 				<p>
-					Questions about these terms go to the project&rsquo;s public issue
-					tracker:{" "}
+					Questions about these terms, and anything involving your own account,
+					go to{" "}
+					<a href="mailto:privacy@archimedes-arc.com">
+						privacy@archimedes-arc.com
+					</a>{" "}
+					— a private mailbox we read.
+				</p>
+				<p>
+					Anything you would rather raise in the open, including a mistake on
+					this page, can go to the project&rsquo;s public issue tracker instead:{" "}
 					<a
 						href="https://github.com/a-apin/archimedes/issues"
 						target="_blank"
@@ -270,7 +316,7 @@ export default function Terms() {
 					>
 						github.com/a-apin/archimedes/issues
 					</a>
-					.
+					. Please keep personal details out of it.
 				</p>
 			</section>
 		</div>

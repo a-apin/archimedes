@@ -177,9 +177,17 @@ test("external links on the policy pages are safe and point at the real repo", (
 		["Privacy", privacy],
 		["Terms", terms],
 	]) {
-		for (const [match] of page.matchAll(/<a[\s\S]*?href="(https?:[^"]*)"[\s\S]*?>/g)) {
+		// Bounded to a single opening tag ([^>]* rather than [\s\S]*?). The lazy
+		// cross-tag form let a non-https anchor — the new mailto: contact links
+		// — be swallowed into the following https match, so an unsafe link could
+		// have ridden along inside a match that passed on its neighbour's rel.
+		let external = 0;
+		for (const [match] of page.matchAll(/<a\b[^>]*href="(https?:[^"]*)"[^>]*>/g)) {
 			assert.match(match, /rel="noopener noreferrer"/, `${name}: external link missing rel=noopener`);
+			external += 1;
 		}
+		// Guards the guard: a regex that stopped matching would pass vacuously.
+		assert.ok(external >= 1, `${name}: expected at least one external link to check`);
 		// a-apin/archimedes is the canonical repo (README.md, CLAUDE.md). The old
 		// pre-rename name still redirects, so a stale link would not 404 — which
 		// is exactly why it needs pinning rather than eyeballing.
@@ -200,17 +208,137 @@ test("the privacy policy discloses the things it would be convenient to omit", (
 	assert.match(privacy, /no delete-my-account button/i, "the absent deletion path must be stated");
 	assert.match(privacy, /public and permanent/i, "the on-chain permanence caveat must be present");
 	assert.match(privacy, /pseudonymous, not anonymous/i);
-	assert.match(privacy, /Google Fonts/, "the one third-party browser request must be disclosed");
+	assert.match(privacy, /Google Fonts/, "the font-CDN link in index.html must be disclosed either way");
 	assert.match(privacy, /do not sell your data/i);
 });
 
-test("the terms state the testnet, no-advice and no-real-funds position", () => {
+// The draft called Google Fonts "the only third-party request the site makes
+// from your browser". Two things were wrong with that. It is not the only one
+// — circle-wallet.js and circle-tx-executor.js call modular-sdk.circle.com and
+// config.js points the browser at rpc.testnet.arc.network — and it is not a
+// request that succeeds: the CSP served by nginx/nginx.conf is
+// `style-src 'self' 'unsafe-inline'; font-src 'self' data:`, which allows
+// neither fonts.googleapis.com nor fonts.gstatic.com, so the stylesheet and
+// the font files are refused. Describing a blocked request as the site's one
+// third-party contact was wrong in both directions at once.
+test("the third-party disclosure matches the CSP that is actually served", () => {
+	const path = sectionBody(privacy, "Who else is in the path");
+	assert.match(path, /Google Fonts/, "the font-CDN link must still be disclosed");
+	assert.match(path, /linked, but blocked/i, "the bullet must lead with the fact that the request is refused");
+	assert.doesNotMatch(
+		path,
+		/loads its typefaces from/i,
+		"false: style-src/font-src are 'self' only, so the font CDN never loads",
+	);
+	assert.match(path, /Arc testnet RPC endpoint/i, "the browser's own RPC calls must be disclosed");
+	assert.match(path, /Circle/, "the browser's Circle SDK calls must be disclosed");
+	assert.doesNotMatch(
+		privacy,
+		/only third-party request/i,
+		"false: Circle's SDK and the Arc RPC are both called from the browser",
+	);
+});
+
+// Generation is charged for real (see the terms guard above), so the record
+// that charge leaves is collected personal data and belongs on this page.
+// Grounded in backend/archimedes/models/payment_receipt.py.
+test("the privacy policy discloses the payment records the paywall creates", () => {
+	const receipts = sectionBody(privacy, "When you pay for a generation");
+	assert.match(receipts, /payment_receipts/, "the table must be named, as archimedes_vid is");
+	assert.match(receipts, /wallet address that paid/i);
+	assert.match(receipts, /settlement reference/i);
+	assert.match(receipts, /not an on-chain transaction hash/i, "settlement_ref is a Circle ref, not a tx hash");
+	// There is no generation_credits table anywhere in this repo. Naming one
+	// would be exactly the kind of plausible-sounding invention these pages
+	// exist to not contain.
+	assert.doesNotMatch(privacy, /generation_credits/, "no such table exists — do not disclose an invented one");
+});
+
+// #1429 makes user_profiles CASCADE on account deletion: the row holding the
+// Fernet-encrypted contact email is ERASED, not detached. The draft said the
+// database "detaches your strategies and profile from you rather than erase
+// them", which describes the pre-#1429 SET NULL for a row that is about to
+// stop behaving that way. The page now splits erase-vs-detach the way the
+// policy actually does.
+test("the deletion section splits what is erased from what is detached", () => {
+	const deletion = sectionBody(privacy, "How long we keep things, and how to get them deleted");
+	assert.match(deletion, /profile row/i, "the encrypted-email row's fate must be stated explicitly");
+	assert.match(deletion, /detached from you rather than destroyed/i, "the SET NULL tables must be described");
+	assert.match(deletion, /payment receipts/i, "receipts must be named in what deletion removes");
+	assert.doesNotMatch(
+		deletion,
+		/detach your strategies and profile/i,
+		"the profile row is erased, not detached (#1429 cascade policy)",
+	);
+});
+
+// #1460 stood up privacy@archimedes-arc.com (SES receipt rule -> SNS -> the
+// owner's inbox). Before it existed, a public issue tracker was the only
+// honest answer; it is no longer an acceptable sole route for a request that
+// requires naming your account. The tracker stays as the open alternative.
+test("both pages route account and privacy requests to the private mailbox", () => {
+	for (const [name, page] of [
+		["Privacy", privacy],
+		["Terms", terms],
+	]) {
+		assert.match(page, /mailto:privacy@archimedes-arc\.com/, `${name} must offer the private mailbox`);
+		assert.match(
+			page,
+			/github\.com\/a-apin\/archimedes\/issues/,
+			`${name} must keep the tracker as an alternative, not drop it`,
+		);
+	}
+	assert.match(
+		sectionBody(privacy, "Contact"),
+		/do not post personal details/i,
+		"the tracker must still be labelled public",
+	);
+});
+
+test("the terms state the testnet and no-advice position", () => {
 	assert.match(terms, /testnet/i);
 	assert.match(terms, /not investment advice/i);
-	assert.match(terms, /settlement is\s+switched off in production/i);
 	assert.match(terms, /Do not connect a wallet holding assets you care about/i);
 	assert.match(terms, /as is/i);
 	assert.match(terms, /Limitation of liability/i);
+});
+
+// The payment position is SPLIT, and the page must carry both halves.
+//
+// This test replaces one that pinned the opposite claim. The draft said
+// "settlement is switched off in production. Nothing is charged, nothing is
+// collected, and no balance is moved" — and a guard held that sentence in
+// place. It was false: infra/ecs.tf pins GENERATION_PAYMENT_REQUIRED="true",
+// GENERATION_PAYMENTS_DRY_RUN="false" and GENERATION_PRICE_USD="2.00" in the
+// live task definition, so services/generation_payment.py runs its real
+// verify+settle path through Circle's facilitator and test USDC actually
+// moves from the payer to the platform wallet. Only the MARKETPLACE rail is
+// still dry (PAYMENTS_DRY_RUN="true").
+//
+// A terms page telling people they are not being charged while they are being
+// charged is the most expensive sentence on either page, so both directions
+// are pinned: the charge must be disclosed, AND the marketplace half must not
+// be dropped in the correction (which would over-claim the other way).
+test("the terms disclose the real generation charge without over-claiming the marketplace rail", () => {
+	assert.match(terms, /\$2\.00 in testnet USDC/, "the generation price must appear on the page");
+	// \s+ throughout: these read the raw JSX source, where prose wraps mid-phrase.
+	assert.match(terms, /settles\s+for real/i, "the paywall must be described as really settling");
+	assert.doesNotMatch(
+		terms,
+		/settlement is\s+switched off in production/i,
+		"blanket 'settlement is off in production' is false — the generation rail settles",
+	);
+	assert.doesNotMatch(terms, /Nothing is charged/i, "false: each generation is charged $2.00");
+
+	// The other half: marketplace settlement really is off, and saying so is
+	// not optional once the page starts talking about payments that work.
+	assert.match(terms, /marketplace/i, "the marketplace rail must still be named");
+	assert.match(terms, /nothing settles there/i, "the marketplace rail must still be disclosed as dry");
+
+	// The price belongs where a reader looks for what things cost, not only in
+	// the payments section.
+	const limits = sectionBody(terms, "Limits and fair use");
+	assert.match(limits, /\$2\.00 in testnet USDC/, "the fair-use section must name the price too");
 });
 
 // Governing law was the owner's call, and he made it (2026-08-21): Illinois.

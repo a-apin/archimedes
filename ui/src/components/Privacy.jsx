@@ -124,6 +124,45 @@ export default function Privacy() {
 			</section>
 
 			<section>
+				<h2>When you pay for a generation</h2>
+				<p>
+					Generating a strategy is charged to your linked wallet — currently
+					$2.00 in testnet USDC — and that payment really settles. The terms
+					describe what that means for your funds; this section is about the
+					record it leaves.
+				</p>
+				<p>
+					Every settled payment is written to a{" "}
+					<code>payment_receipts</code> row and kept, so that you can look back
+					at what you were charged. Each row holds:
+				</p>
+				<ul>
+					<li>your account id, and the wallet address that paid;</li>
+					<li>
+						the amount and the price it was charged at, and the network it was
+						charged on;
+					</li>
+					<li>
+						the settlement reference our payment provider returned — an
+						identifier for the transfer, not an on-chain transaction hash;
+					</li>
+					<li>
+						which generation the payment funded, and when the payment settled.
+					</li>
+				</ul>
+				<p>
+					You can read your own receipts back in the app, and no other account
+					can see them. These rows have no expiry date — they persist until your
+					account is deleted, and removing them is part of the deletion process
+					described below. One honest limitation: writing the receipt is never
+					allowed to fail or delay the generation you paid for, so if our
+					database is unavailable at that moment a payment can settle without a
+					receipt row. A missing receipt is a gap in the record, not evidence
+					that no charge happened.
+				</p>
+			</section>
+
+			<section>
 				<h2>What you make on Archimedes</h2>
 				<p>
 					We store what you put in and what comes out: the brief you write, the
@@ -344,11 +383,23 @@ export default function Privacy() {
 						described above.
 					</li>
 					<li>
-						<strong>Google Fonts.</strong> The site loads its typefaces from
-						Google&rsquo;s font CDN, which means your browser makes a request to
-						Google — and Google can see your IP address and user-agent — when a
-						page loads. This is the only third-party request the site makes from
-						your browser, and it exists for styling, not measurement.
+						<strong>The Arc testnet network.</strong> Your browser talks
+						directly to the Arc testnet RPC endpoint and, when you follow a
+						transaction link, to the Arc block explorer. Those services see your
+						IP address and what you asked the chain about.
+					</li>
+					<li>
+						<strong>Google Fonts — linked, but blocked.</strong> The page markup
+						still asks for typefaces from Google&rsquo;s font CDN, and we would
+						rather delete that line than explain it. As the site is served today
+						our content security policy does not permit it: styles and font
+						files may load only from our own origin, so both the stylesheet and
+						the fonts are refused before they are fetched and the page renders
+						in the fallback typefaces already on your device. What can still
+						reach Google is the connection hint the markup opens ahead of that
+						blocked load — a network connection Google may see your IP address
+						from, carrying nothing about the page. Removing the link is tracked
+						separately; until it is gone, this is the accurate description.
 					</li>
 				</ul>
 				<p>
@@ -391,8 +442,8 @@ export default function Privacy() {
 				<p>
 					<strong>Everything else persists until you ask us to delete it.</strong>{" "}
 					Your account, your strategies, every generation attempt including the
-					rejected ones, your profile, and stored reasoning traces have no expiry
-					date today.
+					rejected ones, your profile, your payment receipts, and stored
+					reasoning traces have no expiry date today.
 				</p>
 				<p>
 					We are describing what we have rather than a policy we have not built:{" "}
@@ -401,11 +452,24 @@ export default function Privacy() {
 					</strong>{" "}
 					Deletion today is manual, done by a person, on request. Ask through the
 					contact route below and we will remove your account and everything
-					attached to it. Worth knowing: deleting the account record automatically
-					removes your sessions, your linked sign-in providers and your linked
-					wallets, but the database is built to detach your strategies and profile
-					from you rather than erase them — so say if you want those removed too,
-					and they will be.
+					attached to it.
+				</p>
+				<p>
+					It is worth being precise about what &ldquo;everything attached&rdquo;
+					means, because two kinds of record are handled differently. Records
+					that exist only for you are erased: your sessions, your linked sign-in
+					providers, your linked wallets, your profile row — which is the one
+					holding your encrypted contact email — your paper-trading history, and
+					your payment receipts. Records that other accounts can reference by id
+					are detached from you rather than destroyed: your strategies, their
+					passports, the generation records behind them, and vault descriptions
+					keep existing with the link to you removed, so that deleting your
+					account cannot break someone else&rsquo;s. If you want those erased as
+					well rather than detached, say so and they will be. Some of this the
+					database now does by itself when the account row goes and some of it is
+					still done by hand as part of the request — which is which is an
+					implementation detail we are actively closing, and it does not change
+					what you end up with.
 				</p>
 				<p>
 					Two limits, stated up front: published records cannot be deleted by
@@ -457,8 +521,17 @@ export default function Privacy() {
 			<section>
 				<h2>Contact</h2>
 				<p>
-					Privacy questions, and deletion or access requests, go to the public
-					issue tracker for the project:{" "}
+					Privacy questions, and deletion or access requests, go to{" "}
+					<a href="mailto:privacy@archimedes-arc.com">
+						privacy@archimedes-arc.com
+					</a>
+					. That is a private mailbox and the right route for anything involving
+					your account or your personal details.
+				</p>
+				<p>
+					If you would rather raise something in the open — a question about this
+					policy itself, or a mistake you have spotted on this page — the
+					project&rsquo;s issue tracker works too:{" "}
 					<a
 						href="https://github.com/a-apin/archimedes/issues"
 						target="_blank"
@@ -466,8 +539,8 @@ export default function Privacy() {
 					>
 						github.com/a-apin/archimedes/issues
 					</a>
-					. It is a public tracker, so please do not post personal details in an
-					issue — say what you want done and we will follow up privately.
+					. It is public, so please do not post personal details there; use the
+					email address above for those.
 				</p>
 			</section>
 		</div>
