@@ -138,10 +138,6 @@ test("landing uses a bespoke product theatre instead of register-template motifs
 	);
 	assert.match(
 		css,
-		/\.public-proof-deck article\s*\{[^}]*position:\s*sticky;/s,
-	);
-	assert.match(
-		css,
 		/\.public-landing\s*\{[^}]*overflow:\s*visible;[^}]*background:\s*var\(--canvas\);/s,
 	);
 	assert.match(
@@ -162,14 +158,104 @@ test("landing uses a bespoke product theatre instead of register-template motifs
 	);
 });
 
-test("proof deck exits its sticky phase as one complete card", () => {
-	assert.match(
+test("proof deck shows all four checks at once instead of stacking them", () => {
+	// The deck used to be a sticky card stack: every article `position: sticky`
+	// at a staggered `top`, 340px tall, so scrolling buried each panel under the
+	// next and the four checks could only ever be flipped through, never
+	// compared. The four-panel comparison is the differentiator the owner asked
+	// to restore, and a stack is the one layout that cannot show it — so the
+	// stacking mechanics must stay gone, not merely be overridden further down
+	// the sheet where a later rule could quietly reinstate them.
+	assert.doesNotMatch(
 		css,
-		/\.public-proof-deck article\s*\{[^}]*position:\s*sticky;[^}]*height:\s*340px;/s,
+		/\.public-proof-deck article[^{]*\{[^}]*position:\s*sticky;/s,
+		"the proof deck must not reintroduce sticky stacking — it hides three of the four checks",
+	);
+	assert.doesNotMatch(
+		css,
+		/\.public-proof-deck article[^{]*\{[^}]*height:\s*340px;/s,
+		"the fixed 340px card height belonged to the sticky stack; a grid panel sizes to its content",
 	);
 	assert.match(
 		css,
-		/@media \(max-width: 760px\)[^{]*\{[\s\S]*?\.public-proof-deck article,[\s\S]*?\.public-proof-deck article:nth-child\(4\)\s*\{[^}]*position:\s*static;[^}]*height:\s*auto;/s,
+		/\.public-proof-deck\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
+		"the deck must be a two-column grid so all four checks are legible at rest",
+	);
+	// One column on a phone: two columns of a 26ch headline is unreadable.
+	assert.match(
+		css,
+		/@media \(max-width: 760px\)[^{]*\{[\s\S]*?\.public-proof-deck\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s,
+	);
+	// The board-level card and the verdict rule are full-width rows under the
+	// four panels, not a fifth cell in the two-column flow.
+	assert.match(css, /\.public-proof-deck__board\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
+	assert.match(css, /\.public-proof-deck__rule\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
+});
+
+test("each rigor panel states its own limit, and the deck names all four verdict states", () => {
+	// The differentiator is not that four checks run — it is that each one says
+	// what it does NOT prove, in the same card, and that the gate reports four
+	// verdicts rather than a pass/fail boolean. Both are load-bearing claims
+	// quoted from the code that computes them, so both get pinned here.
+	//
+	// Every `limit` below is traceable: DSR → rigor_profiles.py's own
+	// "'deflated-Sharpe evidence at the 0.90 level', not 'statistically proven'"
+	// note (level-1 dsr_p_min = 0.90); PBO → compute_pbo's "Known limitations"
+	// (a selection-set property, a neighbour can flip it); OOS →
+	// compute_oos_sharpe's "a single chronological hold-out, NOT a rolling
+	// walk-forward re-estimation ... no purge/embargo gap"; LEAK →
+	// generation_pipeline.py persisting look_ahead_audit_source="self_attested"
+	// while the AST audit runs only on cited library source.
+	const criteria = landing.slice(
+		landing.indexOf("const RIGOR_CRITERIA = ["),
+		landing.indexOf("const BOARD_FDR = {"),
+	);
+	assert.equal(
+		(criteria.match(/\t\tlimit:/g) ?? []).length,
+		4,
+		"every one of the four rejection checks must carry its own honest limit",
+	);
+	assert.match(criteria, /0\.90 level/);
+	assert.match(criteria, /selection set, not one strategy/);
+	assert.match(criteria, /not a rolling refit/);
+	assert.match(criteria, /self-attested, not source-audited/);
+	assert.match(landing, /className="public-proof-deck__limit"/);
+
+	// Four states, verbatim from services/live_rigor_gate.py. "pending" and
+	// "degenerate" are the two a two-state UI would silently round into a fail
+	// or a pass; naming them is the whole point of the strip.
+	const states = landing.slice(
+		landing.indexOf("const VERDICT_STATES = ["),
+		landing.indexOf("export default function Landing"),
+	);
+	for (const state of ["pass", "fail", "pending", "degenerate"]) {
+		assert.match(states, new RegExp(`state: "${state}"`));
+	}
+	assert.match(landing, /Four verdicts, not two\./);
+});
+
+test("board-level FDR is described without hard-coding today's count", () => {
+	// The correction is real and served: GET /api/selection-bias/gate returns
+	// board_level_fdr {fdr_level, n_tested, n_significant}, recomputed over the
+	// exact cohort each response serves (selection_bias_routes.py), at
+	// DEFAULT_BOARD_FDR_LEVEL = 0.05, and compute_board_level_fdr's docstring
+	// pins it as ADVISORY — deliberately not wired into passes_all at any level.
+	// All three of those are asserted below.
+	const board = landing.slice(
+		landing.indexOf("const BOARD_FDR = {"),
+		landing.indexOf("const VERDICT_STATES = ["),
+	);
+	assert.match(board, /Benjamini–Hochberg/);
+	assert.match(board, /α = 0\.05/);
+	assert.match(board, /never flips a gate verdict/);
+	// How many strategies clear the correction is a LIVE number. This copy is
+	// static, so quoting one would ship a claim that goes stale silently — the
+	// same defect the census figcaption above refuses by fetching instead of
+	// caching. A bare digit anywhere in this block is that mistake.
+	assert.doesNotMatch(
+		board,
+		/\b(?:no|none|zero|one|two|three|[0-9]+)\s+(?:of\s+\d+\s+)?strategies\b/i,
+		"do not hard-code how many strategies currently clear board-level FDR — it is served live on /api/selection-bias/gate",
 	);
 });
 
@@ -402,6 +488,61 @@ test("landing does not claim the OOS gate rolls its window forward", () => {
 	assert.doesNotMatch(landing, /forward through time/);
 	assert.match(landing, /Walk-forward out-of-sample/);
 	assert.match(landing, /held-?out/);
+});
+
+test("landing does not claim a failed gate is unoverridable, or that a generation run anchors on Arc", () => {
+	// Two false claims retracted 2026-08-30, both verified against the code
+	// rather than reasoned about, and both pinned here so a rewrite cannot
+	// reintroduce them:
+	//
+	// 1. "A failed gate is not overridable." POST /api/paper/deployments
+	//    (api/paper_routes.py:85-125) is the act-on step a visitor can actually
+	//    reach, and it checks ownership of the source strategy plus that the
+	//    stored spec still validates — nothing else. There is no rigor
+	//    precondition on it; StrategyPassport.jsx:381-382 says exactly that in
+	//    the code ("no wallet, no rigor precondition, free by design"). The
+	//    owner has deployed a gate-failing strategy to paper himself. The
+	//    server-side deploy gate that DOES fail closed (vaults_routes
+	//    ._deployable_levels) guards a path this surface no longer describes.
+	//
+	// 2. "…content-hashed and anchored on Arc" / "Anchor its reasoning on Arc
+	//    before it reports a verdict." A generation run computes a keccak
+	//    provenance hash and persists it on the strategy row — and
+	//    generation_pipeline._persist_candidate's own docstring says that
+	//    identifier is "mirrored on-chain in v1.5", i.e. not today. The only
+	//    code that writes to ReasoningTraceRegistry is the agent rebalance tick
+	//    (chain/agent_runner._commit_trace / _reveal_trace), which no
+	//    generation run reaches.
+	assert.doesNotMatch(landing, /not overridable/i);
+	assert.doesNotMatch(landing, /anchored on Arc/i);
+	assert.doesNotMatch(landing, /Anchor its reasoning/i);
+
+	// The replacement invariant must still be an invariant, not a softening:
+	// the verdict is not the user's to move, even though running a failing idea
+	// in simulation is allowed.
+	assert.match(landing, /A failing strategy stays a failing strategy\./);
+	assert.match(landing, /Paper-trading one is allowed\. Relabelling one is not/);
+	assert.match(landing, /paper-trade a failing candidate — simulated, no capital/);
+
+	// Anti-vacuity: the exact pre-scrub literals must trip the predicates above,
+	// so a future edit that neuters them fails here instead of passing silently.
+	for (const [claim, pattern] of [
+		["<strong>A failed gate is not overridable.</strong>", /not overridable/i],
+		[
+			"the gate verdict — content-hashed and anchored on Arc.",
+			/anchored on Arc/i,
+		],
+		[
+			"<li>Anchor its reasoning on Arc before it reports a verdict</li>",
+			/Anchor its reasoning/i,
+		],
+	]) {
+		assert.match(
+			claim,
+			pattern,
+			`the guard no longer rejects the retracted claim ${JSON.stringify(claim)} — it is guarding nothing`,
+		);
+	}
 });
 
 test("protocols panel describes V_check by the checks it performs", () => {

@@ -6518,10 +6518,12 @@ body:has(.public-site) {
 	font-size: 0.9rem;
 }
 
+/* The deck is a two-column grid now rather than one full-width card at a time,
+   so the sticky copy column gives back some width to keep each panel readable. */
 .public-rigor-story__proof {
 	display: grid;
-	grid-template-columns: minmax(250px, 0.54fr) minmax(0, 1fr);
-	gap: clamp(48px, 8vw, 112px);
+	grid-template-columns: minmax(230px, 0.4fr) minmax(0, 1fr);
+	gap: clamp(40px, 5vw, 72px);
 	align-items: start;
 }
 
@@ -6555,20 +6557,24 @@ body:has(.public-site) {
 	line-height: 1.5;
 }
 
+/* Four panels, side by side. This deck used to be a sticky card stack — each
+   article pinned at a staggered `top` so scrolling buried the previous one —
+   which meant the four checks could never be compared, only flipped through.
+   The four-panel comparison IS the differentiator, so the layout has to show
+   all four at rest. Two columns on desktop, one on narrow; the board-level
+   card and the verdict rule each span the full width beneath them. */
 .public-proof-deck {
 	display: grid;
-	gap: 28px;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 20px;
+	align-items: stretch;
 }
 
 .public-proof-deck article {
-	position: sticky;
-	top: 120px;
 	display: grid;
-	height: 340px;
-	min-height: 290px;
-	align-content: space-between;
-	gap: 20px;
-	padding: clamp(28px, 3.5vw, 40px);
+	align-content: start;
+	gap: 14px;
+	padding: clamp(24px, 2.6vw, 32px);
 	border: 1px solid var(--glass-border);
 	border-radius: 10px;
 	background: var(--surface-1);
@@ -6576,68 +6582,173 @@ body:has(.public-site) {
 }
 
 .public-proof-deck article:nth-child(2) {
-	top: 138px;
-	z-index: 2;
 	border-color: var(--accent);
 	background: var(--accent);
 	color: var(--accent-on);
 }
 
 .public-proof-deck article:nth-child(3) {
-	top: 156px;
-	z-index: 3;
 	border-color: var(--public-theatre-border);
 	background: var(--public-theatre-bg);
 	color: var(--public-theatre-text);
 }
 
 .public-proof-deck article:nth-child(4) {
-	top: 174px;
-	z-index: 4;
 	background: var(--surface-2);
 }
 
 .public-proof-deck article header {
 	display: flex;
 	justify-content: space-between;
-	gap: 20px;
+	gap: 16px;
 	font-family: var(--mono);
 	font-size: 0.65rem;
 	font-weight: 600;
 	letter-spacing: 0.035em;
 }
 
+.public-proof-deck article header span:first-child {
+	flex: none;
+}
+
 .public-proof-deck article header span:last-child {
+	text-align: right;
 	opacity: 0.72;
 }
 
 .public-proof-deck h4 {
 	color: inherit;
-	font-size: 1rem;
+	font-size: 0.82rem;
 	font-weight: 620;
+	letter-spacing: 0.01em;
 	line-height: 1.35;
+	opacity: 0.78;
 }
 
+/* The plain-language question is the panel's headline — it is what a reader
+   who knows no statistics is meant to take away. */
 .public-proof-deck article > p {
-	max-width: 19ch;
-	font-size: clamp(1.7rem, 3.2vw, 3rem);
+	max-width: 26ch;
+	margin-top: -4px;
+	font-size: clamp(1.3rem, 1.9vw, 1.72rem);
 	font-weight: 520;
-	letter-spacing: -0.045em;
-	line-height: 1.02;
+	letter-spacing: -0.032em;
+	line-height: 1.12;
 }
 
 .public-proof-deck small {
+	display: block;
 	max-width: 58ch;
-	font-size: 0.76rem;
-	line-height: 1.55;
-	opacity: 0.76;
+	font-size: 0.78rem;
+	line-height: 1.6;
+	opacity: 0.8;
+}
+
+/* The honest limit of each check, held at the same weight as the method it
+   qualifies rather than shrunk into a disclaimer.
+   Selector note: `.public-proof-deck small` above is (0,1,1) — one class plus
+   an element — so a bare `.public-proof-deck__limit` (0,1,0) loses to it and
+   its `display: block` silently wins, collapsing the label and the text into
+   one run ("LIMITThe Verified bar…"). Qualifying with the element takes this
+   to (0,2,1) so the grid actually applies. */
+.public-proof-deck small.public-proof-deck__limit {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 10px;
+	align-items: baseline;
+	margin-top: auto;
+	padding-top: 14px;
+	border-top: 1px solid currentcolor;
+	opacity: 0.66;
+}
+
+.public-proof-deck__limit > span:first-child {
+	font-family: var(--mono);
+	font-size: 0.6rem;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.public-proof-deck__board {
+	grid-column: 1 / -1;
+	border-color: var(--public-theatre-border);
+	background: var(--surface-2);
+}
+
+/* The board card spans both columns, so stacking its content in one narrow
+   measure leaves the right half empty and reads as an accident. Above the
+   one-column breakpoint it gets its own internal split: the question on the
+   left, the method and its limit on the right. Complements the max-width:760px
+   rule below, which returns the whole deck — this card included — to a stack. */
+@media (min-width: 761px) {
+	.public-proof-deck__board {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		grid-template-areas:
+			"head head"
+			"name name"
+			"ask method"
+			"ask limit";
+		column-gap: clamp(28px, 3vw, 56px);
+		align-content: start;
+	}
+
+	.public-proof-deck__board header {
+		grid-area: head;
+	}
+
+	.public-proof-deck__board h4 {
+		grid-area: name;
+	}
+
+	.public-proof-deck__board > p {
+		grid-area: ask;
+		max-width: 22ch;
+	}
+
+	.public-proof-deck__board > small:not(.public-proof-deck__limit) {
+		grid-area: method;
+	}
+
+	.public-proof-deck__board .public-proof-deck__limit {
+		grid-area: limit;
+	}
 }
 
 .public-proof-deck__rule {
-	padding: 22px 0 0;
+	grid-column: 1 / -1;
+	display: grid;
+	gap: 18px;
+	padding: 24px 0 0;
 	border-top: 1px solid var(--glass-border);
 	color: var(--text-2);
 	font-size: 0.84rem;
+}
+
+.public-proof-deck__rule strong {
+	color: var(--text-1);
+	font-size: 0.95rem;
+	font-weight: 620;
+}
+
+.public-proof-deck__rule dl {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	gap: 16px 28px;
+}
+
+.public-proof-deck__rule dt {
+	margin-bottom: 4px;
+	color: var(--accent-hover);
+	font-family: var(--mono);
+	font-size: 0.68rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+}
+
+.public-proof-deck__rule dd {
+	font-size: 0.8rem;
+	line-height: 1.55;
 }
 
 .public-path {
@@ -8324,16 +8435,13 @@ body:has(.public-site) {
 	}
 
 	.public-proof-deck {
-		gap: 18px;
+		gap: 16px;
 	}
 
 	.public-proof-deck article,
 	.public-proof-deck article:nth-child(2),
 	.public-proof-deck article:nth-child(3),
 	.public-proof-deck article:nth-child(4) {
-		position: static;
-		height: auto;
-		min-height: 220px;
 		padding: 26px;
 	}
 
@@ -8488,11 +8596,17 @@ body:has(.public-site) {
 		gap: 0;
 	}
 
+	/* One column below 760px — two columns of a 26ch headline is unreadable on
+	   a phone. The four panels stay in source order, so the comparison survives
+	   as a scroll instead of a side-by-side. */
+	.public-proof-deck {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
 	.public-proof-deck article,
 	.public-proof-deck article:nth-child(2),
 	.public-proof-deck article:nth-child(3),
 	.public-proof-deck article:nth-child(4) {
-		min-height: 210px;
 		padding: 24px;
 	}
 

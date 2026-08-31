@@ -21,30 +21,101 @@ const CORE_CONTRACT_FIELDS = [
 	"price_oracle",
 ];
 
+// The four rejection checks, plus the honest limit of each one. `limit` is not
+// a disclaimer bolted on afterwards — it is the differentiator: every check
+// below states what it does NOT prove, in the same card, at the same weight.
+// Each `limit` is quoted from the code that computes the check:
+//   DSR   — rigor_profiles.py:67-79 ("say 'deflated-Sharpe evidence at the 0.90
+//           level', not 'statistically proven'"); level-1 dsr_p_min = 0.90.
+//   PBO   — _rigor_helpers.compute_pbo docstring, "Known limitations": CSCV is
+//           a selection-set property, so a neighbour entering the set can flip it.
+//   OOS   — _rigor_helpers.compute_oos_sharpe:567-574, "a single chronological
+//           hold-out, NOT a rolling walk-forward re-estimation ... no purge/embargo
+//           gap at the train/test boundary." train_fraction defaults to 0.70.
+//   LEAK  — strategy_dsl.py:192-193 rejects look_ahead_safe=false at validation;
+//           generation_pipeline.py:1892 persists look_ahead_audit_source=
+//           "self_attested"; rigor_evaluator.look_ahead_audit (the real AST pass)
+//           runs only against cited library source.
 const RIGOR_CRITERIA = [
 	{
 		code: "DSR",
 		name: "Deflated Sharpe Ratio",
-		question: "Could this Sharpe be luck after testing many ideas?",
-		method: "Corrects for multiple testing and non-normal returns.",
+		question: "Could this Sharpe be luck after trying many ideas?",
+		method:
+			"Deflates the Sharpe by how many candidates the search actually tried, and corrects for returns that are skewed or fat-tailed rather than normal.",
+		limit:
+			"The Verified bar is deflated-Sharpe evidence at the 0.90 level — real, not overwhelming.",
 	},
 	{
 		code: "PBO",
 		name: "Probability of Backtest Overfitting",
-		question: "Is the result likely to collapse outside its best sample?",
-		method: "Compares many train and test splits, not one lucky cut.",
+		question: "Would this collapse outside the sample it looks best on?",
+		method:
+			"Re-cuts the history into many equal time partitions and counts how often the in-sample winner lands below the out-of-sample median.",
+		limit:
+			"A property of the whole selection set, not one strategy — read it as a library signal.",
 	},
 	{
 		code: "OOS",
 		name: "Walk-forward out-of-sample",
-		question: "Does the method survive data it did not fit on?",
-		method: "Tested on a 30% chronological held-out window it never trained on.",
+		question: "Does the method survive data it never fit on?",
+		method:
+			"One chronological 70/30 cut. The held-out Sharpe must clear zero and stay within half of the in-sample Sharpe, so an in-sample blowout cannot pass on a sliver.",
+		limit:
+			"A single hold-out, not a rolling refit, and no purge gap at the boundary.",
 	},
 	{
 		code: "LEAK",
 		name: "Look-ahead audit",
-		question: "Did future information leak into any decision?",
-		method: "Rejects strategy code that reads data before it existed.",
+		question: "Did information from the future reach a decision?",
+		method:
+			"Generated strategies are written in a closed language that rejects a spec declaring itself unsafe before any backtest starts.",
+		limit:
+			"Recorded as self-attested, not source-audited — the static audit runs on cited library code.",
+	},
+];
+
+// The fifth check, and the one nobody else runs: a correction across the whole
+// board rather than within one strategy. Real today, and served publicly —
+// GET /api/selection-bias/gate returns `board_level_fdr` {fdr_level, n_tested,
+// n_significant}, recomputed over the exact cohort each response serves
+// (selection_bias_routes.py:535-552). Every claim below is checkable there:
+//   α = 0.05        — rigor_evaluator.DEFAULT_BOARD_FDR_LEVEL.
+//   "never flips a verdict" — compute_board_level_fdr's scope decision, stated
+//                     in its own docstring: ADVISORY, deliberately NOT wired
+//                     into passes_all / blocked_by_floor at any level.
+//   "zero included" — an empty or all-rejected cohort yields n_significant = 0
+//                     and that is what is reported; there is no floor and no
+//                     substitute value.
+// Deliberately NOT stated here: how many strategies clear it right now. That is
+// a live number, it is served on the endpoint above, and hard-coding today's
+// value into shipped copy is exactly the staleness this page refuses elsewhere.
+const BOARD_FDR = {
+	code: "BH-FDR",
+	name: "Board-level false-discovery rate",
+	question: "Is the top of a ranked board an edge, or the best of N searches?",
+	method:
+		"Benjamini–Hochberg corrects every ranked strategy's “true Sharpe is positive” claim together, at α = 0.05, recomputed over the exact cohort each response serves.",
+	limit:
+		"Advisory — it never flips a gate verdict. The count that clears it is reported as measured, zero included.",
+};
+
+// The gate's four states, verbatim from services/live_rigor_gate.py (PASS /
+// FAIL / PENDING / DEGENERATE). `passes` is fail-closed: only "pass" is truthy,
+// so pending and degenerate can never round up into a badge.
+const VERDICT_STATES = [
+	{ state: "pass", body: "Every check cleared at the Verified bar." },
+	{
+		state: "fail",
+		body: "Graded, and it lost. The measured values stay on the record.",
+	},
+	{
+		state: "pending",
+		body: "Not evaluated yet. Never rounded up into a pass.",
+	},
+	{
+		state: "degenerate",
+		body: "The return series has no variance to grade. Blocked at every strictness level.",
 	},
 ];
 
@@ -62,8 +133,20 @@ const WORKFLOW = [
 		body: "The selected method faces DSR, PBO, out-of-sample, and look-ahead checks before sizing diagnostics expose its tradeoffs.",
 	},
 	{
+		// This step used to promise that every run left a reasoning trace bound
+		// to the chain. Retracted 2026-08-30 — false for this path, and pinned
+		// as retracted in ui/test/public-visuals.test.js, whose comment carries
+		// the exact wording. A generation run computes a keccak provenance hash
+		// over (brief, candidate, weights, verdict) and persists it on the
+		// strategy row (generation_pipeline._persist_candidate), whose own
+		// comment says that identifier is "mirrored on-chain in v1.5" — i.e. not
+		// today. The only code that writes to ReasoningTraceRegistry is the
+		// agent rebalance tick (chain/agent_runner._commit_trace /
+		// _reveal_trace), which no generation run reaches. What survives is the
+		// part that is true: nothing is thrown away, and a fail is kept as
+		// durably as a pass.
 		title: "Inspect",
-		body: "Every run leaves a reasoning trace — brief, cited papers, considered rejects, and the gate verdict — content-hashed and anchored on Arc.",
+		body: "Nothing is discarded. The brief, the papers it cited, the candidates that lost, and the measured verdict are all kept with the strategy — a fail as durably as a pass.",
 	},
 ];
 
@@ -74,9 +157,17 @@ const FAQS = [
 			"No. The gate reduces known sources of false confidence. It cannot remove market risk or guarantee future performance.",
 	},
 	{
+		// Was: "… cannot bypass the server-side deployment gate." That gate is
+		// real code, but it guards a path this surface no longer describes, and
+		// the act-on step a visitor CAN reach — paper trading — has no rigor
+		// precondition at all (api/paper_routes.py:85-125 checks ownership and
+		// spec validity, nothing else; StrategyPassport.jsx:381-382 says so in
+		// as many words). Answering with a gate the reader cannot hit would be a
+		// claim the code does not enforce. The true answer is stronger anyway:
+		// running a failing idea is allowed, relabelling one is not.
 		question: "What happens when a strategy fails?",
 		answer:
-			"Failure remains visible with the measured reason. A failed or pending strategy does not receive the verified badge and cannot bypass the server-side deployment gate.",
+			"The failure stays visible with the measured reason, and a failed or pending strategy never receives the verified badge. The verdict is computed server-side on persisted returns, so it cannot be relabelled from the browser. You can still paper-trade a failing candidate — simulated, no capital — and its verdict does not change because you did.",
 	},
 	{
 		question: "Do I need a wallet to explore Archimedes?",
@@ -137,10 +228,15 @@ export default function Landing() {
 							<h1 id="public-hero-title">
 								<span>Portfolio strategy,</span> <span>under scrutiny.</span>
 							</h1>
+							{/* "…before anything runs live" retired 2026-08-30: nothing runs
+							    live from this surface, and the conditional reads as a promise.
+							    The replacement says what actually happens, and lands on the
+							    part that is hardest to fake — the verdict is kept either way. */}
 							<p className="public-hero__lede">
-								Archimedes turns a plain-language brief into a paper-grounded
-								strategy, then tests it for selection bias against a rigor gate it
-								must pass before anything runs live.
+								Archimedes turns a plain-language brief into a strategy grounded in
+								named research, then spends the rest of its effort trying to reject
+								it. Four independent checks, one measured verdict — recorded
+								whichever way it lands.
 							</p>
 							<div className="public-actions">
 								<a
@@ -196,8 +292,10 @@ export default function Landing() {
 						<div className="public-rigor-story__proof-copy">
 							<h3 id="rigor-title">Most candidates should fail here.</h3>
 							<p>
-								Four independent checks look for luck, overfitting, weak
-								out-of-sample behavior, and leaked future data.
+								Four independent checks run outside the generator, on persisted
+								returns, so the thing being graded cannot influence its own grade.
+								Each one answers a different way a backtest can fool you — and
+								each one states, in the same card, what it does not prove.
 							</p>
 							<strong>Any failed check keeps the candidate unverified.</strong>
 						</div>
@@ -284,11 +382,18 @@ export default function Landing() {
 								Start in plain language. Inspect papers, backtests, and gates.
 							</p>
 						</article>
+						{/* Was "Audit what the agent saw, cited, decided, and recorded" /
+						    "Context and transaction evidence stay in one reviewable
+						    trail." Both describe the rebalance-tick trace, which a
+						    visitor here cannot reach — and "transaction evidence" is an
+						    execution claim this surface no longer makes. Narrowed to the
+						    record a generation run really does leave. */}
 						<article className="is-audit">
 							<span>Traceable reasoning</span>
-							<h3>Audit what the agent saw, cited, decided, and recorded.</h3>
+							<h3>Audit what was asked, what was cited, and what lost.</h3>
 							<p>
-								Context and transaction evidence stay in one reviewable trail.
+								The brief, its sources, the rejected candidates, and the measured
+								verdict stay together.
 							</p>
 						</article>
 					</div>
@@ -436,11 +541,16 @@ function EvidenceLedger() {
 					</li>
 					<li>
 						<strong>Four rejection checks</strong>
-						<span>Failures remain part of the record.</span>
+						<span>Each one names its own limit.</span>
 					</li>
+					{/* Was a second "measured failures remain part of the record", a
+					    near-verbatim repeat of the rail above it. Replaced with the
+					    board-level correction — real, served on
+					    GET /api/selection-bias/gate, and the one claim on this page
+					    nobody else on the board is making. */}
 					<li>
-						<strong>Verdict stays visible</strong>
-						<span>Measured failures remain part of the record.</span>
+						<strong>Board-level correction</strong>
+						<span>Ranking N strategies is counted as N tests.</span>
 					</li>
 				</ul>
 				<nav className="public-proof-strip__links" aria-label="Evidence links">
@@ -459,6 +569,12 @@ function EvidenceLedger() {
 	);
 }
 
+// The four rejection checks, readable together rather than one at a time.
+// This was a sticky card stack — four 340px cards pinned at staggered offsets,
+// so scrolling revealed one and buried the last. The four-panel comparison is
+// the differentiator, and a stack is the one layout that cannot show it, so the
+// deck is a plain grid now: four panels at once, the board-level correction
+// spanning underneath them, and the verdict states closing the section.
 function RigorMatrix() {
 	return (
 		<div className="public-proof-deck">
@@ -471,10 +587,37 @@ function RigorMatrix() {
 					<h4>{criterion.name}</h4>
 					<p>{criterion.question}</p>
 					<small>{criterion.method}</small>
+					<small className="public-proof-deck__limit">
+						<span>Limit</span>
+						<span>{criterion.limit}</span>
+					</small>
 				</article>
 			))}
+
+			<article className="public-proof-deck__board">
+				<header>
+					<span>{BOARD_FDR.code}</span>
+					<span>Across every ranked strategy</span>
+				</header>
+				<h4>{BOARD_FDR.name}</h4>
+				<p>{BOARD_FDR.question}</p>
+				<small>{BOARD_FDR.method}</small>
+				<small className="public-proof-deck__limit">
+					<span>Limit</span>
+					<span>{BOARD_FDR.limit}</span>
+				</small>
+			</article>
+
 			<div className="public-proof-deck__rule" role="note">
-				<strong>Measured values stay in the record, pass or fail.</strong>
+				<strong>Four verdicts, not two.</strong>
+				<dl>
+					{VERDICT_STATES.map((v) => (
+						<div key={v.state}>
+							<dt>{v.state}</dt>
+							<dd>{v.body}</dd>
+						</div>
+					))}
+				</dl>
 			</div>
 		</div>
 	);
@@ -499,7 +642,7 @@ function AuthorityBoundary() {
 					<h2 id="authority-title">The gate decides admission. You decide what runs.</h2>
 					<p>
 						Account identity, wallet proof, and the research pipeline stay
-						separate. Nothing reaches a live path by asserting that it should.
+						separate. Nothing earns a verdict by asserting one.
 					</p>
 				</div>
 				<div className="authority-boundary__grid">
@@ -508,7 +651,13 @@ function AuthorityBoundary() {
 						<ul>
 							<li>Read market conditions and cited research</li>
 							<li>Propose, rank, and reject candidate strategies</li>
-							<li>Anchor its reasoning on Arc before it reports a verdict</li>
+							{/* The retired third bullet claimed a chain commitment ahead of
+							    the verdict — retracted with the Inspect step above and for
+							    the same reason: no generation run writes to the trace
+							    registry. What Archimedes does do here is grade a candidate
+							    outside the generator, which is the claim the Security page's
+							    "Verdict" control backs. */}
+							<li>Grade a candidate outside the generator that produced it</li>
 						</ul>
 					</div>
 					<div className="authority-boundary__line" aria-hidden="true">
@@ -523,10 +672,26 @@ function AuthorityBoundary() {
 						</ul>
 					</div>
 				</div>
+				{/* The retired invariant claimed a failed gate could not be
+				    overridden. That is false, and the owner has overridden one
+				    himself — the exact retracted wording is pinned in
+				    ui/test/public-visuals.test.js. POST /api/paper/deployments
+				    (api/paper_routes.py:85-125) checks ownership of the source
+				    strategy and that its stored spec still validates — and nothing
+				    else. There is no rigor precondition on the act-on step a visitor
+				    can actually reach, and StrategyPassport.jsx:381-382 says so in
+				    the code. The invariant that IS true is narrower and better: the
+				    verdict is not yours to move. Running a failing idea in
+				    simulation is allowed; relabelling it is not, because `passes` is
+				    computed server-side on persisted returns and only "pass" is
+				    truthy (services/live_rigor_gate.py). */}
 				<div className="authority-boundary__verdict" role="note">
 					<span>Admission invariant</span>
-					<strong>A failed gate is not overridable.</strong>
-					<span>The measured reason stays on the record.</span>
+					<strong>A failing strategy stays a failing strategy.</strong>
+					<span>
+						Paper-trading one is allowed. Relabelling one is not — the verdict is
+						measured server-side, and the measured reason stays on the record.
+					</span>
 				</div>
 				<a className="authority-boundary__link" href="/security">
 					Read security posture
