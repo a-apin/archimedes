@@ -16,12 +16,11 @@
 // `.nav-group-label`, so it was a bare, header-less button sitting above the
 // labelled bands with no section context — the owner's "looks terrible"
 // finding in the 2026-08-31 product review. The marketing site itself is
-// untouched by its removal: `/` still maps
-// to the `landing` page (routes.js PUBLIC_PATHS) and is still reached from
-// PublicLayout's own nav and by URL — only the in-shell link to it was
-// removed, and with it the sole reason this file ever had an unlabelled
-// group. Adding one back re-creates the defect; the guards in
-// ui/test/nav-groups.test.js reject it.
+// untouched by its removal: `/` still maps to the `landing` page (routes.js
+// PUBLIC_PATHS) and is still reached from PublicLayout's own nav and by URL —
+// only the in-shell link to it was removed, and with it the sole reason this
+// file ever had an unlabelled group. Adding one back re-creates the defect;
+// the guards in ui/test/nav-groups.test.js reject it.
 //
 // The four labelled groups split the /app surfaces by where the user is in
 // the spine (owner's grouping call, 2026-08-31 — this supersedes the earlier
