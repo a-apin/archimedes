@@ -14,6 +14,12 @@ import { ACCOUNT_USAGE_ENDPOINT, deriveFreeGenerationView } from "../freeGenerat
 // user reads and the count the gate enforces cannot drift apart. This
 // component counts nothing itself.
 //
+// Three states, one element: available ("2 free generations left"), locked
+// ("verify your email to unlock 3") and exhausted ("link a wallet"). The
+// locked state is owner decision D1 (2026-08-31) — the free tier unlocks on a
+// verified email, and this banner is where that unlock is offered rather than
+// only being discovered as a 409.
+//
 // Renders NOTHING (not a placeholder, not a zero) when there is no honest
 // number to show: signed out, request failed, the backend reported
 // free_generations_remaining: null because the ledger was unreadable, or the
@@ -47,6 +53,10 @@ export default function FreeGenerationBanner() {
 			role="status"
 			aria-live="polite"
 			data-testid="free-generation-banner"
+			// available | locked | exhausted — the state name the pure module
+			// decided, exposed for styling and for a DOM test to assert on
+			// without re-deriving the rule it is checking.
+			data-state={view.state}
 		>
 			<span>{view.message}</span>
 			<span

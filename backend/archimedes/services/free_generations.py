@@ -26,6 +26,28 @@ Allowance (``FREE_GENERATIONS_PER_ACCOUNT``, default 3) is read per call, not
 cached, so an operator can change it without a deploy. ``<= 0`` disables the
 free path entirely and restores the pre-#1643 wallet-gate-on-first-call
 behaviour exactly — the kill switch for this policy.
+
+**Owner decision D1 (2026-08-31, recorded on #1653): the allowance unlocks on a
+VERIFIED EMAIL, not on account creation alone.** An unverified account is not
+refused — it falls through to exactly the path it had before this module
+existed (link a wallet, then pay) — it simply cannot spend the free allowance.
+Two reasons, both the owner's:
+
+- It prices disposable-account farming. Accounts are free and unlimited; a
+  working inbox per three free generations is the cheapest honest throttle
+  available, and it binds the free tier to something an abuser has to keep
+  paying for.
+- Verification becomes a carrot rather than a chore. ``locked_reason`` exists
+  so ``GET /api/account/usage`` can say *why* the allowance is unavailable and
+  the UI can offer the unlock, instead of a fresh account seeing nothing at all
+  and concluding the free tier is a fiction.
+
+``email_verified`` is a REQUIRED keyword argument of :func:`claim` rather than
+something this module looks up. Two consequences, both deliberate: the check
+cannot be silently forgotten by a future call site (omitting it is a
+``TypeError``, pinned by a test), and this module keeps no opinion about how a
+session is resolved — ``api/account_auth.CurrentUser.email_verified`` is the
+single place Better Auth's ``emailVerified`` is parsed.
 """
 
 from __future__ import annotations
@@ -42,8 +64,14 @@ from archimedes.models.free_generation_grant import (
 
 logger = logging.getLogger(__name__)
 
-#: The owner's 2026-08-31 call: "3 generations on a mere account, then wallet-gate."
+#: The owner's 2026-08-31 call: "3 generations on a verified account, then wallet-gate."
 DEFAULT_ALLOWANCE = 3
+
+#: Why an account that has allowance left still cannot spend it. One value
+#: today (owner decision D1); a string rather than a bool so a second lock
+#: reason can be added without changing the wire shape of
+#: ``GET /api/account/usage`` or of the 409 body.
+LOCK_EMAIL_UNVERIFIED = "email_unverified"
 
 
 def allowance() -> int:
@@ -60,24 +88,49 @@ def allowance() -> int:
         return DEFAULT_ALLOWANCE
 
 
+def locked_reason(*, email_verified: bool) -> str | None:
+    """Why this account cannot spend its free allowance right now, or ``None``.
+
+    ``None`` means "not locked" — which includes the case where the free path
+    is switched off entirely (``allowance() <= 0``). That distinction is the
+    whole point of this function: a disabled policy must NOT report a lock,
+    because the UI turns a lock into a promise ("verify your email and you get
+    3 free generations") and there is nothing behind that promise when the
+    allowance is 0. Silence is honest there; a carrot is not.
+    """
+    if allowance() <= 0:
+        return None
+    return None if email_verified else LOCK_EMAIL_UNVERIFIED
+
+
 def _session():
     from archimedes.db import get_session
 
     return get_session()
 
 
-def claim(user_id: str) -> int | None:
+def claim(user_id: str, *, email_verified: bool) -> int | None:
     """Take one free generation for *user_id*; ``None`` when there is none to take.
 
-    ``None`` covers all four honest answers — allowance exhausted, allowance
-    disabled, a concurrent request won the slot, or the ledger could not be
-    read — because the caller does the same thing in every one of them: fall
-    through to the wallet gate. The log line distinguishes them for an operator.
+    ``None`` covers all five honest answers — the account's email is
+    unverified (owner decision D1), allowance exhausted, allowance disabled, a
+    concurrent request won the slot, or the ledger could not be read — because
+    the caller does the same thing in every one of them: fall through to the
+    wallet gate. The log line distinguishes them for an operator, and the
+    caller re-asks :func:`locked_reason` when it needs to tell the user which
+    of the unlocks applies.
+
+    ``email_verified`` is required and keyword-only so that adding a second
+    call site cannot quietly reopen the free tier to unverified accounts.
     """
     if not user_id:
         return None
     limit = allowance()
     if limit <= 0:
+        return None
+    if locked_reason(email_verified=email_verified) is not None:
+        # No ledger read at all: an unverified account has nothing to claim, and
+        # the wallet gate below is a complete answer for it.
         return None
     try:
         with _session() as session:
@@ -142,6 +195,12 @@ def remaining(user_id: str) -> int | None:
     ``None`` is the honest absence ``GET /api/account/usage`` renders as a
     blank. A fabricated number in either direction is a claim the gate does not
     keep, which is exactly the defect the repo's first rule names.
+
+    This is the LEDGER balance — how many slots remain unspent — and it says
+    nothing about whether they are spendable today. :func:`locked_reason` is
+    the other half, and the route reports both rather than folding a lock into
+    a ``0``: an unverified account has 3 free generations waiting for it, and
+    telling it "0 left" would be as false as telling it "3 available now".
     """
     limit = allowance()
     if limit <= 0:

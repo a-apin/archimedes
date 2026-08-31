@@ -460,18 +460,28 @@ async def start_generation(
         # 2026-08-19 "no free path" directive). An account is still required for
         # every generation, free or paid — `require_current_user` above is
         # unconditional and there is deliberately no wallet-only path — but the
-        # first FREE_GENERATIONS_PER_ACCOUNT (default 3) runs on that account
-        # need no wallet and no payment. The slot is claimed BEFORE the gate it
-        # opens, so N concurrent first-generation calls cannot each be granted
-        # one (services/free_generations.py, and the unique constraint behind
-        # it). Everything from grant #4 onward is byte-for-byte the behaviour
-        # below, unchanged.
+        # first FREE_GENERATIONS_PER_ACCOUNT (default 3) runs on a VERIFIED
+        # account need no wallet and no payment. The slot is claimed BEFORE the
+        # gate it opens, so N concurrent first-generation calls cannot each be
+        # granted one (services/free_generations.py, and the unique constraint
+        # behind it). Everything from grant #4 onward is byte-for-byte the
+        # behaviour below, unchanged.
+        #
+        # `email_verified` is owner decision D1 (2026-08-31, recorded on #1653):
+        # the allowance unlocks on a verified email, not on account creation
+        # alone — accounts are free and unlimited, a working inbox is not, so
+        # verification is what prices disposable-account farming of free LLM
+        # runs. An unverified caller is NOT refused here; it simply falls
+        # through to the wallet gate + paywall it had before this path existed.
+        # The flag is threaded from CurrentUser (api/account_auth.py parses
+        # Better Auth's `emailVerified` in exactly one place) and is a required
+        # keyword argument, so a future call site cannot forget it.
         #
         # The claim lives INSIDE this flag branch on purpose: under flag-off
         # nothing is gated and nothing is charged, so burning a lifetime
         # allowance there would silently spend a user's free runs during a
         # period when generation was free for everyone anyway.
-        free_grant_id = free_generations.claim(user.id)
+        free_grant_id = free_generations.claim(user.id, email_verified=user.email_verified)
         if free_grant_id is None:
             if not linked_wallet:
                 # The wallet-connection precondition. 409 (not 402): the blocker is
@@ -481,17 +491,40 @@ async def start_generation(
                 # Funnel (#1643): this is the exhausted-the-free-tier boundary —
                 # the transition the conversion instrument most needs to see.
                 await record_funnel(request, "wallet_gate_shown")
+                # Two DIFFERENT dead ends share this status code, and telling a
+                # caller the wrong one wastes its next request: an account that
+                # spent its three free runs has only the wallet left, while an
+                # unverified account has two ways out and the cheaper one is the
+                # inbox it already owns. `reason` stays `wallet_link_required`
+                # (the machine contract every client already branches on);
+                # `free_generations_locked_reason` is the new, additive field
+                # that distinguishes them, and the message names BOTH unlocks
+                # when both are real.
+                locked = free_generations.locked_reason(email_verified=user.email_verified)
+                if locked == free_generations.LOCK_EMAIL_UNVERIFIED:
+                    message = (
+                        "Two ways to generate. (1) Verify your email to unlock "
+                        f"{free_generations.allowance()} free generations on this account — no wallet and no "
+                        "payment needed. We emailed a verification link when you signed up; "
+                        "POST /api/auth/send-verification-email re-sends it. "
+                        "(2) Or link a wallet now (POST /api/wallets/challenge → /api/wallets/verify), "
+                        "fund it with testnet USDC (the faucet currently requires a human), and pay per run. "
+                        "See GET /api/generate/quote for the price."
+                    )
+                else:
+                    message = (
+                        "Your free generations are used up. Generation now requires a linked, funded "
+                        "wallet. Link a wallet to your account "
+                        "(POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC "
+                        "(the faucet currently requires a human), then retry. "
+                        "See GET /api/generate/quote for the price."
+                    )
                 raise HTTPException(
                     status_code=409,
                     detail={
                         "reason": "wallet_link_required",
-                        "message": (
-                            "Your free generations are used up. Generation now requires a linked, funded "
-                            "wallet. Link a wallet to your account "
-                            "(POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC "
-                            "(the faucet currently requires a human), then retry. "
-                            "See GET /api/generate/quote for the price."
-                        ),
+                        "free_generations_locked_reason": locked,
+                        "message": message,
                     },
                 )
             payment, credit_id = await _paywall_with_credit(request, linked_wallet, user.id)

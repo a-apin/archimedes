@@ -10,7 +10,11 @@ requirement absolute (``require_current_user`` gates every generation, and
 there is no wallet-only-without-account path) but made the *wallet* optional
 for a small lifetime allowance: the first ``FREE_GENERATIONS_PER_ACCOUNT``
 (default 3) generations on an account need neither a linked wallet nor a
-payment. Nothing in THIS module implements that — the allowance is claimed in
+payment. **Amended the same day (owner decision D1, recorded on #1653): that
+allowance unlocks on a VERIFIED email, not on account creation alone** — an
+unverified account has the wallet + payment path below and nothing else, which
+is precisely the pre-#1643 behaviour. Nothing in THIS module implements that —
+the allowance is claimed in
 ``api/generate_routes.start_generation`` from
 ``services/free_generations.py``, ahead of the wallet check and this paywall —
 and nothing in this module changed: from generation #4 onward every rule below

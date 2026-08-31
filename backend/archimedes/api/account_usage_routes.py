@@ -16,6 +16,12 @@ Also reports the account's LIFETIME free-generation allowance (#1643) —
 axis from the daily caps above and the response keeps them visibly separate:
 the caps reset every UTC day, the allowance never does.
 
+``free_generations_locked_reason`` is the third fact in that group and the
+newest (owner decision D1, 2026-08-31): the allowance unlocks on a VERIFIED
+email. It is deliberately not folded into the remaining count — "3 slots, not
+yet unlocked" and "0 slots left" are different situations with different
+answers, and only the pair distinguishes them.
+
 Account-session-gated (Better Auth, ``require_current_user``) — mirrors
 ``paper_routes.py``'s per-route ``Depends`` style, not the router-level
 ``dependencies=[...]`` style some other routers use in ``main.py``.
@@ -73,6 +79,17 @@ class AccountUsageResponse(BaseModel):
     free_generations_remaining: int | None = None
     free_generations_error: str | None = None
 
+    #: Why the allowance above cannot be spent right now, or ``None`` when it
+    #: can. ``"email_unverified"`` is the only value today (owner decision D1,
+    #: 2026-08-31): the free tier unlocks on a verified email, not on account
+    #: creation alone. Reported as a SEPARATE field rather than folded into
+    #: ``free_generations_remaining`` because the two facts are different: an
+    #: unverified fresh account genuinely has 3 unspent slots waiting for it,
+    #: so a ``0`` here would be as false as pretending they are spendable now.
+    #: A client renders the pair: locked + a positive remaining is the
+    #: "verify your email to unlock these" state, not the "you are out" state.
+    free_generations_locked_reason: str | None = None
+
 
 def _bucket(used: int | None, cap: int) -> DailyCapUsage:
     unlimited = cap <= 0
@@ -111,4 +128,8 @@ async def get_account_usage(
         free_generations_allowance=free_generations.allowance(),
         free_generations_remaining=free_remaining,
         free_generations_error=(None if free_remaining is not None else "free_generation_backend_unavailable"),
+        # The same predicate the gate applies (services/free_generations.py),
+        # against the same `email_verified` the gate reads — so the reason the
+        # UI shows and the reason the 409 gives cannot drift apart.
+        free_generations_locked_reason=free_generations.locked_reason(email_verified=user.email_verified),
     )

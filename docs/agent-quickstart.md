@@ -15,12 +15,15 @@ want the full surface** — the wallet-link handshake in detail, the real on-cha
 the marketplace, the `agent_journey.py` reference harness. This page is narrower: nothing
 below creates a vault or puts capital on-chain.
 
-**Your first three generations are free; after that it is not.** An account is required
-for every generation and there is no wallet-only path, but a **wallet is not required for
-the first `FREE_GENERATIONS_PER_ACCOUNT` (default 3) generations on that account**,
-lifetime (#1643 — this reverses the 2026-08-19 "wallet before the first generation"
-directive earlier revisions of this page documented). From generation #4, generation sits
-behind a live x402 paywall in production: `GET /api/generate/quote` answers
+**Your first three generations are free once your email is verified; after that it is
+not.** An account is required for every generation and there is no wallet-only path, but a
+**wallet is not required for the first `FREE_GENERATIONS_PER_ACCOUNT` (default 3)
+generations on a verified account**, lifetime (#1643 — this reverses the 2026-08-19
+"wallet before the first generation" directive earlier revisions of this page documented;
+the email-verification condition is the owner's 2026-08-31 amendment). **If you cannot
+receive and click a verification link, you have no free tier** — go straight to the wallet
+path (steps 6a–6b); it works from generation #1 for an unverified account. From generation
+#4, generation sits behind a live x402 paywall in production: `GET /api/generate/quote` answers
 `payment_required: true`, `dry_run: false`, `price: "$2.000000"` — so step 6 then charges
 **$2.00 testnet USDC per run and settles for real**, from a wallet you link and fund first
 (steps 6a–6b). The code *defaults* are the opposite of that — the paywall is off and
@@ -50,6 +53,7 @@ Conventions used below:
 | 0 | Discover | `GET /api/agent/manifest` | none |
 | 1 | Price the run | `GET /api/generate/quote` | none |
 | 2 | Create an account | `POST /api/auth/sign-up/email` | none |
+| 2a | Verify your email — this is what unlocks the 3 free generations | click the link in the mail sent at step 2; `POST /api/auth/send-verification-email` re-sends it | none |
 | 3 | Sign in (get the cookie) | `POST /api/auth/sign-in/email` | none |
 | 4 | Confirm the session | `GET /api/auth/get-session` | cookie |
 | 5 | Check your quota + free generations left | `GET /api/account/usage` | cookie |
@@ -118,25 +122,37 @@ whether the rest of the journey costs money.
 host you asked*:
 
 - **`payment_required: true`** (production today) — step 6 needs a linked, funded wallet
-  and a signed payment **once your account's free generations are used up** (see the box
-  below). Unlinked and out of free runs → `409 wallet_link_required`; linked but unsigned
-  → `402`. Steps 6a and 6b are that path, and **`dry_run: false` means the $2 settles for
-  real** rather than being waved through unverified.
+  and a signed payment **once your account's free generations are used up, or immediately
+  if your email is not verified** (see the box below). Unlinked and out of free runs →
+  `409 wallet_link_required`; linked but unsigned → `402`. Steps 6a and 6b are that path,
+  and **`dry_run: false` means the $2 settles for real** rather than being waved through
+  unverified.
 - **`payment_required: false`** — step 6 needs no wallet and no payment; skip 6a and 6b.
 
-> **Your first few generations are free, wallet or not (#1643).** An *account* is required
-> for every generation — there is no wallet-only-without-account path — but a **wallet is
-> not**, for the first `FREE_GENERATIONS_PER_ACCOUNT` (default **3**) generations on that
-> account, lifetime. So against production the sequence is: sign up (step 2), sign in
-> (step 3), then step 6 works immediately, three times, with no wallet and no payment.
-> Steps 6a/6b apply from generation #4 onward, unchanged.
+> **Your first few generations are free, wallet or not — once your email is verified
+> (#1643).** An *account* is required for every generation — there is no
+> wallet-only-without-account path — but a **wallet is not**, for the first
+> `FREE_GENERATIONS_PER_ACCOUNT` (default **3**) generations on that account, lifetime,
+> **provided the account's email is verified**. So against production the sequence is:
+> sign up (step 2), verify the emailed link (step 2a), sign in (step 3), then step 6 works
+> immediately, three times, with no wallet and no payment. Steps 6a/6b apply from
+> generation #4 onward, unchanged.
+>
+> **An unverified account has no free tier and is not blocked either** — it simply gets the
+> wallet + payment path from generation #1. The 409 it receives names both ways out
+> (verify, or link a wallet) and carries `free_generations_locked_reason:
+> "email_unverified"` so a client can tell that case from a genuinely exhausted allowance.
+> Verification is the cheaper unlock where an inbox is available; where it is not — the
+> honest case for many agents — the wallet path is the whole answer, and the free tier is
+> not something to wait for.
 >
 > This **reverses** the 2026-08-19 directive that earlier revisions of this page
-> documented ("a wallet is required before the first generation"). Read your remaining
-> allowance from `GET /api/account/usage` (step 5) rather than counting locally — that
-> endpoint reads the same ledger the gate enforces. `free_generations_remaining: null`
-> there means *unknown* (the ledger could not be read), never *zero*; retry rather than
-> assuming you are locked out.
+> documented ("a wallet is required before the first generation"); the verification
+> condition is the owner's 2026-08-31 amendment to it. Read your remaining allowance and
+> lock state from `GET /api/account/usage` (step 5) rather than counting locally — that
+> endpoint reads the same ledger, and applies the same lock predicate, the gate enforces.
+> `free_generations_remaining: null` there means *unknown* (the ledger could not be read),
+> never *zero*; retry rather than assuming you are locked out.
 
 Do not carry an answer over from another host or from the source. The code *defaults* are
 `GENERATION_PAYMENT_REQUIRED` unset (paywall off) and `PAYMENTS_DRY_RUN=true` (nothing
@@ -204,7 +220,8 @@ curl -sS -b /tmp/agora.jar $BASE/api/account/usage
   "quote": { "payment_required": true, "…": "the same object step 1 returned" },
   "free_generations_allowance": 3,
   "free_generations_remaining": 3,
-  "free_generations_error": null
+  "free_generations_error": null,
+  "free_generations_locked_reason": null
 }
 ```
 
@@ -223,7 +240,16 @@ are still refused `429` once the daily cap is hit. `free_generations_remaining: 
 `free_generations_error` set is the same honest unknown as `used: null` — it is not a
 zero, so do not treat it as "locked out"; retry.
 
-Once `free_generations_remaining` reaches `0` on a `payment_required: true` host, step 6
+**`free_generations_locked_reason` is a third, separate fact: whether the remaining slots
+can be spent right now.** `null` means they can. `"email_unverified"` means the account's
+email is not verified, so the count is real but not yet spendable — verify (step 2a) and
+it becomes available without any of it being consumed. Read the pair, never one alone:
+`remaining: 3` with a lock is *not* "3 free runs available", and a lock is *not* an error
+(`free_generations_error` stays `null`). A reason string this page does not list is still
+a lock — treat it as "not spendable, cause unknown" and take the wallet path.
+
+Once `free_generations_remaining` reaches `0` on a `payment_required: true` host — or
+immediately, if `free_generations_locked_reason` is set and you cannot clear it — step 6
 starts costing $2 and steps 6a/6b become mandatory.
 
 ### 6. Submit the brief
@@ -248,8 +274,10 @@ premium model without an entitlement is a **402**, and the request is refused ra
 silently downgraded.
 
 **On a `payment_required: true` host, this call returns 202 for your account's first three
-generations and starts refusing afterwards** — `409 wallet_link_required` (no wallet on the
-account) or `402` (wallet linked, nothing signed). Those are the paywall, not an error in
+generations — once the account's email is verified — and starts refusing afterwards** —
+`409 wallet_link_required` (no wallet on the account; its
+`free_generations_locked_reason` tells you whether the blocker is an unverified email or a
+spent allowance) or `402` (wallet linked, nothing signed). Those are the paywall, not an error in
 your request, and your brief was not run. Steps 6a and 6b clear them; the body above is
 unchanged and gets replayed verbatim at 6b. On a `payment_required: false` host every call
 is 202 and no allowance is spent at all. `GET /api/account/usage` (step 5) is how you tell
@@ -263,7 +291,9 @@ money** — the `generation_queue_full` body says so in as many words.
 ### 6a. Link a wallet — once per account, after the free generations run out
 
 Skip this entirely when `payment_required` is `false`, and skip it until step 5 reports
-`free_generations_remaining: 0`. You need a wallet you control the
+`free_generations_remaining: 0` **or a `free_generations_locked_reason` you cannot clear**
+(an agent with no reachable inbox cannot verify an email, and that is a normal case, not a
+failure — this step is then required from generation #1). You need a wallet you control the
 key for; `provider: "headless"` is the one of the four an API caller can use.
 
 ```bash
@@ -510,7 +540,8 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 | **429** | `{"detail": {"reason": "generation_daily_cap", "scope": "user", "cap": 10, "message": "…"}}` | Daily generation cap hit, per account (`scope: "user"`) or per IP (`scope: "ip"`) | Wait for the daily reset. Call step 5 **before** step 6 to see this coming; the caps it reports are the caps enforced. |
 | **429** | `{"detail": {"reason": "generation_queue_full", "message": "… No payment was taken. …"}}` | The generation wait queue is full | Retry in a few minutes. No payment was taken — admission control runs before the paywall. |
 | **429** | `{"detail": "Rate limit exceeded. Please slow down and try again later."}` + `X-RateLimit-*` | Per-route request-rate limit (`/api/generate/start` 5/min, `/api/paper/deployments` 10/min) | Back off. This is requests-per-minute, distinct from the daily cap above — same status, different `detail` shape, different fix. |
-| **409** | `{"detail": {"reason": "wallet_link_required", "message": "…"}}` | Your account's free generations are used up (#1643) and it has no linked wallet | **Expected on production from generation #4** — do step 6a: `POST /api/wallets/challenge` → `POST /api/wallets/verify` ([`agent-api.md`](agent-api.md#optional-eip-4361-wallet-link)). Funding the wallet currently needs a human at the faucet, so linking an empty one only moves you to the 402. Check `free_generations_remaining` at step 5 first: if it is `null` the ledger was unreadable, not exhausted. |
+| **409** | `{"detail": {"reason": "wallet_link_required", "free_generations_locked_reason": null, "message": "…"}}` | Your account's free generations are used up (#1643) and it has no linked wallet | **Expected on production from generation #4** — do step 6a: `POST /api/wallets/challenge` → `POST /api/wallets/verify` ([`agent-api.md`](agent-api.md#optional-eip-4361-wallet-link)). Funding the wallet currently needs a human at the faucet, so linking an empty one only moves you to the 402. Check `free_generations_remaining` at step 5 first: if it is `null` the ledger was unreadable, not exhausted. |
+| **409** | `{"detail": {"reason": "wallet_link_required", "free_generations_locked_reason": "email_unverified", "message": "…"}}` | Your email is not verified, so the free allowance is locked — and the account has no wallet either | **Two ways out, and the message names both.** Verify the emailed link (step 2a; `POST /api/auth/send-verification-email` re-sends it) to unlock the 3 free runs with nothing spent, **or** do step 6a and pay per run. The `reason` is deliberately the same string as the row above so existing clients keep working; branch on `free_generations_locked_reason` to tell the two apart. |
 | **404** | `{"detail": "Strategy not found"}` / `{"detail": "Paper deployment not found"}` | Missing **or** not yours — the two are deliberately indistinguishable | Confirm the id came from a call made with this same session. Existence is private; a 404 here is not proof the id is wrong. |
 | **503** | `{"detail": {"reason": "payment_config_missing", "message": "…"}}` | Payments are enabled but not fully configured server-side | Not caller-fixable. Retry later; it fails closed rather than letting the request through free. |
 
@@ -522,6 +553,11 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
   host. `GET /api/generate/quote` is the only authority, it is public, and it costs you
   nothing to ask — the source defaults disagree with production on purpose, so reading the
   code instead of the endpoint gets you the wrong answer.
+- **Do not assume the free tier is yours before step 5 says so.** The allowance unlocks on
+  a verified email; `free_generations_remaining: 3` alongside
+  `free_generations_locked_reason: "email_unverified"` means three runs are waiting, not
+  three runs available. If you have no inbox to verify with, budget for the wallet path
+  from generation #1 rather than discovering it at the 409.
 - **Do not re-sign an x402 payment to retry.** A fresh signature is a fresh real charge.
   Carry an `Idempotency-Key`, and let an undelivered run's credit pay for the next attempt.
 - **Do not treat a `pending` or `fail` rigor gate as a pass.** A gate that never says no is

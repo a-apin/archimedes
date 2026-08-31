@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
 	ACCOUNT_USAGE_ENDPOINT,
+	LOCK_EMAIL_UNVERIFIED,
 	deriveFreeGenerationView,
 } from "../src/freeGenerations.js";
 
@@ -35,6 +36,7 @@ const usage = (overrides = {}) => ({
 	free_generations_allowance: 3,
 	free_generations_remaining: 3,
 	free_generations_error: null,
+	free_generations_locked_reason: null,
 	...overrides,
 });
 
@@ -70,6 +72,95 @@ test("a non-default allowance is rendered as configured, never hard-coded to 3",
 	);
 	assert.equal(view.allowance, 5);
 	assert.equal(view.chipLabel, "4 free generations left");
+});
+
+// ── The locked state: the allowance unlocks on a verified email (owner D1) ─
+//
+// The 2026-08-31 owner decision (recorded on #1653). The banner's job here is
+// the carrot: silence would let a fresh account conclude the free tier is a
+// fiction and bounce off the wallet gate, when the unlock is an inbox it
+// already owns.
+
+test("an unverified account is shown the carrot — what to do, and what it unlocks", () => {
+	const view = deriveFreeGenerationView(
+		usage({ free_generations_locked_reason: LOCK_EMAIL_UNVERIFIED }),
+	);
+	assert.equal(view.state, "locked");
+	assert.equal(view.locked, true);
+	assert.equal(view.lockedReason, "email_unverified");
+	assert.equal(view.exhausted, false);
+	assert.equal(view.remaining, 3);
+	assert.equal(view.chipLabel, "3 free generations locked");
+	assert.match(view.message, /Verify your email to unlock 3 free generations/);
+	assert.match(view.message, /no wallet and no payment needed/i);
+	// The carrot must not read as the exhausted state's wallet gate.
+	assert.doesNotMatch(view.message, /Link a wallet/i);
+});
+
+test("the carrot counts what is actually left, not the headline allowance", () => {
+	// Reachable: slots spent while verified cannot come back if verification
+	// is later lost. Promising 3 when 1 is left would be a claim the gate
+	// refuses on the second run.
+	const view = deriveFreeGenerationView(
+		usage({ free_generations_remaining: 1, free_generations_locked_reason: LOCK_EMAIL_UNVERIFIED }),
+	);
+	assert.equal(view.chipLabel, "1 free generation locked");
+	assert.match(view.message, /unlock 1 free generation on this account/);
+});
+
+test("a locked account with nothing left is told to link a wallet, NOT to verify", () => {
+	// Verifying unlocks nothing once the ledger is spent — an account that
+	// spent its three before this gate shipped is exhausted AND unverified.
+	// Offering the inbox here would be a dead end dressed as a way forward.
+	const view = deriveFreeGenerationView(
+		usage({ free_generations_remaining: 0, free_generations_locked_reason: LOCK_EMAIL_UNVERIFIED }),
+	);
+	assert.equal(view.state, "exhausted");
+	assert.equal(view.exhausted, true);
+	assert.match(view.message, /Link a wallet/);
+	assert.doesNotMatch(view.message, /Verify your email/i);
+});
+
+test("a LOCKED account with an unreadable ledger still renders NOTHING", () => {
+	// The two facts must not be conflated. We do not know how many slots
+	// verification would unlock, and a carrot we cannot size is a promise we
+	// cannot keep — so this is silence, exactly as an unlocked unreadable
+	// ledger is.
+	assert.equal(
+		deriveFreeGenerationView(
+			usage({
+				free_generations_remaining: null,
+				free_generations_error: "free_generation_backend_unavailable",
+				free_generations_locked_reason: LOCK_EMAIL_UNVERIFIED,
+			}),
+		),
+		null,
+	);
+});
+
+test("a lock reason this build does not know renders nothing, not the email carrot", () => {
+	// A newer backend could add a second reason and deploy ahead of the UI.
+	// The count is still not spendable, so it must not be shown as available —
+	// and "verify your email" would be an instruction that fixes nothing.
+	for (const reason of ["region_blocked", "account_suspended", "", 7, {}]) {
+		const view = deriveFreeGenerationView(usage({ free_generations_locked_reason: reason }));
+		if (reason === "" || typeof reason !== "string") {
+			// Absent/malformed is "not locked" — the pre-D1 payload shape.
+			assert.equal(view.locked, false, `reason=${String(reason)} must read as unlocked`);
+		} else {
+			assert.equal(view, null, `reason=${String(reason)} must render nothing`);
+		}
+	}
+});
+
+test("a pre-D1 backend that omits the field entirely still renders the available state", () => {
+	const { free_generations_locked_reason, ...rest } = usage();
+	void free_generations_locked_reason;
+	const view = deriveFreeGenerationView(rest);
+	assert.equal(view.state, "available");
+	assert.equal(view.locked, false);
+	assert.equal(view.lockedReason, null);
+	assert.equal(view.chipLabel, "3 free generations left");
 });
 
 // ── The honesty rule: a number is shown only when the backend sent one ─────
@@ -129,6 +220,14 @@ test("remaining above the allowance is clamped, never shown as '9 of 3'", () => 
 });
 
 // ── Wiring pins (no DOM available under `node --test`) ─────────────────────
+
+test("the component renders the state the pure module decided, and decides none itself", () => {
+	// data-state carries available|locked|exhausted onto the DOM so styling and
+	// any future DOM test read the same decision this file unit-tests, rather
+	// than re-deriving the rule from the payload.
+	assert.match(banner, /data-state=\{view\.state\}/);
+	assert.doesNotMatch(banner, /email_unverified|free_generations_locked_reason/);
+});
 
 test("the component reads the count from the backend, via the credentialed helper", () => {
 	// apiGet (src/api.js) sends credentials:'include' — that cookie is what

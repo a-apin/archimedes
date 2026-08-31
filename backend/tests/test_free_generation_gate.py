@@ -10,10 +10,13 @@ statement of the corrected policy:
      ``free_generation_grants`` rows after every call, so a gate that "exists"
      but never decrements cannot pass.
   2. **The adversarial pass** (CLAUDE.md: a guard must be shown to REJECT
-     something). Three separate inputs that must be refused: a ledger seeded
+     something). Four separate inputs that must be refused: a ledger seeded
      at the allowance so call *one* is blocked; the allowance switched off so
-     the pre-#1643 behaviour returns exactly; and two claims racing for the
-     same slot, where the unique constraint must reject the second.
+     the pre-#1643 behaviour returns exactly; two claims racing for the same
+     slot, where the unique constraint must reject the second; and — owner
+     decision D1, 2026-08-31, recorded on #1653 — an account whose email is
+     not verified, which is refused with a 409 that names BOTH unlocks, with
+     the verified account's identical request served free as the contrast.
   3. **The anti-goals**, each pinned as its own test: the account requirement
      is never relaxed (no wallet-only path), the paid tier from generation #4
      is untouched, the allowance is lifetime rather than daily, and no
@@ -88,19 +91,23 @@ def _hermetic_env(monkeypatch):
 
 
 @contextmanager
-def _as_account(user_id: str = USER, *, wallet: str | None = None):
-    """Signed-in account with an explicitly chosen wallet-link state.
+def _as_account(user_id: str = USER, *, wallet: str | None = None, email_verified: bool = True):
+    """Signed-in account with an explicitly chosen wallet-link + verification state.
 
     ``require_current_user`` is dependency-overridden (the
     ``test_generate_credits_route.py`` idiom) so the account id is a literal
     the ledger assertions can seed against; ``get_linked_wallet_address`` is
     patched at the route module (the ``test_generate_payment_gate.py`` idiom)
     because "signed in but no wallet" is the exact state this issue is about.
+
+    ``email_verified`` defaults to ``True`` — the state in which the free tier
+    exists at all (owner decision D1) — so every test above reads as the policy
+    it is asserting. ``TestEmailVerifiedUnlock`` passes ``False`` explicitly.
     """
     from archimedes.main import app
 
     app.dependency_overrides[require_current_user] = lambda: CurrentUser(
-        user_id, "Free Tier Test", f"{user_id}@example.com", True
+        user_id, "Free Tier Test", f"{user_id}@example.com", email_verified
     )
     try:
         with patch.object(generate_routes, "get_linked_wallet_address", return_value=wallet):
@@ -299,6 +306,140 @@ class TestTheGuardRejects:
         assert resp.json()["detail"]["reason"] == "wallet_link_required"
 
 
+# ── 2b. Owner decision D1: the allowance unlocks on a VERIFIED email ─────
+
+
+class TestEmailVerifiedUnlock:
+    """The 2026-08-31 owner decision recorded on #1653.
+
+    Free generations gate on a verified email, not on account creation alone —
+    accounts are free and unlimited, a working inbox is not, so verification is
+    what prices disposable-account farming of free LLM runs (and doubles as the
+    carrot for verifying). The gate must REFUSE an unverified claim; it must
+    not refuse the *request*, which still has the wallet path it always had.
+    """
+
+    def test_an_unverified_account_is_refused_with_the_dual_unlock_409(self, monkeypatch):
+        """The guard rejecting: identical request, unverified account, no free run.
+
+        Also the message contract. The 409 is now two different dead ends
+        wearing one status code, and telling a caller the wrong one costs it a
+        wasted request: this account's cheapest way forward is the inbox it
+        already owns, so the message must name verification AND the wallet.
+        """
+        _paywall_on(monkeypatch)
+
+        with _as_account(wallet=None, email_verified=False):
+            resp = _start()
+
+        assert resp.status_code == 409, resp.text
+        detail = resp.json()["detail"]
+        assert detail["reason"] == "wallet_link_required"  # the machine contract is unchanged
+        assert detail["free_generations_locked_reason"] == "email_unverified"
+        assert "erify your email" in detail["message"], detail["message"]
+        assert "wallets/challenge" in detail["message"], "the wallet unlock must still be offered"
+        # Nothing was claimed, so verifying later still buys the full allowance.
+        assert _grants() == []
+        assert free_generations.remaining(USER) == 3
+
+    def test_the_same_call_from_a_verified_account_is_served_free(self, monkeypatch):
+        """The contrast pair — the ONLY difference is ``email_verified``.
+
+        Without this, the test above would also pass if the free path had been
+        deleted outright rather than gated.
+        """
+        _paywall_on(monkeypatch)
+
+        with _as_account(wallet=None, email_verified=True):
+            resp = _start()
+
+        assert resp.status_code == 202, resp.text
+        assert [(r.seq, r.status) for r in _grants()] == [(1, GRANT_USED)]
+
+    def test_an_unverified_claim_never_reads_the_ledger(self, monkeypatch):
+        """The refusal is decided before any DB work.
+
+        Asserted on the session factory's ``call_count``, NOT by making it
+        raise: ``claim`` deliberately swallows every exception into "no free
+        slot", so a raising mock would be caught and this test would pass
+        against a gate that read the ledger first — a test that cannot fail
+        its own claim. (Checked: with the verification guard deleted, the
+        raising version still passed; this version fails.)
+        """
+        session_factory = MagicMock(side_effect=AssertionError("the ledger must not be touched"))
+        monkeypatch.setattr(free_generations, "_session", session_factory)
+
+        assert free_generations.claim(USER, email_verified=False) is None
+        assert session_factory.call_count == 0, "an unverified account must cost the database nothing"
+
+    def test_an_unverified_account_with_a_wallet_still_reaches_the_paywall(self, monkeypatch):
+        """Unverified is a lock on the FREE tier, not a block on the product.
+
+        The paid path is exactly what it was before #1643 for this caller: a
+        402 with the x402 requirements, from generation one.
+        """
+        _paywall_on(monkeypatch)
+
+        with _as_account(wallet=WALLET, email_verified=False):
+            resp = _start()
+
+        assert resp.status_code == 402, resp.text
+        assert "PAYMENT-REQUIRED" in resp.headers
+        assert _grants() == []
+
+    def test_an_exhausted_verified_account_gets_the_wallet_message_not_the_carrot(self, monkeypatch):
+        """The other half of the 409 fork: no carrot where verifying changes nothing.
+
+        This account has already verified and spent all three, so pointing it
+        at its inbox would be a dead end dressed as a way forward.
+        """
+        _paywall_on(monkeypatch)
+        _seed_used(USER, 3)
+
+        with _as_account(wallet=None, email_verified=True):
+            resp = _start()
+
+        assert resp.status_code == 409, resp.text
+        detail = resp.json()["detail"]
+        assert detail["free_generations_locked_reason"] is None
+        assert "free generations are used up" in detail["message"]
+        assert "erify your email" not in detail["message"]
+
+    def test_the_kill_switch_reports_no_lock_rather_than_an_empty_promise(self, monkeypatch):
+        """``FREE_GENERATIONS_PER_ACCOUNT=0`` must not dangle a carrot.
+
+        "Verify your email to unlock 0 free generations" is a promise with
+        nothing behind it. A disabled policy reports no lock at all, which the
+        UI renders as silence.
+        """
+        monkeypatch.setenv("FREE_GENERATIONS_PER_ACCOUNT", "0")
+        assert free_generations.locked_reason(email_verified=False) is None
+        assert free_generations.locked_reason(email_verified=True) is None
+
+    def test_claim_cannot_be_called_without_stating_the_verification_state(self):
+        """The keyword argument is required on purpose.
+
+        A future call site that forgets it would silently reopen the free tier
+        to unverified accounts; instead it does not run at all.
+        """
+        with pytest.raises(TypeError):
+            free_generations.claim(USER)  # type: ignore[call-arg]
+
+    def test_the_unverified_refusal_still_emits_wallet_gate_shown(self, monkeypatch):
+        """The funnel keeps seeing the gate — the boundary just has two exits now."""
+        _paywall_on(monkeypatch)
+        stages: list[str] = []
+
+        async def _capture(_request, stage):
+            stages.append(stage)
+
+        monkeypatch.setattr(generate_routes, "record_funnel", _capture)
+        with _as_account(wallet=None, email_verified=False):
+            assert _start().status_code == 409
+
+        assert stages == ["wallet_gate_shown"]
+
+
 # ── 3. The anti-goals ────────────────────────────────────────────────────
 
 
@@ -439,6 +580,30 @@ class TestUsageReporting:
         assert spent["free_generations_remaining"] == 0
         # The daily caps are a separate axis and are still reported separately.
         assert spent["user"]["used"] == 0
+
+    def test_an_unverified_account_is_reported_as_LOCKED_with_its_balance_intact(self, monkeypatch):
+        """Owner decision D1's display half: the lock is its own field.
+
+        "3 slots, not yet unlocked" and "0 slots left" are different situations
+        with different answers, so folding the lock into the count (either way)
+        would destroy the distinction the banner needs.
+        """
+        _paywall_on(monkeypatch)
+
+        with _as_account(wallet=None, email_verified=False):
+            body = self._usage()
+
+        assert body["free_generations_locked_reason"] == "email_unverified"
+        assert body["free_generations_remaining"] == 3  # waiting, not spent
+        assert body["free_generations_error"] is None  # a lock is not a failure
+
+    def test_a_verified_account_reports_no_lock(self, monkeypatch):
+        _paywall_on(monkeypatch)
+
+        with _as_account(wallet=None, email_verified=True):
+            body = self._usage()
+
+        assert body["free_generations_locked_reason"] is None
 
     def test_an_unreadable_ledger_reports_null_never_a_fabricated_number(self, monkeypatch):
         """Adversarial: the failure a naive implementation renders as "0 left"
