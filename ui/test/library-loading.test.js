@@ -140,3 +140,25 @@ test('a row with no gate answer yet says so instead of rendering nothing', () =>
   // failed gate shows the existing error banner, not a permanent "checking…".
   assert.match(strategies, /gatePending=\{gateLoading && !gateError\}/)
 })
+
+// …and only for rows that call can actually answer for.
+// `/api/selection-bias/gate` iterates the curated provider library
+// (selection_bias_routes.evaluate_rigor_gate -> _provider().list_strategies()),
+// so a GENERATED row has no deployMap entry before or after it lands. Claiming
+// "still loading the gate for this row" there would be false, and the chip
+// would flicker in and back out on the default tab. Caught on an adversarial
+// re-read of this PR's own first cut, which wired it to all three tables.
+test('only the curated Examples table claims a pending gate', () => {
+  assert.equal(
+    (strategies.match(/gatePending=\{gateLoading && !gateError\}/g) || []).length,
+    1,
+    'exactly one StrategyTable — the curated Examples one — may claim a pending gate',
+  )
+  // Anchored to that table specifically: the prop must sit between the
+  // `strategies={examples}` this table renders and its own empty state.
+  const examplesTable = strategies.match(
+    /strategies=\{examples\}[\s\S]*?emptyState=\{<p className="caption">No example strategies loaded\.<\/p>\}/,
+  )
+  assert.ok(examplesTable, 'expected the Examples StrategyTable to still be there')
+  assert.match(examplesTable[0], /gatePending=\{gateLoading && !gateError\}/)
+})

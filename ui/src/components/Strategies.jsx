@@ -1115,7 +1115,6 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               onOpenPassport={openPassport}
               deployMap={deployMap}
               level={level}
-              gatePending={gateLoading && !gateError}
               emptyState={
                 rejected.length > 0 ? (
                   <div className="card" style={{ padding: 22 }}>
@@ -1181,7 +1180,6 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                     onOpenPassport={openPassport}
                     deployMap={deployMap}
                     level={level}
-                    gatePending={gateLoading && !gateError}
                     emptyState={<p className="caption">No rejected strategies.</p>}
                   />
                 </div>
@@ -1217,6 +1215,14 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               onOpenPassport={openPassport}
               deployMap={deployMap}
               level={level}
+              // Only the EXAMPLES table claims "checking…". /api/selection-bias/gate
+              // iterates the curated provider library
+              // (selection_bias_routes.evaluate_rigor_gate -> _provider().list_strategies()),
+              // so a generated row has no deployMap entry before OR after that call
+              // lands — telling the reader we are "still loading the gate for this
+              // row" would be false for those rows, and the chip would flicker in
+              // and back out on the default tab. Generated rows are covered by the
+              // per-strategy /gate/{id} route on the Passport, not by this one.
               gatePending={gateLoading && !gateError}
               emptyState={<p className="caption">No example strategies loaded.</p>}
             />
