@@ -144,6 +144,14 @@ jobs:
         run: |
           pip install --quiet -e ./cli
           python -m pytest cli/tests --tb=short -q
+      - name: MCP server tests
+        # archimedes-mcp is a second small distribution (mcp SDK + httpx, mocked at the
+        # same boundary, no network). Same reason as the CLI step above: its claims —
+        # notably "the credential never appears in any output" — must be CI-backed.
+        # Installed AFTER ./cli because it depends on it for the session-cache loader.
+        run: |
+          pip install --quiet -e ./cli -e ./mcp-server
+          python -m pytest mcp-server/tests --tb=short -q
 
   frontend-and-auth:
     name: Frontend + Better Auth
