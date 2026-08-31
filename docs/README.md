@@ -132,6 +132,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`runbooks/docs-site-setup.md`](runbooks/docs-site-setup.md) | runbook | Dan Browne | 2026-08-20 | GitHub Pages docs site (#1381, option B): Dan's two manual steps (Pages source + Route 53 CNAME), local `mkdocs serve` preview, and why `mkdocs build --strict` isn't used. |
 | [`operations/feature-flag-fliplist.md`](operations/feature-flag-fliplist.md) | current | Dan Browne | 2026-08-31 | The go-live checklist (#834): every feature flag in the tree, classified LIVE / FLIP-AT-LAUNCH / DEAD, with its deployed value, its reader, and the precondition for flipping it. Enforced — `backend/tests/test_feature_flag_fliplist_drift.py` re-derives the inventory and fails CI on any flag with no row. |
 | [`runbooks/backtest-results-retention.md`](runbooks/backtest-results-retention.md) | runbook | Dan Browne | 2026-08-30 | `backtest_results` archive-then-prune procedure (v8 Lane 3.1): keep policy, `archive_backtest_results.py`'s `--plan`/`--archive`/`--prune` flags, the manifest-verification guard, and the post-prune VACUUM step. |
+| [`runbooks/runner-ec2-wedge.md`](runbooks/runner-ec2-wedge.md) | runbook | Dan Browne | 2026-08-31 | `archimedes-runner` wedge (#1402): the impaired-instance-check + dead-SSM-agent signature, read-only diagnosis commands, the recovery ladder, what the new `ec2:reboot` alarm automates, and the operator-only steps (`terraform apply`, the one-time live reboot test). |
 
 ## Decisions (ADRs)
 
@@ -165,7 +166,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off). |
+| [`account-authentication.md`](account-authentication.md) | runbook | Daniel Reis | 2026-08 | Better Auth deploy runbook: secrets, ECR, rollback (#1194); account linking, explicit link/unlink (#1420 follow-up; implicit auto-link stays off); account management — email/password change, session revocation, deletion (#1367). |
 | [`plans/2026-07-28-account-auth-app-boundary.md`](plans/2026-07-28-account-auth-app-boundary.md) | plan | Daniel Reis | 2026-07-28 | The #1194 account-auth boundary plan. |
 | [`plans/2026-08-15-core-app-visual-refresh.md`](plans/2026-08-15-core-app-visual-refresh.md) | plan | Daniel Reis | 2026-08-15 | Core-app visual refresh plan. |
 | [`plans/2026-08-22-calm-precision-rebrand.md`](plans/2026-08-22-calm-precision-rebrand.md) | plan | Daniel Reis | 2026-08-22 | Calm-precision rebrand plan (PR #1469). |

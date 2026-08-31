@@ -220,6 +220,72 @@ mock — the authorization-URL construction, CSRF state, and linking decisions a
 library code. UI wiring and the `canUnlink` guard are covered in `ui/test/auth-client.test.js`,
 `ui/test/auth-errors.test.js`, and `ui/test/account-settings.test.js`.
 
+### Account management — email, password, sessions, deletion (#1367)
+
+Account Settings (`/app/account`) was read-only until this landed: no email change, no
+password change, no session list, no deletion. All four are Better Auth's own endpoints,
+called through `ui/src/auth-client.js`; nothing here re-implements password hashing,
+verification tokens, or session invalidation.
+
+**Email change** — `POST /api/auth/change-email`, opt-in via `user.changeEmail.enabled`.
+The address never switches over on submit. When the current address is already verified,
+`sendChangeEmailConfirmation` (`auth/auth.js`) mails a confirmation to the CURRENT address;
+opening it makes Better Auth mint a second token and mail the NEW address; opening THAT is
+the switchover. An unverified account skips the first step — there is no proven old
+address to confirm from. `updateEmailWithoutVerification` stays off, so no path switches an
+address without proving the new one. The callback is fire-and-forget with a fail-soft
+`.catch` for the same reason `sendResetPassword` is: an address that already belongs to
+another account returns an identical `{status: true}` with no mail sent, so a mailer
+failure that could 500 would make "taken" and "free" distinguishable by status code.
+Failures log the greppable marker `CHANGE_EMAIL_CONFIRM_SEND_FAILED`.
+
+**Password change** — `POST /api/auth/change-password`, already live server-side; the UI
+sends `revokeOtherSessions: true`, so rotating the password ends every other session. An
+account with no credential row (Google/GitHub only) is told so rather than shown a form
+that can only 400: `/set-password` is `serverOnly` in Better Auth, so there is no client
+path to add one.
+
+**Sessions** — `GET /api/auth/list-sessions`, `POST /api/auth/revoke-session`, `POST
+/api/auth/revoke-other-sessions`. Note the library's asymmetry: **listing** is behind
+`freshSessionMiddleware` (24h, `session.freshAge`) while **revoking** is not, so a stale
+session cannot read its own session list but can still end every other one. The UI renders
+that state honestly and deliberately keeps "End all other sessions" live in it — an empty
+list would be indistinguishable from a genuinely single-session account, which is a
+fabricated all-clear at exactly the moment someone is checking for a compromise.
+
+`auth/auth.js`'s `hooks.before` adds one guard here. Better Auth's `/revoke-session` does
+check ownership (`api/routes/session.mjs:434`) but returns `{status: true}` either way, so
+a token belonging to another account — or to nothing — gets a 200 claiming a revocation
+that did not happen. The hook turns that into a `404 SESSION_NOT_FOUND` before the
+endpoint runs, uniformly for "not yours" and "no such token", so the UI's "Session ended."
+notice is only ever reached when a session really went away.
+
+**Deletion** — `POST /api/auth/delete-user`, opt-in via `user.deleteUser.enabled`.
+`sendDeleteAccountVerification` is deliberately NOT set: with it, the endpoint only ever
+mails a link and never deletes in-request, which while SES is sandboxed would be a button
+that silently does nothing. Re-authentication is the endpoint's own: a password account
+must submit its current password, and a password-less account falls through to the
+session-freshness check. The UI adds a typed `delete my account` confirmation
+(`ui/src/account-deletion.js`) on top of the usual `window.confirm`.
+
+What actually gets erased is the **database's** decision, not this service's:
+`internalAdapter.deleteUser` ends in a bare `DELETE FROM auth_users WHERE id = ?`, which is
+the statement migration `85ca5310b7a1`'s per-table `ON DELETE` actions and its
+`trg_auth_users_purge_unclaimed_owned_rows` trigger are written to fire on
+(`backend/tests/test_account_deletion_cascade.py`). The user-facing erased/detached/retained
+lists are generated from `ui/src/account-deletion.js`, which
+`ui/test/account-deletion.test.js` pins against the `ondelete=` declared in
+`backend/archimedes/models/*.py` — so the page cannot promise something the schema does not
+do. `payment_receipts` and `generation_credits` carry no FK to `auth_users` and are listed
+to the user as NOT removed, which is the honest reading of the migration's own deferral.
+
+One side effect worth knowing: deleting an account also deletes its `auth_accounts` rows,
+which fires the same `databaseHooks.account.delete.after` that sends the link/unlink
+notification. `notifyAccountChange` returns early for `/delete-user` — otherwise the owner
+gets an "a sign-in method was removed, go review Account Settings" mail about an account
+they just deleted, and the queued hook (running after the `auth_users` row is gone) trips
+`ACCOUNT_CHANGE_NOTIFY_FAILED` on a completely expected event.
+
 ## Wallet linking
 
 1. Authenticated user requests `POST /api/wallets/challenge` with address, chain ID,
