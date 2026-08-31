@@ -110,15 +110,21 @@ class BacktestResult:
     # this field a reader cannot tell a genuine audit pass from the constant.
     #   "broker_config_only"                — execution-timing check only, never fails
     #   "ast_audit"                         — rigor_evaluator.look_ahead_audit ran on real source
-    #   "dsl_structural_audit"              — closed-DSL path, PROVEN: the spec sits
-    #                                          inside a surface whose interpreter was
-    #                                          AST-audited to read only bar t and
-    #                                          earlier, and the broker cheat-on-
-    #                                          close/open check passed
+    #   "dsl_structural_audit"              — closed-DSL path, the audit reached a verdict
+    #                                          about this strategy (pass or fail): the spec
+    #                                          was checked against a surface whose interpreter
+    #                                          was AST-audited to read only bar t and earlier,
+    #                                          and the broker cheat-on-close/open check ran
     #                                          (services/dsl_lookahead_audit.py)
-    #   "self_attested"                     — closed-DSL path, structural audit not
-    #                                          completed or failed; the boolean beside
-    #                                          this label is False
+    #   "dsl_audit_not_run"                 — closed-DSL path, the audit reached NO verdict
+    #                                          ("pending"/"degenerate"): the boolean beside this
+    #                                          label is False because nothing was proven, NOT
+    #                                          because a check found a leak
+    #   "self_attested"                     — RETIRED, never written any more. Closed-DSL rows
+    #                                          from when the LLM's own look_ahead_safe
+    #                                          declaration was the "source". That field is gone
+    #                                          from the DSL; a row carrying this value asserts
+    #                                          nothing and must not be read as an audit result
     #   "static_rebalance_no_signal_shift"  — portfolio simulator: t-1 held weights
     #                                          earn t returns (mechanically look-ahead-
     #                                          free), but the weight matrix itself is

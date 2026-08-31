@@ -18,9 +18,13 @@ gets **401** (session check runs first).
 Account denominator comes from canonical Better Auth users, never cumulative
 request tallies or optional linked-wallet/profile counts.
 
-Today's cost fields are DRAFT/illustrative placeholders (the live Bedrock/infra
-billing wiring — AWS Cost Explorer + Bedrock token metering — is roadmap work);
-they are labelled ``draft`` so a reader can't mistake them for metered live spend.
+The account-level AWS cost fields are DRAFT/illustrative placeholders (the live
+Bedrock/infra billing wiring — AWS Cost Explorer + Bedrock token metering — is
+roadmap work); they are labelled ``draft`` so a reader can't mistake them for
+metered live spend. ``cost_per_generation_usd`` is the exception as of #1217:
+it is derived from real ``generation_costs`` measurements priced against the
+``GENERATION_COST_RATE_CARD`` env rate card (``services/generation_cost_rollup``),
+and carries its own provenance rather than sharing the ``draft`` label.
 Real distinct users are read live so the per-user denominators are honest.
 
 Owner directive (2026-08-20, SUPERSEDES issue #1028 D8 "public Insights page"):
@@ -56,6 +60,7 @@ from archimedes.models.telemetry import (
     WalletsResponse,
 )
 from archimedes.services.engagement_metrics import get_engagement_snapshot
+from archimedes.services.generation_cost_rollup import get_measured_generation_cost
 from archimedes.services.identity_metrics import (
     count_human_wallets,
     list_human_wallets,
@@ -123,24 +128,53 @@ async def get_private_cost(wallet: str = Depends(require_platform_admin)) -> dic
     """Account + admin-linked-wallet cost dashboard. Anonymous
     → 401; verified-but-non-admin → 403.
 
-    Cost fields are DRAFT placeholders until the live billing wiring lands
-    (roadmap: AWS Cost Explorer + Bedrock token metering). ``real_users`` is read
-    live so any per-user figure a consumer computes is anchored to the honest
-    distinct-user denominator, never the request counter.
+    **Two provenances on one payload, and they are labelled separately (#1217).**
+    The account-level AWS spend fields (``bedrock_*``, ``infra_monthly_usd``,
+    ``cost_per_user_usd``) are still DRAFT placeholders pending the live billing
+    wiring (roadmap: AWS Cost Explorer + Bedrock token metering) — that is what
+    the top-level ``source: "draft"`` describes, and it is deliberately
+    unchanged. ``cost_per_generation_usd`` is no longer one of them: it is now
+    derived from the ``generation_costs`` measurements this platform actually
+    recorded, priced against the ``GENERATION_COST_RATE_CARD`` environment rate
+    card, with the full distribution and the N-scaling breakdown under
+    ``generation_cost``.
+
+    It stays ``None`` — never ``0`` — when no rate card is configured or no
+    measured run was priceable, and ``generation_cost.rate_card_configured`` /
+    ``.unpriceable_reasons`` say which. A null here means "not measured or not
+    priceable", exactly as before; what changed is that it can now also be a
+    real, measured number.
+
+    ``real_users`` is read live so any per-user figure a consumer computes is
+    anchored to the honest distinct-user denominator, never the request counter.
+
+    This is the ONLY surface carrying the priced figure, and it is admin-gated:
+    the public ``/api/metrics`` family stays aggregate, PII-free and unpriced.
     """
     real_users = get_distinct_user_count()
+    generation_cost = get_measured_generation_cost()
+    measured = generation_cost.get("cost_per_generation_usd") or {}
     return {
-        "source": "draft",  # NOT live-metered spend — placeholders pending billing wiring.
+        # Describes the AWS-billing placeholders below, NOT generation_cost —
+        # which carries its own provenance (rate_card_configured / jobs_priced /
+        # unavailable) precisely so the two are never read as one claim.
+        "source": "draft",
         "real_users": real_users,
         "bedrock_monthly_usd": None,
         "bedrock_daily_usd": None,
         "infra_monthly_usd": None,
         "cost_per_user_usd": None,
-        "cost_per_generation_usd": None,
+        # The mean of the priced runs, or None. Kept flat for the existing
+        # consumer contract; read `generation_cost` for the distribution, the
+        # LLM-vs-compute split, and how many runs could not be priced.
+        "cost_per_generation_usd": measured.get("mean"),
+        "generation_cost": generation_cost,
         "note": (
-            "Draft placeholders. Per-user / per-generation figures must be derived from "
-            "real_users (canonical accounts) or strategy generations — never the cumulative "
-            "request tallies on /api/metrics (issue #830)."
+            "source='draft' applies to the bedrock_*/infra/cost_per_user placeholders only. "
+            "cost_per_generation_usd is measured: generation_costs rows priced against the "
+            "GENERATION_COST_RATE_CARD env rate card (null, never 0, when unset or unpriceable). "
+            "Per-user figures must be derived from real_users (canonical accounts) — never the "
+            "cumulative request tallies on /api/metrics (issue #830)."
         ),
         "authenticated_wallet": wallet,
         "timestamp": datetime.now(UTC).isoformat(),

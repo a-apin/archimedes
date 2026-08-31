@@ -1733,23 +1733,32 @@ def _look_ahead_audit_source(rigor_verdict: dict) -> str:
     ``BacktestResult.look_ahead_audit_source`` exists precisely so a reader can
     tell a genuine audit pass from a constant. This path used to hardcode
     ``"self_attested"`` — correct at the time, because the boolean really was the
-    LLM's own ``look_ahead_safe`` declaration. It is now derived from the
-    three-state ``look_ahead_audit`` verdict that ``dsl_lookahead_audit`` computes:
+    LLM's own ``look_ahead_safe`` declaration. That field no longer exists, so
+    the label is derived from the four-state ``look_ahead_status`` verdict that
+    ``dsl_lookahead_audit`` computes, on the axis a provenance column is actually
+    about — did an audit reach a verdict, or not:
 
-      * ``"dsl_structural_audit"`` — the spec was proven to sit inside a DSL
-        surface whose interpreter provably reads only bar ``t`` and earlier, and
-        the broker cheat-on-close/open check passed.
-      * ``"self_attested"``        — anything less. The verdict blob is missing
-        the field (a row written before this landed), the structural audit could
-        not be completed, or it FAILED. In every one of those cases the boolean
-        beside this label is False, so a reader is never shown a self-attested
-        True again.
+      * ``"dsl_structural_audit"`` — the audit CONCLUDED (``pass`` or ``fail``):
+        the spec was checked against a DSL surface whose interpreter provably
+        reads only bar ``t`` and earlier, and the broker cheat-on-close/open
+        check ran. Note this is written for a ``fail`` too: the audit is still
+        the provenance of that ``False``.
+      * ``"dsl_audit_not_run"``    — the audit reached NO verdict (``pending`` /
+        ``degenerate``), or the blob predates this field entirely. The boolean
+        beside this label is False because nothing was proven, not because a
+        leak was found.
+
+    ``"self_attested"`` is never written again by any path.
     """
-    from archimedes.services.dsl_lookahead_audit import PASSED_STRUCTURAL
+    from archimedes.services.dsl_lookahead_audit import (
+        CONCLUSIVE_STATUSES,
+        SOURCE_DSL_AUDIT,
+        SOURCE_DSL_AUDIT_NOT_RUN,
+    )
 
-    if rigor_verdict.get("look_ahead_audit") == PASSED_STRUCTURAL:
-        return "dsl_structural_audit"
-    return "self_attested"
+    if rigor_verdict.get("look_ahead_status") in CONCLUSIVE_STATUSES:
+        return SOURCE_DSL_AUDIT
+    return SOURCE_DSL_AUDIT_NOT_RUN
 
 
 def _portfolio_daily_returns(artifact: dict) -> list[float]:
@@ -1911,17 +1920,16 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             backtest_engine=(rv.get("backtest_engine") or ENGINE_SINGLE_FEED),
             # Fixed cost basis every fusion/DSL backtest is charged — tx_cost_bps
             # and slippage_bps are never overridden by a caller on this path today
-            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). (#1242 review:
-            # cost_model_id used to stop at the artifact dict on this path and
-            # never reach the persisted row.)
+            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). This is the
+            # closed-DSL path, with no inspectable source for an AST audit
+            # (#1242 review: cost_model_id used to stop at the artifact dict on
+            # this path and never reach the persisted row).
             cost_model_id=DEFAULT_COST_MODEL_ID,
             # Provenance of look_ahead_audit_passed above, derived from the
-            # three-state audit rather than hardcoded. This used to be a flat
+            # four-state audit rather than hardcoded. It used to be a flat
             # "self_attested" because the boolean genuinely WAS the LLM's own
-            # look_ahead_safe flag. It no longer is: a DSL spec proven to sit
-            # inside the verified interpreter surface earns
-            # "dsl_structural_audit"; anything short of that keeps the honest
-            # "self_attested" label AND (unlike before) a False boolean.
+            # look_ahead_safe flag; that field no longer exists, so nothing is
+            # attested and that value is never written again.
             look_ahead_audit_source=_look_ahead_audit_source(rv),
         )
         artifact = {
@@ -1935,23 +1943,32 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         # persisted passes_rigor_gate matches what verdicts_for_strategies computes.
         # look_ahead_audit_passed threads the REAL structural audit computed above
         # (result.look_ahead_audit_passed, from rv["lookahead_audit_passed"], which
-        # dsl_lookahead_audit derives — NOT the LLM's look_ahead_safe boolean)
-        # through to the gate. Without this, strategy_code=None (this path has no
-        # inspectable source for the AST audit) left the gate's look_ahead_passed
-        # unconditionally False — an always-on floor failure that blocked deploy at
-        # EVERY strictness level regardless of DSR/PBO/OOS, no matter how strong the
-        # strategy. A spec that cannot clear the structural audit now arrives here
-        # as False and correctly fails that floor.
+        # dsl_lookahead_audit derives — there IS no LLM look_ahead_safe boolean
+        # any more) through to the gate. Without this, strategy_code=None (this
+        # path has no inspectable source for the AST audit) left the gate's
+        # look_ahead_passed unconditionally False — an always-on floor failure
+        # that blocked deploy at EVERY strictness level regardless of DSR/PBO/OOS,
+        # no matter how strong the strategy. A spec that cannot clear the
+        # structural audit now arrives here as False and correctly fails that
+        # floor.
+        #
+        # This boolean is the SAME term fusion_evaluator.apply_rigor_gate folded
+        # into `passing` (both are `DslLookAheadAudit.passed`), which is what keeps
+        # the two gates from disagreeing about one strategy — the badge gate here
+        # and the fusion verdict cannot land on opposite sides of the look-ahead
+        # leg. Pinned by test_dsl_lookahead_audit.TestTheTwoGatesAgree.
+        #
         # Fail-closed on admission, honest on the surface: when the boolean above
-        # is False because the structural audit never COMPLETED (rather than
-        # because it caught a leak), say so. The gate outcome is identical either
-        # way — the always-on floor still blocks — but the user is not told their
-        # strategy failed an audit that never ran.
+        # is False because the audit reached NO verdict (rather than because it
+        # caught a leak), the status and reason say so. The gate outcome is
+        # identical either way — the always-on floor still blocks — but the user
+        # is not told their strategy failed an audit that never ran.
         live = verdict_from_returns(
             strategy_id,
             returns,
             num_trials=int(num_trials),
             look_ahead_audit_passed=result.look_ahead_audit_passed,
+            look_ahead_status=rv.get("look_ahead_status"),
             look_ahead_not_run_reason=not_run_reason_from_verdict(rv),
         )
 

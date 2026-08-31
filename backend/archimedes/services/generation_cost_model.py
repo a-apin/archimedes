@@ -33,10 +33,13 @@ Three boundaries make this safe to add without weakening anything:
    columns precisely so a priced document can never be filed as a ``cost_v1``
    record, and that guard is what enforces it.
 
-Nothing in the serving path imports this module yet. Wiring it into
-``quote()`` is a separate, flag-gated change designed in
+**Nothing on a customer-facing path imports this module.** One reader exists —
+:mod:`archimedes.services.generation_cost_rollup`, which aggregates these
+estimates for the admin-only ``GET /api/metrics/private/cost`` dashboard
+(#1217). That is a *report*, not a charge. Wiring this into ``quote()`` is
+still a separate, flag-gated change designed in
 ``docs/adr/lambda-generation-offload.md``; the flat ``GENERATION_PRICE_USD``
-remains the default and this module changes no behaviour by existing.
+remains the default and what a user pays is unchanged by this module existing.
 """
 
 from __future__ import annotations
@@ -59,6 +62,18 @@ SCHEMA = "cost_model_v1"
 #: (or malformed) means "no measured pricing available", which is a supported
 #: state: the flat price is still the default.
 RATE_CARD_ENV = "GENERATION_COST_RATE_CARD"
+
+# Stable machine-readable codes for the ways an estimate can come out
+# incomplete. ``incomplete_reasons`` stays human prose (it is what a refusal
+# message quotes); these are what an aggregate groups by. A rollup that had to
+# group by the prose would be parsing a sentence containing a call count and a
+# model id — two unbounded values — so "3 calls without usage" and "4 calls
+# without usage" would be two different buckets for one cause.
+REASON_SCHEMA_MISMATCH = "schema_mismatch"
+REASON_LLM_USAGE_INCOMPLETE = "llm_usage_incomplete"
+REASON_NO_PER_MODEL_TOKENS = "llm_no_per_model_tokens"
+REASON_MODEL_NOT_ON_CARD = "model_not_on_rate_card"
+REASON_NO_WALL_SECONDS = "no_wall_seconds"
 
 #: USDC settles at six decimals, and circlekit's price strings are
 #: ``"$X.XXXXXX"``. Quoting more precision than the asset can express would be
@@ -204,32 +219,42 @@ def billed_seconds(wall_seconds: float | Decimal, card: RateCard) -> Decimal:
     return max(steps * card.billing_granularity_seconds, card.minimum_billed_seconds)
 
 
-def _llm_cost(snapshot: dict[str, Any], card: RateCard) -> tuple[Decimal, list[str]]:
+def _llm_cost(snapshot: dict[str, Any], card: RateCard) -> tuple[Decimal, list[tuple[str, str]], list[str]]:
     """Price the LLM term from the snapshot's per-model token counts.
 
     Per-model, never on the aggregate: models differ by an order of magnitude in
     price, so a total priced at one model's rate is not an estimate of anything.
+
+    Returns the priced total, the ``(code, prose)`` reasons it is incomplete,
+    and the model ids the card could not price.
     """
     llm = snapshot.get("llm") or {}
-    reasons: list[str] = []
+    reasons: list[tuple[str, str]] = []
+    unpriced_models: list[str] = []
     if not llm.get("usage_complete", False):
         missing = llm.get("calls_missing_usage")
-        reasons.append(f"cost_meter reported incomplete LLM usage ({missing} call(s) without a usage block)")
+        reasons.append(
+            (
+                REASON_LLM_USAGE_INCOMPLETE,
+                f"cost_meter reported incomplete LLM usage ({missing} call(s) without a usage block)",
+            )
+        )
 
     total = Decimal(0)
     by_model = llm.get("by_model") or {}
     if not by_model and llm.get("calls"):
-        reasons.append("snapshot records LLM calls but no per-model token counts")
+        reasons.append((REASON_NO_PER_MODEL_TOKENS, "snapshot records LLM calls but no per-model token counts"))
     for model_id, counts in by_model.items():
         rate = card.models.get(str(model_id))
         if rate is None:
-            reasons.append(f"no rate on the card for model {model_id!r}")
+            reasons.append((REASON_MODEL_NOT_ON_CARD, f"no rate on the card for model {model_id!r}"))
+            unpriced_models.append(str(model_id))
             continue
         input_tokens = _decimal(counts.get("input_tokens", 0), where=f"by_model[{model_id!r}].input_tokens")
         output_tokens = _decimal(counts.get("output_tokens", 0), where=f"by_model[{model_id!r}].output_tokens")
         total += input_tokens / _MILLION * rate.input_usd_per_mtok
         total += output_tokens / _MILLION * rate.output_usd_per_mtok
-    return total, reasons
+    return total, reasons, unpriced_models
 
 
 def estimate_cost(snapshot: dict[str, Any], card: RateCard) -> dict[str, Any]:
@@ -237,21 +262,25 @@ def estimate_cost(snapshot: dict[str, Any], card: RateCard) -> dict[str, Any]:
 
     Returns a self-describing estimate. ``complete`` is the only field a caller
     needs to read before deciding whether the total is safe to quote from;
-    ``incomplete_reasons`` says why when it is not.
+    ``incomplete_reasons`` says why when it is not, and
+    ``incomplete_reason_codes`` says the same thing in a form an aggregate can
+    group by without parsing prose.
     """
     if not isinstance(snapshot, dict):
         raise TypeError(f"snapshot must be a dict, got {type(snapshot).__name__}")
-    reasons: list[str] = []
+    reasons: list[tuple[str, str]] = []
     schema = snapshot.get("schema")
     if schema != "cost_v1":
-        reasons.append(f"snapshot schema {schema!r} is not the cost_v1 this model prices")
+        reasons.append((REASON_SCHEMA_MISMATCH, f"snapshot schema {schema!r} is not the cost_v1 this model prices"))
 
-    llm_usd, llm_reasons = _llm_cost(snapshot, card)
+    llm_usd, llm_reasons, unpriced_models = _llm_cost(snapshot, card)
     reasons.extend(llm_reasons)
 
     wall = snapshot.get("wall_seconds")
     if wall is None or (isinstance(wall, float) and not math.isfinite(wall)):
-        reasons.append("snapshot has no usable wall_seconds — the compute term cannot be priced")
+        reasons.append(
+            (REASON_NO_WALL_SECONDS, "snapshot has no usable wall_seconds — the compute term cannot be priced")
+        )
         seconds = Decimal(0)
     else:
         seconds = billed_seconds(wall, card)
@@ -262,7 +291,11 @@ def estimate_cost(snapshot: dict[str, Any], card: RateCard) -> dict[str, Any]:
         "schema": SCHEMA,
         "lane": card.lane,
         "complete": not reasons,
-        "incomplete_reasons": reasons,
+        "incomplete_reasons": [prose for _, prose in reasons],
+        # Deduplicated, first-seen order: two calls missing usage is one cause,
+        # not two, and a bucket count must not double-count one snapshot.
+        "incomplete_reason_codes": list(dict.fromkeys(code for code, _ in reasons)),
+        "unpriced_models": list(dict.fromkeys(unpriced_models)),
         "components": {
             "llm_usd": _fixed(llm_usd.quantize(_COMPONENT_EXPONENT, rounding=ROUND_HALF_UP)),
             "compute_usd": _fixed(compute_usd.quantize(_COMPONENT_EXPONENT, rounding=ROUND_HALF_UP)),

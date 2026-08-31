@@ -160,7 +160,8 @@ def test_private_cost_200_with_valid_admin_siwe_session(client):
     # The honest distinct-user count is present (denominator for any per-user $).
     assert body["real_users"] == 2
     assert body["authenticated_wallet"] == _ADMIN_WALLET.lower()
-    # Cost fields are draft placeholders until billing wiring lands.
+    # The AWS-billing fields are still draft placeholders; `source` describes
+    # THEM, not the measured generation cost (#1217 narrowed its scope).
     assert body["source"] == "draft"
 
 
@@ -169,6 +170,89 @@ def test_private_cost_admin_wallets_parsed_case_insensitively(client, monkeypatc
     monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", _ADMIN_WALLET.upper())
     res = client.get("/api/metrics/private/cost", cookies=_siwe_cookies(_ADMIN_WALLET))
     assert res.status_code == 200
+
+
+# ── The measured $/generation figure (#1217) ─────────────────────────────
+# `cost_per_generation_usd` was a hard-coded `None`. It is now the mean of the
+# `generation_costs` measurements priced against the env rate card. What these
+# tests pin is the pair of properties that make that safe: it is null (never 0)
+# when nothing can be priced, and it never leaves the admin gate.
+
+
+def test_private_cost_generation_cost_is_null_without_a_rate_card(client, monkeypatch):
+    """No rate card configured → null, and a stated reason. Never $0.00.
+
+    This is the default state of every environment that has not been handed a
+    card, so it is the shape the dashboard renders most of the time — and the
+    one where a plausible-looking zero would do the most damage.
+    """
+    monkeypatch.delenv("GENERATION_COST_RATE_CARD", raising=False)
+    res = client.get("/api/metrics/private/cost", cookies=_siwe_cookies(_ADMIN_WALLET))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["cost_per_generation_usd"] is None
+    assert body["generation_cost"]["rate_card_configured"] is False
+    assert body["generation_cost"]["schema"] == "cost_rollup_v1"
+
+
+def test_private_cost_serves_the_measured_figure_when_priceable(client, monkeypatch):
+    """A priced rollup reaches the flat field the dashboard already reads."""
+    rollup = {
+        "schema": "cost_rollup_v1",
+        "rate_card_configured": True,
+        "lane": "fargate_inline",
+        "jobs_priced": 2,
+        "cost_per_generation_usd": {"mean": "2.20000000", "median": "2.20000000"},
+        "by_n_candidates": [],
+        "unavailable": False,
+    }
+    with patch(
+        "archimedes.api.metrics_private_routes.get_measured_generation_cost",
+        return_value=rollup,
+    ):
+        res = client.get("/api/metrics/private/cost", cookies=_siwe_cookies(_ADMIN_WALLET))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["cost_per_generation_usd"] == "2.20000000"
+    assert body["generation_cost"]["jobs_priced"] == 2
+
+
+def test_measured_generation_cost_never_reaches_a_public_surface(client, monkeypatch):
+    """Cost/ops data is admin-only — the measured $/generation included.
+
+    The adversarial half of the "surfaced, never public" claim: with a rollup
+    that WOULD price (a real card, a real number), sweep the public metrics
+    endpoints and assert the figure appears on none of them. A prose claim that
+    something is admin-only is worth exactly as much as the check behind it.
+    """
+    rollup = {
+        "schema": "cost_rollup_v1",
+        "rate_card_configured": True,
+        "lane": "fargate_inline",
+        "jobs_priced": 1,
+        "cost_per_generation_usd": {"mean": "2.20000000"},
+        "by_n_candidates": [],
+        "unavailable": False,
+    }
+    with patch(
+        "archimedes.api.metrics_private_routes.get_measured_generation_cost",
+        return_value=rollup,
+    ):
+        # Present behind the gate...
+        admin = client.get("/api/metrics/private/cost", cookies=_siwe_cookies(_ADMIN_WALLET))
+        assert admin.status_code == 200
+        assert "2.20000000" in admin.text
+
+        # ...and absent from every public metrics surface.
+        for path in ("/api/metrics", "/api/metrics/funnel", "/api/metrics/visitors"):
+            public = client.get(path)
+            assert public.status_code in (200, 404), f"{path} → {public.status_code}"
+            assert "2.20000000" not in public.text, f"measured $/generation leaked onto {path}"
+            assert "cost_per_generation_usd" not in public.text, f"priced key leaked onto {path}"
+
+        # ...and unreadable by a non-admin wallet.
+        assert client.get("/api/metrics/private/cost", cookies=_siwe_cookies(_NON_ADMIN_WALLET)).status_code == 403
+        assert client.get("/api/metrics/private/cost").status_code == 401
 
 
 # ── /whoami — the admin-gate probe the frontend calls on entry to Insights

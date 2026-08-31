@@ -458,15 +458,20 @@ async def test_the_zero_address_sentinel_would_leak_the_same_body():
     """G3's adversarial control — the reason ``vault_address=""`` is not
     cosmetic.
 
-    The design's finding: reusing ``construction_trace.UNBOUND_VAULT`` for
-    "no vault" makes an UNSTAMPED paper trace world-readable, because
+    The design's finding: reusing the zero-address sentinel for "no vault"
+    makes an UNSTAMPED paper trace world-readable, because
     ``is_public_trace_vault`` returns True for any non-blank address while
     ``PUBLIC_TRACE_VAULTS`` is unarmed (it is set nowhere in this tree). Here
     the identical record is rewritten onto the sentinel with the stamp
     removed, and it IS readable anonymously — which is what makes the test
     above a demonstration rather than a tautology.
+
+    The sentinel was imported as ``construction_trace.UNBOUND_VAULT`` until
+    that zero-caller module was deleted; the literal is inlined here. The
+    control is unchanged — any non-blank vault address leaks, and the zero
+    address is the one a future author is most likely to reach for.
     """
-    from archimedes.services.construction_trace import UNBOUND_VAULT
+    UNBOUND_VAULT = "0x0000000000000000000000000000000000000000"
 
     dep_id = _seed()
     with _store(_Store()) as store:

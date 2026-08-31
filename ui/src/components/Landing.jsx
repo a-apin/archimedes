@@ -32,10 +32,12 @@ const CORE_CONTRACT_FIELDS = [
 //   OOS   — _rigor_helpers.compute_oos_sharpe:567-574, "a single chronological
 //           hold-out, NOT a rolling walk-forward re-estimation ... no purge/embargo
 //           gap at the train/test boundary." train_fraction defaults to 0.70.
-//   LEAK  — strategy_dsl.py:192-193 rejects look_ahead_safe=false at validation;
-//           generation_pipeline.py:1892 persists look_ahead_audit_source=
-//           "self_attested"; rigor_evaluator.look_ahead_audit (the real AST pass)
-//           runs only against cited library source.
+//   LEAK  — dsl_lookahead_audit.py proves every bar-indexed read in the
+//           interpreter is offset <= 0 (AST pass, #1566) and walks the
+//           validated spec against that audited surface; the generator's own
+//           safety claim is retired and ignored if present
+//           (strategy_dsl.LEGACY_IGNORED_FIELDS, #1599) — the verdict is
+//           derived, never self-attested.
 const RIGOR_CRITERIA = [
 	{
 		code: "DSR",
