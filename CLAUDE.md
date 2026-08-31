@@ -194,6 +194,13 @@ Live picture: [`docs/architecture.md`](docs/architecture.md). Deployed contract 
   `--graph` show unit-of-work boundaries. Rebase-merge confuses `git branch --merged`
   (rewritten commits aren't ancestors of `main`) and loses the "this was a single PR" signal
   needed for post-hoc forensics.
+- **Close the issue from the PR body with a real keyword.** `Closes #123` / `Fixes #123` /
+  `Resolves #123`, the keyword immediately before each `#`, repeated once per issue —
+  `Closes #1 and #2` closes only #1. Without one the work merges and the issue stays open,
+  which is how a pile of already-fixed-but-still-open issues accumulates that nobody goes
+  back to drain. Referencing without closing is correct for partial work; write `Part of
+  #123` so the non-closing reference reads as deliberate.
+  [`.github/pull_request_template.md`](.github/pull_request_template.md) prompts for it.
 - **The few hard rules — universal, and they do not impede speed:** never force-push
   `main`; never commit secrets or `.env`; one logical change per PR. Force-pushing your
   *own* unmerged feature branch is fine and expected (rebase-before-merge).
@@ -217,6 +224,7 @@ blocks and what does not**:
 | `import-guard.yml` | **YES** | Runs on every PR. Catches imports that resolve locally but not in a clean environment. |
 | `contracts-test.yml` | no | `forge build` + `forge test`. **Path-filtered to `contracts/**`, so it must not be made a required check** until an always-runs fallback job reports the same check name — see the boxed comment in `scripts/setup-branch-protection.sh`. |
 | `docs-gate.yml` | no | Link resolution and index completeness across `docs/` and root markdown; staleness reported but never blocking. **Path-filtered — same constraint as `contracts-test.yml`, and the same warning is boxed at the top of the workflow.** Run it locally with `make docs-check`. |
+| `infra-gate.yml` | no | `terraform fmt -check -recursive` + `init -backend=false` + `validate`, as a matrix over the two Terraform roots (`infra/`, `company-site/infra/`). No credentials, no `plan`, never reads S3 state. **Path-filtered — same constraint as `contracts-test.yml`/`docs-gate.yml`, same boxed warning at the top of the workflow.** Note that quality-gate's "Infra — user-data size guard" row is a byte-count on `infra/user-data.sh` and parses no `.tf` file; this is the row that does. |
 | `deploy.yml` · `release-tag.yml` | n/a | Build → ECR → roll Fargate (superseded runs auto-cancel); semver tag per merged PR. |
 | `deploy-runners.yml` | n/a | `workflow_dispatch` only — the `push` trigger is deliberately commented out. Oracle + agent EC2 and the KB scheduled Fargate task. |
 
@@ -366,7 +374,7 @@ npm project — runtime deps only, no `--omit=dev` needed) before any dep bump;
 triage Dependabot promptly. Three rules:
 
 - **Pin transitively-vulnerable deps directly when CVEs warrant it** — e.g. `starlette>=1.0.1` is pinned in both `environment.yml` and `backend/requirements.txt` to close PYSEC-2026-161 even though it would otherwise arrive transitively via FastAPI. Pin to the closest `Fix Versions` so a fresh resolution can't regress.
-- **Keep `environment.yml` (local dev) and `backend/requirements.txt` (Docker / CI) aligned.** Drift is the most common source of "works on my machine" + "breaks in CI" — the `slowapi`/`redis` misalignment caused 62 `user_routes` test errors locally on 2026-05-24. Any new pip dep goes in BOTH files in the same PR.
+- **Keep `environment.yml` (local dev) and `backend/requirements.txt` (Docker / CI) aligned.** Drift is the most common source of "works on my machine" + "breaks in CI" — the `slowapi`/`redis` misalignment caused 62 `user_routes` test errors locally on 2026-05-24. Since #1522 the shared floors have **one home, [`backend/requirements-base.txt`](backend/requirements-base.txt)**, which both files pull in with `-r`: a new pip dep needed by backend runtime code goes there **once**, not in two places. Only `torch` / `sentence-transformers` are still written down twice (`environment.yml` cannot include the file carrying the CPU-wheel `--extra-index-url` without losing MPS on Apple Silicon), and [`backend/tests/test_env_requirements_alignment.py`](backend/tests/test_env_requirements_alignment.py) fails the build both on drift between those two and on any *new* duplicate.
 - **No new dep without a sentence on what it does and why**, as a comment in the requirements/env file. "added by tooling" is not a sentence. Frontend: always `npm ci`, never `npm install` — `npm ci` verifies `package-lock.json` integrity and won't mutate the lockfile.
 
 ### Smoke-test before deploy; don't connect important wallets

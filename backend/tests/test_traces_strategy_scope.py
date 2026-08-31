@@ -356,6 +356,12 @@ def _fake_redis(traces: list[dict]):
         async def get(self, key):
             return bodies.get(key)
 
+        async def mget(self, keys):
+            # `list_traces` batches the body reads (#1577). Mirrors the real
+            # contract: one slot per requested key, in request order, `None`
+            # where the key is absent. `get` stays for the single-key readers.
+            return [bodies.get(k) for k in keys]
+
     return _R()
 
 
