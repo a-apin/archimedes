@@ -1050,11 +1050,11 @@ resource "aws_cloudwatch_log_metric_filter" "oracle_stale" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "oracle_stale_alarm" {
-  alarm_name        = "${var.project_name}-oracle-stale"
-  alarm_description = "/health reported oracle_fresh=false 3+ times per 5-min window in 2 of the last 3 windows — the probed on-chain PriceOracle push set is not current (see oracle_oldest_age_s / oracle_reason in the /health response)."
-  namespace         = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].namespace
-  metric_name       = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].name
-  statistic         = "Sum"
+  alarm_name          = "${var.project_name}-oracle-stale"
+  alarm_description   = "/health reported oracle_fresh=false 3+ times per 5-min window in 2 of the last 3 windows — the probed on-chain PriceOracle push set is not current (see oracle_oldest_age_s / oracle_reason in the /health response)."
+  namespace           = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.oracle_stale.metric_transformation[0].name
+  statistic           = "Sum"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = 3
   period              = 300
