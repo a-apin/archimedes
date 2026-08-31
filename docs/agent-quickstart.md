@@ -234,11 +234,17 @@ The one thing a key cannot do is manage keys. `POST`/`GET`/`DELETE` on
 `/api/account/keys` require a session cookie and answer `403` to a key, so a leaked key
 cannot mint itself successors that survive your revoking the one you know about.
 
-List and revoke (session cookie, as above):
+List with `GET /api/account/keys` (session cookie, as above):
 
 ```bash
 curl -sS -b /tmp/agora.jar $BASE/api/account/keys
-curl -sS -b /tmp/agora.jar -X DELETE $BASE/api/account/keys/9f3c1a77b204de51   # 204
+```
+
+Revoke with `DELETE /api/account/keys/{key_id}` — `204`, and idempotent:
+
+```bash
+export KEY_ID=9f3c1a77b204de51
+curl -sS -b /tmp/agora.jar -X DELETE $BASE/api/account/keys/$KEY_ID
 ```
 
 The list never contains a key — only `prefix` (`archim_<id>`, which identifies a key and
@@ -544,7 +550,7 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 |---|---|---|---|
 | **401** | `{"detail": "Authentication required"}` + `WWW-Authenticate: Session` | No valid credential on a gated route — no session cookie, **or** an API key that is unknown, malformed, or revoked | Redo steps 3–4. Signing up (step 2) does **not** sign you in; only step 3 sets the cookie. Check the jar is passed with `-b`. If you are using a key: the header must be exactly `Authorization: Bearer archim_…`, and a revoked key 401s from the next call onward — mint a new one at step 4b. A wrong key and an unknown key are the same answer on purpose. |
 | **403** | `{"detail": "API keys cannot manage API keys. …"}` | You called `/api/account/keys` with `Authorization: Bearer archim_…` | Use the session cookie for key management. This is containment, not a bug: a leaked key must not be able to issue successors. |
-| **409** | `{"detail": {"reason": "api_key_limit_reached", "message": "…"}}` | 25 live keys already | Revoke one (`DELETE /api/account/keys/{id}`) before minting another. |
+| **409** | `{"detail": {"reason": "api_key_limit_reached", "message": "…"}}` | 25 live keys already | Revoke one (`DELETE /api/account/keys/{key_id}`) before minting another. |
 | **402** | `{"detail": {"reason": "payment_required", "message": "…", "quote": {…}}}` + `PAYMENT-REQUIRED` header | The generation paywall is on and no `Payment-Signature` was presented | **Expected on production** — step 6b, not a bug. Sign the x402 requirements in the header with your **linked** wallet and retry with `Payment-Signature` (plus an `Idempotency-Key`). `GET /api/generate/quote` → `payment_required` tells you which host you are on; only when it is `false` can this not happen. |
 | **409** | `{"detail": {"reason": "idempotency_key_already_used", "message": "…"}}` | The `Idempotency-Key` you replayed already paid for a generation that started | Do not re-sign. That run exists — find it via `GET /api/generate/jobs/{job_id}`; use a fresh key for a genuinely new run. |
 | **402** | `{"detail": "Model '…' is a premium (Anthropic) model and requires an entitlement. …"}` | You named a premium `model` without entitlement | Omit `model` (the free default is used) or name an allowlisted free model. The request is **not** silently downgraded. |
@@ -570,7 +576,7 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 - **Do not treat an API key as a lighter-weight credential.** It is the full account. Put
   it in an environment variable or a secret store, never in a URL, a query string, a
   committed file, or a log line — the server never logs it and neither should you. If it
-  leaks, `DELETE /api/account/keys/{id}` ends it on the next request.
+  leaks, `DELETE /api/account/keys/{key_id}` ends it on the next request.
 - **Do not expect a key to get you past anything.** Same caps, same rate limits, same
   paywall, same wallet precondition. If you are looking for a way around the 402, the key
   is not it.

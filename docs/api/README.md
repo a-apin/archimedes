@@ -30,7 +30,7 @@ these five levels:
 | Level | Requirement | Failure mode |
 |---|---|---|
 | `anonymous` | Nothing. No cookie, no header. | N/A — never 401s on auth grounds. |
-| `account-session` | A live Better Auth session — the `better-auth.session_token` cookie, verified by FastAPI against the colocated Better Auth sidecar's `GET /api/auth/get-session` on every request. | `401` with no/expired session. |
+| `account-session` | An authenticated account, established by **either** credential: the `better-auth.session_token` cookie (verified by FastAPI against the colocated Better Auth sidecar's `GET /api/auth/get-session` on every request), **or** an `Authorization: Bearer archim_…` API key (see [`api-keys.md`](api-keys.md)). Both resolve to the same canonical user at the same chokepoint, so no route distinguishes them — a key is a credential, never a bypass. The three key-management routes are the sole exception and require the cookie specifically. | `401` with no/expired session and no valid key. |
 | `linked-wallet` | An `account-session`, **plus** a wallet verified-linked to that account (`require_linked_wallet`). | `401` with no session; `403` with a session but no linked wallet. |
 | `platform-admin` | A `linked-wallet`, **plus** that wallet listed in the `PLATFORM_ADMIN_WALLETS` env allowlist. Grants **no fund/custody/treasury authority** — it is a read gate on the internal cost/ops dashboard, nothing more. | `401` no session; `403` linked-but-non-admin wallet. |
 | `internal-key` | A matching `X-Internal-Agent-Key` header, compared with `hmac.compare_digest` against `INTERNAL_AGENT_API_KEY`. Fails closed (rejects everyone) if that env var is unset. Used only by internal services (the agent runner) — never reachable from the browser UI. | `403` on any missing/wrong key. |
@@ -46,6 +46,7 @@ Each level nests into the one above it (`linked-wallet` implies
 | Doc | Covers |
 |---|---|
 | [`auth-and-accounts.md`](auth-and-accounts.md) | The Better Auth sidecar (`/api/auth/*`): email/password + OAuth sign-up/sign-in, session lookup, email verification. |
+| [`api-keys.md`](api-keys.md) | `/api/account/keys/*` — mint, list, and revoke the bearer API keys that let a machine caller authenticate as an account without a cookie jar. |
 | [`wallets.md`](wallets.md) | `/api/wallets/*` — EIP-4361 wallet-link challenge/verify, linking a wallet to an already-signed-in account. |
 
 ### Generation & rigor

@@ -132,6 +132,7 @@ nav:
   - API Reference:
       - api/README.md
       - api/auth-and-accounts.md
+      - api/api-keys.md
       - api/generation.md
       - api/strategies-and-rigor.md
       - api/vaults-and-chain.md
