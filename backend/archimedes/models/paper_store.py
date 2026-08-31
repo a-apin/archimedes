@@ -57,13 +57,26 @@ class PaperDeployment(Base):
     # Ownership carries BOTH identity columns during the canonical-identity
     # transition (#1194): wallet for the SIWE model live today, user id for
     # Better Auth once it lands. Same pattern as strategy_store. Both FKs
-    # retrofitted in schema-relations Phase 1 — added NOT VALID in
+    # retrofitted in schema-relations Phase 1 (#1438) — added NOT VALID in
     # fb8d0bae8112, validated (gated on a live orphan count) in 9c2e7b5a1f4d.
     owner_wallet: Mapped[str | None] = mapped_column(
         String(42), ForeignKey("wallet_identities.wallet_address"), nullable=True
     )
+    # CASCADE (issue #1367, D3): a paper deployment is a private per-user
+    # ledger — no other account reads or depends on someone else's paper
+    # trades (unlike strategy_store/strategy_passports, which can be public
+    # marketplace/audit artifacts other users rely on). Deleting the owning
+    # account should remove it outright, and PaperDailyReturn already
+    # cascades off `paper_deployments.id` (see below), so the whole ledger
+    # goes with it — no orphaned rows either direction.
+    #
+    # #1438 created this FK (`fk_paper_deployments_owner_user_id`) with
+    # ondelete="SET NULL", matching the five sibling ownership columns
+    # `b7e3f1a2c9d4` established. `85ca5310b7a1` ALTERS that constraint to
+    # CASCADE — it does not create a second one. The FK's existence is #1438's;
+    # only its ON DELETE action is this PR's.
     owner_user_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("auth_users.id", ondelete="SET NULL"), nullable=True, index=True
+        String(64), ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=True, index=True
     )
     # The deploy-time snapshot of the validated spec — the thing being graded.
     spec_json: Mapped[str] = mapped_column(Text, nullable=False)
