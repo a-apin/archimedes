@@ -34,12 +34,32 @@ paper_router = APIRouter(prefix="/api/paper", tags=["paper"])
 
 
 def _spec_for_strategy(session, strategy_id: str, caller_wallet: str | None, caller_user_id: str | None) -> dict:
-    """The spec to snapshot, honoring strategy visibility (#850 rules)."""
+    """The spec to snapshot, gated on OWNERSHIP of the source strategy.
+
+    The validated DSL spec is the strategy's EXECUTABLE LOGIC — the derivation,
+    not the card. Publishing a strategy puts its name, methodology and metrics
+    on a public board; it does not hand over the machine-readable
+    implementation for anyone to snapshot into their own ledger. So this asks
+    ``is_strategy_reasoning_visible``, not ``is_strategy_visible``: curated /
+    ``is_example`` house content stays available to everyone, a user's row is
+    available to its owner, and ``is_published`` alone grants nothing (#1557 —
+    this call site used the card predicate, so any published row's spec was
+    deployable by any signed-in stranger).
+
+    This fails CLOSED on purpose. If a marketplace/licensing flow later makes
+    "paper-trade someone else's published strategy" a deliberate product
+    decision, that flow reopens it explicitly — with whatever attribution or
+    licensing check it decides on — rather than inheriting the permission by
+    accident from a predicate that was never about reasoning.
+
+    404 for both "no such strategy" and "not yours": existence stays private
+    (#850 idiom, same as ``_owned_deployment`` below).
+    """
     from archimedes.models.strategy_store import StrategyRecord
-    from archimedes.services.strategy_visibility import is_strategy_visible
+    from archimedes.services.strategy_visibility import is_strategy_reasoning_visible
 
     row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
-    if row is None or not is_strategy_visible(row, caller_wallet, caller_user_id=caller_user_id):
+    if row is None or not is_strategy_reasoning_visible(row, caller_wallet, caller_user_id=caller_user_id):
         raise HTTPException(status_code=404, detail="Strategy not found")
     spec = (row.to_dict() or {}).get("strategy_spec")
     if not spec:

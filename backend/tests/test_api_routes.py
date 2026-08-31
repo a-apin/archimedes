@@ -280,6 +280,11 @@ class TestRootAndHealth:
         assert "version" in data
         assert "strategy_count" in data
         assert isinstance(data["strategy_count"], int)
+        # Reveal-reconciliation gauges (issue #1353) — fail-safe to 0 when
+        # Redis is unreachable (this hermetic test has no live Redis), never
+        # a 500 or a missing field.
+        assert data["reveal_reconcile_pending"] == 0
+        assert data["reveal_reconcile_terminal"] == 0
 
 
 # NOTE: TestFrontierRoutes and TestCorrelationRoutes were removed in the wake

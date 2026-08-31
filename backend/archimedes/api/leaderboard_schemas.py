@@ -12,6 +12,18 @@ explicit and echoed in the response; and the StockBench / live-P&L axis carries 
 flows — the UI omits the axis rather than rendering it (#1365). (A prior
 marketplace surface was removed for "hardcoded fees + invented math", #381 — we
 do not repeat that.)
+
+TWO BOARDS, NEVER BLENDED (Lane 3.4). The conviction board above is entirely
+BACKTEST-ERA: gate, DSR, OOS and PBO are all measured on history the strategy
+was fitted and graded against. A separate surface — ``LivePaperLeaderboard
+Response``, served from /api/leaderboard/live-paper — ranks only what is
+actually running forward, computed from the append-only paper ledger
+(``paper_daily_returns``). They are deliberately NOT combined into one score:
+a blended number would let a strong backtest carry a strategy that has traded
+forward for four days, which is the precise claim this product exists to
+refuse. Instead every row on both boards carries ``performance_basis`` —
+``"backtest_research"`` or ``"live_paper"`` — so a number can never be read
+off either board without its provenance attached.
 """
 
 from __future__ import annotations
@@ -19,6 +31,11 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from archimedes.api.schemas import PaperRefResponse
+
+#: Provenance tags for a displayed number. These are the ONLY two bases the
+#: product measures on, and every row on every board carries exactly one.
+BASIS_BACKTEST = "backtest_research"
+BASIS_LIVE_PAPER = "live_paper"
 
 
 class LeaderboardScoreComponents(BaseModel):
@@ -108,6 +125,24 @@ class LeaderboardEntry(BaseModel):
     # Forward axis (paired, honest-pending).
     forward: LeaderboardForwardAxis
 
+    # ── Provenance of the numbers in this row (Lane 3.4) ────────────────────
+    # Every metric above — conviction score, Sharpe, CAGR, DSR, PBO, OOS — is
+    # measured on the BACKTEST window named by backtest_start/backtest_end,
+    # not on anything the strategy has done forward. The constant below is not
+    # decoration: it is what lets a reader (or another surface) tell a row on
+    # this board apart from a row on the live-paper board, which carries
+    # ``live_paper`` and an inception date instead.
+    performance_basis: str = Field(
+        BASIS_BACKTEST,
+        description="Always 'backtest_research' on this board — the numbers are backtest-era, not forward.",
+    )
+    # The window the metrics were computed over (ISO dates, threaded from the
+    # passport's backtest_start/backtest_end). None where the source row
+    # predates the field or was never evaluated — rendered as an explicit
+    # "window unknown", never as a silently absent qualifier.
+    backtest_start: str | None = None
+    backtest_end: str | None = None
+
     # Provenance + context.
     regime_tag: str = "regime_neutral"
     return_source: str = "noise"
@@ -146,6 +181,13 @@ class LeaderboardScoringEngine(BaseModel):
 class LeaderboardResponse(BaseModel):
     entries: list[LeaderboardEntry]
     total: int
+    # Board-level restatement of every row's basis, so a consumer can label the
+    # whole surface without inspecting rows (and so an empty board still says
+    # what it would have been showing).
+    performance_basis: str = Field(
+        BASIS_BACKTEST,
+        description="'backtest_research' — this board ranks backtest-era metrics only. Never blended with live paper.",
+    )
     sort_by: str
     order: str
     scope: str = Field(
@@ -166,5 +208,82 @@ class LeaderboardResponse(BaseModel):
     # build). `degraded_reason` names which. The UI must never render "No
     # strategies match these filters yet." while this is True — that is a
     # different, false claim.
+    degraded: bool = False
+    degraded_reason: str = ""
+
+
+# ── Live paper board — the forward surface (Lane 3.4) ────────────────────────
+
+
+class LivePaperEntry(BaseModel):
+    """One ACTIVE paper deployment with a non-empty forward ledger.
+
+    Hard construction rule, enforced in ``build_live_paper_leaderboard`` and
+    pinned by test: a deployment with zero ``paper_daily_returns`` rows NEVER
+    becomes an entry. There is no zero-filled row, no "0.0% since inception",
+    no placeholder — a deployment that has not produced a single observation
+    has no forward performance to display, and rendering one would fabricate
+    the exact thing this board exists to prove. Withheld deployments are
+    counted on the response (``withheld_no_ledger``) so the omission is a
+    loud absence rather than a silence.
+    """
+
+    rank: int
+    deployment_id: str
+    strategy_id: str
+    name: str = Field(..., description="Human label — the strategy's name, else the deployed spec's name, else its id")
+
+    performance_basis: str = Field(
+        BASIS_LIVE_PAPER,
+        description="Always 'live_paper' — every number in this row is compounded from the append-only forward ledger.",
+    )
+    # Compounded product of the ledger's daily returns, minus 1. Never
+    # annualised, never extrapolated: over a handful of days an annualised
+    # figure is a fiction, and this board's whole point is that four days of
+    # forward data must look like four days.
+    cumulative_return: float = Field(..., description="∏(1 + daily_return) − 1 over the whole ledger, since inception")
+    days_live: int = Field(..., ge=1, description="Count of ledger observations — always ≥ 1 by construction")
+    inception_date: str = Field(..., description="ISO date the deployment opened (paper_deployments.deployed_at)")
+    as_of: str = Field(..., description="ISO date of the LAST ledger observation — what the return actually reflects")
+    last_updated: str | None = Field(
+        None, description="ISO timestamp the last ledger row was appended (paper_daily_returns.appended_at)"
+    )
+    # The ledger is append-only by law; a replay that disagrees with already
+    # written rows stamps the deployment instead of rewriting it. Surfaced so
+    # a drifted track record is visibly drifted on the board too.
+    drift_detected: bool = False
+
+
+class LivePaperLeaderboardResponse(BaseModel):
+    """The forward board. Deliberately carries NO conviction score and no
+    backtest metric: the two bases never share a row, never share a sort, and
+    are never averaged into one number."""
+
+    entries: list[LivePaperEntry]
+    total: int = Field(..., description="Qualifying rows BEFORE `limit` — deployments with ledger data, nothing else")
+    performance_basis: str = Field(
+        BASIS_LIVE_PAPER, description="'live_paper' — forward, paper/simulated, compounded from the ledger"
+    )
+    scope: str = Field(
+        "own",
+        description=(
+            "'own' — the signed-in caller's own paper deployments (a paper "
+            "track record is private, #850). 'anonymous' — no session, so "
+            "there is no cohort to show; entries is empty and that is an "
+            "honest empty state, not a degradation."
+        ),
+    )
+    sort_by: str = Field("cumulative_return", description="Fixed — the only forward number this board has")
+    order: str = "desc"
+    #: Latest ledger date across all entries; None on an empty board.
+    as_of: str | None = None
+    #: Active deployments dropped for having no ledger rows yet. Counted, not
+    #: hidden — see LivePaperEntry's docstring.
+    withheld_no_ledger: int = 0
+    methodology: str = Field(
+        ...,
+        description="One-line, plain statement of exactly how the displayed number was computed.",
+    )
+    disclaimer: str
     degraded: bool = False
     degraded_reason: str = ""
