@@ -18,9 +18,15 @@
 ## Project
 
 **Archimedes** — "Linus for quantitative finance": a single-user agent that turns q-fin
-research literature into investable, rigor-gated strategies, then executes and monitors
-them in non-custodial vaults on Arc with USDC settlement. Spine (generate → rigor-gate →
-execute → monitor → explore) locked in [`docs/user-stories.md`](docs/user-stories.md).
+research literature into investable, rigor-gated strategies. **Executing and monitoring
+them in non-custodial vaults on Arc with USDC settlement is roadmap, not shipped product —
+write it in the future tense.** The `Vault`/`VaultFactory` contracts are real and deployed
+([ADR](docs/adr/non-custodial-vault-owner-agent.md)), but the deploy-a-vault journey is
+gated off every public surface behind `ROADMAP_SURFACES_ENABLED`
+([`ui/src/featureFlags.js`](ui/src/featureFlags.js), off by default, #1266/#1354, guarded by
+`ui/test/roadmap-copy.test.js`), and #1469 is open to scrub the remaining present-tense
+copy. Spine (generate → rigor-gate → execute → monitor → explore) locked in
+[`docs/user-stories.md`](docs/user-stories.md).
 Repo [`a-apin/archimedes`](https://github.com/a-apin/archimedes) · Discord **Archimedes
 Arcadia** · live at [`archimedes-arc.com`](https://archimedes-arc.com/) (Arc testnet, chain
 `5042002` / `0x4cef52`; `.com` is the sole domain — the `.app` split caused the Circle
@@ -224,9 +230,10 @@ sparingly; when in doubt, no marker.
 
 ### Before you approve a merge — the green check may not mean what you think
 
-Applies to every reviewer, every session, and **every review subagent**. All four rules
-below come from defects that shipped past a full row of green checks in a single week.
-The common shape: **a signal was trusted for something it does not actually measure.**
+Applies to every reviewer, every session, and **every review subagent**. Rules 1–4 come
+from defects that shipped past a full row of green checks in a single week; rule 5 from a
+merge train three months later. The common shape: **a signal was trusted for something it
+does not actually measure.**
 
 **1. A stale PR's green check describes a base that no longer exists.**
 GitHub freezes a PR's test-merge ref at its last push. A PR far behind `main` was tested
@@ -262,6 +269,24 @@ claimed "no network" and "installed package import path" while enforcing neither
 pushing** — and put that demonstration in the PR body. This applies to claims made in
 **prose** too: a PR description asserting a property the code does not enforce is the same
 defect, just harder to grep for.
+
+**5. In a merge train, rule 2 runs *between* merges, not once at the end.**
+A train lands PRs seconds apart. Union-testing only the final `main` finds the break after
+every intermediate `main` has already been red — and every open PR's test-merge ref
+regenerates against a broken base, so the whole board goes red for a reason none of them
+caused.
+→ **Before the train, pairwise-intersect the members' changed-file lists (`gh pr diff
+<n> --name-only`) and union-test every pair that shares a file** — merge the pair locally and
+run the CI command. A shared *function* is the dangerous case: both branches are green,
+neither diff touches the other's lines, and the collision is invisible until they execute
+together. Corollary for test doubles: **a boundary mock must stub the shared function's
+full surface, not only the calls the branch under test makes** — a double that covers your
+own path silently drops a sibling's.
+*Cost of learning it:* 2026-08-31 — #1562's ownership-stamp tests mocked only the Redis
+methods `save_trace` used on that branch, while #1403 added `sadd`/`srem`/`hsetnx`/`hdel`
+index maintenance to the same `save_trace`. Both green alone; merged, the double's
+non-awaitable `srem` failed 5 tests on `main` and poisoned every open PR's merge-ref until
+the fix-forward (#1565) landed.
 
 ### Testing conventions (codified 2026-05-27)
 
@@ -624,3 +649,11 @@ Full rules: [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md). Before you write a doc
 _Disagree with something here? Discuss in Discord, agree, and update the file — don't let
 it silently drift. Anything that decays does not belong in this file; put it where readers
 expect decay._
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+See [AGENTS.md](AGENTS.md) for OpenWiki agent instructions.
+
+<!-- OPENWIKI:END -->
