@@ -67,9 +67,11 @@ Corrected here.)
 - ~~The `num-trials-self-containment.md` portfolio-math sign-off~~ — **resolved
   2026-08-31**: ratified by Önder Akkaya
   ([#1555](https://github.com/a-apin/archimedes/issues/1555), outcome 3), with four
-  corrections folded into the ADR. Residual from the same review: the served board-level
-  BH FDR correction (`compute_board_level_fdr`) has **no `ui/src` consumer** — computed,
-  served, invisible. A wiring follow-up, not a spec question.
+  corrections folded into the ADR. Residual from the same review, upgraded by a prod
+  pull: the served board-level BH FDR (`compute_board_level_fdr`) currently
+  **disagrees with the per-strategy gate on every strategy** (min adjusted p 0.319
+  board-wide) and no `ui/src` file reads it. Open item = the product decision on what
+  the ranking surface says — wanted before the badge is leaned on as a public claim.
 
 ## When to add an ADR
 

@@ -140,15 +140,28 @@ headline claim is "`num_trials` is self-contained," deliberately not "the gate i
 - **We give up a real signal.** There genuinely is a portfolio-level multiple-testing
   problem: selecting from a 40-strategy library *is* a selection event for the user doing
   the selecting. This decision moves that concern to the Leaderboard/Marketplace surface.
-  *(Gap resized 2026-08-31.)* The correction now **exists and is served**: a board-level
-  Benjamini–Hochberg FDR
+  *(Reframed twice on 2026-08-31 — second time on prod evidence.)* The correction
+  **exists, is served, and is answering**: a board-level Benjamini–Hochberg FDR
   ([`compute_board_level_fdr`, `rigor_evaluator.py:405`](../../backend/archimedes/services/rigor_evaluator.py))
-  surfaces `board_fdr_significant` / `board_fdr_adjusted_p` / `board_fdr_confidence` per
-  strategy plus `n_tested` / `n_significant` — exactly the shape Decision #3 prescribes,
-  and BH is the right method under the positive dependence of strategies sharing a
-  universe. The remaining gap is **wiring, not spec**: nothing under `ui/src/` consumes
-  `board_fdr*`, so it is computed, served, and invisible. Smaller than this ADR originally
-  described, but still open until a ranking surface renders it.
+  ships `board_fdr_significant` / `board_fdr_adjusted_p` / `board_fdr_confidence` per
+  strategy plus `n_tested` / `n_significant` as a top-level key on every
+  `/api/selection-bias/gate` response, with BH the right method under the positive
+  dependence of strategies sharing a universe. And it **currently disagrees with the
+  per-strategy gate on every strategy**: pulled from prod 2026-08-30, the minimum
+  `board_fdr_adjusted_p` across the whole board is **0.319** — nothing clears a
+  board-level FDR threshold at any conventional level, including every strategy that
+  passes the per-strategy gate (adjusted p 0.319 / 0.319 / 0.536, all
+  `board_fdr_significant: false`). That is not a contradiction in the math — the gate
+  answers "sound on its own evidence," the board FDR answers "distinguishable from the
+  field's multiple testing," and both can be true — but nothing under `ui/src/` reads
+  `board_fdr*`, so the public badge currently stands alone while the served correction
+  that qualifies it stays invisible. **The open item is therefore a product decision, not
+  a spec or a wiring ticket**: decide what the ranking surface says when the board-level
+  correction disqualifies every row the badge approves — and decide it before anything
+  leans on the badge as a public claim.
+  (Evidence: [Önder's prod pull](https://github.com/a-apin/archimedes/issues/1555#issuecomment-5471987448),
+  #1555 thread; no pass count quoted, per the standing rule — the point stands on the
+  adjusted p-values, a property of the correction rather than of the return data.)
 - **Two conventions exist in the historical record.** Verdicts computed before 2026-07-09
   used formula (A); `num_trials_convention` distinguishes them, but any longitudinal
   comparison of pass rates across that boundary is invalid.
@@ -243,8 +256,11 @@ out-of-line — and each edit is dated where it lands:
    coupling named explicitly (the carve-out under the Decision list) — the gate contains
    one library-level criterion by construction, and this ADR must not be citable for a
    property the gate does not have.
-3. **The Leaderboard/Marketplace "open gap" resized** (Consequences): board-level BH FDR
-   is computed and served; the remaining gap is UI wiring, not a missing spec.
+3. **The Leaderboard/Marketplace "open gap" reframed** (Consequences): board-level BH FDR
+   is computed and served — and, per the reviewer's post-ratification prod pull, currently
+   disagrees with the per-strategy gate on every strategy (min adjusted p 0.319
+   board-wide). The open item is the product decision on what the ranking surface says,
+   made before the badge is leaned on publicly — not a spec, and no longer merely wiring.
 4. **Decision #5 rewritten**: it cited the `N_eff` form that #1558 showed to be the wrong
    functional form and #1559 removed. Found during the stamp, not in the review — the
    document claimed the code did something it no longer does. (A matching stale comment in
