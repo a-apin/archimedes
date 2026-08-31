@@ -56,6 +56,9 @@ infra/.terraform/
 infra/.terraform.lock.hcl
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
+# Lambda zips built at plan time by data.archive_file (infra/cost_kill_switch.tf).
+# Build output, not source — the source is infra/lambda/**/*.py.
+infra/.build/
 
 # Terraform variable files — operator-specific config (wallet addresses,
 # feature-flag values, and, transiently, the Aurora master password if ever

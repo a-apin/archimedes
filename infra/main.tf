@@ -25,6 +25,12 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.0"
     }
+    # Zips the cost kill-switch Lambda source at plan time (cost_kill_switch.tf).
+    # Added 2026-08-31 — `terraform init` is required before the next plan.
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 }
 
