@@ -47,6 +47,14 @@ jobs:
           submodules: recursive
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          # Pinned 2026-08-31. Unpinned, this action tracks latest stable, and the
+          # toolchain moved under us between the last green run (08-20) and today:
+          # the newer forge's lint-on-build pass floods the log and the job died
+          # with SIGTERM/cancellation on three consecutive runs (one after 40
+          # minutes) with zero Solidity changes in the PR. v1.7.1 matches the
+          # version the contracts were last built and tested with locally.
+          version: v1.7.1
       - name: forge build
         working-directory: contracts
         run: forge build
