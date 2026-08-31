@@ -39,9 +39,10 @@ const MARKS_POLL_MS = 5 * 60 * 1000
 //   - `series` (paper_daily_returns) is the SETTLED, append-only track record
 //     that carries to mainnet;
 //   - the intraday marks from GET /api/paper/deployments/{id}/marks are an
-//     UNSETTLED re-pricing of the same position, which the backend deletes
-//     past 90 days. They are polled, drawn as a dashed tail, and always
-//     labelled with their as-of time.
+//     UNSETTLED re-pricing of that strategy's ASSET BASKET — not of its live
+//     position, which v1 cannot see (MARK_BASIS_DISCLOSURE) — and the backend
+//     deletes them past 90 days. They are polled, drawn as a dashed tail, and
+//     always labelled with their as-of time.
 
 function nameOf(row) {
   return row?.strategy_name || row?.name || row?.paper_title || null
