@@ -44,11 +44,16 @@ def _unset_allowlist(monkeypatch):
 
 
 def _fake_redis() -> MagicMock:
+    # save_trace is a single write choke point shared by two features: the
+    # ownership stamp under test here (#1556) and the reveal-reconciliation
+    # index maintenance (#1353), which awaits sadd/srem/hsetnx/hdel on the same
+    # client. Stub the choke point's full surface — a double that only knows
+    # one feature's calls breaks the moment the other feature touches the
+    # shared writer (this exact union broke on 2026-08-31).
     r = MagicMock()
+    for method in ("get", "set", "zadd", "sadd", "srem", "hsetnx", "hdel", "aclose"):
+        setattr(r, method, AsyncMock(return_value=None))
     r.get = AsyncMock(return_value=None)
-    r.set = AsyncMock()
-    r.zadd = AsyncMock()
-    r.aclose = AsyncMock()
     return r
 
 
