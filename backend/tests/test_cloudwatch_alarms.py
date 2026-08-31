@@ -387,7 +387,11 @@ class TestAntiGoals:
         assert _string_attr(alarm, "comparison_operator") == "GreaterThanOrEqualToThreshold"
         assert _int_attr(alarm, "threshold") == 3
         assert _int_attr(alarm, "period") == 300
-        assert _int_attr(alarm, "evaluation_periods") == 1
+        # 1 -> 3 with datapoints_to_alarm 2: the #1601 retune (2-of-3 windows must
+        # breach before paging), merged after this fence was written. The fence's
+        # point stands -- these values change only via a deliberate, cited retune.
+        assert _int_attr(alarm, "evaluation_periods") == 3
+        assert _int_attr(alarm, "datapoints_to_alarm") == 2
         assert _string_attr(alarm, "treat_missing_data") == "notBreaching"
 
     def test_the_oracle_stale_filter_is_untouched(self) -> None:

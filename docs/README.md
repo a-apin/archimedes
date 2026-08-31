@@ -44,10 +44,9 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md) | current | Dan Browne | 2026-08-20 | `/api/strategies/*` and `/api/selection-bias/*` — the strategy library, portfolio advisor, stress testing, and the rigor gate. |
 | [`api/paper-trading.md`](api/paper-trading.md) | current | Dan Browne | 2026-08-20 | `/api/paper/*` — deploy a strategy to an append-only, never-rewritten forward-return ledger. |
 | [`api/vaults-and-chain.md`](api/vaults-and-chain.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/*`, `/api/traces/*`, `/api/swap/*`, `/api/config/contracts`, and the health/root endpoints. |
-| [`api/chat.md`](api/chat.md) | current | Dan Browne | 2026-08-20 | `/api/vaults/{address}/chat*` — per-vault chat: public reads, linked-wallet writes, internal-only system events. |
 | [`api/leaderboard-and-metrics.md`](api/leaderboard-and-metrics.md) | current | Dan Browne | 2026-08-20 | `/api/leaderboard` and the public, PII-free `/api/metrics/*` traction surface. |
 | [`api/admin-private.md`](api/admin-private.md) | current | Dan Browne | 2026-08-31 | `/api/metrics/private/*` — the platform-admin-gated cost/ops dashboard (incl. the measured `$/generation`) and per-wallet identity roster. |
-| [`api-surface-status.md`](api-surface-status.md) | current | Dan Browne | 2026-08-20 | Census of every router `backend/archimedes/main.py` registers: prefix, auth model, status, and whether a detailed doc above covers it (15/30 do). Backed by a completeness test that fails CI if a registered router has no row. |
+| [`api-surface-status.md`](api-surface-status.md) | current | Dan Browne | 2026-08-20 | Census of every router `backend/archimedes/main.py` registers: prefix, auth model, status, and whether a detailed doc above covers it (14/30 do). Backed by a completeness test that fails CI if a registered router has no row. |
 
 ## Product
 
