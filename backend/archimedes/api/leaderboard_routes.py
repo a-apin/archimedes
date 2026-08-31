@@ -315,7 +315,17 @@ def _live_paper_ledgers(user_id: str) -> tuple[list[LivePaperLedger], bool, str]
                         inception=d.deployed_at,
                         returns=observations.get(d.id, []),
                         last_appended_at=last_appended.get(d.id),
-                        drift_detected=d.drift_detected_at is not None,
+                        # BOTH stamps, deliberately. #1449 narrowed
+                        # `drift_detected_at` to data-attributable drift and
+                        # routed engine re-grades to `engine_regrade_at`; reading
+                        # only the first here would make this board's negative
+                        # chip ("no replay disagreement recorded") false for a
+                        # re-graded deployment. The board's flag means what it
+                        # has always meant — a replay disagreed with written
+                        # rows — and its coarseness (it does not yet say WHICH
+                        # cause) is stated in the field description rather than
+                        # papered over.
+                        drift_detected=d.drift_detected_at is not None or d.engine_regrade_at is not None,
                     )
                     for d in deps
                 ],
