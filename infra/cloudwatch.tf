@@ -452,6 +452,146 @@ resource "aws_cloudwatch_metric_alarm" "runner_instance_impaired" {
   tags                = { Project = var.project_name }
 }
 
+# ── Runner EC2 automatic recovery (issue #1402) ────────────────────────────
+# Everything above this line PAGES. Nothing above it ACTS. That is the gap
+# #1402 is still open on: all four wedges (13-day SSM ConnectionLost found
+# 2026-08-19; two on 2026-08-20; the 4-hour 06:12→10:23 CDT window recorded
+# in the issue) ended with a HUMAN rebooting the box, and the recorded
+# outage lengths are hours because a human had to notice first. #1413's swap
+# + per-container memory/CPU caps make the wedge less likely; they do not
+# shorten the outage if it happens anyway. These two alarms do — they carry
+# EC2 automatic actions in `alarm_actions` alongside the SNS topic, so AWS
+# remediates while the page is still in flight.
+#
+# The two actions are NOT interchangeable, and picking the wrong one is the
+# failure mode this block exists to prevent:
+#
+#   * `ec2:reboot` — the ONLY automatic action valid for
+#     `StatusCheckFailed_Instance`. That is #1402's actual signature
+#     (instance check impaired, system check ok, SSM agent stops pinging),
+#     and a reboot is empirically what recovered the box every time.
+#   * `ec2:recover` — AWS: "The recover action can be used only with
+#     StatusCheckFailed_System, not with StatusCheckFailed_Instance."
+#     (Add recover actions to Amazon CloudWatch alarms.) Attaching it to the
+#     `_Instance` alarm is the change that looks right and silently cannot
+#     do the one thing it was added for; `runner_instance_impaired` above
+#     already carries a comment saying so, and
+#     backend/tests/test_runner_recovery_alarms.py now enforces it.
+#
+# Evaluation periods follow AWS's own anti-race guidance for running a
+# reboot alarm and a recover alarm on the same instance: reboot at three
+# 1-minute periods, recover at two. Recover therefore fires first on a
+# genuine hardware failure (where both checks fail together) and the reboot
+# alarm never gets to third strike; on an OS-only wedge the system check
+# stays healthy, the recover alarm never leaves OK, and reboot is the only
+# action that fires. `var.runner_instance_type` (t3.small) is in AWS's
+# supported-instance-type list for CloudWatch action based recovery.
+#
+# `treat_missing_data = "missing"` on BOTH — deliberately different from the
+# paging alarms' "breaching". A missing datapoint here means "EC2 stopped
+# publishing status checks", which is exactly what a stopped instance and an
+# in-progress reboot both look like. Under "breaching", the reboot this
+# block just triggered would blank the metric and drive the recover alarm to
+# ALARM, stop/starting the box on top of its own reboot — automation
+# reacting to its own side effects. Absence-of-metric detection is not lost:
+# `runner_instance_impaired` and `runner_ec2_status_check_failed`
+# (runner_ec2.tf) both keep "breaching" and both page a human on it. The
+# split is intentional — humans should be paged on ambiguity, robots should
+# not act on it.
+#
+# NOT AUTOMATED HERE, on purpose: nothing stops, terminates, or replaces the
+# instance. This is a funds-adjacent exactly-once singleton (runner_ec2.tf
+# header, #1065 decision #1); reboot and recover both preserve instance id,
+# EBS root volume, and private IP, so the SSM host-prep state #1413 installs
+# survives. A `terminate` action would silently discard it.
+
+resource "aws_cloudwatch_metric_alarm" "runner_instance_reboot" {
+  alarm_name          = "${var.project_name}-runner-instance-reboot"
+  alarm_description   = "Oracle+agent runner EC2 OS-level status check (StatusCheckFailed_Instance) failed 3x 1-min — issue #1402's wedge signature. Automatically reboots the instance (ec2:reboot) AND pages, turning a multi-hour manual-reboot outage into a ~2-minute blip."
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_Instance"
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  period              = 60
+  evaluation_periods  = 3
+  dimensions          = { InstanceId = aws_instance.runner.id }
+  alarm_actions       = [aws_sns_topic.alerts.arn, "arn:aws:automate:${var.aws_region}:ec2:reboot"]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "missing"
+  tags                = { Project = var.project_name }
+}
+
+resource "aws_cloudwatch_metric_alarm" "runner_system_recover" {
+  alarm_name          = "${var.project_name}-runner-system-recover"
+  alarm_description   = "Oracle+agent runner EC2 system status check (StatusCheckFailed_System) failed 2x 1-min — underlying hardware/hypervisor is unhealthy. Automatically migrates the instance onto new hardware (ec2:recover) AND pages. Mirrors nat_status_check_failed."
+  namespace           = "AWS/EC2"
+  metric_name         = "StatusCheckFailed_System"
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  period              = 60
+  evaluation_periods  = 2
+  dimensions          = { InstanceId = aws_instance.runner.id }
+  alarm_actions       = [aws_sns_topic.alerts.arn, "arn:aws:automate:${var.aws_region}:ec2:recover"]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "missing"
+  tags                = { Project = var.project_name }
+}
+
+# ── SSM-agent liveness, by proxy (issue #1402) ─────────────────────────────
+# HONEST LIMITATION FIRST: there is no CloudWatch metric for "is this box's
+# SSM agent pinging". SSM's own liveness signal is `LastPingDateTime` on
+# `ssm:DescribeInstanceInformation`, an API field — not a metric, so it
+# cannot be alarmed on without new infrastructure (a scheduled poller
+# publishing a custom metric, or an EventBridge rule on inventory events).
+# The direct check is therefore a COMMAND, documented step-by-step in
+# docs/runbooks/runner-ec2-wedge.md § Diagnosis, not an alarm.
+#
+# What CAN be alarmed for free is the proxy, and #1402's own forensics show
+# it is a tight one: the agent log stream went silent at 2026-08-20T10:56Z
+# and SSM's LastPingDateTime for the same incident is 05:55:09-05:00 —
+# 10:55Z. The same host-level starvation kills the SSM agent and the docker
+# logging driver within the same minute, because it starves everything. So
+# "the runner has stopped writing logs" is the machine-detectable shadow of
+# "the SSM agent has stopped pinging".
+#
+# `IncomingLogEvents` on the runner log group (AWS/Logs, free, no agent
+# install, no new IAM) is that signal. The oracle loop writes on a verified
+# 60-second cadence (#1402: "clean 60-second cadence ... cadence gaps are
+# exactly 60s"), so a healthy 5-minute window carries >= 5 events from the
+# oracle stream alone; three consecutive windows below 1 means ~15 minutes
+# of total silence from BOTH runners. CloudWatch publishes no zero for an
+# idle log group — it publishes nothing — so `treat_missing_data` must be
+# "breaching" or total silence, the exact condition being detected, would
+# leave the alarm sitting in OK forever.
+#
+# WHAT THIS ALARM DOES NOT MEAN: it is not proof the SSM agent is dead. A
+# deliberately stopped container, a paused deploy, or an oracle disabled by
+# flag all produce the same silence. It says "the runner has stopped
+# talking" — which is worth a page on a box whose whole job is to talk — and
+# the runbook's first diagnosis step is the `describe-instance-information`
+# call that distinguishes the cases. No automatic action is attached for
+# exactly that reason: rebooting a box because someone stopped a container
+# on purpose would be automation acting on an inference.
+
+resource "aws_cloudwatch_metric_alarm" "runner_log_silence" {
+  alarm_name          = "${var.project_name}-runner-log-silence"
+  alarm_description   = "No log events reached ${aws_cloudwatch_log_group.runners.name} for 3 consecutive 5-min periods. The oracle loop writes every 60s, so ~15 min of silence means the runner box has gone quiet — the machine-visible proxy for the dead-SSM-agent wedge in issue #1402. Not proof the SSM agent is dead: see docs/runbooks/runner-ec2-wedge.md."
+  namespace           = "AWS/Logs"
+  metric_name         = "IncomingLogEvents"
+  statistic           = "Sum"
+  comparison_operator = "LessThanThreshold"
+  threshold           = 1
+  period              = 300
+  evaluation_periods  = 3
+  dimensions          = { LogGroupName = aws_cloudwatch_log_group.runners.name }
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "breaching"
+  tags                = { Project = var.project_name }
+}
+
 # ── Dashboards — consolidated 6→3, founder-readable (2026-08-20) ───────────
 # Replaces the per-subsystem dashboards this file used to define (ops,
 # aurora, elasticache, vpc_nat, alb, waf — six by the time of this change,
@@ -842,6 +982,9 @@ resource "aws_cloudwatch_dashboard" "machines_and_network" {
             [
               aws_cloudwatch_metric_alarm.runner_ec2_status_check_failed.arn,
               aws_cloudwatch_metric_alarm.runner_instance_impaired.arn,
+              aws_cloudwatch_metric_alarm.runner_instance_reboot.arn,
+              aws_cloudwatch_metric_alarm.runner_system_recover.arn,
+              aws_cloudwatch_metric_alarm.runner_log_silence.arn,
             ],
             aws_cloudwatch_metric_alarm.nat_status_check_failed[*].arn,
             aws_cloudwatch_metric_alarm.nat_egress_anomaly[*].arn,
@@ -861,7 +1004,7 @@ resource "aws_cloudwatch_dashboard" "machines_and_network" {
           ]
           annotations = {
             horizontal = [
-              { label = "Alarm threshold (>= 1, 2x 5-min periods)", value = 1 }
+              { label = "Alarm line (>= 1): pages at 2x 5-min, auto-reboots at 3x 1-min", value = 1 }
             ]
           }
         }
@@ -869,7 +1012,7 @@ resource "aws_cloudwatch_dashboard" "machines_and_network" {
       {
         type = "text", x = 12, y = 3, width = 12, height = 6,
         properties = {
-          markdown = "### Runner instance status check\n\nThe oracle+agent runner's OS-level health check — catches memory exhaustion / OS wedges even when the underlying hardware is fine (issue #1402). Normal: flat at 0. **Worry if** this hits **1** — that's the alarm line, and it means no oracle price pushes and no agent rebalances until it recovers."
+          markdown = "### Runner instance status check\n\nThe oracle+agent runner's OS-level health check — catches memory exhaustion / OS wedges even when the underlying hardware is fine (issue #1402). Normal: flat at 0. **Worry if** this hits **1** — it means no oracle price pushes and no agent rebalances until it recovers.\n\nTwo alarms watch this one line. `runner-instance-reboot` fires after **3 minutes** and **automatically reboots the box** (AWS `ec2:reboot`), which is what recovered it manually all four times in #1402. `runner-instance-impaired` pages after **10 minutes** and does nothing else. So the expected shape of an incident now is a ~2-minute blip that self-heals, not an outage waiting on a human. **If the reboot alarm goes to ALARM twice in a day, stop trusting the automation** and open the runbook: `docs/runbooks/runner-ec2-wedge.md`."
         }
       },
       # Row 2 — runner CPU

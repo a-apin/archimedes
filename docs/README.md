@@ -130,6 +130,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`runbooks/t3.2-contract-redeploy.md`](runbooks/t3.2-contract-redeploy.md) | runbook | Dan Browne | — | Contract redeploy procedure and secret handling. |
 | [`runbooks/docs-site-setup.md`](runbooks/docs-site-setup.md) | runbook | Dan Browne | 2026-08-20 | GitHub Pages docs site (#1381, option B): Dan's two manual steps (Pages source + Route 53 CNAME), local `mkdocs serve` preview, and why `mkdocs build --strict` isn't used. |
 | [`runbooks/backtest-results-retention.md`](runbooks/backtest-results-retention.md) | runbook | Dan Browne | 2026-08-30 | `backtest_results` archive-then-prune procedure (v8 Lane 3.1): keep policy, `archive_backtest_results.py`'s `--plan`/`--archive`/`--prune` flags, the manifest-verification guard, and the post-prune VACUUM step. |
+| [`runbooks/runner-ec2-wedge.md`](runbooks/runner-ec2-wedge.md) | runbook | Dan Browne | 2026-08-31 | `archimedes-runner` wedge (#1402): the impaired-instance-check + dead-SSM-agent signature, read-only diagnosis commands, the recovery ladder, what the new `ec2:reboot` alarm automates, and the operator-only steps (`terraform apply`, the one-time live reboot test). |
 
 ## Decisions (ADRs)
 
