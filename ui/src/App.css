@@ -8443,9 +8443,9 @@ body:has(.public-site) {
 /* The auth screen renders outside both .app-site and .public-site, so neither
    of their :focus-visible rules reaches it and it was left on the UA default
    ring — which the surrounding `outline` shorthands can and did erase (see the
-   NOTE by the input block above). Give it its own indicator: --accent is
-   #d4a853 on the dark canvas and #8a5f0a on the light one, both well clear of
-   the 3:1 non-text floor (1.4.11), and 3px/2px matches the app shell's
+   NOTE by the input block above). Give it its own indicator: --accent resolves
+   to the rebrand palette here (#8290ff dark canvas, #4658e8 light — the later
+   :root wins), both well clear of the 3:1 non-text floor (1.4.11), and 3px/2px matches the app shell's
    weight. */
 .auth-site :focus-visible {
 	outline: 3px solid var(--accent);
@@ -8483,8 +8483,8 @@ body:has(.public-site) {
 }
 
 /* Hover strengthens the underline and never lightens the text: --accent-hover
-   is #b47f17 on the light theme = 3.13:1 on --surface-1, and 1.4.3 applies to
-   every state a text colour can be in, not just the resting one. */
+   resolves via the rebrand :root to 7.52:1 on --surface-1 (light), and 1.4.3
+   applies to every state a text colour can be in, not just the resting one. */
 .auth-quiet-link:hover {
 	text-decoration-color: currentColor;
 }

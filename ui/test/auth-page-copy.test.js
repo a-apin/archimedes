@@ -54,10 +54,19 @@ const TRUE_STATEMENTS = [
 	"Arc public testnet uses no real funds.",
 ];
 
+// Slice the RENDERED const's array literal — a match in a code comment must not
+// satisfy this pin (the validator proved the whole-file check passed with the
+// array emptied). The map() guard below proves the array actually reaches JSX.
+const proofsStart = authPage.indexOf("const ACCOUNT_BOUNDARY_PROOFS = [");
+const proofsEnd = authPage.indexOf("\n]", proofsStart);
+const proofsArray = authPage.slice(proofsStart, proofsEnd);
+
 test("the three verified statements are present, verbatim", () => {
+	assert.ok(proofsStart > -1 && proofsEnd > proofsStart, "ACCOUNT_BOUNDARY_PROOFS array literal not found");
+	assert.ok(/ACCOUNT_BOUNDARY_PROOFS\.map\(/.test(authPage), "ACCOUNT_BOUNDARY_PROOFS is never rendered via map()");
 	for (const statement of TRUE_STATEMENTS) {
 		assert.ok(
-			authPage.includes(statement),
+			proofsArray.includes(statement),
 			`AuthPage.jsx no longer states "${statement}" — these three are the owner's exact wording and each is backed by a cited live path; do not paraphrase`,
 		);
 	}
