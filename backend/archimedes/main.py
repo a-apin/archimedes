@@ -5,6 +5,7 @@ chain services that read/write Arc smart contracts.
 """
 
 import asyncio
+import concurrent.futures
 import faulthandler
 import logging
 import os
@@ -234,12 +235,76 @@ class _MarketplaceUnavailable(Exception):
     """Sentinel: the marketplace engine did not start, so rehydration is skipped."""
 
 
+# ── Process-wide default thread pool (chosen, never inherited) ───────────────
+#
+# Every `asyncio.to_thread` / `run_in_executor(None, ...)` in the backend shares
+# ONE pool. Until now nothing called `set_default_executor`, so its width was
+# whatever CPython picked: `min(32, os.cpu_count() + 4)` — 5 on a 1-vCPU task,
+# 6 on 2. That pool is what `asset_market_service`, `traces_routes`,
+# `chat_routes`, `portfolio_routes` and `strategies_routes` block on, and it is
+# also what the debate proposer fan-out (up to DEBATE_POOL_MAX = 10 concurrent
+# LLM calls) occupies for the length of a generation. 10 > 6, so serving work
+# queued behind generation with nothing in the code choosing that trade-off.
+#
+# The proposer threads are IO-bound (blocked on an LLM socket, holding no GIL),
+# so the correct answer for them is a pool wide enough to absorb the fan-out
+# plus serving headroom. The CPU-bound half — the backtests — is NOT solved by
+# widening; it is moved off this pool entirely onto the bounded, dedicated pool
+# in agents/debate_engine.py. The two changes are complements.
+_DEFAULT_EXECUTOR_FLOOR = 16
+
+
+def _default_executor_workers() -> int:
+    """Explicit width for the process-wide default thread pool.
+
+    Floor of 16 because one generation pipeline parks up to ``DEBATE_POOL_MAX``
+    (10) IO-bound proposer threads here for minutes; anything at or below that
+    leaves zero threads for request-serving blocking calls.
+    ``SERVER_THREAD_POOL_WORKERS`` overrides for a box where that is wrong.
+    """
+    try:
+        override = int(os.getenv("SERVER_THREAD_POOL_WORKERS", "0"))
+    except ValueError:
+        override = 0
+    if override > 0:
+        return min(64, override)
+    return min(32, max(_DEFAULT_EXECUTOR_FLOOR, (os.cpu_count() or 1) * 4))
+
+
+def _install_default_executor(logger_: logging.Logger) -> concurrent.futures.ThreadPoolExecutor:
+    """Bind an explicitly-sized pool as the running loop's default executor.
+
+    Emits ONE INFO line carrying ``os.cpu_count()``, the width we chose, and the
+    width CPython would have picked. That last number is the measurement: if
+    ``cpu_count() + 4`` is at or below the 10-wide debate fan-out, executor
+    exhaustion (not just GIL contention) was live on this task size.
+    """
+    cpu_count = os.cpu_count()
+    width = _default_executor_workers()
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=width,
+        thread_name_prefix="archimedes-default",
+    )
+    asyncio.get_running_loop().set_default_executor(executor)
+    logger_.info(
+        "startup: executor os.cpu_count()=%s default_executor_max_workers=%d "
+        "(cpython_default_would_be=%d, override=SERVER_THREAD_POOL_WORKERS)",
+        cpu_count,
+        width,
+        min(32, (cpu_count or 1) + 4),
+    )
+    return executor
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """FastAPI lifespan context manager — startup before yield, shutdown after."""
     _logger = logging.getLogger("archimedes.startup")
 
     # ── STARTUP ──────────────────────────────────────────────────────────
+    # 0. Choose the process-wide default executor before anything can use it.
+    _app.state.default_executor = _install_default_executor(_logger)
+
     # 1. (removed) Rigor-gate backfill.
     #
     # This used to load every backtest_results row for every curated strategy
