@@ -175,13 +175,40 @@ def _delete_the_account(session: Session, user_id: str = _USER_ID) -> None:
     session.commit()
 
 
-def _seed_one_row_in_each_owned_table(session: Session) -> None:
-    """One AuthUser plus one row it owns in each of the six tables."""
+def _seed_strategy_anchor(session: Session) -> None:
+    """A ``strategy_store`` row at ``_STRATEGY_ID``, unowned.
+
+    Exists purely to satisfy ``paper_deployments.strategy_id ->
+    strategy_store.id``, the FK `fb8d0bae8112` (#1438) added. Before that FK
+    a deployment could name a strategy id that was not in the table; with
+    ``PRAGMA foreign_keys=ON`` — which this file turns on precisely so ON
+    DELETE actions really fire — it cannot. Unowned (``owner_user_id`` is
+    NULL) so it takes no part in the deletion policy under test.
+    """
+    session.add(
+        StrategyRecord(
+            id=_STRATEGY_ID,
+            content_hash="0x" + "d" * 64,
+            generation_method="fusion",
+            strategy_name="Deployment FK anchor",
+        )
+    )
+    session.flush()
+
+
+def _seed_one_row_in_each_owned_table(session: Session) -> str:
+    """One AuthUser plus one row it owns in each of the six tables.
+
+    Returns the ``strategy_store.id`` the seeded paper deployment points at —
+    the owned strategy's own id, so the fixture holds exactly ONE
+    ``strategy_store`` row and the FK `fb8d0bae8112` added is satisfied by
+    real data rather than by an extra anchor row.
+    """
     _add_account(session)
     _link_wallet(session, _USER_ID, _WALLET, primary=True)
     session.flush()  # wallet_identities row must exist before FK-dependent inserts below
 
-    upsert_strategy(
+    strategy = upsert_strategy(
         session,
         generation_method="fusion",
         strategy_name="Cascade test strategy",
@@ -190,6 +217,7 @@ def _seed_one_row_in_each_owned_table(session: Session) -> None:
         asset_universe=["SPY"],
         owner_user_id=_USER_ID,
     )
+    session.flush()
     session.add(StrategyPassportRecord(id="passport-cascade-1", owner_user_id=_USER_ID))
     session.add(
         StrategyProposal(
@@ -211,7 +239,7 @@ def _seed_one_row_in_each_owned_table(session: Session) -> None:
     session.add(
         PaperDeployment(
             id="deployment-claimed-1",
-            strategy_id=_STRATEGY_ID,
+            strategy_id=strategy.id,
             owner_wallet=_WALLET,
             owner_user_id=_USER_ID,
             spec_json="{}",
@@ -221,6 +249,26 @@ def _seed_one_row_in_each_owned_table(session: Session) -> None:
     session.flush()
     session.add(PaperDailyReturn(deployment_id="deployment-claimed-1", date=date.today(), daily_return=0.01))
     session.commit()
+    return strategy.id
+
+
+def _owner_user_id_fks(conn, table: str) -> list[dict[str, str]]:
+    """Every FK on ``table.owner_user_id`` that points at ``auth_users``, as a
+    LIST — never a dict keyed by column.
+
+    ``PRAGMA foreign_key_list`` yields one row per foreign key:
+    ``(id, seq, referenced_table, from_col, to_col, on_update, on_delete,
+    match)``. Two constraints on the SAME column are two rows with different
+    ``id``s, and folding them into a ``{from_col: on_delete}`` dict silently
+    keeps only the last — which is exactly the failure this file has to be
+    able to see, since `85ca5310b7a1` ALTERS a constraint `fb8d0bae8112`
+    created rather than creating its own.
+    """
+    return [
+        {"id": row[0], "to": row[4], "on_delete": row[6]}
+        for row in conn.exec_driver_sql(f"PRAGMA foreign_key_list({table})")
+        if row[3] == "owner_user_id" and row[2] == "auth_users"
+    ]
 
 
 def test_migrated_schema_is_what_is_under_test(engine):
@@ -229,22 +277,45 @@ def test_migrated_schema_is_what_is_under_test(engine):
     ORM model. Asserted directly rather than assumed — ``create_all()`` and
     ``upgrade head`` are two different schema-management paths (see
     ``migrations/env.py``), and only one of them is the one that ships.
+
+    Covers **all six** ``owner_user_id`` columns, not just the two CASCADE
+    ones: a wrong ``ondelete=`` in the MIGRATION for any of the four SET NULL
+    tables is caught here by introspection, in addition to being caught
+    behaviourally by ``test_account_deletion_cascades_or_nulls_every_owned_table``.
     """
     with engine.connect() as conn:
         stamped = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         assert stamped == "85ca5310b7a1", f"expected this migration to be head, got {stamped!r}"
 
-        actions = {
-            row[3]: row[6]  # from-column -> ON DELETE action
-            for row in conn.exec_driver_sql("PRAGMA foreign_key_list(user_profiles)")
-        }
-        assert actions.get("owner_user_id") == "CASCADE", (
-            f"migrated user_profiles.owner_user_id is not ON DELETE CASCADE: {actions}"
-        )
+        for table in _ALL_OWNED_TABLES:
+            expected = "CASCADE" if table in _CASCADE_TABLES else "SET NULL"
+            owner_fks = _owner_user_id_fks(conn, table)
 
-        paper_actions = {row[3]: row[6] for row in conn.exec_driver_sql("PRAGMA foreign_key_list(paper_deployments)")}
-        assert paper_actions.get("owner_user_id") == "CASCADE", (
-            f"migrated paper_deployments.owner_user_id is not ON DELETE CASCADE: {paper_actions}"
+            # Exactly ONE, deliberately. `fb8d0bae8112` (#1438) creates
+            # `fk_paper_deployments_owner_user_id` with SET NULL and this
+            # revision ALTERS it; if it ever went back to *creating* the
+            # constraint instead, the SQLite batch-rebuild path would leave
+            # TWO foreign keys on one column with contradictory ON DELETE
+            # actions, and SQLite would apply whichever it reached first.
+            # A dict keyed by from-column cannot see that — it collapses the
+            # duplicate — so count the rows before reading the action.
+            assert len(owner_fks) == 1, (
+                f"migrated {table}.owner_user_id should carry exactly one FK to auth_users, "
+                f"found {len(owner_fks)}: {owner_fks}"
+            )
+            assert owner_fks[0]["on_delete"] == expected, (
+                f"migrated {table}.owner_user_id is ON DELETE {owner_fks[0]['on_delete']}, expected {expected}"
+            )
+
+        # The index belongs to #1438 in both directions — this revision must
+        # neither create a second one nor drop it on downgrade.
+        paper_indices = [
+            row[1]
+            for row in conn.exec_driver_sql("PRAGMA index_list(paper_deployments)")
+            if row[1] == "ix_paper_deployments_owner_user_id"
+        ]
+        assert paper_indices == ["ix_paper_deployments_owner_user_id"], (
+            f"expected exactly one ix_paper_deployments_owner_user_id in the migrated schema, got {paper_indices}"
         )
 
         triggers = {row[0] for row in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
@@ -253,10 +324,69 @@ def test_migrated_schema_is_what_is_under_test(engine):
         )
 
 
+def test_migration_alters_the_paper_deployments_fk_rather_than_creating_a_second_one():
+    """The Postgres DDL this revision emits, read directly.
+
+    ``fb8d0bae8112`` (#1438) CREATES ``fk_paper_deployments_owner_user_id``
+    (SET NULL) and ``ix_paper_deployments_owner_user_id``. This revision must
+    only change that constraint's ON DELETE action — if it ever went back to
+    *creating* the constraint, Postgres would abort the deploy with
+    ``constraint "fk_paper_deployments_owner_user_id" ... already exists``,
+    and re-creating the index would fail the same way.
+
+    **Why this test renders Postgres SQL instead of introspecting the sqlite
+    database the rest of this file uses:** it can't be caught on sqlite.
+    ``batch_alter_table`` on sqlite is a reflect-rename-copy-drop table
+    rebuild, so a ``create_foreign_key`` for a name that already exists is
+    silently absorbed into the rebuild and the resulting table still carries
+    exactly one, correct-looking FK — verified by mutating the migration that
+    way and watching all four sqlite tests stay green. Postgres is the only
+    place this policy runs and the only place the collision is fatal, so the
+    guard has to read Postgres DDL. ``alembic upgrade --sql`` renders it with
+    no live connection: the URL only selects the dialect.
+    """
+    result = subprocess.run(
+        ["alembic", "upgrade", "9c2e7b5a1f4d:85ca5310b7a1", "--sql"],
+        cwd=str(_BACKEND_DIR),
+        env=_clean_subprocess_env("postgresql://user:pass@localhost:5432/dbname"),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, f"offline render failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    sql = result.stdout
+
+    drop_at = sql.find("ALTER TABLE paper_deployments DROP CONSTRAINT fk_paper_deployments_owner_user_id")
+    assert drop_at != -1, (
+        "this revision does not DROP fk_paper_deployments_owner_user_id before re-adding it; "
+        "on Postgres that is a duplicate-constraint abort, because #1438 already created it.\n"
+        f"rendered SQL:\n{sql}"
+    )
+    add_at = sql.find(
+        "ALTER TABLE paper_deployments ADD CONSTRAINT fk_paper_deployments_owner_user_id "
+        "FOREIGN KEY(owner_user_id) REFERENCES auth_users (id) ON DELETE CASCADE"
+    )
+    assert add_at != -1, f"the CASCADE re-add is missing from the rendered SQL:\n{sql}"
+    assert drop_at < add_at, "the FK is re-added before it is dropped"
+
+    # The index is #1438's in both directions — neither created nor dropped here.
+    assert "ix_paper_deployments_owner_user_id" not in sql, (
+        "this revision touches ix_paper_deployments_owner_user_id; #1438's fb8d0bae8112 already "
+        f"creates it, so CREATE INDEX here aborts the deploy:\n{sql}"
+    )
+
+    # user_profiles is the same shape — its FK comes from b7e3f1a2c9d4.
+    assert "ALTER TABLE user_profiles DROP CONSTRAINT fk_user_profiles_owner_user_id" in sql
+    assert (
+        "ALTER TABLE user_profiles ADD CONSTRAINT fk_user_profiles_owner_user_id "
+        "FOREIGN KEY(owner_user_id) REFERENCES auth_users (id) ON DELETE CASCADE" in sql
+    )
+
+
 def test_account_deletion_cascades_or_nulls_every_owned_table(engine):
     """Both policy branches, on the schema the migration builds."""
     with Session(engine) as session:
-        _seed_one_row_in_each_owned_table(session)
+        seeded_strategy_id = _seed_one_row_in_each_owned_table(session)
         assert session.get(AuthUser, _USER_ID) is not None, "seed did not create the account"
 
         _delete_the_account(session)
@@ -296,7 +426,7 @@ def test_account_deletion_cascades_or_nulls_every_owned_table(engine):
         assert remaining_email_rows == 0, "an encrypted email row remains in user_profiles after account deletion"
 
         remaining_deployments = session.execute(
-            text("SELECT COUNT(*) FROM paper_deployments WHERE strategy_id = :sid"), {"sid": _STRATEGY_ID}
+            text("SELECT COUNT(*) FROM paper_deployments WHERE strategy_id = :sid"), {"sid": seeded_strategy_id}
         ).scalar_one()
         assert remaining_deployments == 0, "paper_deployments row survived account deletion"
 
@@ -325,6 +455,7 @@ def test_account_deletion_reaches_unclaimed_rows_on_a_second_linked_wallet(engin
         _link_wallet(session, _USER_ID, _WALLET, primary=True)
         _link_wallet(session, _USER_ID, _SECOND_WALLET)
         session.flush()
+        _seed_strategy_anchor(session)
 
         # The canonical, claimed profile — reached by the FK.
         session.add(
@@ -390,6 +521,7 @@ def test_deletion_does_not_reach_an_unclaimed_row_on_a_wallet_the_account_never_
         # and a paper deployment, never linked to any Better Auth account.
         session.add(WalletIdentity(wallet_address=_STRANGER_WALLET, actor_class="human"))
         session.flush()
+        _seed_strategy_anchor(session)
 
         session.add(
             UserProfile(
