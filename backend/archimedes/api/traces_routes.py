@@ -167,9 +167,20 @@ async def list_traces(
     decision_type: str | None = Query(None, pattern="^(construction|rebalance|rotation|regime_change|skip)$"),
     strategy_id: str | None = Query(
         None,
+        # min_length=1 is a GATE, not validation. `?strategy_id=` (present but
+        # empty) is falsy, so a truthiness check would have skipped
+        # assert_strategy_visible and served the whole unfiltered feed — the
+        # gate bypassed by an empty value it was never asked about. FastAPI
+        # rejects the empty value with 422 before the handler runs, and the
+        # handler additionally branches on `is not None` rather than on
+        # truthiness so the gate cannot be re-opened by relaxing this.
+        min_length=1,
         description=(
-            "Only traces whose strategies_referenced contains this id. Subject to the same "
-            "visibility gate as GET /api/strategies/{id} — a strategy you cannot read is 404 here too."
+            "Restrict to DECISION traces (rebalance / rotation / regime_change / skip) whose "
+            "strategies_referenced contains exactly this strategy id. Construction and "
+            "generation traces are excluded: their strategies_referenced holds paper anchors and "
+            "arXiv ids, not strategy ids. Subject to the same visibility gate as "
+            "GET /api/strategies/{id} — a strategy you cannot read is 404 here too."
         ),
     ),
     limit: int = Query(20, ge=1, le=100),
@@ -199,7 +210,7 @@ async def list_traces(
         trace_owner_view,
     )
 
-    if strategy_id:
+    if strategy_id is not None:
         assert_strategy_visible(strategy_id, request)
 
     caller_user_id, caller_wallet = _caller_identity(request)
@@ -237,13 +248,16 @@ async def list_traces(
                 if t.get("trigger") != "empty_vault"
                 and is_trace_visible(trace_owner_view(t, owners), caller_wallet, caller_user_id=caller_user_id)
             ]
+            # `total` counts what survived BOTH filters and the empty_vault
+            # drop, so "N of TOTAL" never promises a row the caller cannot
+            # reach. Windowing happens after, on the same list.
             total = len(visible)
             return TraceListResponse(
                 traces=[_offchain_trace_response(t) for t in visible[offset : offset + limit]],
                 total=total,
             )
 
-        if strategy_id:
+        if strategy_id is not None:
             # The on-chain fallback below CANNOT answer a strategy-scoped
             # question: a registry entry is (agent, vault, hash, timestamp) and
             # records no strategy reference at all. Falling through would return

@@ -5,7 +5,7 @@ import {
   TRACE_REGISTRY_ABI, NEW_CONTRACTS,
 } from '../config'
 import { regimeMeta } from '../regime'
-import { anchorState, blockOrderCopy, verificationTone } from '../trace-binding'
+import { anchorState, blockOrderCopy, referencedStrategyId, verificationTone } from '../trace-binding'
 
 
 
@@ -139,8 +139,10 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
         on-chain receipt and confirm the stored hash matches — traces anchored
         without an off-chain body to compare against report{' '}
         <strong>anchored, not re-hashed</strong> instead of a false match; click{' '}
-        <strong>→ Strategy passport</strong> to jump to the source strategy,
-        where its generation debate and its other trading decisions live. Skips
+        <strong>→ Strategy passport</strong> — on the trading decisions that
+        name one — to jump to that strategy, where its generation debate and its
+        other trading decisions live. A construction trace cites papers rather
+        than a strategy, so it offers no passport link. Skips
         read <strong>not anchored (no trade to bind)</strong>: with no trade
         there is nothing for an on-chain commitment to bind, so no anchor is
         attempted — that is a permanent, explained absence, not a pending write.
@@ -376,13 +378,20 @@ function OnChainTraces({ onNavigate, highlightTraceId }) {
                       strategies the decision actually consulted. This button
                       was therefore dead on every row, which is why the copy at
                       the top of the page promising a follow-back to "the source
-                      strategy and its full passport" was unreachable. Deep-links
-                      to the passport (which now carries the reverse link: that
-                      strategy's own trading decisions). */}
-                  {t.strategies_referenced?.[0] && onNavigate && (
+                      strategy and its full passport" was unreachable.
+
+                      `referencedStrategyId` rather than
+                      `strategies_referenced[0]`: on a CONSTRUCTION trace that
+                      first entry is an arXiv id or a paper anchor, not a
+                      strategy id (see the helper), so linking it would send the
+                      reader to a passport that does not exist. Same rule the
+                      backend's ?strategy_id= filter uses, so a row that offers
+                      this button is exactly a row that strategy's passport
+                      lists back. */}
+                  {referencedStrategyId(t) && onNavigate && (
                     <button
                       className="btn btn-outline btn-sm"
-                      onClick={() => onNavigate('strategy', { strategyId: t.strategies_referenced[0] })}
+                      onClick={() => onNavigate('strategy', { strategyId: referencedStrategyId(t) })}
                       title="Open this trace's strategy passport"
                     >
                       → Strategy passport
@@ -479,9 +488,10 @@ export default function Reasoning({ onNavigate }) {
       <div className="max-w-[720px] mb-7">
         <h2 className="font-serif text-[2rem] mb-2.5">Reasoning</h2>
         <p className="body">
-          Every autonomous agent decision is anchored on-chain by hash. Browse the
-          trace timeline below, verify any hash against the on-chain registry, and
-          follow each trace back to the source strategy in the Library.
+          Every autonomous agent decision is hashed, and every decision that
+          traded is anchored on-chain by that hash. Browse the trace timeline
+          below, verify any hash against the on-chain registry, and follow a
+          trading decision back to the passport of the strategy it consulted.
         </p>
       </div>
       <OnChainTraces onNavigate={onNavigate} highlightTraceId={highlightTraceId} />

@@ -1,7 +1,7 @@
 """Traces become reachable per strategy, and readable in full — without
 becoming an existence oracle for private strategies.
 
-Three claims are under test, each one a place where a plausible-looking
+Six claims are under test, each one a place where a plausible-looking
 implementation would have lied:
 
 1. **``?strategy_id=`` is gated exactly like the strategy itself.** Traces are
@@ -24,6 +24,25 @@ implementation would have lied:
    ``portfolio_after``, ``consulted_paper_hashes``) were reachable only via
    ``/canonical``'s raw bytes. The anchored claim is worth nothing to a user
    who cannot read what was anchored.
+
+4. **An empty ``?strategy_id=`` cannot walk around the gate.** A blank value is
+   falsy, so a truthiness check skipped the visibility gate *and* the filter and
+   returned the whole platform feed under a filter the caller had asked for.
+
+5. **``total`` describes rows a page can actually contain.** The ``empty_vault``
+   drop and the #1556 per-row filter both run before the count, so "3 of 5"
+   never promises a row no offset will reach.
+
+6. **The match is exact, and scoped to traces that name strategies at all.**
+   ``strategies_referenced`` holds real strategy ids only on the agent's
+   DECISION traces; the two construction writers put arXiv ids and paper anchors
+   in the same field. Inside that scope the match is element-exact — a bare
+   string is not substring-matched and a dict is not key-matched.
+
+The ownership half of the trace gate (#1556 — who may read a row at all) is
+proved in ``tests/api/test_traces_ownership_gate.py``, including the guard on
+the widened detail body this branch introduced. It is deliberately NOT
+re-implemented here.
 
 Hermetic: ``AgentStateStore`` is mocked at the boundary (same shape as
 ``test_traces_display_anchored_only.py``) and the DB is a per-test tmp sqlite
@@ -53,6 +72,20 @@ _OTHER_SID = "strat-scoped-2"
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _unset_trace_allowlist(monkeypatch):
+    """Weakest #1556 floor, so these tests measure the STRATEGY scope only.
+
+    With `PUBLIC_TRACE_VAULTS` unset every unowned trace is house-public, so a
+    row missing from a scoped listing here is missing because of the strategy
+    filter — not because an allowlist happened to be armed in the environment.
+    The ownership half of the story is proved in
+    `tests/api/test_traces_ownership_gate.py`, against the same weakest floor.
+    """
+    monkeypatch.delenv("PUBLIC_TRACE_VAULTS", raising=False)
+    monkeypatch.delenv("AGENT_VAULT_ADDRESSES", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -407,3 +440,216 @@ async def test_detail_cannot_smuggle_a_temporal_binding_claim_through_the_wider_
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["temporal_binding_valid"] is None
+
+
+# ── 5. An empty ?strategy_id= must not bypass the gate ──────────────────────
+
+
+async def test_empty_strategy_id_is_rejected_not_silently_unscoped():
+    """`?strategy_id=` — present but empty — must never serve the whole feed.
+
+    The bypass: an empty string is falsy, so a `if strategy_id:` gate skipped
+    `assert_strategy_visible` AND skipped passing the filter down, and the
+    caller got the platform's entire unfiltered trace feed back under a filter
+    they had explicitly asked for. A gate that a blank value walks around is
+    not a gate.
+
+    Two independent defences, so relaxing either alone still refuses: FastAPI's
+    `min_length=1` rejects the value before the handler runs, and the handler
+    branches on `is not None` rather than on truthiness.
+    """
+    _mk_strategy(_SID, owner=_W_OWNER, published=False)
+    store = AsyncMock(return_value=([_trace("t1", strategies=[_SID])], 1))
+
+    resp = await _get(f"/api/traces/?strategy_id=&limit=100&_={_SID}", list_traces=store)
+
+    assert resp.status_code == 422, resp.text
+    assert "t1" not in resp.text, "the unfiltered feed came back under an empty filter"
+
+
+async def test_whitespace_strategy_id_is_gated_like_any_other_id():
+    """A value that clears `min_length=1` still meets the visibility gate.
+
+    `?strategy_id=%20` is a real string, so it reaches the handler — and it is
+    not a strategy anyone may read, so it is 404, exactly like a made-up id.
+    """
+    store = AsyncMock(return_value=([_trace("t1", strategies=[_SID])], 1))
+
+    resp = await _get("/api/traces/?strategy_id=%20&limit=100", list_traces=store)
+
+    assert resp.status_code == 404, resp.text
+    assert "t1" not in resp.text
+
+
+async def test_unknown_strategy_id_is_404_not_an_empty_200():
+    """Same answer for "no such strategy" as for "not yours" — otherwise the
+    difference between the two responses is the existence oracle."""
+    resp = await _get(
+        "/api/traces/?strategy_id=no-such-strategy",
+        list_traces=AsyncMock(return_value=([], 0)),
+    )
+    assert resp.status_code == 404, resp.text
+
+
+# ── 6. `total` describes rows the caller can actually reach ────────────────
+
+
+async def test_total_counts_only_rows_that_survive_every_filter():
+    """ "3 of 5" must not include rows the response can never show.
+
+    `empty_vault` traces are dropped by the route (an agent tick against a vault
+    with nothing in it is not a decision worth showing), and #1556 drops rows
+    the caller may not read. Counting before those drops and windowing after
+    them yields a total that promises rows no page will ever contain.
+    """
+    _mk_strategy(_SID, published=True)
+    rows = [
+        _trace("t1", strategies=[_SID]),
+        _trace("skip-me-1", strategies=[_SID], trigger="empty_vault"),
+        _trace("t2", strategies=[_SID]),
+        _trace("skip-me-2", strategies=[_SID], trigger="empty_vault"),
+        _trace("t3", strategies=[_SID]),
+    ]
+    # The store reports the pre-drop count, exactly as the real one does.
+    store = AsyncMock(return_value=(rows, len(rows)))
+
+    resp = await _get(f"/api/traces/?strategy_id={_SID}&limit=100", list_traces=store)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [t["id"] for t in body["traces"]] == ["t1", "t2", "t3"]
+    assert body["total"] == 3, "total counted rows the route filtered out of every page"
+
+
+async def test_every_row_the_total_promises_is_reachable_by_paging():
+    """The honest form of the claim: paging through `total` yields `total` rows.
+
+    A count taken before a post-window filter fails this even when the first
+    page looks right — page 2 comes back short and the reader never learns why.
+    """
+    _mk_strategy(_SID, published=True)
+    rows = [
+        _trace("t1", strategies=[_SID]),
+        _trace("skip-me", strategies=[_SID], trigger="empty_vault"),
+        _trace("t2", strategies=[_SID]),
+    ]
+    store = AsyncMock(return_value=(rows, len(rows)))
+
+    first = await _get(f"/api/traces/?strategy_id={_SID}&limit=1&offset=0", list_traces=store)
+    second = await _get(f"/api/traces/?strategy_id={_SID}&limit=1&offset=1", list_traces=store)
+
+    total = first.json()["total"]
+    assert total == 2
+    seen = [t["id"] for t in first.json()["traces"]] + [t["id"] for t in second.json()["traces"]]
+    assert seen == ["t1", "t2"]
+    assert len(seen) == total
+
+
+# ── 7. What `strategies_referenced` actually matches ───────────────────────
+#
+# The field is named for strategy ids and does not uniformly hold them:
+# chain/agent_runner.py writes real strategy ids on its decision traces, while
+# the two CONSTRUCTION writers in api/strategies_routes.py write paper anchors
+# and arXiv ids into the same field. These pin the two halves of the honest
+# answer — the scope, and the exactness of the match inside it.
+
+
+def test_construction_traces_are_out_of_scope_because_they_name_papers():
+    """A construction trace's `strategies_referenced` is arXiv ids / paper
+    anchors, so matching a strategy id against it is a category error. Excluded
+    explicitly rather than left to fail silently, which reads as "this strategy
+    has no construction trace" instead of "this filter cannot see one"."""
+    from archimedes.services.redis_state import trace_references_strategy
+
+    fusion = _trace("f1", strategies=["2301.00001", "2405.09876"], decision_type="construction")
+    anchored = _trace("c1", strategies=["arxiv:2301.00001#momentum"], decision_type="construction")
+
+    # Not even its own literal contents match, because the scope is the gate.
+    assert trace_references_strategy(fusion, "2301.00001") is False
+    assert trace_references_strategy(anchored, "arxiv:2301.00001#momentum") is False
+    assert trace_references_strategy(fusion, _SID) is False
+
+
+def test_every_agent_decision_type_is_in_scope():
+    """The runner's four decision types all write real strategy ids, and all
+    four belong on a strategy's passport — a skip is a decision about holding
+    it, and dropping skips would quietly present a filtered history."""
+    from archimedes.services.redis_state import STRATEGY_REFERENCE_DECISION_TYPES, trace_references_strategy
+
+    assert {"rebalance", "rotation", "regime_change", "skip"} == STRATEGY_REFERENCE_DECISION_TYPES
+    for dt in STRATEGY_REFERENCE_DECISION_TYPES:
+        assert trace_references_strategy(_trace("t", strategies=[_SID], decision_type=dt), _SID) is True
+
+
+def test_a_bare_string_matches_the_whole_string_never_a_substring():
+    """`strategy_id in refs` on a string is a SUBSTRING test. "alpha" would be
+    attributed every decision that consulted "alpha-momentum-v2"."""
+    from archimedes.services.redis_state import trace_references_strategy
+
+    row = _trace("t1", strategies=[])
+    row["strategies_referenced"] = f"{_SID}-momentum-v2"
+
+    assert trace_references_strategy(row, _SID) is False
+    row["strategies_referenced"] = _SID
+    assert trace_references_strategy(row, _SID) is True
+
+
+def test_a_dict_shape_records_no_references_rather_than_matching_its_keys():
+    """`strategy_id in refs` on a dict is a KEY test. No writer produces a dict
+    here, so key-matching would silently promote whatever a future writer keyed
+    a mapping by into a provenance claim."""
+    from archimedes.services.redis_state import trace_references_strategy
+
+    row = _trace("t1", strategies=[])
+    row["strategies_referenced"] = {_SID: {"weight": 0.4}}
+
+    assert trace_references_strategy(row, _SID) is False
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [None, 7, [None], [7], [{"id": _SID}], [[_SID]], ()],
+    ids=["none", "int", "list-of-none", "list-of-int", "list-of-dict", "nested-list", "empty-tuple"],
+)
+def test_unrecognised_shapes_match_nothing(refs):
+    """ "I cannot establish that this decision consulted that strategy" is the
+    honest answer, and the safe one: a false positive puts someone else's trade
+    on a strategy's passport."""
+    from archimedes.services.redis_state import trace_references_strategy
+
+    row = _trace("t1", strategies=[])
+    row["strategies_referenced"] = refs
+    assert trace_references_strategy(row, _SID) is False
+
+
+def test_a_tuple_or_set_of_ids_still_matches_exactly():
+    """JSON round-trips lists, but the predicate is also called on in-memory
+    records; accepting the sequence types while keeping element equality exact
+    is the point."""
+    from archimedes.services.redis_state import trace_references_strategy
+
+    for refs in ([_SID, "other"], (_SID,), {_SID, "other"}, frozenset({_SID})):
+        row = _trace("t1", strategies=[])
+        row["strategies_referenced"] = refs
+        assert trace_references_strategy(row, _SID) is True
+
+    row = _trace("t1", strategies=[])
+    row["strategies_referenced"] = (f"{_SID}x",)
+    assert trace_references_strategy(row, _SID) is False
+
+
+async def test_store_filter_skips_construction_traces_end_to_end():
+    """The scope is enforced by the store, not only by the pure predicate."""
+    from archimedes.services.redis_state import AgentStateStore
+
+    rows = [
+        _trace("decision", strategies=[_SID]),
+        _trace("construction", strategies=[_SID], decision_type="construction"),
+    ]
+    store = AgentStateStore()
+    store._get_redis = AsyncMock(return_value=_fake_redis(rows))
+
+    window, total = await store.list_traces(strategy_id=_SID)
+
+    assert [t["id"] for t in window] == ["decision"]
+    assert total == 1

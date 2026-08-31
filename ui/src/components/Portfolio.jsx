@@ -6,6 +6,7 @@ import {
 	NEW_CONTRACTS,
 	getUsdcBalance,
 } from "../config";
+import { apiGet } from "../api";
 import { anchorState } from "../trace-binding";
 import PaymentReceipts from "./PaymentReceipts";
 import RegimePanel from "./RegimePanel";
@@ -223,8 +224,12 @@ export default function Portfolio({
 		// Regime is loaded + rendered by <RegimePanel /> above, not duplicated here.
 	}, []);
 
-	// Own vaults only — /api/traces/ has no auth, and an unfiltered call
-	// returns the platform's most recent traces across every user's vaults.
+	// Own vaults only. Since #1556 /api/traces/ IS ownership-gated, so an
+	// unfiltered call no longer returns other users' traces — but it still
+	// returns the house agent's public proof surface, which is not this
+	// panel's subject. `vault_address` stays the right filter for "my
+	// activity"; the gate is what stops it being the only thing between the
+	// reader and the platform.
 	// Key on the joined address list (not the userVaults array reference)
 	// so loadTraces only gets a new identity when the actual vault set
 	// changes, not on every re-fetch of the same vaults.
@@ -242,11 +247,16 @@ export default function Portfolio({
 			// filter, not a list — one request per owned vault, merged and
 			// re-sorted client-side, rather than inventing a filter shape the
 			// backend doesn't support.
+			// apiGet, not a bare fetch: it sends `credentials: "include"` and the
+			// X-Wallet-Address header. Since #1556 those ARE the caller's
+			// identity on this route — a bare fetch is an anonymous read, so the
+			// user's own vault traces would be filtered out of their own
+			// activity feed and the panel would silently show only house rows.
 			const results = await Promise.all(
 				addrs.map((addr) =>
-					fetch(`${API_BASE}/api/traces/?limit=20&vault_address=${addr}`)
-						.then((r) => (r.ok ? r.json() : { traces: [] }))
-						.catch(() => ({ traces: [] })),
+					apiGet(
+						`/api/traces/?limit=20&vault_address=${encodeURIComponent(addr)}`,
+					).catch(() => ({ traces: [] })),
 				),
 			);
 			const tsMs = (t) => {

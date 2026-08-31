@@ -131,3 +131,43 @@ export function anchorState(trace) {
   if (t.decision_type === 'skip') return ANCHOR_STATES.not_anchored_no_trade
   return ANCHOR_STATES.anchor_pending
 }
+
+// ── Which traces actually name a strategy ────────────────────────────────
+//
+// `strategies_referenced` is named for strategy ids and does not uniformly
+// hold them. The agent runner writes real strategy ids on its decision traces;
+// the two CONSTRUCTION writers in api/strategies_routes.py write arXiv ids and
+// paper-anchor strings into the same field. So "the first entry of
+// strategies_referenced is a strategy id" is true for decision traces and
+// false for construction ones, and a follow-back button that ignores the
+// difference deep-links a reader to a passport for an arXiv id — a 404 dressed
+// up as provenance.
+//
+// This mirrors `STRATEGY_REFERENCE_DECISION_TYPES` /
+// `trace_references_strategy` in backend/archimedes/services/redis_state.py,
+// which is what `GET /api/traces/?strategy_id=` filters on. The two must agree:
+// a row that offers a follow-back here is exactly a row the scoped listing on
+// that strategy's passport would return. Change one, change the other.
+export const STRATEGY_REFERENCE_DECISION_TYPES = new Set([
+  'rebalance',
+  'rotation',
+  'regime_change',
+  'skip',
+])
+
+/**
+ * The strategy id this trace consulted, or null when it names none.
+ *
+ * Null — not a guess — for construction/generation traces, for an unknown
+ * shape, and for an empty list. The caller renders no follow-back rather than
+ * one that leads nowhere.
+ */
+export function referencedStrategyId(trace) {
+  const t = trace || {}
+  if (!STRATEGY_REFERENCE_DECISION_TYPES.has(t.decision_type)) return null
+  const refs = t.strategies_referenced
+  if (typeof refs === 'string') return refs || null
+  if (!Array.isArray(refs)) return null
+  const first = refs.find((r) => typeof r === 'string' && r)
+  return first || null
+}

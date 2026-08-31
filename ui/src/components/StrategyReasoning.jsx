@@ -15,6 +15,17 @@ import { anchorState } from "../trace-binding";
 //     autonomous agent emitted while running a vault that references this
 //     strategy. Each one is hashed and (when it traded) anchored on Arc.
 //
+// What the second section can show is bounded by what the filter can honestly
+// match, and the copy says so rather than implying more. `strategies_referenced`
+// holds real strategy ids only on the agent's DECISION traces; the two
+// construction writers in api/strategies_routes.py put arXiv ids and paper
+// anchors in the same field, so the backend scopes ?strategy_id= to decision
+// types (services/redis_state.py STRATEGY_REFERENCE_DECISION_TYPES). A
+// construction trace therefore never appears here — not because it is hidden,
+// but because it references papers, not this strategy. Saying "no anchored
+// decisions" while silently dropping a whole class of trace would be the
+// dishonest version of the same empty state.
+//
 // They are rendered as two separately-headed sections, never interleaved into
 // one "reasoning" timeline: a debate turn carries no anchor and must never sit
 // in a list whose rows imply one.
@@ -227,9 +238,11 @@ function TradingDecisions({ strategyId, onNavigate }) {
 	if (traces.length === 0) {
 		return (
 			<p className="caption leading-relaxed">
-				No anchored decisions yet for this strategy. Decisions appear here
-				once the autonomous agent acts on a vault that references it — every
-				trade it makes is hashed and anchored on Arc first.
+				No trading decisions recorded yet for this strategy. They appear here
+				once the autonomous agent runs a vault that holds it — a rebalance, a
+				rotation, a regime change, or a skip. This list does not include the
+				strategy's own construction: that trace cites the papers it was built
+				from, not the strategy, so it is not a decision about holding it.
 			</p>
 		);
 	}
@@ -237,10 +250,12 @@ function TradingDecisions({ strategyId, onNavigate }) {
 	return (
 		<>
 			<p className="caption mb-3 leading-relaxed max-w-[640px]">
-				Agent decisions that consulted this strategy, newest first
-				{total > traces.length ? ` (${traces.length} of ${total})` : ""}. Each
-				row states its own anchoring status — open one on Reasoning to
-				re-fetch the on-chain receipt and compare the hash.
+				Agent decisions — rebalances, rotations, regime changes and skips —
+				that named this strategy, newest first
+				{total > traces.length ? ` (showing ${traces.length} of ${total})` : ""}
+				. Each row states its own anchoring status: a decision that traded is
+				anchored on Arc, a skip has no trade for an anchor to bind. Open one
+				on Reasoning to re-fetch the on-chain receipt and compare the hash.
 			</p>
 			<div className="flex flex-col gap-2">
 				{traces.map((t) => (

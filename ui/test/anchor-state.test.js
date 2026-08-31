@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { ANCHOR_STATES, anchorState } from "../src/trace-binding.js";
+import {
+	ANCHOR_STATES,
+	STRATEGY_REFERENCE_DECISION_TYPES,
+	anchorState,
+	referencedStrategyId,
+} from "../src/trace-binding.js";
 
 // The per-row anchoring claim, and the three surfaces that make it.
 //
@@ -144,6 +149,98 @@ test("the skip copy matches the wording the #714 branch settled on", () => {
 	);
 });
 
+test("anchorState carries #714's Portfolio copy forward verbatim", () => {
+	// Portfolio.jsx's inline three-state ternary — what #714 landed on main —
+	// was replaced by anchorState during the rebase. That resolution is only
+	// lossless if the shared helper reproduces main's strings and icons
+	// EXACTLY; a reworded tooltip would be a silent product-copy regression
+	// smuggled in through a merge conflict. Pinned character-for-character.
+	const anchored = anchorState({ is_verified: true });
+	assert.equal(anchored.label, "anchored on Arc");
+	assert.equal(anchored.icon, "i-lucide-check-circle");
+	assert.equal(anchored.tone, "verified");
+
+	const skip = anchorState({ decision_type: "skip" });
+	assert.equal(skip.icon, "i-lucide-skip-forward");
+
+	const pending = anchorState({ decision_type: "rebalance" });
+	assert.equal(pending.label, "anchor pending");
+	assert.equal(pending.icon, "i-lucide-clock");
+	assert.equal(
+		pending.title,
+		"Trace hashed + persisted off-chain; on-chain anchor pending (registry write didn't complete yet — usually transient).",
+	);
+});
+
+test("the ordering fix survives: an anchored skip is not relabelled by its type", () => {
+	// main's #714 ternary tested is_verified before decision_type, so an
+	// anchored skip read "anchored on Arc". anchorState must keep that
+	// precedence AND extend it to arc_tx_hash, which main did not consider.
+	assert.equal(anchorState({ decision_type: "skip", is_verified: true }).state, "anchored");
+	assert.equal(anchorState({ decision_type: "skip", arc_tx_hash: "0xabc" }).state, "anchored");
+});
+
+// ── Which rows may offer a follow-back ───────────────────────────────────
+
+test("referencedStrategyId ignores construction traces, which cite papers", () => {
+	// `strategies_referenced` is named for strategy ids and does not uniformly
+	// hold them: api/strategies_routes.py writes arXiv ids and paper anchors
+	// into the same field on CONSTRUCTION traces. Linking those would deep-link
+	// the reader to a passport for an arXiv id — a 404 dressed as provenance.
+	assert.equal(
+		referencedStrategyId({ decision_type: "construction", strategies_referenced: ["2301.00001"] }),
+		null,
+	);
+	assert.equal(
+		referencedStrategyId({
+			decision_type: "construction",
+			strategies_referenced: ["arxiv:2301.00001#momentum"],
+		}),
+		null,
+	);
+});
+
+test("referencedStrategyId returns the id for every agent decision type", () => {
+	// Must agree with STRATEGY_REFERENCE_DECISION_TYPES in
+	// backend/archimedes/services/redis_state.py — a row that offers the
+	// button is exactly a row that strategy's scoped listing returns.
+	assert.deepEqual(
+		[...STRATEGY_REFERENCE_DECISION_TYPES].sort(),
+		["rebalance", "regime_change", "rotation", "skip"],
+	);
+	for (const decision_type of STRATEGY_REFERENCE_DECISION_TYPES) {
+		assert.equal(
+			referencedStrategyId({ decision_type, strategies_referenced: ["strat-1"] }),
+			"strat-1",
+		);
+	}
+});
+
+test("referencedStrategyId returns null rather than guessing on an odd shape", () => {
+	for (const strategies_referenced of [undefined, null, [], {}, [null], [""], 7]) {
+		assert.equal(
+			referencedStrategyId({ decision_type: "rebalance", strategies_referenced }),
+			null,
+			`guessed a strategy id from ${JSON.stringify(strategies_referenced)}`,
+		);
+	}
+	assert.equal(referencedStrategyId(undefined), null);
+	// A bare string is a whole id, not a list to index into.
+	assert.equal(
+		referencedStrategyId({ decision_type: "rebalance", strategies_referenced: "strat-1" }),
+		"strat-1",
+	);
+});
+
+test("Reasoning.jsx gates the passport button on referencedStrategyId", () => {
+	const reasoning = src("components/Reasoning.jsx");
+	assert.ok(reasoning.includes("referencedStrategyId(t) && onNavigate"));
+	assert.ok(
+		!/t\.strategies_referenced\?\.\[0\] && onNavigate/.test(reasoning),
+		"the button links strategies_referenced[0] raw — an arXiv id on a construction trace",
+	);
+});
+
 test("the Reasoning page's intro copy describes buttons that exist", () => {
 	const reasoning = src("components/Reasoning.jsx");
 	// It used to promise "→ Strategy in Library", a button gated on a field
@@ -155,6 +252,50 @@ test("the Reasoning page's intro copy describes buttons that exist", () => {
 	assert.ok(reasoning.includes("not anchored (no trade to bind)"));
 });
 
+test("BOTH intros on the Reasoning page were corrected, not just the panel's", () => {
+	// The page has two intro paragraphs: the <Reasoning> page header and the
+	// <OnChainTraces> panel blurb. Only the panel's was updated when the button
+	// changed, so the page header went on promising a follow-back "to the
+	// source strategy in the Library" while the button deep-linked the
+	// passport. The earlier version of this test asserted on the file as a
+	// whole, which the panel's corrected copy satisfied on its own — so it
+	// reported covering a paragraph it never read. Slice the header out and
+	// assert against that text specifically.
+	const reasoning = src("components/Reasoning.jsx");
+	const start = reasoning.indexOf("export default function Reasoning(");
+	assert.ok(start !== -1, "page component not found");
+	const header = reasoning.slice(start);
+
+	assert.ok(
+		!/in the Library/.test(header),
+		"the page header still sends the reader to the Library; the button opens the passport",
+	);
+	assert.match(header, /passport of the strategy it consulted/);
+
+	// The panel blurb is the other half, and it must not overclaim either: the
+	// button is absent on construction traces, which cite papers, not a strategy.
+	const panelStart = reasoning.indexOf("function OnChainTraces(");
+	const blurb = reasoning.slice(panelStart, start);
+	assert.match(blurb, /on the trading decisions that\s*\n?\s*name one/);
+	assert.match(blurb, /construction trace cites papers rather/);
+});
+
+test("no surface still points a trace back to the Library", () => {
+	// One grep for the retired destination across every file that renders a
+	// trace row, so the next surface to grow a follow-back cannot quietly
+	// reintroduce it.
+	for (const file of [
+		"components/Reasoning.jsx",
+		"components/StrategyReasoning.jsx",
+		"components/Portfolio.jsx",
+	]) {
+		assert.ok(
+			!/onNavigate\(\s*["']library["']/.test(src(file)),
+			`${file} navigates a trace back to the Library`,
+		);
+	}
+});
+
 test("the dead t.strategy_id follow-back is gone from Reasoning.jsx", () => {
 	// TraceResponse has never had a `strategy_id` field — the API emits
 	// `strategies_referenced` — so the "→ Strategy" button rendered on zero
@@ -164,7 +305,7 @@ test("the dead t.strategy_id follow-back is gone from Reasoning.jsx", () => {
 		!/\{t\.strategy_id && onNavigate/.test(reasoning),
 		"the button still gates on a field the API never sends",
 	);
-	assert.ok(reasoning.includes("t.strategies_referenced?.[0] && onNavigate"));
+	assert.ok(reasoning.includes("referencedStrategyId(t) && onNavigate"));
 });
 
 // ── The passport panel ───────────────────────────────────────────────────
@@ -193,11 +334,56 @@ test("StrategyReasoning scopes its trace query to the strategy", () => {
 
 test("empty states are honest and specific, not a generic 'nothing here'", () => {
 	const panel = src("components/StrategyReasoning.jsx");
-	assert.ok(panel.includes("No anchored decisions yet for this strategy."));
+	assert.ok(panel.includes("No trading decisions recorded yet for this strategy."));
 	assert.ok(panel.includes("No debate transcript for this strategy."));
 	// Both explain WHY the absence exists rather than implying a failure.
 	assert.match(panel, /curated library strategies never ran one/);
-	assert.match(panel, /once the autonomous agent acts on a vault that references it/);
+	assert.match(panel, /once the autonomous agent runs a vault that holds it/);
+});
+
+test("the panel says what the filter actually matches, and what it cannot", () => {
+	const panel = src("components/StrategyReasoning.jsx");
+	// The backend scopes ?strategy_id= to decision types, because a
+	// construction trace's strategies_referenced holds arXiv ids and paper
+	// anchors. Copy that says "agent decisions that consulted this strategy"
+	// while a whole class of trace can never match is an overclaim by omission.
+	assert.match(panel, /rebalances, rotations, regime changes and skips/);
+	assert.match(panel, /does not include the\s*\n?\s*strategy's own construction/);
+
+	// And it must not call the list "anchored decisions": a SKIP is a decision
+	// this list shows and by design has no anchor (#714).
+	assert.ok(
+		!/No anchored decisions yet/.test(panel),
+		"the empty state calls every row anchored; skips are shown here and never anchor",
+	);
+	assert.match(panel, /a skip has no trade for an anchor to bind/);
+});
+
+test("the 'N of TOTAL' count is only rendered against a filtered total", () => {
+	// `total` comes from the API, which now counts rows AFTER the empty_vault
+	// drop and the #1556 ownership filter and windows the same list — so
+	// "showing 20 of 57" cannot promise rows no page will ever contain. The
+	// word "showing" is what makes the partial-page reading explicit.
+	const panel = src("components/StrategyReasoning.jsx");
+	assert.match(panel, /total > traces\.length \? ` \(showing \$\{traces\.length\} of \$\{total\}\)`/);
+});
+
+test("the Portfolio trace feed sends the caller's identity with the request", () => {
+	// Since #1556 /api/traces/ is ownership-gated, so a bare `fetch` is an
+	// ANONYMOUS read: the user's own vault traces would be filtered out of
+	// their own activity feed. apiGet sends credentials + the wallet header.
+	const portfolio = src("components/Portfolio.jsx");
+	assert.ok(portfolio.includes('import { apiGet } from "../api"'));
+	assert.ok(
+		!/fetch\(`\$\{API_BASE\}\/api\/traces\//.test(portfolio),
+		"the trace feed still reads /api/traces/ anonymously through a bare fetch",
+	);
+	assert.ok(portfolio.includes("apiGet(\n\t\t\t\t\t\t`/api/traces/?limit=20&vault_address="));
+	// The stale claim that justified the bare fetch must be gone with it.
+	assert.ok(
+		!/\/api\/traces\/ has no auth/.test(portfolio),
+		"the comment still says /api/traces/ has no auth — #1556 gated it",
+	);
 });
 
 test("a 404 from either endpoint is an empty state, not an error banner", () => {
