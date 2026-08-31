@@ -30,9 +30,19 @@ real answer about a strategy the way ``GATE_FAILED`` is. Kept as a separate name
 than spelling ``USAGE`` at every auth call site) purely so the reason is legible in the
 code that raises it."""
 
+INCOMPLETE = 4
+"""``verify`` reached the server and got an answer, but not every runnable leg of
+the gate could be evaluated — typically too few bars for the walk-forward OOS
+split (~70) while DSR only needs 4.
+
+A new code rather than ``GATE_FAILED`` on purpose, per this module's own split:
+an incomplete evaluation is not a verdict about the strategy, so collapsing it
+into 1 would report "not enough data" as "strategy rejected" — precisely the
+confusion the header warns about. See #1481."""
+
 NOT_IMPLEMENTED = 3
 """The subcommand exists in the command tree but has no implementation in this
 release. 0.0.1 returned this for every subcommand; 0.1.0 narrows it to ``backtest``
 and ``verify --local``, which still need the not-yet-published local execution engine."""
 
-__all__ = ["AUTH", "GATE_FAILED", "NOT_IMPLEMENTED", "OK", "USAGE"]
+__all__ = ["AUTH", "GATE_FAILED", "INCOMPLETE", "NOT_IMPLEMENTED", "OK", "USAGE"]

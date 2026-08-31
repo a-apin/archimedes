@@ -17,6 +17,7 @@
 // Setup: ui/.env.example documents VITE_CIRCLE_CLIENT_KEY + VITE_CIRCLE_CLIENT_URL.
 
 import { createPublicClient } from 'viem'
+import { EXECUTION_CHAIN_ID } from './chain-config'
 import { toWebAuthnAccount } from 'viem/account-abstraction'
 import {
   toWebAuthnCredential,
@@ -33,7 +34,7 @@ const CLIENT_URL = import.meta.env.VITE_CIRCLE_CLIENT_URL
 // Arc Testnet chain definition; matches the EOA-path chain in config.js so
 // any downstream code that introspects .chain sees the same object shape.
 const arcTestnet = {
-  id: 5042002,
+  id: EXECUTION_CHAIN_ID,
   name: 'Arc Testnet',
   nativeCurrency: { name: 'USD Coin', symbol: 'USDC', decimals: 18 },
   rpcUrls: { default: { http: ['https://rpc.testnet.arc.network'] } },

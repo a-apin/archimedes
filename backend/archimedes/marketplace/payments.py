@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from decimal import Decimal
 
 import circlekit.server as _circlekit_server
@@ -26,7 +25,7 @@ from circlekit.server import GatewayMiddleware
 from circlekit.wallets import CircleWalletSigner
 from circlekit.x402 import create_payment_header, get_payment_required
 
-from archimedes.marketplace.config import DEFAULT_GATEWAY_CHAIN
+from archimedes.marketplace.config import gateway_chain
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +78,7 @@ def get_gateway_middleware(seller_address: str) -> GatewayMiddleware:
     if not seller_address or int(seller_address, 16) == 0:
         raise RuntimeError(f"refusing to charge into zero address ({seller_address})")
 
-    chain = os.getenv("GATEWAY_CHAIN", DEFAULT_GATEWAY_CHAIN).strip()
+    chain = gateway_chain()
     mw = create_gateway_middleware(
         seller_address=seller_address,
         chain=chain,

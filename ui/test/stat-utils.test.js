@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { median } from "../src/statUtils.js";
+import { changeWindowLabel, groupChangeWindowLabel, median } from "../src/statUtils.js";
 
 // ── #1322: group "24h change" headline must be robust to a single outlier ──
 // A prior arithmetic-mean implementation let one bad tick (or one genuinely
@@ -60,14 +60,19 @@ test("median is robust to one outlier of any magnitude (the actual #1322 bug)", 
 const explorePage = readFileSync(new URL("../src/components/Explore.jsx", import.meta.url), "utf8");
 const groupModal = readFileSync(new URL("../src/components/AssetGroupModal.jsx", import.meta.url), "utf8");
 
+// The import pins allow sibling named imports — #1378 added
+// changeWindowLabel / groupChangeWindowLabel alongside median. The property
+// under test is that `median` comes from the shared module rather than being
+// re-implemented locally, which a `[^}]*\bmedian\b[^}]*` pin still enforces;
+// pinning the exact one-name import list guarded spelling, not sourcing.
 test("Explore.jsx group headline imports and calls the shared median, not a local mean", () => {
-	assert.match(explorePage, /import \{ median \} from '\.\.\/statUtils'/);
+	assert.match(explorePage, /import \{[^}]*\bmedian\b[^}]*\} from '\.\.\/statUtils'/);
 	assert.match(explorePage, /median\(vals\)/);
 	assert.doesNotMatch(explorePage, /reduce\(\(a, b\) => a \+ b, 0\) \/ vals\.length/);
 });
 
 test("AssetGroupModal.jsx aggregate stat imports and calls the shared median, not a local mean", () => {
-	assert.match(groupModal, /import \{ median \} from '\.\.\/statUtils'/);
+	assert.match(groupModal, /import \{[^}]*\bmedian\b[^}]*\} from '\.\.\/statUtils'/);
 	assert.match(groupModal, /median\(vals\)/);
 	assert.doesNotMatch(groupModal, /reduce\(\(a, b\) => a \+ b, 0\) \/ vals\.length/);
 });
@@ -75,6 +80,72 @@ test("AssetGroupModal.jsx aggregate stat imports and calls the shared median, no
 test("the group headline labels no longer claim 'avg' when the value is a median", () => {
 	assert.doesNotMatch(explorePage, />\s*avg 24h\s*</);
 	assert.doesNotMatch(groupModal, /Avg 24h change/);
-	assert.match(explorePage, /median 24h/);
-	assert.match(groupModal, /Median 24h change/);
+	// #1378 made the window dynamic, so the pin follows the template literal
+	// rather than the old hardcoded "24h". "median" is still the word under
+	// test — that is what #1322 was about.
+	assert.match(explorePage, /`median \$\{medianWindow\}`/);
+	assert.match(groupModal, /`Median \$\{medianWindow\} change`/);
+});
+
+// ── #1378: the window label must never fall back to the "24h" claim ─────────
+//
+// `change_24h_pct` is a one-bar change. One bar is 24 hours only on a 24/7
+// feed; a Friday-to-Monday equity pair spans 72. The backend now measures the
+// real window; these guard the display-layer fallbacks, which are where the
+// old false claim actually lived.
+
+test("changeWindowLabel: uses the backend's measured window when present", () => {
+	assert.equal(changeWindowLabel({ change_window_label: "3d" }), "3d");
+	assert.equal(changeWindowLabel({ change_window_label: "24h" }), "24h");
+});
+
+test("changeWindowLabel: an unknown window never falls back to '24h'", () => {
+	// The load-bearing assertion. Defaulting to "24h" here would reinstate the
+	// exact claim #1378 exists to remove, on precisely the rows where we have
+	// least reason to make it.
+	assert.equal(changeWindowLabel({ change_window_label: null }), "prev close");
+	assert.equal(changeWindowLabel({}), "prev close");
+	assert.equal(changeWindowLabel(undefined), "prev close");
+});
+
+test("groupChangeWindowLabel: returns the shared window when members agree", () => {
+	const members = [
+		{ change_24h_pct: 1.0, change_window_label: "3d" },
+		{ change_24h_pct: -2.0, change_window_label: "3d" },
+	];
+	assert.equal(groupChangeWindowLabel(members), "3d");
+});
+
+test("groupChangeWindowLabel: returns null when members disagree", () => {
+	// A group spanning a holiday genuinely holds both windows. There is no
+	// single true label for that, so the caller must render a generic one
+	// rather than picking a member's window and implying it covers the group.
+	const members = [
+		{ change_24h_pct: 1.0, change_window_label: "24h" },
+		{ change_24h_pct: -2.0, change_window_label: "2d" },
+	];
+	assert.equal(groupChangeWindowLabel(members), null);
+});
+
+test("groupChangeWindowLabel: one unknown window poisons the group label", () => {
+	const members = [
+		{ change_24h_pct: 1.0, change_window_label: "24h" },
+		{ change_24h_pct: -2.0, change_window_label: null },
+	];
+	assert.equal(groupChangeWindowLabel(members), null);
+});
+
+test("groupChangeWindowLabel: ignores members that contributed no value", () => {
+	// Matches the median's own filter — a member with a null change is not in
+	// the aggregate, so its window must not constrain the aggregate's label.
+	const members = [
+		{ change_24h_pct: 1.0, change_window_label: "3d" },
+		{ change_24h_pct: null, change_window_label: "24h" },
+	];
+	assert.equal(groupChangeWindowLabel(members), "3d");
+});
+
+test("groupChangeWindowLabel: empty and absent inputs return null, not a guess", () => {
+	assert.equal(groupChangeWindowLabel([]), null);
+	assert.equal(groupChangeWindowLabel(undefined), null);
 });

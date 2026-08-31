@@ -29,6 +29,20 @@ updates:
       - backend
     commit-message:
       prefix: "[deps][backend]"
+    ignore:
+      # torch resolves through the `--extra-index-url .../whl/cpu` in
+      # backend/requirements.txt, so the *installed* version reads `2.13.0+cpu`
+      # and dependabot rewrites the floor to match: `torch>=2.13.0+cpu,<3.0`.
+      # That is not a valid PEP 440 requirement — a local version label is only
+      # permitted on `==` or `!=` — so import-guard rejects every such PR. See
+      # #1478, and the trailing comment on the torch line in requirements.txt.
+      # Selecting the CPU wheel is the index's job, not the specifier's.
+      # Only version bumps are suppressed; security advisories still open PRs.
+      - dependency-name: torch
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
 
   # Analytics engine — pip
   - package-ecosystem: pip

@@ -390,6 +390,180 @@ class TestStrategySpecPersistence:
         assert json.loads(r2.strategy_spec) == DSL_SPEC  # unchanged, not other_spec
 
 
+class TestBriefIntentPersistence:
+    """v8 Lane 3.3: the user's own free-text ask, persisted alongside the
+    derived thesis. Same never-overwrite backfill contract as strategy_spec
+    above, exercised the same way."""
+
+    def test_insert_with_brief_persists(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Momentum Clone",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="Something that beats SPY in a recession",
+        )
+        assert r.brief_intent == "Something that beats SPY in a recession"
+
+    def test_insert_without_brief_is_null(self, session):
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="No Brief Debate",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r.brief_intent is None
+
+    @pytest.mark.parametrize(
+        ("name", "brief"),
+        [
+            ("Empty Brief Explicitly Provided", ""),
+            ("Whitespace Brief Spaces", "   "),
+            ("Whitespace Brief Newlines And Tabs", "\n\t \r\n"),
+        ],
+    )
+    def test_insert_with_blank_brief_collapses_to_null(self, session, name, brief):
+        """Unlike strategy_spec's `is not None` (where {} is a meaningful
+        distinct payload), brief_intent is plain text — an empty OR
+        whitespace-only string carries nothing to show and is stored as NULL,
+        not as blanks.
+
+        The whitespace cases are the ones that matter: `"" or None` is already
+        None by truthiness, but `"   "` is TRUTHY, so without the explicit
+        `.strip()` in upsert_strategy a row of blanks reaches the DB and the
+        passport renders an empty "Your brief" card (StrategyPassport.jsx
+        guards on `s.brief_intent`, which a blank string satisfies).
+        """
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name=name,
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent=brief,
+        )
+        assert r.brief_intent is None
+
+    def test_brief_is_stripped_before_persisting(self, session):
+        """A real brief with incidental surrounding whitespace is stored
+        trimmed — the same normalization, applied to the non-blank case."""
+        r = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Padded Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="  Low-vol income for retirement\n",
+        )
+        assert r.brief_intent == "Low-vol income for retirement"
+
+    def test_whitespace_only_brief_never_backfills_an_existing_row(self, session):
+        """The OTHER write branch: a content-hash match whose incoming brief is
+        whitespace-only must leave the existing NULL alone, not fill it with
+        blanks. `"   "` is truthy, so this branch's `if brief_intent and not
+        existing.brief_intent` would happily write it without the shared
+        normalization."""
+        r1 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Blank Backfill Attempt",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r1.brief_intent is None
+
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Blank Backfill Attempt",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="   \n ",
+        )
+        assert r1.id == r2.id
+        assert r2.brief_intent is None
+
+    def test_content_hash_match_backfill_strips_the_brief(self, session):
+        """The backfill branch normalizes too: a padded real brief lands
+        trimmed on the existing row, not with its whitespace intact."""
+        upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Padded Backfill",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Padded Backfill",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="\t Beat SPY in a drawdown  ",
+        )
+        assert r2.brief_intent == "Beat SPY in a drawdown"
+
+    def test_content_hash_match_backfills_missing_brief(self, session):
+        """Same content, first call with no brief, second call WITH one —
+        the existing row is backfilled (never a duplicate row)."""
+        r1 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Backfill My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+        )
+        assert r1.brief_intent is None
+
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Backfill My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="Low-vol income strategy",
+        )
+        assert r1.id == r2.id
+        assert session.query(StrategyRecord).count() == 1
+        assert r2.brief_intent == "Low-vol income strategy"
+
+    def test_content_hash_match_never_overwrites_existing_brief(self, session):
+        """A row that already has a brief keeps it — a later upsert (even
+        with a DIFFERENT brief string) never clobbers the persisted one."""
+        r1 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Keep My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="Original brief",
+        )
+        r2 = upsert_strategy(
+            session,
+            generation_method="debate",
+            strategy_name="Keep My Brief",
+            thesis="X",
+            source_papers=PAPERS_A,
+            asset_universe=["SPY"],
+            brief_intent="A different brief entirely",
+        )
+        assert r1.id == r2.id
+        assert r2.brief_intent == "Original brief"  # unchanged, not the second call's text
+
+
 class TestToStrategyPassport:
     """StrategyRecord -> StrategyPassport adapter (used by the live agent
     runner to evaluate a generated strategy's own DSL spec)."""

@@ -14,8 +14,13 @@
 
 ## What the second wave taught us (the pivot)
 
-The library is at 22 strategies; **2 pass the rigor gate** (`moreira_muir_2017_volatility_managed`,
-`moskowitz_ooi_pedersen_2012_tsmom`). All nine second-wave additions are `CANDIDATE`.
+The library was at 22 strategies when this was written; for the count today ask the tree
+(`ls analytics-engine/strategies/*.py | wc -l`), not this doc. The two entries then read as
+clearing the gate were `moreira_muir_2017_volatility_managed` and
+`moskowitz_ooi_pedersen_2012_tsmom`, and all nine second-wave additions were `CANDIDATE`.
+**Both of those readings predate the data-feed-fallback finding, so the pass count is
+unestablished — do not quote a number here or anywhere else** ([`CLAUDE.md`](../../CLAUDE.md)
+§ the hard constraint). The argument below does not depend on the count.
 We then tested the obvious hypothesis — "they fail only because the demo universe
 is too small" — directly, on larger and strategy-appropriate universes, and it is
 **false**: bigger universes do not flip any verdict and often make things worse
