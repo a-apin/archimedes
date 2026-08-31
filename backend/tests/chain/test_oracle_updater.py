@@ -678,6 +678,71 @@ class TestStaleReseedEscape:
         assert result == "tx-reseed"
         session.post.assert_called_once()
 
+    async def test_threshold_boundary_one_second_short_still_rejects(self):
+        # Pins the comparison direction on the staleness threshold itself: at
+        # the threshold minus 1s the baseline is NOT yet stale and the identical
+        # move is refused; at exactly the threshold it is. Without this an
+        # off-by-one (>= vs >) would silently widen or narrow the escape by a
+        # full cycle and no other test would notice.
+        updater, (session_cm, session) = self._updater()
+        just_short = await self._push(
+            updater,
+            session_cm,
+            usd=self.RECOVERY_USD,
+            reference_int=self.STALE_REF,
+            age_s=float(DEFAULT_STALE_RESEED_AFTER_SECONDS - 1),
+        )
+        assert just_short is None
+        session.post.assert_not_called()
+
+        at_threshold = await self._push(
+            updater,
+            session_cm,
+            usd=self.RECOVERY_USD,
+            reference_int=self.STALE_REF,
+            age_s=float(DEFAULT_STALE_RESEED_AFTER_SECONDS),
+        )
+        assert at_threshold == "tx-reseed"
+        session.post.assert_called_once()
+
+    async def test_reseed_still_faces_the_secondary_crosscheck(self, caplog):
+        # The escape relaxes ONE gate (the deviation band vs a stale on-chain
+        # baseline) and nothing else. The #775 independent-second-opinion
+        # cross-check runs AFTER _validate_for_push returns None, so a re-seed
+        # candidate whose primary diverges from the secondary is still refused
+        # and no tx is submitted. Uses sSPY (the only synth in YFINANCE_MAP, so
+        # the cross-check is live for it) and the issue's real sSPY numbers:
+        # 592.40 → 769.09 is 2983 bps, inside the 7500 bps recovery ceiling.
+        updater, (session_cm, session) = self._updater()
+        price = AssetPrice(
+            symbol="sSPY",
+            price_usd=769.09,
+            timestamp=datetime.now(UTC),
+            # NOT the active market-data provider, so the cross-check is a real
+            # second opinion rather than the same source twice.
+            source="pyth",
+        )
+        fresh_bar = datetime.now(UTC)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(592.40), True))),
+            patch.object(updater, "_reference_age_seconds", AsyncMock(return_value=13 * _DAY_S)),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="COMPLETE")),
+            # Independent reading disagrees wildly — beyond the 5000 bps band.
+            patch.object(updater, "_fetch_yfinance_single", AsyncMock(return_value=(300.0, fresh_bar))),
+            caplog.at_level(logging.WARNING, logger="archimedes.chain.oracle_updater"),
+        ):
+            result = await updater.push_prices_on_chain([price])
+
+        assert result is None
+        session.post.assert_not_called()
+        messages = [r.getMessage() for r in caplog.records]
+        # The escape did fire (proving the cross-check is what stopped it, not
+        # the deviation band) and the cross-check then refused the push anyway.
+        assert any("STALE-RESEED for sSPY" in m for m in messages), messages
+        assert any("cross-check FAIL" in m for m in messages), messages
+
     async def test_unknown_baseline_age_does_not_unlock_the_escape(self, caplog):
         # An unreadable lastUpdated (RPC down) must never be read as "stale
         # enough" — same confirmed-absent vs unobtainable discipline as #587.
