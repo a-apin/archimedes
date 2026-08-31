@@ -26,7 +26,7 @@ reason, never ``+0.00%``) is what a pre-existing deployment renders until its
 first tick.
 
 Revision ID: e41c7a9b2d63
-Revises: 5cb798feef58
+Revises: 85ca5310b7a1
 Create Date: 2026-08-30 21:00:00.000000
 """
 
@@ -38,7 +38,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e41c7a9b2d63"
-down_revision: str | Sequence[str] | None = "5cb798feef58"
+down_revision: str | Sequence[str] | None = "85ca5310b7a1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
