@@ -186,10 +186,21 @@ class _Store:
     async def get(self, key: str):
         return self.records.get(key)
 
-    async def list(self, vault_address=None, decision_type=None, limit=20, offset=0):
+    async def list(self, vault_address=None, decision_type=None, strategy_id=None, limit=20, offset=0):
+        # `strategy_id` mirrors the parameter #1569 added to the real
+        # AgentStateStore.list_traces. The route's call sits inside an
+        # `except Exception` that reads a TypeError as "Redis unavailable"
+        # and silently serves the empty on-chain fallback — a fake whose
+        # signature drifts makes every test downstream assert on a page the
+        # gate never produced (the union failure mode from #1573/#1569).
+        # Delegates the provenance rule rather than re-implementing it.
+        from archimedes.services.redis_state import trace_references_strategy
+
         rows = list({id(v): v for v in self.records.values()}.values())
         if decision_type:
             rows = [t for t in rows if t.get("decision_type") == decision_type]
+        if strategy_id:
+            rows = [t for t in rows if trace_references_strategy(t, strategy_id)]
         return rows[offset : offset + limit], len(rows)
 
 
