@@ -35,6 +35,7 @@ import httpx
 import numpy as np
 import pytest
 from archimedes.api import account_auth, rigor_verify_routes
+from archimedes.services.rigor_evaluator import compute_dsr_hac_and_iid
 from fastapi import FastAPI
 
 # ── Synthetic, reproducible fixture series ──────────────────────────────
@@ -220,6 +221,76 @@ async def test_higher_declared_trials_deflates_dsr_p_value(app, monkeypatch):
             "dsr_p_value"
         ]
     assert p50 < p1
+
+
+# ── 6. rf convention (#1409 review fix) ─────────────────────────────────
+# Prior to this fix, `verify_rigor` discarded `ReturnPoint.date` entirely —
+# the request already carries real per-bar dates (the CLI builds them, see
+# `cli/src/archimedes_cli/cli.py`), but every DSR/OOS call ran on the flat
+# 5% fallback with no `rf_convention` disclosed at all. Far-future dates
+# below use year 3000 (matches the convention in
+# `test_rf_convention_gate.py::test_run_rigor_gate_rf_convention_falls_back_beyond_coverage`)
+# so this stays out-of-coverage regardless of how far `DGS3MO.csv` is ever
+# refreshed.
+
+
+def _far_future_body(series: list[float], trials: int = 1) -> dict:
+    return {
+        "returns": [{"date": f"3000-01-{(i % 28) + 1:02d}", "daily_return": r} for i, r in enumerate(series)],
+        "trials": trials,
+    }
+
+
+@pytest.mark.asyncio
+async def test_rf_convention_is_the_series_when_request_dates_are_in_coverage(app, monkeypatch):
+    """The request's dates (2024, well within the vendored series'
+    coverage) must resolve to the T-bill series, not the flat fallback."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES))
+    assert resp.status_code == 200
+    assert resp.json()["rf_convention"] == "excess_tbill_series"
+
+
+@pytest.mark.asyncio
+async def test_rf_convention_falls_back_and_arithmetic_matches_the_flat_formula(app, monkeypatch):
+    """Out-of-coverage dates must disclose the fallback AND produce
+    byte-identical arithmetic to calling the same gate function with no
+    dates at all — the marker and the arithmetic can never disagree, by
+    construction (mirrors the same invariant `_resolve_gate_rf` enforces for
+    `run_rigor_gate`)."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_far_future_body(_STRONG_SERIES))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rf_convention"] == "excess_flat_fallback"
+
+    dsr_flat, p_flat, _dsr_iid, _p_iid = compute_dsr_hac_and_iid(
+        _STRONG_SERIES, 1, average_correlation=0.0, hac_lags="auto"
+    )
+    assert body["dsr"]["deflated_sharpe"] == pytest.approx(dsr_flat, abs=1e-6)
+    assert body["dsr"]["dsr_p_value"] == pytest.approx(p_flat, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_rf_convention_series_arithmetic_measurably_differs_from_fallback(app, monkeypatch):
+    """POSITIVE-direction regression guard (2026-08-21 review finding): the
+    SAME return series graded with in-coverage dates vs out-of-coverage
+    dates must produce a MEASURABLY DIFFERENT DSR — not merely a different
+    `rf_convention` string next to identical numbers. This is exactly the
+    guard whose absence let the pre-fix code discard `dates` silently: the
+    marker would have been the only thing that ever changed."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        in_coverage = (await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES))).json()
+        fallback = (await client.post("/api/rigor/verify", json=_far_future_body(_STRONG_SERIES))).json()
+
+    assert in_coverage["rf_convention"] == "excess_tbill_series"
+    assert fallback["rf_convention"] == "excess_flat_fallback"
+    assert in_coverage["dsr"]["dsr_p_value"] != fallback["dsr"]["dsr_p_value"]
+    assert in_coverage["dsr"]["deflated_sharpe"] != fallback["dsr"]["deflated_sharpe"]
+    assert in_coverage["oos_consistency"]["oos_sharpe"] != fallback["oos_consistency"]["oos_sharpe"]
 
 
 # ── empty returns rejected ──────────────────────────────────────────────
