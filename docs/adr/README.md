@@ -34,10 +34,10 @@ the review named in the code has not happened.
 
 ## Index
 
-Twenty records. Status and date are authoritative in each ADR's front-matter block;
+Twenty-one records. Status and date are authoritative in each ADR's front-matter block;
 this table mirrors them. (The count read "eighteen" while the table already held nineteen —
 the `generation-payment-credit-not-refund` row landed 2026-08-29 without a count bump.
-Corrected here.)
+Corrected here, and bumped again for `lambda-generation-offload` on 2026-08-30.)
 
 | ADR | Status | Date | Owner | Decision |
 |---|---|---|---|---|
@@ -61,6 +61,7 @@ Corrected here.)
 | [`num-trials-self-containment.md`](num-trials-self-containment.md) | **Accepted, pending quant sign-off** | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1` |
 | [`aurora-postgres-alembic-datastore.md`](aurora-postgres-alembic-datastore.md) | Accepted | 2026-07-28 | Dan Browne | Why **Aurora PostgreSQL Serverless v2 (18.3)** is the system of record, **Alembic** the only schema-change mechanism, **Redis 7.1** ephemeral-only |
 | [`strategy-dsl-hardening-over-lean4.md`](strategy-dsl-hardening-over-lean4.md) | Accepted | 2026-08-30 | Dan Browne | Why the generator's emission target stays the **closed-enum JSON DSL, hardened**, and **not Lean 4** — the no-generated-code property is already structural; a restricted sandbox is reserved for shapes the DSL cannot express |
+| [`lambda-generation-offload.md`](lambda-generation-offload.md) | **Proposed — verdict DEFER** | 2026-08-30 | Dan Browne | Why generation does **not** move to Lambda yet, measured on a real VPC-attached container built from the production image: no dependency or size blocker, but a **13.6 s** steady-state / **51 s** post-deploy cold start on a ~48 s job. Adopts the lane-agnostic worker entrypoint + the measured-cost model, and corrects the quote seam from `quote()` to `_price()` (#1411, feeds #1217) |
 
 ### Open review debt
 
