@@ -464,10 +464,39 @@ at level L plus its `min_passing_level`.
 
 **Scope note (v1).** Curated library strategies (real returns + source) are
 re-graded live at any level. *Generated* strategies remain badge-gated for
-deployment in v1 — their look-ahead provenance is a closed-DSL self-attestation
-rather than the AST audit the live re-grade runs, so re-grading them at a looser
-level would be apples-to-oranges; wiring generated strategies into the live
-per-level path is a follow-up.
+deployment in v1 — but **not** for the reason this note used to give.
+
+The reason recorded here through 2026-08-30 was that a generated strategy's
+look-ahead provenance was "a closed-DSL self-attestation rather than the AST
+audit the live re-grade runs". That is no longer true.
+[`dsl_lookahead_audit.py`](../../backend/archimedes/services/dsl_lookahead_audit.py)
+replaced the self-declared `look_ahead_safe` boolean with a structural proof in
+three parts: an AST pass over the DSL interpreter proving every bar-indexed read
+carries an offset ≤ 0 (bar *t* or earlier); a walk of the validated spec proving
+it uses nothing outside that audited surface; and the broker
+cheat-on-close/cheat-on-open check charged on the real `cerebro` the backtest
+ran. The verdict is three-state — `passed_structural` /
+`passed_declared_only` / `failed` — and **only `passed_structural` clears the
+LEAK criterion**. The LLM's own boolean survives as `look_ahead_declared`, a
+record with no vote.
+
+Two consequences worth stating plainly, because they pull in opposite
+directions and both are deliberate:
+
+- **Deployability is fail-closed.** `passed_declared_only` — the structural
+  audit could not be completed — blocks the gate exactly as hard as `failed`.
+  An unfinished audit is not evidence.
+- **Rendering is honest.** That same state must be *shown* as "not audited",
+  never as a failure, because nothing found a leak — nothing finished looking.
+  The verdict carries `look_ahead_render_state`
+  (`passed` / `not_checked` / `failed`) as a separate axis from the gating
+  boolean for exactly this reason, and `gate_details["look_ahead"]` renders a
+  leg that never ran as `NOT_RUN (…) — blocks admission (fail-closed)` rather
+  than `FAIL`.
+
+What still keeps generated strategies badge-gated is the remaining wiring: the
+live *per-level* re-grade path takes curated strategies only. That is a
+follow-up, and it is now the whole of the reason.
 
 ## 6. Board-level Benjamini-Hochberg FDR correction (#1185, 2026-08-20)
 

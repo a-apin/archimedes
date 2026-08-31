@@ -249,19 +249,186 @@ async def test_gate_endpoint_has_required_top_level_keys():
 
 @pytest.mark.asyncio
 async def test_gate_endpoint_counts_are_consistent():
-    """total == passing + failing and strategies list length matches total."""
+    """total == passing + failing + pending (#1358) and strategies list length
+    matches total. Pre-#1358 this asserted total == passing + failing, which
+    silently counted every never-scored (pending) row as a rigor-gate failure."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/selection-bias/gate")
     data = resp.json()
-    assert data["total"] == data["passing"] + data["failing"]
+    assert data["total"] == data["passing"] + data["failing"] + data["pending"]
     assert len(data["strategies"]) == data["total"]
 
 
 @pytest.mark.asyncio
+async def test_gate_endpoint_pending_rows_excluded_from_failing():
+    """#1358: a strategy with no persisted backtest data (this hermetic test's
+    fresh tmp-sqlite DB has none) reports as ``pending``, not ``failing`` — a
+    strategy with zero statistics computed must never render as a rigor-gate
+    failure. Every ``StrategyRigorResult`` in the curated library response is
+    marked ``pending`` in this fixture (no backtests have been persisted), so
+    ``failing`` must be 0 and ``pending`` must equal ``total``."""
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/selection-bias/gate")
+    data = resp.json()
+    assert data["total"] > 0, "expected at least one curated strategy in the fixture library"
+    assert data["failing"] == 0
+    assert data["pending"] == data["total"]
+    assert all(s["pending"] is True for s in data["strategies"])
+
+
+@pytest.mark.asyncio
+async def test_gate_endpoint_scored_row_is_not_pending(monkeypatch):
+    """#1358 round-2 review: the guard above is one-directional — every existing
+    pending assertion is satisfied by "everything is pending" (this file's fresh,
+    unpopulated tmp-sqlite DB), so a mutation that hoists ``pending=True`` out of
+    the ``len(daily_returns) < 10`` branch onto EVERY row (converting a real
+    rigor-gate FAILURE into a neutral "pending" chip) would still pass the whole
+    suite. This is the missing inverse: a strategy the gate actually SCORES
+    (>=10 persisted daily returns, injected at the ``get_all_daily_returns`` DB
+    boundary per ``TestDegenerateSeriesExcludedFromCohort``'s pattern) must
+    report ``pending is False`` — and since the injected series is the same
+    deterministic strong-IS/weak-OOS shape ``TestOosCliffDenominator`` uses to
+    force a genuine oos_sharpe FAIL, it must also be counted in ``failing``."""
+    from archimedes.api import selection_bias_routes as routes
+    from archimedes.main import app
+
+    strategies = routes._provider().list_strategies()
+    if not strategies:
+        pytest.skip("no strategies in provider")
+    target_id = strategies[0].id
+
+    # Same deterministic strong-IS / weak-OOS shape as TestOosCliffDenominator
+    # (no RNG -> version-independent): guaranteed to FAIL the oos_sharpe cliff
+    # criterion, so this row's passes_all is deterministically False.
+    amp = 0.01
+    is_part = [0.003 + (amp if i % 2 == 0 else -amp) for i in range(700)]
+    oos_part = [0.0015 + (amp if i % 2 == 0 else -amp) for i in range(300)]
+    series = is_part + oos_part
+
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target_id: series},
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/selection-bias/gate")
+    data = resp.json()
+    row = next(s for s in data["strategies"] if s["strategy_id"] == target_id)
+    assert row["pending"] is False, "a strategy the gate actually scored must not report pending"
+    assert row["passes_all"] is False, "the deterministic series must fail the oos cliff"
+    assert data["failing"] >= 1, (
+        "a real rigor-gate failure must be counted in `failing`, not silently reclassified as pending"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate_endpoint_degenerate_row_is_distinguishable_from_a_floor_failure(monkeypatch):
+    """#1358 round-3: a zero-variance persisted series must be reported as its own
+    thing on the wire, not left indistinguishable from a graded correctness failure.
+
+    Why the field is needed at all — the mechanism, asserted here rather than
+    described: a flat series makes ``dsr_p_value`` and ``oos_sharpe`` both None,
+    and ``RigorGateResult.blocked_by_floor`` treats a None on either as a floor
+    failure. So this row arrives with ``blocked_by_floor is True`` and
+    ``min_passing_level is None`` — byte-for-byte the shape of a strategy that
+    WAS fully graded and found broken. Every UI consumer of those two fields then
+    says "fails an always-on correctness floor" about a series no floor ever got
+    to measure. ``degenerate`` is the discriminator that makes the honest
+    rendering possible; ``pending`` cannot serve, because there IS data here.
+
+    Note the row is still *scored* (>= 10 returns), so ``pending`` must stay
+    False — the two neutral states are not interchangeable and this asserts it.
+    """
+    from archimedes.api import selection_bias_routes as routes
+    from archimedes.main import app
+
+    strategies = routes._provider().list_strategies()
+    if not strategies:
+        pytest.skip("no strategies in provider")
+    target_id = strategies[0].id
+
+    # Zero-variance and long enough to clear the `< 10 returns` pending branch,
+    # so the ONLY thing that can explain a neutral verdict here is degeneracy.
+    series = [0.0] * 300
+
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target_id: series},
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/selection-bias/gate")
+    assert resp.status_code == 200
+    data = resp.json()
+    row = next(s for s in data["strategies"] if s["strategy_id"] == target_id)
+
+    assert row["degenerate"] is True, (
+        "a zero-variance persisted series must be reported as degenerate on the wire — "
+        "without this the UI cannot tell it apart from a graded correctness failure"
+    )
+    assert row["pending"] is False, (
+        "degenerate is not pending: this row HAS persisted returns, they are merely flat, "
+        "so 'not yet evaluated' would be a false claim"
+    )
+    # The shape that makes the field load-bearing. If these two ever stop
+    # holding, the honest-rendering problem this field solves has changed and
+    # the UI branches keyed on `degenerate` need re-reading.
+    assert row["blocked_by_floor"] is True, (
+        "documents WHY `degenerate` is needed: a flat series trips the floor mechanically"
+    )
+    assert row["min_passing_level"] is None
+
+
+@pytest.mark.asyncio
+async def test_gate_endpoint_ordinary_failure_is_not_marked_degenerate(monkeypatch):
+    """The inverse of the guard above, without which it is one-directional.
+
+    Every strategy in this file's fresh tmp-sqlite DB is pending, so a mutation
+    that hoisted ``degenerate=True`` onto every scored row would satisfy the test
+    above and quietly convert every genuine rigor-gate failure into a neutral
+    "unevaluable" chip — the exact defect class #1358 exists to fix, just pointed
+    the other way. A real (non-flat) series that fails the gate must report
+    ``degenerate is False``.
+    """
+    from archimedes.api import selection_bias_routes as routes
+    from archimedes.main import app
+
+    strategies = routes._provider().list_strategies()
+    if not strategies:
+        pytest.skip("no strategies in provider")
+    target_id = strategies[0].id
+
+    # Same deterministic strong-IS / weak-OOS shape the pending inverse uses:
+    # real variance throughout, guaranteed to fail the oos_sharpe cliff.
+    amp = 0.01
+    is_part = [0.003 + (amp if i % 2 == 0 else -amp) for i in range(700)]
+    oos_part = [0.0015 + (amp if i % 2 == 0 else -amp) for i in range(300)]
+    series = is_part + oos_part
+
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target_id: series},
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/selection-bias/gate")
+    data = resp.json()
+    row = next(s for s in data["strategies"] if s["strategy_id"] == target_id)
+
+    assert row["passes_all"] is False, "the deterministic series must fail the oos cliff"
+    assert row["degenerate"] is False, (
+        "a graded failure on a real series must NOT be marked degenerate — that would "
+        "excuse a genuine rigor-gate loss as 'nothing to measure'"
+    )
+
+
+@pytest.mark.asyncio
 async def test_gate_endpoint_counts_non_negative():
-    """total, passing, failing are all non-negative integers."""
+    """total, passing, failing, pending are all non-negative integers."""
     from archimedes.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -270,6 +437,7 @@ async def test_gate_endpoint_counts_non_negative():
     assert data["total"] >= 0
     assert data["passing"] >= 0
     assert data["failing"] >= 0
+    assert data["pending"] >= 0
 
 
 @pytest.mark.asyncio

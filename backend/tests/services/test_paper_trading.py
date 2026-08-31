@@ -14,6 +14,9 @@ the part that must never regress silently:
   4. THE DEPLOY DATE SLICES THE REPLAY: history before deployed_at never
      enters the ledger.
   5. ONE BAD DEPLOYMENT CANNOT STALL THE REST of advance_all.
+  6. THE MARKS LOOP READS, NEVER WRITES: the daily advance stamps a position
+     cache and that is the only channel to the intraday loop, so marks cannot
+     change what the strategy does (intraday design §4.0/§4.1).
 """
 
 from __future__ import annotations
@@ -165,3 +168,113 @@ def test_summary_compounds_the_ledger():
         expected = (1.01 * 0.98 * 1.005) - 1.0
         assert summary["total_return"] == pytest.approx(expected)
         assert summary["series"][-1]["equity_index"] == pytest.approx(1.0 + expected)
+
+
+# ── The position-set cache (intraday design §4.1) ──────────────────────
+#
+# 6. THE MARKS LOOP READS, NEVER WRITES. The cache is the only thing the
+#    daily advance hands the intraday loop, and it is written here — so the
+#    marks path has no route back into what the strategy does. That one-way
+#    arrow is the whole safety argument for intraday marks (§4.0), and these
+#    tests are what make it a checked fact instead of a diagram.
+
+
+def _replay_with_positions(spec_dict, deployed_at):
+    """A stub replay that behaves like the real ``replay_spec``: a dict of
+    dated returns, with the position set attached."""
+    from archimedes.services.paper_trading import PositionSet, ReplayResult
+
+    out = ReplayResult(_replay_v1(spec_dict, deployed_at))
+    out.positions = PositionSet(
+        as_of=date(2026, 8, 5),
+        weights={"SPY": 0.6, "BTC-USD": 0.4},
+        ref_prices={"SPY": 500.0, "BTC-USD": 60000.0},
+    )
+    return out
+
+
+def test_the_advance_stamps_the_position_cache_for_the_marks_loop():
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        advance_deployment(s, dep, replay=_replay_with_positions)
+
+        cache = json.loads(dep.position_cache_json)
+        assert cache["as_of"] == "2026-08-05"
+        assert cache["weights"] == {"SPY": 0.6, "BTC-USD": 0.4}
+        assert cache["ref_prices"] == {"SPY": 500.0, "BTC-USD": 60000.0}
+        assert dep.position_cache_at is not None
+
+
+def test_the_cached_equity_index_matches_what_the_summary_renders():
+    """The intraday value is anchored to the SAME index the settled total
+    return shows. If these two ever disagreed, the live line would visibly
+    jump at every daily advance — a number moving for a reason that is not a
+    price change."""
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        advance_deployment(s, dep, replay=_replay_with_positions)
+
+        cache = json.loads(dep.position_cache_json)
+        summary = deployment_summary(s, dep)
+        assert cache["equity_index"] == pytest.approx(summary["series"][-1]["equity_index"])
+
+
+def test_a_plain_dict_replay_stamps_no_cache_and_still_appends():
+    """The seam's backwards compatibility, stated as a test: every existing
+    caller and stub hands back a plain dict, which carries no position set.
+    That must cost the cache and nothing else — the ledger append is
+    untouched."""
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        out = advance_deployment(s, dep, replay=_replay_v1)
+        assert out == {"appended": 3, "drift": 0}
+        assert dep.position_cache_json is None
+
+
+def test_a_later_replay_without_positions_does_not_clear_an_existing_cache():
+    """A cache stale by one day still prices the position the ledger last
+    settled; a CLEARED one makes a working deployment's live value vanish.
+    Keeping the older cache is the smaller, more honest failure — and the mark
+    it produces still carries its own as-of time, so nothing is claimed to be
+    fresher than it is."""
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        advance_deployment(s, dep, replay=_replay_with_positions)
+        stamped = dep.position_cache_json
+        assert stamped is not None
+
+        advance_deployment(s, dep, replay=_replay_v1)  # no positions this time
+        assert dep.position_cache_json == stamped
+
+
+def test_the_summary_carries_the_latest_mark_and_none_means_none():
+    """`latest_mark` is a SEPARATE key from `total_return`, never folded into
+    it, and `None` is a real state the UI must render as an em-dash with a
+    reason rather than as +0.00%."""
+    from datetime import UTC, datetime
+
+    from archimedes.models.paper_store import PaperMark
+
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        advance_deployment(s, dep, replay=_replay_v1)
+        assert deployment_summary(s, dep)["latest_mark"] is None
+
+        s.add(
+            PaperMark(
+                deployment_id=dep.id,
+                ts=datetime(2026, 8, 5, 14, 45, tzinfo=UTC),
+                prices_json='{"SPY": 512.34}',
+                portfolio_value=1.0347,
+                source="yfinance",
+                is_delayed=True,
+                granularity="raw",
+            )
+        )
+        s.flush()
+        summary = deployment_summary(s, dep)
+        assert summary["latest_mark"]["portfolio_value"] == pytest.approx(1.0347)
+        assert summary["latest_mark"]["is_delayed"] is True
+        assert summary["latest_mark"]["prices"] == {"SPY": 512.34}
+        # The settled figure is unmoved by the presence of a mark.
+        assert summary["total_return"] == pytest.approx((1.01 * 0.98 * 1.005) - 1.0)

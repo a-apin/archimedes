@@ -187,6 +187,28 @@ class StrategyRigorResult(BaseModel):
     # the correction), and "not significant" were indistinguishable to a
     # consumer. On the leaderboard, where a row is a cohort member by
     # construction, `None` has exactly one meaning.
+    # True for a strategy with fewer than 10 persisted daily returns — the gate
+    # genuinely could not run (#1358). ``passes_all`` is False for these rows
+    # too (an all-MISSING gate never passes), but collapsing "never evaluated"
+    # into the same bucket as "evaluated and lost" is the defect this field
+    # exists to fix: a transient DB blip or a strategy that hasn't been
+    # backtested yet must never render as a rigor-gate FAILURE. Both no-data
+    # branches below (the cohort loop and ``_generated_strategy_rigor``) set
+    # this explicitly; every other branch leaves the ``False`` default.
+    pending: bool = False
+    # True when the persisted return series exists but carries no variance —
+    # a zero-trade backtest or broken data (``RigorGateResult.is_degenerate``,
+    # #1184). This is NOT ``pending`` (there IS data) and NOT an ordinary
+    # failure (nothing was measurable to fail), yet it lands on the wire looking
+    # exactly like the harshest kind of failure: a degenerate series leaves
+    # ``dsr_p_value``/``oos_sharpe`` at None, which trips ``blocked_by_floor``,
+    # so ``blocked_by_floor=True, min_passing_level=None`` — indistinguishable
+    # from a strategy that was fully graded and found broken. The deployability
+    # chip rendered "Fails an always-on correctness floor" for a series no floor
+    # ever got to measure. Carried here, alongside ``pending``, so the one
+    # endpoint that decides deployability also says which of the three reasons
+    # it is (#1358).
+    degenerate: bool = False
 
 
 class RigorGateResponse(BaseModel):
@@ -196,6 +218,12 @@ class RigorGateResponse(BaseModel):
     total: int
     passing: int
     failing: int
+    # Rows with fewer than 10 persisted daily returns — the gate genuinely could
+    # not run (#1358). ``passing + failing + pending == total`` always; a
+    # pending row was never counted toward ``failing`` (previously it was —
+    # a strategy with zero statistics computed rendered as a rigor-gate
+    # failure on the Library table, mobile cards, and deployability chip).
+    pending: int = 0
     library_pbo: LibraryPbo = LibraryPbo()
     # The strictness level the ``passing``/``failing`` counts + each
     # ``passes_all`` were evaluated at (1 = strictest/badge … 5 = loosest).
@@ -285,7 +313,13 @@ async def evaluate_rigor_gate(
 
     if not strategies:
         return RigorGateResponse(
-            strategies=[], total=0, passing=0, failing=0, library_pbo=library_pbo, strictness_level=strictness
+            strategies=[],
+            total=0,
+            passing=0,
+            failing=0,
+            pending=0,
+            library_pbo=library_pbo,
+            strictness_level=strictness,
         )
 
     # ── Collect real daily returns from persisted backtest results ──
@@ -421,6 +455,7 @@ async def evaluate_rigor_gate(
                         strictness_level=strictness,
                         min_passing_level=None,
                         blocked_by_floor=False,
+                        pending=True,
                     )
                 )
                 continue
@@ -491,6 +526,7 @@ async def evaluate_rigor_gate(
                     strictness_level=strictness,
                     min_passing_level=gate_result.min_passing_level,
                     blocked_by_floor=gate_result.blocked_by_floor,
+                    degenerate=gate_result.is_degenerate,
                     num_trials_scope=_SCOPE_CURATED_SELF_CONTAINED,
                 )
             )
@@ -521,12 +557,16 @@ async def evaluate_rigor_gate(
     # this route grades each strategy on its own evidence and says nothing about
     # where that strategy sits relative to the field.
 
+    # ``pending`` rows never have ``passes_all=True`` (an all-MISSING gate can't
+    # pass), so ``passing`` is unaffected by carving pending out of ``failing``.
+    pending = sum(1 for r in results if r.pending)
     passing = sum(1 for r in results if r.passes_all)
     return RigorGateResponse(
         strategies=results,
         total=len(results),
         passing=passing,
-        failing=len(results) - passing,
+        failing=len(results) - passing - pending,
+        pending=pending,
         library_pbo=library_pbo,
         strictness_level=strictness,
     )
@@ -709,6 +749,7 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
                 strictness_level=strictness,
                 min_passing_level=None,
                 blocked_by_floor=False,
+                pending=True,
             )
 
         # Persisted context from the latest backtest row — never recomputed
@@ -777,6 +818,7 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         strictness_level=strictness,
         min_passing_level=gate_result.min_passing_level,
         blocked_by_floor=gate_result.blocked_by_floor,
+        degenerate=gate_result.is_degenerate,
         num_trials_scope=num_trials_scope,
     )
 

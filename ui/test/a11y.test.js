@@ -147,6 +147,76 @@ test("base and public palettes keep muted text above the 4.5:1 floor", () => {
 	assert.doesNotMatch(authPage, /text-\[var\(--text-4\)\]/);
 });
 
+test("--accent is a fill token; accent-coloured TEXT resolves --accent-text", () => {
+	// The public light theme's accent is the brand cobalt #625cf6. As a FILL it
+	// is correct; as TEXT it cannot work on this canvas — its ceiling against
+	// --surface-1 is 4.79:1 and it measured 3.91–3.97:1 on the pale cards, so
+	// the Architecture pipeline's step numbers and its "you act" labels were
+	// failing 1.4.3. This is the same defect the BASE palette already fixed by
+	// darkening its accent (see the --accent note at the top of App.css); the
+	// public theme fixes it by splitting the two roles instead, so darkening
+	// the text value can never darken a button. Ratios are computed, not
+	// pinned, so the background side cannot drift with the guard still green.
+	// Several tokens in this block are `var(--public-*)` references to the
+	// rebrand :root, so resolution has to see both. The light block goes first
+	// so its own definitions win the lookup.
+	const lightOwn = cssBlock(
+		css,
+		':root\\[data-theme="light"\\] \\.public-site',
+	);
+	const rebrandRoot = [...css.matchAll(/\n:root \{([\s\S]*?)\n\}/g)]
+		.map((m) => m[1])
+		.find((b) => b.includes("--public-paper:"));
+	assert.ok(rebrandRoot, "rebrand :root block not found");
+	const light = `${lightOwn}\n${rebrandRoot}`;
+	const accentText = resolveHex(light, tokenValue(light, "accent-text"));
+	for (const surfaceName of ["surface-1", "surface-2", "surface-3"]) {
+		const surfaceHex = resolveHex(light, tokenValue(light, surfaceName));
+		const ratio = contrastRatio(accentText, surfaceHex);
+		assert.ok(
+			ratio >= 4.5,
+			`--accent-text (${accentText}) on --${surfaceName} (${surfaceHex}) is ${ratio.toFixed(2)}:1, below the 4.5:1 floor`,
+		);
+	}
+	// --positive is drawn as the "Live" marker text on --surface-2. #147a69 was
+	// 4.02:1 there; #116c5e — already this theme's --public-theatre-positive —
+	// is 4.85:1.
+	const positive = resolveHex(light, tokenValue(light, "positive"));
+	const surface2 = resolveHex(light, tokenValue(light, "surface-2"));
+	const positiveRatio = contrastRatio(positive, surface2);
+	assert.ok(
+		positiveRatio >= 4.5,
+		`--positive (${positive}) on --surface-2 (${surface2}) is ${positiveRatio.toFixed(2)}:1, below the 4.5:1 floor`,
+	);
+	// No rule targeting the public shell may paint text with the raw fill
+	// token. Scoped by SELECTOR rather than by a slice of the file: the public
+	// layer is not the tail of the sheet (the .auth-* and .app-site layers come
+	// after it), and those two live on palettes whose --accent is already
+	// contrast-corrected — see the --accent note at the top of App.css.
+	const offenders = [];
+	const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+	let rule;
+	while ((rule = ruleRe.exec(css))) {
+		const selector = rule[1]
+			.replace(/\/\*[\s\S]*?\*\//g, "")
+			.trim()
+			.split("\n")
+			.map((s) => s.trim())
+			.join(" ");
+		if (!/^\.public-[\w-]|^\.authority-boundary|^\.security-/.test(selector)) {
+			continue;
+		}
+		if (/^\s*color:\s*var\(--accent\);\s*$/m.test(rule[2])) {
+			offenders.push(selector);
+		}
+	}
+	assert.deepEqual(
+		offenders,
+		[],
+		`these public rules paint text with --accent (a fill token) instead of --accent-text:\n${offenders.join("\n")}`,
+	);
+});
+
 test("chart axis labels clear 4.5:1 on every card they are drawn on", () => {
 	// Axis ticks are real 8-10px <text>. Neither shell overrides these tokens
 	// and the asset modal portals outside both, so the BASE values are the
@@ -323,8 +393,29 @@ test("the authenticated shell ships a skip link with a focusable target", () => 
 });
 
 test("a failed deep link does not share the landing page's title", () => {
-	assert.match(app, /'not-found': 'Page not found · Archimedes'/);
-	assert.match(app, /route\.kind === 'not-found' \? 'not-found' : route\.page/);
+	// Quote-style agnostic: the rebrand formats with double quotes; the
+	// guarded behavior (a dedicated not-found title, keyed off route.kind)
+	// is what matters, not the quoting.
+	assert.match(app, /["']not-found["']: ["']Page not found · Archimedes["']/);
+	// A denied /app/insights admin-gate probe (owner directive 2026-08-20)
+	// titles the tab as 'not-found' too — see the next test — so this key
+	// computation ORs in that case rather than checking route.kind alone.
+	assert.match(
+		app,
+		/const key = route\.kind === ["']not-found["'] \|\| deniedInsights \? ["']not-found["'] : route\.page/,
+	);
+});
+
+test("a denied insights admin-gate probe titles the tab as not-found, not 'Insights'", () => {
+	// "do not advertise existence" (owner directive 2026-08-20) applies to the
+	// tab title too — a many-tabs user must not be able to tell "unknown
+	// route" apart from "gated route I'm not allowed on" — or from "gate
+	// still resolving" (round 3: isInsightsPageBlocked treats an unresolved
+	// probe the same as a denied one, for the title as well as the render).
+	assert.match(
+		app,
+		/const deniedInsights = isInsightsPageBlocked\(route\.page, insightsAdmin\)/,
+	);
 });
 
 // ── 2.1.1 Keyboard / 4.1.2 Name, Role, Value ──────────────────────────────

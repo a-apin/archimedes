@@ -140,3 +140,41 @@ def _clear_rigor_cache():
     rigor_cache.clear()
     yield
     rigor_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_vault_owner_cache():
+    """Reset the trace-ownership memo (services/trace_visibility.py) — #1573.
+
+    Same hazard as ``_clear_rigor_cache`` above, one layer down: the vault →
+    owner memo is a module-global dict keyed on the vault address, and several
+    test files reuse the SAME vault addresses against DIFFERENT per-test
+    SQLite databases. Without this reset, "vault X is owned by user Y" (or,
+    worse, "vault X is unowned") learned in one test would be served to a
+    later test whose database says otherwise, making an ownership *verdict*
+    depend on suite order. Cleared before and after, like its sibling.
+    """
+    from archimedes.services.trace_visibility import clear_vault_owner_cache
+
+    clear_vault_owner_cache()
+    yield
+    clear_vault_owner_cache()
+
+
+@pytest.fixture(autouse=True)
+def _clear_health_probe_cache():
+    """Reset /health's last-known-value memo (services/health_cache.py) — #1592.
+
+    Third instance of the same hazard as the two fixtures above, and the one
+    with the sharpest teeth: this memo exists precisely so a timed-out probe can
+    serve a previous reading. Without a reset, a test that establishes
+    "chain_connected = True" hands that value to a later test whose whole point
+    is that the probe times out — the later test would then assert against a
+    ``stale_cached`` outcome it never set up, and, worse, a broken fallback path
+    could pass by inheriting a neighbour's success. Cleared before and after.
+    """
+    from archimedes.services.health_cache import clear_health_probe_cache
+
+    clear_health_probe_cache()
+    yield
+    clear_health_probe_cache()

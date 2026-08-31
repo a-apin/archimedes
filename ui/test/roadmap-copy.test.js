@@ -159,6 +159,89 @@ for (const rel of SURFACE_FILES) {
 	});
 }
 
+// ── Guard 3: the surfaces that must carry NO execution claim at all ──────
+//
+// Owner decision, 2026-08-30. There are zero live user deployments of the
+// on-chain execution path, so the two surfaces a visitor reads as a promise
+// — the landing page and the public security-posture page — must not mention
+// it in ANY form, gated or not. /architecture keeps a single explicitly
+// roadmap-framed mention and is therefore deliberately NOT in this list; it
+// is still covered by the OVERCLAIM_PATTERNS scan above.
+//
+// This is a stricter guard than guard 1 on purpose. Guard 1 forbids specific
+// marketing phrase-shapes and lets the words survive in incidental prose;
+// this one forbids the vocabulary outright, because on these two pages any
+// occurrence is either a claim or reads as one. It is a raw source scan, so
+// it also applies to comments — the scrubbed files' own comments are written
+// around it rather than exempted, which keeps the guard free of carve-outs
+// that would later be used to smuggle copy back in.
+//
+// index.html is included because its meta description, OpenGraph/Twitter
+// cards, and JSON-LD blob are the copy that actually gets syndicated — a
+// claim retracted on the page but left in the share card is still shipped.
+const EXECUTION_CLAIM_FREE_SURFACES = [
+	"src/components/Landing.jsx",
+	"src/components/Security.jsx",
+	"index.html",
+];
+
+const EXECUTION_CLAIM_PATTERN = /vault|non-?custodial|custody/i;
+
+//: Anti-vacuity for the pattern: the literal copy that these three files
+//: carried BEFORE the scrub. Each must trip the pattern, so a future edit
+//: that neuters the regex fails here instead of silently passing every file.
+const PRE_SCRUB_EXAMPLES = [
+	'question: "Can Archimedes withdraw from my vault?"',
+	"<strong>You retain vault ownership.</strong>",
+	"Propose allocations and rebalance within vault rules",
+	"authority, and vault ownership. These controls describe current",
+	"Vault share owner",
+	"Custody decision record",
+	"authorize a non-custodial vault only when you choose.",
+	"selection-bias checks and non-custodial testnet vaults.",
+];
+
+test("every execution-claim-free surface exists", () => {
+	const missing = EXECUTION_CLAIM_FREE_SURFACES.filter(
+		(rel) => !existsSync(repoFile(rel)),
+	);
+	assert.deepEqual(
+		missing,
+		[],
+		`EXECUTION_CLAIM_FREE_SURFACES names files that do not exist — a rename shrank the scan silently: ${missing}`,
+	);
+});
+
+test("the execution-claim pattern rejects every pre-scrub example", () => {
+	for (const example of PRE_SCRUB_EXAMPLES) {
+		assert.match(
+			example,
+			EXECUTION_CLAIM_PATTERN,
+			`EXECUTION_CLAIM_PATTERN no longer rejects ${JSON.stringify(example)} — ` +
+				"it has been weakened and is guarding less than it claims",
+		);
+	}
+});
+
+for (const rel of EXECUTION_CLAIM_FREE_SURFACES) {
+	test(`${rel} makes no on-chain execution claim (owner decision 2026-08-30)`, () => {
+		const lines = readFileSync(repoFile(rel), "utf8").split("\n");
+		const hits = lines
+			.map((line, i) => [i + 1, line])
+			.filter(([, line]) => EXECUTION_CLAIM_PATTERN.test(line))
+			.map(([n, line]) => `${n}: ${line.trim()}`);
+		assert.deepEqual(
+			hits,
+			[],
+			`${rel} mentions the on-chain execution path, which has zero live user ` +
+				`deployments:\n${hits.join("\n")}\n` +
+				"This surface must describe only what runs today (research, the rigor " +
+				"gate, paper trading, on-chain trace anchoring). The single permitted " +
+				"roadmap mention lives on /architecture (Architecture.jsx).",
+		);
+	});
+}
+
 test("proof rail is flag-derived: 3 stages off, 5 on (explicit override, no import.meta.env mutation)", () => {
 	assert.deepEqual(
 		getProofStages(false).map((s) => s.id),
@@ -178,7 +261,8 @@ test("proof rail is flag-derived: 3 stages off, 5 on (explicit override, no impo
 });
 
 test("onboarding tour's paper card has no nav anchor — anon-bounce guard (#1354)", () => {
-	// No nav item carries data-tour="paper" (Layout.jsx's NAV has no 'paper'
+	// No nav item carries data-tour="paper" (the NAV array — extracted out of
+	// Layout.jsx into src/navConfig.js by PR #1437 — has no 'paper'
 	// entry), so an `anchor: 'paper'` here would make measure() always miss,
 	// which falls through to OnboardingTour.jsx's "not mounted yet" effect
 	// and calls setPage('paper') as a side effect. 'paper' is a page kind:
