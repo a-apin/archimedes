@@ -22,6 +22,23 @@ Today's cost fields are DRAFT/illustrative placeholders (the live Bedrock/infra
 billing wiring — AWS Cost Explorer + Bedrock token metering — is roadmap work);
 they are labelled ``draft`` so a reader can't mistake them for metered live spend.
 Real distinct users are read live so the per-user denominators are honest.
+
+Owner directive (2026-08-20, SUPERSEDES issue #1028 D8 "public Insights page"):
+``/app/insights`` moved from the public app surface to ADMIN-ONLY. It remains
+the owner traction dashboard and gained new current-schema engagement/adoption
+tiles (``GET /whoami``, ``GET /engagement`` below); the public aggregate
+endpoints on ``metrics_router`` (``/api/metrics``, ``/funnel``, ``/visitors``)
+are UNCHANGED and stay public — only the Insights *page* and these new
+per-entity admin endpoints are gated. ``/whoami`` is a server-truth gate probe:
+the frontend calls it before rendering anything Insights-shaped so a
+non-admin/anonymous visitor gets the exact "page does not exist" treatment
+(``ui/src/routes.js``'s not-found handling), not a page that discloses "you
+need admin access" — which would itself advertise the page's existence.
+This closes only that one disclosure vector (the denial screen's wording),
+not concealment of the endpoint or route in general — a non-admin's browser
+still calls this probe on every app page and still ships the gated route
+and component in its main JS bundle; see ``ui/src/adminProbe.js``'s "Scope
+of 'does not advertise the page exists'" note (round 2, 2026-08-20).
 """
 
 from __future__ import annotations
@@ -38,6 +55,7 @@ from archimedes.models.telemetry import (
     WalletIdentityOut,
     WalletsResponse,
 )
+from archimedes.services.engagement_metrics import get_engagement_snapshot
 from archimedes.services.identity_metrics import (
     count_human_wallets,
     list_human_wallets,
@@ -70,6 +88,34 @@ metrics_private_router = APIRouter(
     tags=["metrics", "private"],
     dependencies=[Depends(require_platform_admin)],
 )
+
+
+@metrics_private_router.get("/whoami")
+async def get_whoami(wallet: str = Depends(require_platform_admin)) -> dict:
+    """Admin-gate probe for the frontend — the server-truth half of the gate.
+
+    The UI calls this on entry to the Insights page (and to decide whether to
+    render the Ops nav item) BEFORE rendering anything Insights-shaped.
+    Anonymous → 401; verified-but-non-admin → 403; admin → 200
+    ``{admin: true, wallet}``. There is no "admin: false" 200 response —
+    non-admin is always a 4xx, so the frontend's error branch is the only
+    path that ever needs to fall back to the not-found treatment, and a
+    network/parse failure degrades the same way (fail closed, not open).
+    """
+    return {"admin": True, "wallet": wallet}
+
+
+@metrics_private_router.get("/engagement")
+async def get_engagement(wallet: str = Depends(require_platform_admin)) -> dict:
+    """Dashboard v2 — current-schema engagement/adoption tiles (admin-only).
+
+    See ``services/engagement_metrics.py`` for the per-tile query docs and
+    what is/isn't joinable today; the PR that introduced this endpoint carries
+    the Phase 2 list of metrics deferred pending schema-relations work.
+    """
+    snapshot = get_engagement_snapshot()
+    snapshot["authenticated_wallet"] = wallet
+    return snapshot
 
 
 @metrics_private_router.get("/cost")

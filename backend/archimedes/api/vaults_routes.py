@@ -389,6 +389,14 @@ async def create_vault(
         meta={"vault_address": vault_address, "strategy_ids": req.strategy_ids},
     )
 
+    # This event is one of the two things that make a vault OWNED, and the trace
+    # read gate memoizes vault ownership (#1573). Drop the memo now so a
+    # "this vault is unowned" answer cached moments ago cannot outlive the fact
+    # — an unowned legacy trace falls to the house-public floor.
+    from archimedes.services.trace_visibility import invalidate_vault_owner
+
+    invalidate_vault_owner(vault_address)
+
     return VaultCreateResponse(vault_address=vault_address, strategy_ids=req.strategy_ids)
 
 
@@ -488,6 +496,14 @@ async def store_vault_metadata(
         meta.set_strategy_ids(req.strategy_ids)
         session.commit()
         session.refresh(meta)
+
+        # The other ownership-establishing write — same reason as in
+        # `create_vault`: the trace read gate memoizes vault ownership (#1573)
+        # and a stale "unowned" memo would keep this vault's legacy traces on
+        # the house-public floor for the rest of the TTL.
+        from archimedes.services.trace_visibility import invalidate_vault_owner
+
+        invalidate_vault_owner(vault_address)
 
         # Fire-and-forget on-chain strategy anchoring (best-effort, non-fatal)
         if req.strategy_ids:

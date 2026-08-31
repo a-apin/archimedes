@@ -1,0 +1,87 @@
+# .openwikiignore — the read boundary for every OpenWiki run in this repo.
+#
+# Syntax is gitignore-style (comments, blanks, `*`/`**`/`?`, leading `/` to
+# anchor at the repo root, trailing `/` for directories, `!` to re-include) with
+# LAST-MATCH-WINS ordering. It is a read boundary for OpenWiki's own discovery,
+# separate from .gitignore: OpenWiki never reads, scans, or reproduces an
+# excluded path, and while any rule is active it also refuses arbitrary shell.
+#
+# ---------------------------------------------------------------------------
+# SECTION A — bootstrap slice scope.  READ THIS BEFORE WIDENING.
+# ---------------------------------------------------------------------------
+# This file is an ALLOW-LIST, not a deny-list. Section A excludes the whole
+# repository and then re-includes exactly one slice. That is deliberate: the
+# tooling-adoption standard for this repo is that a tool is run against a real
+# slice and its cost recorded before it is pointed at everything
+# (docs/decisions/tooling-adoptions-2026-08.md). A full-repo run over ~4k source
+# files is an unmeasured bill, and the 2026-08-31 bootstrap attempt that ran
+# unscoped was interrupted in the planning phase with nothing to show for it.
+#
+# To widen: add ONE more `!/path/` line, run, and record what that slice cost in
+# the tooling-adoptions doc. One slice per change, cost recorded each time.
+#
+# ORDER IS LOAD-BEARING. Matching is last-match-wins, so a hard deny placed
+# above the allow-list is silently re-included by it — Section B must stay last.
+# Verify with `node scripts/check_openwiki_ignore.mjs` after ANY edit here; it
+# runs the real OpenWiki matcher against paths that must be rejected, including
+# traversal out of the slice and secrets nested inside it.
+
+# Exclude everything at the root, recursively.
+/*
+
+# Re-include the docs tree, then narrow it back to the bootstrap slice.
+!/docs/
+/docs/*
+!/docs/quant/
+
+# OpenWiki's own output tree and the marker files it maintains must stay
+# writable, or the run is denied permission to emit anything.
+!/openwiki/
+!/AGENTS.md
+!/CLAUDE.md
+
+# ---------------------------------------------------------------------------
+# SECTION B — hard denies. These come last so last-match-wins keeps them
+# excluded no matter what Section A re-includes later.
+# ---------------------------------------------------------------------------
+
+# --- dependencies / vendored code (not hand-authored source) ---
+node_modules/
+contracts/lib/
+
+# --- build output (regenerated, not a source of truth) ---
+ui/dist/
+
+# --- agent/session-local state (not repo documentation) ---
+.claude/
+
+# --- sibling git worktrees (this repo is worked in named worktrees off the
+#     main checkout; none live inside this tree today, but excluded
+#     defensively so a future in-tree worktree is never scanned) ---
+.git/worktrees/
+**/archimedes-wt-*/
+**/wt-*/
+
+# --- lockfiles (machine-generated, no narrative content) ---
+*.lock
+package-lock.json
+**/*.lock.hcl
+
+# --- test fixtures over 100KB (bulk sample data, not behavior) ---
+backend/tests/fixtures/spy_ohlcv_2004_2026.csv
+ui/test/fixtures/**
+
+# --- other bulk/generated data, same cost-bounding rationale as fixtures ---
+# 10k-paper corpus manifest (14MB); the corpus is LEXICAL only, no embeddings,
+# so reading this file buys tokens without buying signal.
+data/corpus/manifest.jsonl
+# Timestamped analytics run artifacts and contract-deploy broadcast logs:
+# generated output, already .gitignore'd, present in some checkouts.
+analytics-engine/artifacts/**
+contracts/broadcast/**
+
+# --- secrets, always, in every spelling ---
+*.env
+.env*
+**/*.pem
+**/*.key

@@ -84,22 +84,22 @@ dependencies:
       # the documented #1 cause of "works locally, breaks in CI". eth-utils 5→6
       # was an API-breaking bump, so the floors must agree.
       - web3>=7.16.0                  # Python EVM client; works with Arc (EVM-compatible)
-      - eth-account>=0.13.7           # Local key management for testnet wallets
+      - eth-account>=0.14.0           # Local key management for testnet wallets (dependabot PR #1581)
       - eth-abi>=5.2.0,<6             # ABI codec (direct import in marketplace/encoding.py). Cap <6: eth-account's pre-release specifier (`eth-abi>=4.0.0-b.2`) otherwise lets pip resolve the 6.0.0b1 beta — no betas on the funds path. Aligned with backend/requirements.txt.
       - eth-utils>=6.0.0
-      - cryptography>=50.0.0          # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt
+      - cryptography>=50.0.1          # RSA sign/serialize for the oracle signer (backend/archimedes/chain/oracle_updater.py); mirrors backend/requirements.txt (dependabot PR #1585)
 
       # --- AWS / S3 ---
-      - boto3>=1.43.71                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1162.
+      - boto3>=1.43.82                 # S3 artifact reads for KB pipeline output (embeddings, KG). Floor aligned with backend/requirements.txt via dependabot PR #1584.
       - botocore>=1.43.81              # Direct imports for AWS exceptions/config. boto3 constrains compatible versions; aligned with backend/requirements.txt.
 
       # --- Paper ingestion (Q-fin corpus) ---
       - arxiv>=4.0.1                  # arxiv API client. Floor aligned with backend/requirements.txt (was still pinned at 2.1, a pre-existing drift with no open Dependabot PR to attach the fix to).
-      - pypdf>=6.16.0                 # PDF text extraction. Floor 6.13.3 closed 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt (dependabot batch 2026-07-13).
+      - pypdf>=6.16.2                 # PDF text extraction. Floor 6.13.3 closed 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25). Aligned with backend/requirements.txt (dependabot PR #1589).
 
       # --- Semantic retrieval (paper_rag MiniLM embeddings, issue #874) ---
       - torch>=2.13.0,<3.0             # PyTorch CPU (local dev: pip picks the native/MPS wheel; Docker uses the CPU-only wheel via --extra-index-url in requirements.txt). Floor aligned with backend/requirements.txt via dependabot PR #1163.
-      - sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 zero-cost semantic retrieval for paper_rag.py. Floor aligned with backend/requirements.txt via dependabot PR #1167; this closes a large pre-existing drift (was still pinned at 2.7, several major versions behind requirements.txt's 5.6.0).
+      - sentence-transformers>=6.0.0  # all-MiniLM-L6-v2 zero-cost semantic retrieval for paper_rag.py. Floor aligned with backend/requirements.txt via dependabot PR #1587 (5.6.1 -> 6.0.0, major).
 
       # --- Quality + tests ---
       - ruff>=0.6                     # Linter + formatter; configured at line length 120

@@ -98,9 +98,9 @@ anthropic>=0.120.2
 
 # On-chain / Web3
 web3>=7.16.0
-eth-account>=0.13.7
+eth-account>=0.14.0
 eth-utils>=6.0.0
-cryptography>=50.0.0
+cryptography>=50.0.1
 # direct import in marketplace/encoding.py (derive_pool_id); do not rely on web3 transitive.
 # Cap <6: eth-account declares `eth-abi>=4.0.0-b.2`, whose pre-release specifier lets pip
 # resolve the 6.0.0b1 BETA on a fresh build (observed 2026-07-13 in the Docker image) —
@@ -113,7 +113,7 @@ slowapi>=0.1.10
 # Paper ingestion
 arxiv>=4.0.1
 # Floor raised to 6.13.3 to close 8 CVEs incl GHSA-jm82-fx9c-mx94 (CVE bump 2026-06-25).
-pypdf>=6.16.0
+pypdf>=6.16.2
 
 # Semantic retrieval — MiniLM embeddings for paper_rag.py (issue #874).
 # CPU-only torch wheel: the extra-index-url below resolves torch to the
@@ -122,9 +122,9 @@ pypdf>=6.16.0
 # the CPU wheel so the Docker image stays within budget.
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.13.0,<3.0  # CPU-only wheel via pytorch whl index (see extra-index-url above); no +cpu here, pip rejects a local version label on a >= specifier
-sentence-transformers>=5.6.1  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
+sentence-transformers>=6.0.0  # all-MiniLM-L6-v2 semantic retrieval; baked at Docker build time
 
 # AWS / S3
-boto3>=1.43.71
+boto3>=1.43.82
 # Imported directly for AWS exceptions/config; boto3 constrains compatibility.
 botocore>=1.43.81
