@@ -9,9 +9,9 @@ export default function Security() {
 							Security is enforced boundaries, not a guarantee.
 						</h1>
 						<p className="security-hero__lede">
-							Archimedes separates account identity, wallet proof, agent
-							authority, and vault ownership. These controls describe current
-							code—not a promise that failure is impossible.
+							Archimedes separates account identity, wallet proof, and the
+							service credentials its own agents run under. These controls
+							describe current code—not a promise that failure is impossible.
 						</p>
 					</div>
 					<ul className="security-status" aria-label="Current product status">
@@ -39,11 +39,11 @@ export default function Security() {
 					<div className="security-section-heading">
 						<p className="public-overline">Authority model</p>
 						<h2 id="authority-model-title">
-							Four boundaries. No role inflation.
+							Three boundaries. No role inflation.
 						</h2>
 						<p>
-							Signing in, linking a wallet, running an agent, and owning vault
-							shares are separate capabilities.
+							Signing in, proving a wallet, and running an internal agent are
+							separate capabilities. None of them implies the others.
 						</p>
 					</div>
 					<dl className="security-role-ledger">
@@ -71,22 +71,13 @@ export default function Security() {
 						<div>
 							<dt>
 								<span>03</span>
-								Bounded agent
+								Bounded internal agent
 							</dt>
 							<dd>
-								The agent may set targets and rebalance within vault checks. Its
-								role cannot withdraw, redeem, transfer ownership, or install an
-								arbitrary oracle.
-							</dd>
-						</div>
-						<div>
-							<dt>
-								<span>04</span>
-								Vault share owner
-							</dt>
-							<dd>
-								The share owner withdraws or redeems directly, or explicitly
-								approves a spender under ERC-4626 allowance rules.
+								Archimedes&apos; own generation and research agents authenticate
+								with a service credential, not a user session. A user session
+								cannot assume that role, and that role cannot read or write
+								another account&apos;s private records.
 							</dd>
 						</div>
 					</dl>
@@ -134,8 +125,8 @@ export default function Security() {
 							<div>
 								<h3>Agent-only writes require a service credential.</h3>
 								<p>
-									User sessions cannot forge internal reasoning traces,
-									rebalance events, or other integrity-critical agent records.
+									User sessions cannot forge internal reasoning traces or any
+									other integrity-critical record written by an agent role.
 								</p>
 							</div>
 						</li>
@@ -152,13 +143,25 @@ export default function Security() {
 							</div>
 						</li>
 						<li>
-							<span>Contract</span>
+							<span>Verdict</span>
 							<div>
-								<h3>Trades must stay inside contract rules.</h3>
+								<h3>A rigor verdict is computed server-side, never asserted.</h3>
 								<p>
-									Rebalances require an earlier reasoning-trace commitment,
-									bounded target movement, slippage checks, and owner-curated
-									oracle paths.
+									The gate runs outside the generator, on persisted returns, so
+									the thing being graded cannot influence its own grade. A failed
+									or pending result cannot be relabelled as verified from the
+									client.
+								</p>
+							</div>
+						</li>
+						<li>
+							<span>Provenance</span>
+							<div>
+								<h3>Reasoning records are content-hashed and anchored on Arc.</h3>
+								<p>
+									A published trace can be re-hashed and compared against its
+									on-chain anchor. That proves the record was not rewritten
+									afterwards—it does not prove the reasoning was good.
 								</p>
 							</div>
 						</li>
@@ -184,8 +187,15 @@ export default function Security() {
 							should be used.
 						</li>
 						<li>
-							<strong>Agent risk:</strong> Agent may mis-rebalance within its
-							constraints, but its role cannot withdraw user assets.
+							<strong>No execution:</strong> Archimedes does not trade with
+							capital today. Generation, the rigor gate, paper trading, and trace
+							anchoring are what run; nothing here should be read as a claim that
+							funds are being managed.
+						</li>
+						<li>
+							<strong>Model risk:</strong> Generation is LLM-driven and can be
+							wrong in ways the gate does not measure. A passed verdict bounds
+							selection bias, not judgement.
 						</li>
 						<li>
 							<strong>Demo inputs:</strong> Some current oracle and risk inputs
@@ -233,23 +243,23 @@ export default function Security() {
 						</li>
 						<li>
 							<a
-								href="https://github.com/a-apin/archimedes/blob/main/contracts/src/Vault.sol"
+								href="https://github.com/a-apin/archimedes/blob/main/contracts/src/ReasoningTraceRegistry.sol"
 								target="_blank"
 								rel="noreferrer"
 							>
-								Vault contract
+								Trace registry contract
 							</a>
-							<span>Role checks and execution constraints</span>
+							<span>How a reasoning record is anchored on Arc</span>
 						</li>
 						<li>
 							<a
-								href="https://github.com/a-apin/archimedes/blob/main/docs/adr/non-custodial-vault-owner-agent.md"
+								href="https://github.com/a-apin/archimedes/blob/main/backend/archimedes/services/live_rigor_gate.py"
 								target="_blank"
 								rel="noreferrer"
 							>
-								Custody decision record
+								Live rigor gate
 							</a>
-							<span>Why owner and agent authority stay separate</span>
+							<span>The admission checks, as they actually run</span>
 						</li>
 					</ul>
 				</div>
