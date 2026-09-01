@@ -870,7 +870,7 @@ function CorpusSection({ health, healthError }) {
 			) : (
 				<p className="body mb-4">
 					Generation starts from a corpus of quantitative-finance research —{" "}
-					{fmtNum(health.corpus_db_count)} paper metadata records spanning
+					{fmtNum(health.corpus_papers)} embargo-eligible papers spanning
 					statistical finance, portfolio math, market microstructure, and
 					agentic AI. At generate time, retrieval runs in two stages: a
 					keyword/asset-class filter, then a relevance rerank against your brief,

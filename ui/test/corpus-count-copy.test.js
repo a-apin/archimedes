@@ -116,7 +116,7 @@ test("equal counts still do not get subset copy — equality is not ingestion co
 test("the ledger formatter names one population, with no denominator", () => {
 	const ledger = formatCorpusLedgerCounts(LIVE_DEFECT_COUNTS, usFmt);
 	assert.equal(claimsIngestedSubsetOfManifest(ledger), false);
-	assert.equal(ledger, "18,907 paper metadata records");
+	assert.equal(ledger, "18,752 embargo-eligible papers scored");
 	assert.doesNotMatch(ledger, /\bof\b/);
 	assert.doesNotMatch(ledger, /hydrated/i);
 });
@@ -153,6 +153,11 @@ const BANNED_SOURCE_PATTERNS = [
 		"body_n_paper_arxiv_manifest",
 		/health\.corpus_papers\)\}-paper arXiv manifest/,
 		"{fmtNum(health.corpus_papers)}-paper arXiv manifest",
+	],
+	[
+		"generation_starts_from_db_count",
+		/Generation starts from[\s\S]{0,120}corpus_db_count/,
+		"Generation starts from a corpus … {fmtNum(health.corpus_db_count)} paper metadata records",
 	],
 ];
 

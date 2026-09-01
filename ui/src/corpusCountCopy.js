@@ -77,8 +77,10 @@ export function formatCorpusHonestyCounts(health, fmtNum) {
 }
 
 /**
- * Ledger retrieval-row count. One population, one label — no denominator.
+ * Ledger retrieval-row count. Retrieval scores the embargo-filtered
+ * generation surface (`corpus_papers`), not the full papers-table count.
+ * One population, one label — no denominator.
  */
 export function formatCorpusLedgerCounts(health, fmtNum) {
-	return `${fmtNum(health.corpus_db_count)} paper metadata records`;
+	return `${fmtNum(health.corpus_papers)} embargo-eligible papers scored`;
 }
