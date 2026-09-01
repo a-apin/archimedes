@@ -12,6 +12,23 @@ dependencies:
                 # have to install Node separately and CI-vs-local parity
                 # breaks (the ESLint gate runs in CI only).
 
+  # Postgres client library — needed to BUILD, not just to run (issue #1632).
+  # backend/requirements-base.txt now asks for source-built `psycopg2` instead
+  # of `psycopg2-binary`, so pip compiles it during `conda env create` and needs
+  # `pg_config` + the libpq headers on PATH. conda-forge's libpq supplies both,
+  # and it is linked against the SAME conda-forge openssl as the env's Python —
+  # so a dev machine gets the same one-OpenSSL-per-process property production
+  # gets, which is the point of the swap. (A C compiler is also required:
+  # Xcode Command Line Tools on macOS, build-essential on Linux. Deliberately
+  # not pulled from conda-forge — `c-compiler` is a large download that tends to
+  # fight the system toolchain, and every dev already has one.)
+  #
+  # This is a conda-level entry on purpose. It is a shared LIBRARY, not a pip
+  # floor, so it is invisible to backend/tests/test_env_requirements_alignment.py
+  # and creates no second home for a version (the psycopg2 floor still lives
+  # only in backend/requirements-base.txt, which the pip block below includes).
+  - libpq
+
   # Infra / cloud CLI tooling — conda-forge binaries, pinned so the whole team
   # (and a from-scratch setup) gets one consistent version for IaC + AWS work.
   - terraform>=1.10   # IaC for the AWS stack (infra/*.tf). >=1.10 required for S3-native

@@ -31,7 +31,31 @@ sqlalchemy>=2.0.52
 # the already-populated prod Postgres DB. MIT license, maintained by the
 # SQLAlchemy project itself.
 alembic>=1.19.1
-psycopg2-binary>=2.9.12
+# Source-built, NOT `psycopg2-binary` (swapped 2026-09-01, issue #1632).
+#
+# The binary wheel vendors its OWN copy of libpq *and* libssl/libcrypto
+# (`psycopg2_binary.libs/libssl-*.so.3`). Loading it into an interpreter that
+# already maps the system OpenSSL — which ours does, via stdlib `_ssl`,
+# aiohttp, and web3 — puts TWO distinct OpenSSL builds in one address space.
+# psycopg2's own docs say exactly this: "the binary package is a practical
+# choice for development and testing but in production it is advised to use
+# the package built from sources", because the bundled libraries clash with
+# other extension modules linked to a different OpenSSL. This image loads 230
+# C extensions (ckzg, greenlet, uvloop, cryptography, …), so the odds of a
+# symbol resolving into the wrong OpenSSL are not theoretical.
+#
+# Prod backend was dying with a bare `Fatal Python error: Aborted` — a raw C
+# abort(), no Python traceback, no glibc/terminate/SSL message — inside
+# psycopg2 `do_executemany` on the OHLCV cache-write commit (~10 min after
+# boot, on the paper-replay tick). Dual-OpenSSL is the leading mechanism and
+# is being A/B-confirmed separately; the swap is correct hygiene either way,
+# and `backend/tests/test_single_openssl.py` keeps the class visible forever.
+#
+# Cost: the wheel no longer ships libpq, so the image needs `libpq-dev` at
+# build time and `libpq5` at runtime (both wired in backend/Dockerfile), and
+# local `conda env create` needs conda-forge `libpq` for `pg_config` (wired in
+# environment.yml). Do not "fix a slow build" by putting -binary back.
+psycopg2>=2.9.12
 redis>=8.1.0
 pydantic>=2.13.4
 pydantic-settings>=2.14.2
