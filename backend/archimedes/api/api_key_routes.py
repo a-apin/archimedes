@@ -12,6 +12,13 @@ What each one exposes, precisely
            remedy is to revoke it and mint another — which is the correct behaviour
            for a credential we cannot read back either.
 
+           **Transactional in effect**, and that is a safety property rather than a
+           tidiness one: because the token is unrecoverable, a row that is committed
+           but not returned is a permanently consumed slot out of
+           ``MAX_KEYS_PER_ACCOUNT``, findable only by listing and revoking it. So the
+           response body is built *before* the commit and every side effect runs
+           *after* it, individually suppressed. See :func:`create_api_key`.
+
 ``GET``    returns ``id``, ``name``, ``prefix`` (``archim_<id>`` — the non-secret
            half), ``created_at``, ``last_used_at``, ``revoked_at``. There is no
            code path that can add the token: the serialiser is
@@ -27,6 +34,7 @@ What each one exposes, precisely
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -86,14 +94,60 @@ class ApiKeyCreateResponse(ApiKeySummary):
     )
 
 
+def _after_mint(response: Response, key_id: str, user_id: str) -> None:
+    """Side effects that run *after* the key is durable. **Nothing here may raise.**
+
+    Past this point the row is committed and the caller is owed the one and only
+    copy of its token. An exception escaping here does not undo the key — it
+    replaces the response that carries the token with a 500, which strands a
+    slot the account can never use and can only find by listing and revoking it.
+    So every side effect is suppressed individually: one failing must not skip
+    the next, and none of them may reach the client.
+
+    Add future side effects (telemetry, funnel, a webhook) *inside this function*,
+    each in its own ``suppress`` — never between the commit and the return.
+    """
+    with contextlib.suppress(Exception):
+        # The id is safe to log (it is the public half and appears in the token
+        # prefix); the token is not, and is not passed to any logger anywhere.
+        logger.info("api key created: id=%s user=%s", key_id, user_id)
+
+    with contextlib.suppress(Exception):
+        # This is the only response in the system that carries a token, so it
+        # must not sit in a proxy, a browser cache, or a `curl -O` on disk.
+        # It also gives `response` a second, visible job — the parameter is
+        # load-bearing for slowapi (see the signature) and a reader who deletes
+        # it as unused reintroduces the 500 this function documents.
+        response.headers["Cache-Control"] = "no-store"
+
+
 @api_key_router.post("", response_model=ApiKeyCreateResponse, status_code=201)
 @limiter.limit("10/hour")
 async def create_api_key(
     payload: ApiKeyCreateRequest,
     request: Request,  # noqa: ARG001 — slowapi's decorator requires it by name; also read by require_session_credential
+    response: Response,
     user: CurrentUser = Depends(require_session_credential),
 ) -> ApiKeyCreateResponse:
-    """Mint a key for the calling account. The token is in the response, once."""
+    """Mint a key for the calling account. The token is in the response, once.
+
+    Transactional in effect: the response body is built **before** the commit, so
+    anything that can fail while turning the row into a body fails while the
+    transaction is still open and the ``except`` below rolls the row back. A
+    caller who gets a 500 from this endpoint has not burned one of their
+    ``MAX_KEYS_PER_ACCOUNT`` slots on a key whose token nobody will ever hold.
+
+    ``response`` is **not** optional decoration. ``@limiter.limit`` wraps this
+    coroutine, and slowapi injects its ``X-RateLimit-*`` headers into whatever the
+    handler returned — but a handler returning a pydantic model instead of a
+    ``Response`` sends it to ``kwargs["response"]`` instead, and
+    ``Limiter._inject_headers`` *raises* when that is ``None``. That raise happens
+    in slowapi's wrapper, outside this function's ``try``, after the commit: a
+    plain-text 500 with the key already persisted. It is invisible to the unit
+    suite because ``limiter.enabled`` is ``False`` under ``TESTING``, which is why
+    this endpoint 500'd on every production mint while CI stayed green.
+    ``test_api_key_mint.py`` pins both halves.
+    """
     session = get_session()
     try:
         if live_key_count(session, user.id) >= MAX_KEYS_PER_ACCOUNT:
@@ -109,14 +163,11 @@ async def create_api_key(
             )
 
         record, token = mint(session, user_id=user.id, name=payload.name)
-        payload_out = record.to_payload()
+        # Build the body BEFORE the commit — see the docstring. Serialisation,
+        # a null timestamp, a model-validation error: all of them land in the
+        # ``except`` below while the row is still rollback-able.
+        body = ApiKeyCreateResponse(**record.to_payload(), key=token)
         session.commit()
-
-        # The id is safe to log (it is the public half and appears in the token
-        # prefix); the token is not, and is not passed to any logger anywhere.
-        logger.info("api key created: id=%s user=%s", payload_out["id"], user.id)
-
-        return ApiKeyCreateResponse(**payload_out, key=token)
     except HTTPException:
         session.rollback()
         raise
@@ -126,6 +177,10 @@ async def create_api_key(
         raise HTTPException(status_code=500, detail="Could not create API key") from exc
     finally:
         session.close()
+
+    # ── The key is durable and the caller is owed its token. Nothing below raises. ──
+    _after_mint(response, body.id, user.id)
+    return body
 
 
 @api_key_router.get("", response_model=list[ApiKeySummary])
