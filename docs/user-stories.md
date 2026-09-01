@@ -25,20 +25,22 @@
 
 ## One-line definition
 
-**Archimedes is a research-grounded strategy-generation instrument for non-experts who
-want their idle USDC to compound thoughtfully** — fusing what you want with current
-market conditions and 10,000 q-fin research papers into novel strategies, gating them
-through selection-bias rigor (so you only see what's defensibly real), executing them
-into your non-custodial vault on Arc, and surfacing every reasoning step so you can
-inspect what worked and what didn't.
+**Archimedes is a research-grounded strategy-generation instrument for non-experts** —
+fusing what you want with current market conditions and the live q-fin corpus
+(`GET /health` → `corpus_db_count` / `corpus_papers`; this file never freezes a
+number) into novel strategies, then gating them through selection-bias rigor so you
+only see what is defensibly real. Generate, gate, and explore are shipped. Execute
+and monitor — allocating into a non-custodial vault on Arc — are roadmap, not shipped
+product.
 
 > **Testnet reality (read this first).** Arc has **no mainnet** — it's testnet-only
 > (Circle's docs list mainnet as "upcoming"; the public testnet "mirrors mainnet
-> behavior, no real assets"). The honest user story is *"try the full flow on the Arc
-> public testnet with faucet USDC"* (<https://faucet.circle.com/>, 20 USDC / 2h,
-> USDC-is-gas) — **no real funds at risk, by design.** This is a strength, not a
-> hedge: it's the correct posture for an Arc-stage project. Real-funds custody,
-> mainnet, and the regulatory architecture are the mainnet / business-plan roadmap.
+> behavior, no real assets"). Generation charges $2 faucet USDC per run
+> (`GENERATION_PAYMENTS_DRY_RUN=false`, `GENERATION_PRICE_USD=2.00`). The honest
+> user story is *"try generate → gate → explore on the Arc public testnet with
+> faucet USDC"* (<https://faucet.circle.com/>, 20 USDC / 2h, USDC-is-gas). There is
+> no mainnet and no user vault. Real-funds custody, mainnet, and the regulatory
+> architecture are the mainnet / business-plan roadmap.
 
 ## The primary archetype — the **capable non-expert**
 
@@ -102,10 +104,13 @@ product that demonstrates the wedge without needing the judge to read the deck f
                    only what clears it is admitted to your library
         │
         ▼
-   ③ EXECUTE       allocate it into a non-custodial vault (testnet USDC on Arc)
+   ③ EXECUTE       roadmap: allocate into a non-custodial vault (testnet USDC on Arc).
+                   Not shipped. ROADMAP_SURFACES_ENABLED is off; no user vault
+                   has been deployed.
         │
         ▼
-   ④ MONITOR       portfolio, results, and the agent's on-chain reasoning
+   ④ MONITOR       roadmap: portfolio, results, and the agent's on-chain reasoning.
+                   Vault execute/monitor is the same unshipped journey.
         │
         ▼
    ⑤ EXPLORE       your compounding library + the underlying research,
@@ -128,18 +133,23 @@ Each step, expressed as the story the user is living:
 > was tried. If it passes, the verdict cards (DSR, PBO, OOS Sharpe, look-ahead
 > audit) are visible with plain-English explanations next to each."*
 
-### ③ Execute
+### ③ Execute (roadmap)
 
-> *"I deposit testnet USDC into a non-custodial vault that runs the strategy. The
-> only step that needs my wallet. The vault tells me, in advance, what authorities
-> the agent has (rebalance, yes; withdraw-to-platform, never). I confirm. Done."*
+> *"When this ships, I will deposit testnet USDC into a non-custodial vault that
+> runs the strategy. The only step that needs my wallet. The vault will tell me,
+> in advance, what authorities the agent has (rebalance, yes; withdraw-to-platform,
+> never). I confirm. Done."*
+>
+> Not shipped today. Contracts exist on Arc testnet; `ROADMAP_SURFACES_ENABLED` is
+> off; no user vault has been deployed.
 
-### ④ Monitor
+### ④ Monitor (roadmap)
 
-> *"I check in. I see how my portfolio is performing, what the agent has done
-> recently, and why. Every rebalance has a reasoning trace I can open — what market
-> conditions it saw, what papers it referenced, what it decided. The full trace is
-> hashed and anchored on Arc — I can verify it wasn't rewritten."*
+> *"When execute ships, I will check in. I will see how my portfolio is performing,
+> what the agent has done recently, and why. Traces are written; not every trace is
+> anchored (`arc_tx_hash` may be null). I can verify a trace that did land."*
+>
+> Vault execute/monitor is roadmap, not a live visitor path.
 
 ### ⑤ Explore (Library + Learnings)
 
@@ -331,16 +341,20 @@ bearing for trust.
    ones, see why it failed the gate. (This is the honesty proof point.)
 4. **Learnings** — see which strategies have performed well and which haven't, with
    the agent's reasoning available for each. (The "we don't hide losses" proof.)
-5. **Vault detail** (or "Deploy" CTA on the generated strategy) — show the
-   non-custodial vault structure, the agent's authorities.
-6. **Wallet wall** appears **only at Deposit** — the single gated action.
+5. **Vault detail (roadmap)** — when execute ships, this is where the
+   non-custodial vault structure and the agent's authorities will live. Not a
+   live visitor path today.
+6. **Wallet wall (roadmap)** — the planned gate at Deposit when that journey
+   ships. Generate, gate, and explore do not require it.
 
 ## Scope
 
 **In (the MVP we ship & demo):** the single-user spine end-to-end, one user at a
-time, hosted, **on the Arc public testnet with faucet USDC (no real funds)**. The
-curated reference library plus the generator-produced strategies. The DB-backed
-10,000-paper q-fin corpus + the live Corpus Explorer. The rigor gate with real 22-year
+time, hosted, **on the Arc public testnet with faucet USDC**. Generation charges
+$2 faucet USDC per run; there is no mainnet and no user vault. The curated
+reference library plus the generator-produced strategies. The live q-fin corpus
+(`GET /health` → `corpus_db_count` / `corpus_papers`; never freeze a number) + the
+live Corpus Explorer. The rigor gate with real 22-year
 SPY data. On-chain reasoning traces via the deployed `ReasoningTraceRegistry`.
 
 > **Corrected 2026-08-31.** Two claims in this paragraph were stale.
