@@ -136,7 +136,7 @@ export default function PublicLayout({ user, children }) {
 					</nav>
 				</div>
 				<div className="public-shell public-footer__base">
-					<span>Research prototype. No real funds.</span>
+					<span>Research prototype. No mainnet money. Generation fee is real testnet USDC.</span>
 					<span>Past performance does not guarantee future results.</span>
 				</div>
 			</footer>
