@@ -48,6 +48,13 @@ os.environ["TESTING"] = "1"
 # one was; only its starting contents change (empty, like a fresh worktree).
 # `tests/db_isolation.redirect_to_tmp_sqlite` remains the right tool for
 # per-test isolation and layers on top of this unchanged.
+#
+# The remaining leak is that same per-process file: a TestClient / ASGI
+# lifespan still runs `seed_from_manifest()` into it (~18k rows). Tests that
+# call `load_corpus()` with `path=None` and expect the file fallback
+# (`test_loader_env_override`, `test_empty_db_falls_back_to_file_manifest`)
+# must isolate with `isolated_empty_sqlite`. Do not "fix" that by making
+# `ARCHIMEDES_CORPUS_MANIFEST` a production DB bypass.
 if not os.environ.get("DATABASE_URL"):
     _TEST_DB_DIR = tempfile.mkdtemp(prefix="archimedes-test-db-")
     atexit.register(shutil.rmtree, _TEST_DB_DIR, ignore_errors=True)

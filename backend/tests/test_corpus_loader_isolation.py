@@ -45,7 +45,7 @@ from archimedes import db as archimedes_db
 from archimedes.agents.strategy_fusion import load_corpus
 from archimedes.models.corpus_store import PaperRecord
 
-from tests.db_isolation import redirect_to_tmp_sqlite
+from tests.db_isolation import isolated_empty_sqlite, redirect_to_tmp_sqlite
 
 # Old enough to clear the 30-day Outcome Embargo in load_papers_from_db().
 _OLD = "2024-01-01"
@@ -202,3 +202,102 @@ class TestNoPathStillMeansDatabaseFirst:
 
         with _tmp_db(tmp_path):  # empty papers table
             assert [p.arxiv_id for p in load_corpus()] == ["4444.44444"]
+
+
+class TestFileFallbackSurvivesASeededSharedDatabase:
+    """The 18752-vs-4 / 18752-vs-0 Quality Gate leak.
+
+    TestClient / ASGI lifespan seeds the process-global suite DB with the
+    full manifest. ``load_corpus()`` with ``path=None`` then prefers that DB
+    over ``ARCHIMEDES_CORPUS_MANIFEST`` — which is correct in production
+    (issue #1640: the env var is the file-fallback location, not a DB
+    bypass) and wrong for the two tests that need an empty papers table to
+    measure the file path.
+
+    This plants a distinctive corpus on the *shared* engine (the lifespan
+    seed, in miniature), then runs those two shapes behind
+    ``isolated_empty_sqlite``. Drop the redirect and both fail with
+    ``len == N_PLANTED`` instead of 4 / 0. Cleanup is mandatory: planted
+    rows must not outlive the test and poison later files in the process.
+    """
+
+    N_PLANTED = 17  # not 4, not 0, not the real ~18k
+    _ID_PREFIX = "seedleak."
+
+    def _ids(self) -> list[str]:
+        return [f"{self._ID_PREFIX}{i:05d}" for i in range(self.N_PLANTED)]
+
+    def _plant_on_shared_engine(self) -> None:
+        archimedes_db.Base.metadata.create_all(bind=archimedes_db.engine)
+        with archimedes_db.get_session() as session:
+            for arxiv_id in self._ids():
+                session.add(_db_row(arxiv_id, f"leaked {arxiv_id}"))
+            session.commit()
+
+    def _unplant_from_shared_engine(self) -> None:
+        with archimedes_db.get_session() as session:
+            session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(self._ids())).delete(synchronize_session=False)
+            session.commit()
+
+    def test_loader_env_override_still_sees_four_after_the_shared_db_is_seeded(self, tmp_path, monkeypatch):
+        """The ``test_strategy_fusion.py::test_loader_env_override`` shape."""
+        four = _write_manifest(
+            tmp_path / "four.jsonl",
+            ["2401.00001", "2402.00002", "2403.00003", "2404.00004"],
+        )
+        monkeypatch.setenv("ARCHIMEDES_CORPUS_MANIFEST", str(four))
+        planted_ids = set(self._ids())
+        self._plant_on_shared_engine()
+        try:
+            # The leak is live: path=None prefers the shared DB (which may
+            # already hold a sibling lifespan's ~18k rows). If our planted
+            # ids are missing, isolation below is vacuous.
+            leaked = {p.arxiv_id for p in load_corpus()}
+            assert planted_ids <= leaked, "shared-DB plant did not occupy load_corpus()"
+            with isolated_empty_sqlite(tmp_path):
+                isolated = load_corpus()
+            assert len(isolated) == 4
+            assert not planted_ids & {p.arxiv_id for p in isolated}
+        finally:
+            self._unplant_from_shared_engine()
+
+    def test_empty_db_catalog_fallback_still_sees_zero_after_the_shared_db_is_seeded(self, tmp_path, monkeypatch):
+        """The ``test_papers_routes.py::test_empty_db_falls_back_to_file_manifest`` shape."""
+        import asyncio
+
+        from archimedes.api import papers_routes
+        from archimedes.models.chat import Base
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        monkeypatch.setenv("ARCHIMEDES_CORPUS_MANIFEST", str(tmp_path / "does-not-exist.jsonl"))
+        empty_engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=empty_engine)
+        empty_session = sessionmaker(bind=empty_engine)()
+
+        class _Ctx:
+            def __enter__(self):
+                return empty_session
+
+            def __exit__(self, *args):
+                pass
+
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _Ctx())
+        self._plant_on_shared_engine()
+        try:
+            leaked = asyncio.run(
+                papers_routes.list_papers(page=1, page_size=20, category=None, search=None, processed_only=True)
+            )
+            # Catalog's own session is empty; a non-zero total is load_corpus()
+            # reading the shared engine. May be N_PLANTED or N_PLANTED+~18k.
+            assert leaked["total"] >= self.N_PLANTED
+            with isolated_empty_sqlite(tmp_path):
+                isolated = asyncio.run(
+                    papers_routes.list_papers(page=1, page_size=20, category=None, search=None, processed_only=True)
+                )
+            assert isolated["total"] == 0
+            assert isolated["papers"] == []
+        finally:
+            empty_session.close()
+            empty_engine.dispose()
+            self._unplant_from_shared_engine()
