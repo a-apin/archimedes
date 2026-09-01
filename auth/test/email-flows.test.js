@@ -351,26 +351,37 @@ test('a refused sign-in does not silently re-send verification mail — the user
   assert.equal(mailer.sent.length, afterSignup, 'a refused sign-in re-sent verification mail on its own')
 })
 
-// ── FINDING EV-1: the production rate limiter has no client IP to key on ───
+// ── EV-1 (#1691): the production rate limiter's client-IP resolution ───────
 //
-// Better Auth's limiter keys every bucket on `${ip}|${path}`
-// (@better-auth/core/dist/utils/ip.mjs:225 createRateLimitKey). It resolves
-// that IP from X-Forwarded-For, and — with no `advanced.ipAddress.trustedProxies`
-// configured, which auth.js does not set — it trusts the header ONLY when it
-// carries exactly one value (ip.mjs:189 `if (forwardedIps.length !== 1) return
-// null`), because every other token in a chain is spoofable. In production the
-// request reaches the auth container through CloudFront -> ALB -> nginx, and
-// each hop appends: CloudFront sets the client, the ALB appends the edge it
-// saw, and nginx appends `$proxy_add_x_forwarded_for` (nginx/nginx.conf:179).
-// So the header is never single-valued, no IP resolves, and every caller in
-// the world shares one bucket per path — the library even says so in a startup
-// warning ("Rate limiting could not determine a client IP and is falling back
-// to a single shared per-path bucket").
+// Better Auth keys every rate-limit bucket on `${ip}|${path}`
+// (@better-auth/core/dist/utils/ip.mjs:225 createRateLimitKey) and resolves
+// that ip from the headers named in `advanced.ipAddress.ipAddressHeaders`,
+// trusting a value only when it is SINGLE-valued (ip.mjs:189 `if
+// (forwardedIps.length !== 1) return null`) — every other token in a forwarded
+// chain is client-supplied and therefore spoofable, so refusing is correct.
 //
-// The two tests below are a matched pair on purpose: the first shows the
-// limiter working per-client when an IP DOES resolve, so the second cannot be
-// read as "the limiter is broken" or "the test is wrong". The only difference
-// between them is the number of hops in the header.
+// The finding: the default header list is ['x-forwarded-for'], and in
+// production that header is never single-valued — CloudFront sets the viewer,
+// the ALB appends the edge it saw, nginx appends `$proxy_add_x_forwarded_for`.
+// No ip resolved, so `no-trusted-ip` was substituted and the entire internet
+// shared one bucket per path: three password-reset requests from anywhere
+// exhausted /request-password-reset for everybody.
+//
+// The fix (option A in #1691): nginx SETS `X-Client-IP: $remote_addr` — its
+// realip-resolved address, bound to the trusted ALB CIDR — and auth.js points
+// ipAddressHeaders at that one header. The tests below are a matched set:
+//   1. control      — buckets separate per client when X-Client-IP resolves,
+//                     WITH the multi-hop X-Forwarded-For production sends.
+//   2. adversarial  — a caller rotating X-Forwarded-For, and forging its own
+//                     X-Client-IP as an XFF token, buys no extra bucket.
+//   3. adversarial  — nginx OVERWRITES a client-supplied X-Client-IP, so a
+//                     spoof from a non-edge source never reaches this process
+//                     (source-pinned against nginx/nginx.conf).
+//   4. fail-safe    — no X-Client-IP at all (a request that skipped nginx)
+//                     falls back to the shared bucket, i.e. over-limits rather
+//                     than handing the caller a key it controls.
+//   5. mechanism    — the library-level reads the four above rest on.
+// Test 1 is the mutation guard: revert either half of the fix and it fails.
 //
 // NOTE ON FIDELITY: these run with the process's own NODE_ENV unset, so
 // @better-auth/core's isTest()/isDevelopment() are both false
@@ -379,63 +390,134 @@ test('a refused sign-in does not silently re-send verification mail — the user
 // createAuth (`rateLimit.enabled = production` in auth.js), which is why these
 // pass NODE_ENV: 'production' in the env object.
 
-async function signUpOverHttp(auth, email, forwardedFor) {
+// The header shape nginx produces behind CloudFront + ALB: viewer, CloudFront
+// edge, nginx's own peer. Never single-valued, which is the whole finding.
+const MULTI_HOP_XFF = clientToken => `${clientToken}, 70.132.1.2, 10.0.3.4`
+
+async function signUpOverHttp(auth, email, headers) {
   const response = await auth.handler(new Request('http://localhost:3000/api/auth/sign-up/email', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       origin: 'http://localhost:3000',
-      'x-forwarded-for': forwardedFor,
+      ...headers,
     },
     body: JSON.stringify({ email, password: PASSWORD, name: 'U' }),
   }))
   return response.status
 }
 
-test('rate-limit buckets separate per client when the forwarded header carries exactly one hop', async () => {
+test('rate-limit buckets separate per client behind the multi-hop header production sends', async () => {
   const { auth } = await harness({ NODE_ENV: 'production' })
+  // Both clients carry the three-hop X-Forwarded-For the live chain produces —
+  // the header that used to defeat resolution entirely. What separates them is
+  // the single-valued X-Client-IP nginx sets from $remote_addr.
+  //
+  // MUTATION GUARD (#1691, CLAUDE.md "a guard must be shown to reject
+  // something"): drop `ipAddress.ipAddressHeaders` from auth.js's advanced
+  // block — or point it back at 'x-forwarded-for' — and client B's FIRST
+  // request 429s on client A's spending, failing this test on the assertion
+  // below. Removing nginx's `proxy_set_header X-Client-IP` has the same effect
+  // in production and is pinned separately by the nginx test further down.
+  const a = { 'x-client-ip': '203.0.113.7', 'x-forwarded-for': MULTI_HOP_XFF('203.0.113.7') }
+  const b = { 'x-client-ip': '198.51.100.9', 'x-forwarded-for': MULTI_HOP_XFF('198.51.100.9') }
+
   // '/sign-up/email' is 3 per 600s in auth.js's customRules.
   for (let i = 1; i <= 3; i += 1) {
-    assert.equal(await signUpOverHttp(auth, `single-a${i}@example.com`, '203.0.113.7'), 200)
+    assert.equal(await signUpOverHttp(auth, `edge-a${i}@example.com`, a), 200)
   }
-  assert.equal(await signUpOverHttp(auth, 'single-a4@example.com', '203.0.113.7'), 429, 'client A was not limited')
+  assert.equal(await signUpOverHttp(auth, 'edge-a4@example.com', a), 429, 'client A was not limited')
 
-  // A different client is untouched by A's spending — this is what the
-  // per-IP claim in auth.js's rateLimit comment and docs/account-authentication.md
-  // describes, and it holds exactly when the client IP resolves.
-  assert.equal(await signUpOverHttp(auth, 'single-b1@example.com', '198.51.100.9'), 200, 'client B was limited by A')
-})
-
-test('FINDING: with the multi-hop header production actually sends, every client shares ONE bucket', async () => {
-  const { auth } = await harness({ NODE_ENV: 'production' })
-  // client, CloudFront edge, nginx's own view — the shape nginx.conf:179
-  // produces behind CloudFront + ALB.
-  const clientA = '203.0.113.7, 70.132.1.2, 10.0.3.4'
-  const clientB = '198.51.100.9, 70.132.9.9, 10.0.3.4'
-
-  for (let i = 1; i <= 3; i += 1) {
-    assert.equal(await signUpOverHttp(auth, `multi-a${i}@example.com`, clientA), 200)
-  }
-  // An entirely unrelated client, first request of its life.
+  // An entirely unrelated client, first request of its life. Under the finding
+  // this was a 429; it is what the per-rate-key claim in auth.js's rateLimit
+  // comment and docs/account-authentication.md actually asserts.
   assert.equal(
-    await signUpOverHttp(auth, 'multi-b1@example.com', clientB),
-    429,
-    'client B was NOT limited by client A — the IP now resolves and finding EV-1 is fixed; update this test',
+    await signUpOverHttp(auth, 'edge-b1@example.com', b),
+    200,
+    'client B was rate-limited by client A — the client IP is not resolving; EV-1 has regressed',
   )
 })
 
-test('FINDING EV-1, mechanism: a multi-hop forwarded header resolves to no client IP without trustedProxies', async () => {
-  const { getIp } = await import('@better-auth/core/utils/ip')
-  const request = xff => new Request('https://archimedes-arc.com/api/auth/sign-in/email', {
-    headers: { 'x-forwarded-for': xff },
+test('SECURITY: forging X-Forwarded-For buys no extra bucket — the key follows the nginx-set header', async () => {
+  const { auth } = await harness({ NODE_ENV: 'production' })
+  // One abuser at one address, rotating every token it controls: a fresh
+  // leftmost XFF hop per request, and — belt and braces — its own X-Client-IP
+  // planted in the chain, which is precisely the value an attacker would forge
+  // if the leftmost token were trusted. nginx's X-Client-IP is the only thing
+  // read, and it does not move.
+  const spoof = i => ({
+    'x-client-ip': '203.0.113.7',
+    'x-forwarded-for': `10.0.0.${i}, 198.51.100.${i}, 70.132.1.2, 10.0.3.4`,
   })
 
-  assert.equal(getIp(request('203.0.113.7'), {}), '203.0.113.7')
-  assert.equal(getIp(request('203.0.113.7, 70.132.1.2'), {}), null)
-  assert.equal(getIp(request('203.0.113.7, 70.132.1.2, 10.0.3.4'), {}), null)
+  for (let i = 1; i <= 3; i += 1) {
+    assert.equal(await signUpOverHttp(auth, `spoof-a${i}@example.com`, spoof(i)), 200)
+  }
+  assert.equal(
+    await signUpOverHttp(auth, 'spoof-a4@example.com', spoof(4)),
+    429,
+    'rotating X-Forwarded-For minted a fresh bucket — a spoofable token is being trusted (#1691 anti-goal)',
+  )
+})
 
-  // auth.js sets no advanced.ipAddress config at all — this is the absence
-  // the two tests above are a consequence of.
+test('SECURITY: nginx SETS X-Client-IP, so a spoof from a non-edge source never reaches this process', async () => {
+  // The auth container trusts x-client-ip because nothing outside the edge can
+  // write it. That property lives in nginx.conf, so it is pinned there —
+  // source-pinned the same way the better-auth reads above are, and the same
+  // way auth.test.js pins ../../.env.example.
+  const conf = readFileSync(new URL('../../nginx/nginx.conf', import.meta.url), 'utf8')
+
+  // `proxy_set_header` REPLACES the header; `$proxy_add_x_forwarded_for`
+  // (used one line below for X-Forwarded-For) is what APPENDS a client value.
+  // X-Client-IP must never be built that way.
+  assert.match(conf, /^\s*proxy_set_header X-Client-IP \$remote_addr;$/m)
+  assert.equal(/X-Client-IP\s+\$proxy_add_x_forwarded_for/.test(conf), false)
+  assert.equal((conf.match(/proxy_set_header X-Client-IP/g) ?? []).length, 1)
+
+  // $remote_addr is only ever influenced by X-Forwarded-For when the socket
+  // peer is inside the ALB CIDR: `real_ip_header` is bound by set_real_ip_from,
+  // and that CIDR is the narrowed one from AUDIT I7 (not the RFC1918 ranges,
+  // which would have let the box itself spoof). A request from any other
+  // source contributes nothing to the value it is keyed on.
+  assert.match(conf, /^\s*set_real_ip_from 10\.0\.0\.0\/16;$/m)
+  assert.match(conf, /^\s*real_ip_header X-Forwarded-For;$/m)
+  assert.equal(/set_real_ip_from (?!10\.0\.0\.0\/16)/.test(conf), false)
+})
+
+test('fail-safe: a request that never passed through nginx gets the shared bucket, not a key it controls', async () => {
+  const { getIp } = await import('@better-auth/core/utils/ip')
+  const options = { advanced: { ipAddress: { ipAddressHeaders: ['x-client-ip'] } } }
+  const request = headers => new Request('https://archimedes-arc.com/api/auth/request-password-reset', { headers })
+
+  // No x-client-ip (only the spoofable chain): null, which the limiter turns
+  // into the shared `no-trusted-ip|<path>` bucket. Over-limiting, never open.
+  assert.equal(getIp(request({ 'x-forwarded-for': '203.0.113.7' }), options), null)
+  assert.equal(getIp(request({}), options), null)
+  // And x-forwarded-for is not consulted as a fallback: a single-valued XFF is
+  // exactly what a direct-to-container caller would forge.
+  assert.equal(getIp(request({ 'x-forwarded-for': '203.0.113.7', 'x-client-ip': '198.51.100.9' }), options), '198.51.100.9')
+})
+
+test('EV-1 mechanism: ipAddressHeaders is what makes the key resolve, and it is pinned in auth.js', async () => {
+  const { getIp } = await import('@better-auth/core/utils/ip')
+  const request = headers => new Request('https://archimedes-arc.com/api/auth/sign-in/email', { headers })
+
+  // The finding, unchanged and still true of the DEFAULT header list: a
+  // multi-hop forwarded header resolves to no client IP.
+  assert.equal(getIp(request({ 'x-forwarded-for': '203.0.113.7' }), {}), '203.0.113.7')
+  assert.equal(getIp(request({ 'x-forwarded-for': '203.0.113.7, 70.132.1.2' }), {}), null)
+  assert.equal(getIp(request({ 'x-forwarded-for': MULTI_HOP_XFF('203.0.113.7') }), {}), null)
+
+  // The fix: a single-valued header nginx controls, named explicitly.
   const { auth } = await harness({ NODE_ENV: 'production' })
-  assert.equal(auth.options.advanced.ipAddress, undefined)
+  assert.deepEqual(auth.options.advanced.ipAddress.ipAddressHeaders, ['x-client-ip'])
+  assert.equal(auth.options.advanced.ipAddress.disableIpTracking, undefined)
+  assert.equal(auth.options.advanced.ipAddress.trustedProxies, undefined)
+  assert.equal(getIp(request({ 'x-client-ip': '203.0.113.7', 'x-forwarded-for': MULTI_HOP_XFF('203.0.113.7') }), auth.options), '203.0.113.7')
+
+  // The mail endpoints the EMAIL_VERIFICATION_ENFORCED flip puts under load
+  // are pinned explicitly rather than inherited (#1691 scope item 5); the
+  // values match better-auth/dist/api/rate-limiter/index.mjs:378-382.
+  assert.deepEqual(auth.options.rateLimit.customRules['/request-password-reset'], { window: 60, max: 3 })
+  assert.deepEqual(auth.options.rateLimit.customRules['/send-verification-email'], { window: 60, max: 3 })
 })
