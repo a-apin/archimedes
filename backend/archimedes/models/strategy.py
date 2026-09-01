@@ -43,10 +43,24 @@ class StrategyStatus(str, Enum):
 
 
 class PositionSizing(str, Enum):
+    """Sizing rules a passport can declare.
+
+    This enum must remain a SUPERSET of ``strategy_dsl.POSITION_SIZING_TYPES``
+    (#1769). The passport card's sizing field is derived from the validated DSL
+    spec, and ``StrategyPassportRecord.to_strategy_passport`` coerces the stored
+    column back through this enum — so a DSL sizing type with no member here is
+    not "unsupported", it is a ``ValueError`` on read for every row that uses
+    it. ``test_passport_spec_parity.py`` fails if the DSL grows a type this list
+    has not grown with it. ``risk_parity`` / ``kelly`` have no DSL counterpart
+    and are curated-YAML vocabulary; the superset direction is the safe one.
+    """
+
     EQUAL_WEIGHT = "equal_weight"
     RISK_PARITY = "risk_parity"
     KELLY = "kelly"
     INVERSE_VOL = "inverse_vol"
+    FULL_INVESTED_WHEN_IN_MARKET = "full_invested_when_in_market"
+    VOLATILITY_TARGET = "volatility_target"
 
 
 class RebalanceFrequency(str, Enum):

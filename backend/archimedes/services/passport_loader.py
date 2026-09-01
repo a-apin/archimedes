@@ -211,6 +211,24 @@ def _update_record(
     # source (e.g. the post-backtest metrics refresh) never clobbers it with None.
     if passport.universe_source is not None:
         record.universe_source = passport.universe_source
+    # position_sizing / rebalance_frequency had NO writer on the update path
+    # (#1769) — the create branch above wrote them and this one did not, so a
+    # `force_update` refresh (the post-backtest metrics rebuild) left whatever
+    # the row already held. That is how a spec-derived `monthly` /
+    # `full_invested_when_in_market` reverted to the `weekly` / `equal_weight`
+    # column defaults. Written unconditionally, exactly like `asset_universe`
+    # two lines up and unlike `universe_source`: every caller builds these two
+    # from its own source of truth (the candidate's validated DSL spec, or the
+    # curated YAML's metadata), so there is no "refresh that doesn't know" case
+    # for them to be defended against.
+    record.position_sizing = (
+        passport.position_sizing.value if hasattr(passport.position_sizing, "value") else str(passport.position_sizing)
+    )
+    record.rebalance_frequency = (
+        passport.rebalance_frequency.value
+        if hasattr(passport.rebalance_frequency, "value")
+        else str(passport.rebalance_frequency)
+    )
     record.status = passport.status.value if hasattr(passport.status, "value") else str(passport.status)
     record.regime_tag = passport.regime_tag or "regime_neutral"
     record.passes_rigor_gate = passport.passes_rigor_gate

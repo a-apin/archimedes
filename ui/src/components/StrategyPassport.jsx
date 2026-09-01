@@ -26,6 +26,11 @@ import {
 	UNKNOWN_RIGOR_TITLE,
 } from "../rigorGateStatus.js";
 import { formatStrategySpec, tokenizeJson } from "../strategySpec.js";
+import { paperAttributionHeader } from "../paperAttribution.js";
+import {
+	hasSharpeReconciliation,
+	rigorBarClause,
+} from "../sharpeReconciliation.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -130,21 +135,26 @@ function joinWords(items) {
 	return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-function PapersTable({ papers, methodologyHash }) {
+function PapersTable({ papers, methodologyHash, distinctMechanismPapers }) {
 	const rows = papers;
 	const blanks = blankColumns(rows);
+	// #1769: the heading counts CITATIONS and ATTRIBUTIONS separately. It used
+	// to read "Fused from N papers", which presented a citation count as fusion
+	// depth — on the strategy that surfaced this, all 5 contribution cells were
+	// em-dashes. The sub-line is no longer conditional on `rows.length > 1`
+	// either: it was the claim "One methodology synthesized from every row
+	// below", which is the same overclaim in a sentence.
+	const attribution = paperAttributionHeader(rows, distinctMechanismPapers);
+	// `null` only for an empty `rows`, which the one call site already routes to
+	// its own "no source papers are recorded" panel. Guarded anyway so a second
+	// call site can never white-screen the passport on an empty list.
+	if (!attribution) return null;
 
 	return (
 		<div className="card passport-panel passport-papers">
 			<div className="passport-papers__head">
-				<div className="label">
-					{rows.length === 1 ? "Source paper" : `Fused from ${rows.length} papers`}
-				</div>
-				{rows.length > 1 && (
-					<p className="caption text-[var(--text-3)]">
-						One methodology synthesized from every row below.
-					</p>
-				)}
+				<div className="label">{attribution.heading}</div>
+				<p className="caption text-[var(--text-3)]">{attribution.note}</p>
 			</div>
 
 			<div className="passport-papers__scroll">
@@ -576,7 +586,11 @@ export default function StrategyPassport({
 					{(s.papers || []).length > 1 ? (
 						<span className="tag tag-accent inline-flex items-center gap-1">
 							<span className="i-lucide-layers w-3.5 h-3.5" />
-							{s.papers.length} fused papers
+							{/* "fused papers" was the same citation-count-as-fusion-depth
+							    claim the table heading carried (#1769). The chip is a
+							    count, so it says what it counts; the attribution split
+							    lives in the table heading, which has room for it. */}
+							{s.papers.length} papers cited
 						</span>
 					) : (
 						s.paper_arxiv_id && (
@@ -792,7 +806,11 @@ export default function StrategyPassport({
 						    renders, and a strategy with no recorded papers says so
 						    instead of printing an empty pair of quotation marks. */}
 						{papers.length > 0 ? (
-							<PapersTable papers={papers} methodologyHash={s.methodology_hash} />
+							<PapersTable
+								papers={papers}
+								methodologyHash={s.methodology_hash}
+								distinctMechanismPapers={s.distinct_mechanism_papers}
+							/>
 						) : (
 							<div className="card passport-panel passport-papers">
 								<div className="label mb-2">Source papers</div>
@@ -933,6 +951,40 @@ export default function StrategyPassport({
 								}
 							/>
 						</div>
+						{/* Raw vs deflated (#1769). The card above prints a Sharpe and
+						    the Rigor card below prints a Deflated Sharpe beside a
+						    pass/fail pill; nothing said they are the same edge measured
+						    twice, so the gap read as two contradictory results. Both
+						    figures go through MetricValue like every other number on this
+						    page (#1651) — this sentence introduces no arithmetic and no
+						    threshold of its own, and it renders only when BOTH numbers
+						    exist, because the relationship is its entire subject. */}
+						{hasSharpeReconciliation(s) && (
+							<p className="caption mt-3 leading-relaxed text-[var(--text-3)]">
+								Sharpe{" "}
+								<strong>
+									<MetricValue
+										metric="sharpe_ratio"
+										value={s.sharpe_ratio}
+										row={s}
+										surface="Passport"
+									/>
+								</strong>{" "}
+								is the raw backtest figure; deflated for selection bias it is{" "}
+								<strong>
+									<MetricValue
+										metric="deflated_sharpe_ratio"
+										value={s.deflated_sharpe_ratio}
+										row={s}
+										surface="Passport"
+									/>
+								</strong>
+								. The verdict below reads that deflation — not the raw
+								Sharpe — alongside PBO, out-of-sample Sharpe and the
+								look-ahead audit
+								{rigorBarClause(s) ? `, ${rigorBarClause(s)}.` : "."}
+							</p>
+						)}
 						{(s.backtest_start || s.backtest_end) && (
 							<div className="caption mt-3 text-[var(--text-3)]">
 								Window:{" "}

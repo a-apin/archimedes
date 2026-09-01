@@ -40,6 +40,7 @@ from archimedes.api.selection_bias_routes import (
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.live_rigor_gate import RigorGateVerdict
+from archimedes.services.passport_spec_parity import reconcile_card_fields
 from archimedes.services.rigor_evaluator import RigorGateResult
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,22 @@ def _to_strategy_response(
     if s.status == StrategyStatus.CANDIDATE and verdict.passes:
         served_status = StrategyStatus.VALIDATED.value
 
+    # The same spec-wins reconciliation the generated path takes (#1769), on the
+    # provider path's own in-hand spec — no query, because `Strategy` already
+    # carries `strategy_spec`. A no-op for today's curated corpus, where
+    # `strategy_provider._to_strategy` sets no spec at all and the YAML's
+    # POSITION_SIZING / REBALANCE_FREQUENCY metadata IS the source of truth. It
+    # is here so the invariant is unconditional: wherever a validated spec
+    # exists, the card shows the spec. A curated row that later gains one must
+    # not quietly become the surface where prose beats the DSL again.
+    _card = reconcile_card_fields(
+        s.id,
+        s.strategy_spec,
+        asset_universe=s.asset_universe,
+        rebalance_frequency=s.rebalance_frequency,
+        position_sizing=s.position_sizing,
+    )
+
     # Build papers list from passport
     papers_list = [
         PaperRefResponse(
@@ -152,10 +169,14 @@ def _to_strategy_response(
         paper_title=s.paper_title,
         paper_authors=s.paper_authors,
         methodology_summary=s.methodology_summary,
-        asset_universe=s.asset_universe,
+        asset_universe=_card["asset_universe"],
         universe_source=s.universe_source,
-        position_sizing=s.position_sizing.value,
-        rebalance_frequency=s.rebalance_frequency.value,
+        # A bare `.value` is gone on purpose: `reconcile_card_fields` hands back
+        # the enum member it was given when the stored side won, and the DSL's
+        # own literal string when the spec won. The schema field is `str`, so
+        # both shapes are normalised here rather than assuming either one.
+        position_sizing=str(getattr(_card["position_sizing"], "value", _card["position_sizing"])),
+        rebalance_frequency=str(getattr(_card["rebalance_frequency"], "value", _card["rebalance_frequency"])),
         status=served_status,
         paper_venue=s.paper_venue,
         paper_year=s.paper_year,
@@ -1238,6 +1259,40 @@ def _num_trials_for_passport(strategy_id: str, session) -> tuple[int | None, str
         return None, "unspecified"
 
 
+def _strategy_spec_for_passport(strategy_id: str, session) -> dict | None:
+    """The validated DSL spec stored for a generated row, or ``None`` (#1769).
+
+    The spec column lives on ``StrategyRecord`` (``strategy_store``), not on the
+    ``strategy_passports`` row this module reshapes — so reading it costs one
+    primary-key lookup, the same shape and the same per-row cost as
+    ``_generation_cost_for`` and ``_num_trials_for_passport`` immediately above.
+    It does not change the complexity class of the list path.
+
+    **This is not a #1557 leak.** The spec itself is REASONING and stays
+    owner-gated at the detail route; nothing here puts it on the wire. What
+    comes back out of ``reconcile_card_fields`` is three fields the passport row
+    already serves publicly to every caller — a rebalance cadence, a sizing
+    rule and a ticker list — with their values corrected. A public field with a
+    right value discloses nothing a public field with a wrong value did not.
+
+    Fails soft: a lookup failure means the card keeps its stored values, which is
+    exactly today's behaviour, and never takes down a strategy read.
+    """
+    if session is None or not strategy_id:
+        return None
+    try:
+        from archimedes.models.strategy_store import StrategyRecord
+
+        row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+        return row.decoded_strategy_spec() if row is not None else None
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning("strategy_spec lookup failed for %s: %s", strategy_id, exc)
+        _rollback_quietly(session)
+        return None
+
+
 # Sentinel distinguishing "no returns were prefetched for this call" from "the
 # prefetch ran and this strategy genuinely has no persisted series". The two
 # must not collapse: the first means we do not know, the second is a fact.
@@ -1380,7 +1435,20 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
         for r in refs
     ]
 
-    asset_universe = json.loads(record.asset_universe) if record.asset_universe else []
+    # The three executable card fields, reconciled against the validated DSL
+    # spec (#1769). The generation path now derives them at WRITE time, but the
+    # rows written before that fix are still in the table and the table is
+    # append-only — a read that trusted them would keep serving the card that
+    # contradicts its own backtest. The spec wins and the disagreement is logged
+    # naming this id; see services/passport_spec_parity.py.
+    _card = reconcile_card_fields(
+        record.id,
+        _strategy_spec_for_passport(record.id, session),
+        asset_universe=json.loads(record.asset_universe) if record.asset_universe else [],
+        rebalance_frequency=record.rebalance_frequency or "weekly",
+        position_sizing=record.position_sizing or "equal_weight",
+    )
+    asset_universe = _card["asset_universe"]
 
     # The enriched first-paper title (may have been filled from corpus above).
     first_title = papers_list[0].title if papers_list else (first.title if first else "")
@@ -1409,8 +1477,8 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
         methodology_summary=record.methodology_summary or "",
         asset_universe=asset_universe,
         universe_source=record.universe_source,
-        position_sizing=record.position_sizing or "equal_weight",
-        rebalance_frequency=record.rebalance_frequency or "weekly",
+        position_sizing=_card["position_sizing"],
+        rebalance_frequency=_card["rebalance_frequency"],
         status=record.status or "candidate",
         methodology_hash=record.methodology_hash,
         extraction_llm=record.extraction_llm,
