@@ -259,11 +259,15 @@ at an in-memory `FusionProposal`. The eventual shape:
   `ReasoningTraceRegistry`, exactly as construction traces are anchored — *without
   modifying that flow now*. The anchor would bind *"this novel combination of these N
   papers was proposed at time T by this served model"*.
-- **IPFS-pin the full reasoning.** The full fusion reasoning + the resolved source paper
-  metadata pinned to IPFS, with the CID in the on-chain anchor — a public, permanent,
-  **falsifiable** novelty claim: anyone can fetch the papers, read the synthesis, and
-  argue the combination was in fact already published. Being falsifiable is the point;
-  it is the on-chain analogue of the McLean–Pontiff discipline.
+- **Public-storage pin of the full reasoning (owner-gated; not live).** The full fusion
+  reasoning + the resolved source paper metadata in a public store, with a pointer in
+  the on-chain anchor — a public, permanent, **falsifiable** novelty claim: anyone can
+  fetch the papers, read the synthesis, and argue the combination was in fact already
+  published. Being falsifiable is the point; it is the on-chain analogue of the
+  McLean–Pontiff discipline. Do not rebuild the deleted Pinata client to land this:
+  live reveal is hash-only (`docs/adr/ipfs-pinning-not-live.md`). Re-enablement needs
+  an owner-seeded JWT, `infra/ecs.tf` `secrets{}`, a rebuilt pin client, and a CID
+  proven on a public gateway.
 - **Novelty decay tracking.** Once anchored, a fusion's novelty is itself a decaying
   quantity (its own publication is the decay trigger). A future loop re-scores anchored
   fusions against newer corpus snapshots and rotates capital away from syntheses the
@@ -284,4 +288,5 @@ discipline by which this module is itself additive and flagged.
 - [x] Backend seam mirrors the architect (lazy `anthropic`, `extract_json`, fallback).
 - [x] Records `response.model` as `model`; keeps `requested_model` separately.
 - [x] Mocked-client tests; no network; self-contained fixture manifest.
-- [ ] (Future, not this PR) Route wiring, on-chain anchor, IPFS pin, novelty-decay loop.
+- [ ] (Future, not this PR) Route wiring, on-chain anchor, public-storage pin
+      (owner-gated; see `docs/adr/ipfs-pinning-not-live.md`), novelty-decay loop.
