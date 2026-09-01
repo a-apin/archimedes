@@ -902,6 +902,7 @@ def _probe_error_fields(prefix: str, exc: BaseException) -> dict[str, object]:
         f"{prefix}_probe_reason": f"{prefix} probe_error: {exc}",
     }
 
+
 # The LLM backend probe. `make_llm_backend()` looks like pure construction and
 # is not: on the ollama path — the local-mode default this budget exists for
 # (#1044) — its `available` check is a SYNCHRONOUS `httpx.get({LLM_BASE_URL}
