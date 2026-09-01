@@ -8,14 +8,18 @@
 //   corpus_db_count  = COUNT(papers) — metadata records; the Corpus page
 //                      reports the same number. The committed JSONL seed is
 //                      the floor; intake can grow the table past it.
-//   corpus_papers    = len(load_corpus()) — the generation surface. On the
-//                      DB path that is embargo-filtered (Xia Outcome Embargo);
-//                      on file fallback it is valid JSONL rows. /health does
-//                      not say which path ran.
+//   corpus_papers    = count_corpus_papers() — embargo-filtered scalar
+//                      COUNT on papers (`published < day-after-cutoff`,
+//                      blank excluded). Still ≤ corpus_db_count by
+//                      construction (same table, one extra WHERE). The
+//                      user-facing "Generation currently loads N" still
+//                      means the size of the corpus generation would load.
 //
-// The UI cannot prove a subset relationship from /health, so this module
-// never emits "X of the Y" / "fully ingested" / "hydrated" completeness
-// copy. Extracted from Architecture.jsx so the live 18,907-vs-18,752
+// corpus_papers ≤ corpus_db_count by construction, but they are still
+// different populations (embargoed COUNT vs full table), not a
+// completeness ratio of a committed manifest — so this module never
+// emits "X of the Y" / "fully ingested" / "hydrated" copy.
+// Extracted from Architecture.jsx so the live 18,907-vs-18,752
 // sentence is unit-testable without a DOM (same shape as paperCopy.js /
 // generateQuote.js). See #778 for the broader corpus claim-integrity rule.
 

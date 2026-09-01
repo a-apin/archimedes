@@ -240,10 +240,10 @@ carries its arXiv ID and content hash.
 
 **Honesty card (live-driven):** The papers table holds `{corpus_db_count}` metadata
 records (the Corpus page count). Generation currently loads `{corpus_papers}`. These are
-different populations — `corpus_papers` is `len(load_corpus())` and `corpus_db_count` is
-`COUNT(papers)` — not a completeness ratio of a committed manifest. Do not concatenate the
-two `/health` counts with a subset preposition: a subset cannot be larger than its
-superset. The knowledge-graph
+different populations — `corpus_papers` is `count_corpus_papers()` (embargo-filtered COUNT)
+and `corpus_db_count` is `COUNT(papers)` — not a completeness ratio of a committed
+manifest. Do not concatenate the two `/health` counts with a subset preposition: a subset
+cannot be larger than its superset. The knowledge-graph
 layer (citation graph over the corpus) is built by a pipeline that has not yet produced its
 first production artifact — the Corpus page shows exactly that, rather than a synthesized
 graph. Generation requires at least two relevant papers or it declines to run.
