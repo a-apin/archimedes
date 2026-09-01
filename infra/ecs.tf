@@ -562,6 +562,43 @@ resource "aws_ecs_task_definition" "backend" {
         # Not secrets. Both layers must pass; <= 0 disables a layer.
         { name = "GENERATION_DAILY_CAP_PER_USER", value = "100" },
         { name = "GENERATION_DAILY_CAP_PER_IP", value = "200" },
+        # Admission control (#1668) — the same config-drift failure the caps
+        # above were plumbed to avoid, found again by grep: all three are read
+        # from the environment by shipped code (generate_routes.py's
+        # `_max_concurrent_generations()` / `_max_queued_generations()` and
+        # debate_engine.py's `_pool_max()`) and none of them were in this file,
+        # so prod ran on the os.getenv() fallbacks by accident. Wired from
+        # variables.tf, whose defaults are byte-identical to those fallbacks —
+        # plumbing only, no behaviour change on apply. Retuning any of them is
+        # a separate, separately-reviewed change (#1668 anti-goal).
+        # backend/tests/test_admission_knobs_drift.py reads both sides and
+        # fails if they ever diverge, in either direction.
+        { name = "GENERATION_MAX_CONCURRENT", value = var.generation_max_concurrent },
+        { name = "GENERATION_MAX_QUEUE", value = var.generation_max_queue },
+        { name = "DEBATE_POOL_MAX", value = var.debate_pool_max },
+        # Hard ceiling on one generation run. Read at
+        # backend/archimedes/api/generate_routes.py:162, whose code default is
+        # 600 s — and this name was NEVER in this task definition, so prod ran
+        # that 600 s default by accident rather than by decision. Flagged by
+        # the 2026-08-31 Javi re-grade, which reported a prod generation hang
+        # of roughly 420 s: a ceiling looser than the hang it exists to bound
+        # is not a ceiling. (The ~420 s figure is the re-grade's; it is not
+        # reproduced anywhere in this repo — carried here as attribution.)
+        #
+        # 300 s is the deliberate tightening. Headroom is ample: a single
+        # generation averages ~48 s (measured 2026-08-20, cited in the
+        # admission-control note in generate_routes.py), so this is ~6x the
+        # measured run. Past it, `_run_with_cleanup`'s `asyncio.wait_for`
+        # ends the job `error` with an honest "generation exceeded the
+        # 300-second limit", restores the payer's credit via
+        # `_release_credit_if_undelivered`, and frees the generation-gate slot.
+        #
+        # Keep this a bare positive number. `_generation_timeout_seconds()`
+        # is deliberately fail-soft — "300s", "5m", "0" or "-1" all fall back
+        # to 600 silently — so a mistyped value reinstates exactly the drift
+        # this line removes. Guarded by
+        # backend/tests/test_ecs_generation_timeout.py.
+        { name = "GENERATION_TIMEOUT_SECONDS", value = "300" },
         # Generation payment gate (flip-list #834): flag stays "false" until
         # Dan flips it deliberately — and GENERATION_PAYMENT_RECIPIENT (the
         # platform wallet that receives x402 settlements) MUST be set first;

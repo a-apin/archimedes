@@ -137,7 +137,10 @@ _ABSENCE_PIN = ("backend/archimedes/api/selection_bias_routes.py", "class BoardL
 # (``ui/test/roadmap-copy.test.js``, which requires roadmap tense on every vault
 # sentence in ``ui/public/``), not to a ledger-citation test.
 _OPEN_OVERCLAIMS: tuple[tuple[str, str], ...] = (
-    ("README.md", "non-custodial vault on the Arc testnet"),
+    # The README's over-claim was FIXED by the 2026-08-31 README refresh (future
+    # tense) and the two agent surfaces retired themselves in #1650 (see the note
+    # above), so all three pins are gone and their ledger rows moved OVER-CLAIMED
+    # → CHANGED. The remaining two surfaces below still carry the claim.
     ("ui/index.html", "records the whole decision on Arc public testnet"),
     ("docs/user-stories.md", "into your non-custodial vault on Arc"),
 )

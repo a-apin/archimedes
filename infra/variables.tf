@@ -113,6 +113,49 @@ variable "github_oauth_enabled" {
   default     = false
 }
 
+# ── Admission-control knobs (issue #1668) ──────────────────────────────────
+# The three levers that bound how much concurrent work one Fargate task takes
+# on. All three are read from the process environment by code that already
+# ships, and all three were absent from infra/ecs.tf — so production ran on the
+# code's os.getenv() fallbacks by accident rather than by decision. That is the
+# exact config-drift class the generation-cap comment in ecs.tf already calls
+# out in prose, and the one docs/adr/lambda-generation-offload.md recorded
+# under § Consequences instead of patching.
+#
+# `type = string`, not `number`: ECS `environment` entries are string/string
+# pairs and jsonencode would emit a bare JSON number, which the
+# RegisterTaskDefinition API rejects (KeyValuePair.value is typed String). Same
+# reason ecs_backend_cpu / ecs_backend_memory are strings.
+#
+# Defaults here are byte-identical to the os.getenv() fallbacks in the code, so
+# this is pure plumbing: applying it changes no behaviour, it only makes the
+# values visible and tunable without a code deploy. Retuning them is a separate
+# change with separate review (issue #1668 anti-goal). The pairing is pinned by
+# backend/tests/test_admission_knobs_drift.py, which reads both sides — the
+# reader-facing source of each default is that test, not these comments.
+#
+# Each description names the READING FUNCTION rather than a line number: the
+# line moves whenever anything above it is edited, and a stale citation is
+# worse than none.
+
+variable "generation_max_concurrent" {
+  description = "GENERATION_MAX_CONCURRENT — how many strategy-generation pipelines may run at once inside ONE backend task. A generation averages ~65% of the task's vCPU for ~48s (measured 2026-08-20), so unbounded parallelism starves auth/SSE/the ALB health check and the task gets killed with every in-flight job. Floored at 1 by the code. Must match the os.getenv default in `_max_concurrent_generations()`, backend/archimedes/api/generate_routes.py."
+  type        = string
+  default     = "1"
+}
+
+variable "generation_max_queue" {
+  description = "GENERATION_MAX_QUEUE — how many further generations may WAIT for a slot (the job stays `queued` and its SSE stream gets a job_queued event plus heartbeats). Beyond this /start refuses 429 BEFORE the payment gate, so nobody is charged for a slot that does not exist. 0 disables queueing. Must match the os.getenv default in `_max_queued_generations()`, backend/archimedes/api/generate_routes.py."
+  type        = string
+  default     = "10"
+}
+
+variable "debate_pool_max" {
+  description = "DEBATE_POOL_MAX — how many of the regime×mechanism `_STEERS` (3 regimes × 6 mechanisms = 18 today) fan out as parallel proposer LLM calls in the multi-agent debate; the code clamps to [2, len(_STEERS)]. This is the debate's cost lever (docs/specs/multi-agent-debate-spec.md § 8): the deterministic critics and the backtests cost zero tokens, the proposer fan-out is the N× spend. Must match the os.getenv default in `_pool_max()`, backend/archimedes/agents/debate_engine.py."
+  type        = string
+  default     = "10"
+}
+
 # ── Config consolidation (issue #1039 P5) ──────────────────────────────────
 # Public wallet addresses (not secrets — no private key material), but
 # operator-specific and NOT baked into the image or a box `.env` file. Set at

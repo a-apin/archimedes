@@ -105,9 +105,11 @@ _STALLED_AFTER_SECONDS = 300
 # this bound.
 _DEFAULT_GENERATION_TIMEOUT_SECONDS = 600
 
-# Live registry of in-flight asyncio tasks per job. Lets cancel_job actually
-# stop the work — without this, /cancel only flips Redis status while the
-# agent keeps burning LLM tokens to completion.
+# Registry of the in-flight asyncio tasks THIS process is running, for local
+# liveness/diagnostics only. It is deliberately NOT the cancellation
+# mechanism (#1667): a process-local dict cannot see a job started by another
+# task, so cancel_job goes through the shared Redis flag
+# (`JobStore.request_cancel`) that the pipeline polls at its stage boundaries.
 _RUNNING_TASKS: dict[str, asyncio.Task] = {}
 
 
@@ -1009,15 +1011,23 @@ async def cancel_job(
 ) -> dict[str, str]:
     """Cancel a running job. Idempotent.
 
-    Hard cancellation: looks up the asyncio.Task driving the job and calls
-    ``task.cancel()`` on it. The pipeline's ``except CancelledError`` branch
-    emits the synthetic error event + flips Redis status to ``cancelled``.
+    Cancellation is a **durable Redis flag**, not a local task handle (#1667).
+    The pipeline polls that flag at its stage boundaries and stops from
+    whichever task is actually running it. This is the only shape that works
+    once the service runs more than one task: ``_RUNNING_TASKS`` is
+    process-local, so at ``MinCapacity=2`` this POST landed on the task that
+    started the job barely half the time — and every other time the old code
+    returned ``{"status": "cancelled"}`` while the pipeline kept running and
+    burning LLM tokens. A worker/offload lane has no task registry at all.
 
-    Caveat: if the agent is mid-``asyncio.to_thread(llm_call)``, the OS
-    thread itself isn't cancellable (Python doesn't expose that). The
-    awaiter unblocks immediately, the in-flight LLM call burns to
-    completion but its result is discarded — no events emitted after the
-    cancellation, no strategy persisted.
+    The flag is written and read back BEFORE the job is reported cancelled;
+    if that write cannot be confirmed we return 503 rather than claim a
+    cancellation that never happened.
+
+    Caveat (unchanged): if the agent is mid-``asyncio.to_thread(llm_call)``,
+    that OS thread isn't cancellable, so the in-flight call finishes and its
+    result is discarded at the next stage boundary — no events emitted after
+    the cancellation, no strategy persisted.
     """
     store = get_job_store()
     job = await store.get(job_id)
@@ -1029,8 +1039,25 @@ async def cancel_job(
     if job["status"] in ("done", "error", "cancelled"):
         return {"job_id": job_id, "status": job["status"]}
 
-    # Flip status first so observers see "cancelled" even if the cancel
-    # callback hasn't fully propagated yet.
+    # Durably request the cancel FIRST — this is what actually stops the
+    # pipeline, from any task. Nothing below may claim "cancelled" until this
+    # write is confirmed.
+    try:
+        requested = await store.request_cancel(job_id)
+    except Exception:
+        logger.exception("cancel: flag write failed for job %s", sanitize_log_value(job_id))
+        requested = False
+    if not requested:
+        # Honest failure: the job IS still running. Reporting "cancelled" here
+        # is the claims-truth violation this endpoint used to commit every time
+        # the POST landed on a task that didn't own the job.
+        raise HTTPException(
+            status_code=503,
+            detail=f"cancellation for job {job_id} could not be recorded — the job is still running; retry",
+        )
+
+    # Now the flag is durable, the status may be flipped and the terminal
+    # event pushed: observers see "cancelled" and the claim is backed.
     await store.update_status(job_id, "cancelled", error="cancelled by user")
     await store.push_event(
         job_id,
@@ -1039,14 +1066,6 @@ async def cancel_job(
             "data": {"job_id": job_id, "message": "cancelled by user", "recoverable": False, "code": "CANCELLED"},
         },
     )
-
-    # Hard-cancel the task itself if we're still holding a reference.
-    task = _RUNNING_TASKS.get(job_id)
-    if task is not None and not task.done():
-        task.cancel()
-        logger.info("hard-cancelled job %s", sanitize_log_value(job_id))
-    else:
-        logger.info("cancel for %s: no live task (already finished or restart)", sanitize_log_value(job_id))
 
     return {"job_id": job_id, "status": "cancelled"}
 

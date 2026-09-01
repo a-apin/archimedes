@@ -12,6 +12,7 @@ import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
 import { depositToGateway, getGatewayBalance, parseUsdcAmount, paymentPayerAddress, paymentWalletKind, signGatewayPayment, walletSupportsPayment } from "../x402";
 import { ensureSessionLinked, getOrCreateSessionAccount } from "../payment-session";
 import {
+	DEFAULT_DEPTH,
 	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
 	deriveQuoteView,
@@ -102,7 +103,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// ── Advanced options (hidden by default) ──
 	const [advancedOpen, setAdvancedOpen] = useState(false);
 	const [riskAppetite, setRiskAppetite] = useState("moderate");
-	const [depth, setDepth] = useState(5);
+	const [depth, setDepth] = useState(DEFAULT_DEPTH);
 	const [selectedAssets, setSelectedAssets] = useState([]);
 	const [assetQuery, setAssetQuery] = useState("");
 	const [strategyName, setStrategyName] = useState("");
@@ -827,7 +828,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 							Advanced options
 							{(selectedAssets.length > 0 ||
 								riskAppetite !== "moderate" ||
-								depth !== 5) && (
+								depth !== DEFAULT_DEPTH) && (
 								<span
 									className="tag tag-accent"
 									style={{ fontSize: "0.7rem", padding: "1px 6px" }}
@@ -863,7 +864,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 											onChange={(e) => setDepth(Number(e.target.value))}
 											className="chat-input w-auto px-2 py-1"
 											disabled={starting}
-											title="How many papers the engine considers"
+											title="How many papers the engine retrieves and shows the model. It is asked to fuse at least 5 of them, and to name what it rejected when it cites fewer."
 										>
 											{DEPTH_OPTIONS.map((n) => (
 												<option key={n} value={n}>
