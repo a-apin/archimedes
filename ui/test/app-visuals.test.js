@@ -128,17 +128,34 @@ test("social auth controls do not wait for provider discovery", () => {
 	assert.match(authPage, /<GitHubMark \/>/);
 });
 
-test("Generate uses brief-first workbench with context rail", () => {
+test("Generate uses a mobile-first brief-first workbench with context rail", () => {
 	assert.match(generate, /className="generate-page"/);
 	assert.match(generate, /className="app-page-heading generate-page__heading"/);
 	assert.match(generate, /className="generate-workbench"/);
 	assert.match(generate, /className="card generate-brief"/);
 	assert.match(generate, /className="generate-context-rail"/);
 	assert.match(generate, /className="generate-register"/);
+
+	// #1642 inverted the layout. The BASE rule — the one with no media query
+	// around it — is now the phone layout: one column. Pinning the base as
+	// single-column is what makes "mobile-first" a mechanical property rather
+	// than a claim in a comment; a desktop grid restored here would fail.
+	assert.match(css, /\.generate-workbench\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+
+	// The two-column brief+rail grid and the sticky rail are the enhancement,
+	// and they live behind min-width — never behind a max-width collapse.
+	const desktopTier = css.match(
+		/@media \(min-width: 900px\)\s*\{([\s\S]*?)\n\}/,
+	);
+	assert.ok(desktopTier, "no min-width:900px tier found");
 	assert.match(
-		css,
+		desktopTier[1],
 		/\.generate-workbench\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.35fr\) minmax\(280px,\s*0\.65fr\);/s,
 	);
+	assert.match(desktopTier[1], /\.generate-context-rail\s*\{[^}]*position:\s*sticky;/s);
+
+	// The retired always-visible examples list and its styles are gone.
+	assert.doesNotMatch(css, /\.generate-example\s*[,{]/);
 });
 
 test("Strategy Passport separates evidence from user authority", () => {
@@ -195,10 +212,25 @@ test("app motion and core workspaces respect narrow or reduced-motion contexts",
 		css,
 		/@media \(prefers-reduced-motion: reduce\)[^{]*\{[\s\S]*?\.app-site \.fade-up,[\s\S]*?animation:\s*none !important;/s,
 	);
+	// Passport and Portfolio still collapse at max-width: 900px. Generate no
+	// longer appears in this tier — #1642 made single-column its base state,
+	// so there is nothing left here for it to un-collapse (see the
+	// mobile-first test above, which pins the base + the min-width tier).
 	assert.match(
 		css,
-		/@media \(max-width: 900px\)[^{]*\{[\s\S]*?\.generate-workbench,[\s\S]*?\.passport-workspace,[\s\S]*?\.portfolio-workspace\s*\{[^}]*grid-template-columns:\s*1fr;/s,
+		/@media \(max-width: 900px\)[^{]*\{[\s\S]*?\.passport-workspace,[\s\S]*?\.portfolio-workspace\s*\{[^}]*grid-template-columns:\s*1fr;/s,
 	);
+	// Bounded to each max-width block's own body: an unbounded `[\s\S]*?`
+	// would happily span from any earlier media query to the base
+	// `.generate-workbench` rule and "find" a violation that is not there.
+	// Top-level blocks in this file close with a `}` in column 0.
+	for (const block of css.matchAll(/@media \(max-width: \d+px\)\s*\{([\s\S]*?)\n\}/g)) {
+		assert.doesNotMatch(
+			block[1],
+			/\.generate-workbench\s*[,{]/,
+			"Generate's workbench must not be laid out from a max-width tier (#1642)",
+		);
+	}
 });
 
 const generationStream = readFileSync(

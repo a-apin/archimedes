@@ -41,6 +41,8 @@ Conventions used below:
   step 4b. Same account, same limits, same paywall; no jar, and no re-sending your
   password when the 7-day cookie expires. If you are writing CI, do step 4b and use the
   header everywhere.
+- Prefer tools over curl? See *Driving this from an MCP client instead*, below — the MCP
+  server wraps these same routes and takes the same key via `ARCHIMEDES_API_KEY`.
 - Response bodies are shown **shape-first**: field names and types are exact, values are
   illustrative. `…` means "more fields of the same kind that this page does not depend on."
   **The one exception is step 1** — its values are the live production ones, because there
@@ -640,6 +642,80 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 | **503** | `{"detail": {"reason": "payment_config_missing", "message": "…"}}` | Payments are enabled but not fully configured server-side | Not caller-fixable. Retry later; it fails closed rather than letting the request through free. |
 
 ---
+
+## Driving this from an MCP client instead
+
+Everything above is the HTTP surface, and it stays the source of truth. If your agent
+speaks [MCP](https://modelcontextprotocol.io), [`mcp-server/`](../mcp-server/README.md) in
+this repo wraps nine of these routes as tools so you call `archimedes_quote` instead of
+writing the `curl`.
+
+**It is a thin client and adds nothing.** No business logic, no database, no Redis, no
+wallet key. It can do exactly what an unprivileged HTTP caller can do — the eleven-step
+journey above is still the journey, and the steps this server does not cover (sign-up,
+sign-in, wallet link, x402 signing, SSE, paper trading) are still done the way this page
+documents them. Owner decision **D2** on
+[#1653](https://github.com/a-apin/archimedes/pull/1653) chose that shape deliberately, and
+named the risk it carries: a second surface can drift from the API. The routes each tool
+calls are declared in `mcp-server/src/archimedes_mcp/contract.py` and asserted against the
+running app — both that they resolve and that each tool's "needs a credential" label is
+what the app actually does — by `backend/tests/test_mcp_contract_drift.py`.
+
+### Install and configure
+
+```json
+{
+  "mcpServers": {
+    "archimedes": {
+      "command": "archimedes-mcp",
+      "env": {
+        "ARCHIMEDES_API_URL": "https://archimedes-arc.com",
+        "ARCHIMEDES_API_KEY": "archim_..."
+      }
+    }
+  }
+}
+```
+
+That block is the Claude Desktop / Claude Code shape; other clients take the same three
+pieces (a command, an optional env map, stdio transport). Install first — neither
+distribution is on PyPI yet, so both come from this repo with
+`pip install -e ./cli -e ./mcp-server`.
+
+`ARCHIMEDES_API_KEY` is optional and is sent as `Authorization: Bearer <key>`. Without it
+the server falls back to the session cookie `archimedes login` caches at
+`~/.config/archimedes/session.json` (mode `600`), which is the same credential step 3
+produces. **Exactly one of the two goes on the wire** — when both exist the key wins in the
+client and no cookie is sent, so the server-side precedence rule can never decide which
+account a call acts as. Neither credential is ever logged, returned, or rendered.
+
+**One honest caveat about the key.** Scoped API keys are owner decision **D3** on the same
+PR and are not on `main` at the time of writing, so against production today a bearer key
+`401`s and the cookie is the working lane. The header is written to the agreed shape now so
+nothing changes here on the day that merges.
+
+### The tools
+
+| Tool | Route on this page | Credential | Cost |
+|---|---|---|---|
+| `archimedes_quote` | `GET /api/generate/quote` (step 1) | no | free |
+| `archimedes_usage` | `GET /api/account/usage` (step 5) | yes | free |
+| `archimedes_rigor_verify` | `POST /api/rigor/verify` | yes | free, 5/min |
+| `archimedes_generate_start` | `POST /api/generate/start` (step 6) | yes | **charges — see step 1** |
+| `archimedes_generate_status` | `GET /api/generate/jobs/{job_id}` (step 7b) | yes | free |
+| `archimedes_strategy` | `GET /api/strategies/{strategy_id}` (step 9) | no | free |
+| `archimedes_passport` | `GET /api/strategies/passports/{strategy_id}` | no | free |
+| `archimedes_leaderboard` | `GET /api/leaderboard` | no | free |
+| `archimedes_corpus_search` | `GET /api/papers/` | no | free |
+
+Every tool returns a JSON object whose first field is `ok`. A failure is a **result**, not
+a protocol error: `{"ok": false, "error": "payment_required", "message": …, "remedy": …,
+"quote": {…}}`. The paywall, the wallet gate and the quotas above arrive intact and
+un-retried, because they are answers your agent has to act on — and because a protocol
+error would collapse a `402` to a string, losing the price, chain and recipient it carries.
+
+**The server does not sign payments.** It holds no wallet key. A `402` comes back with the
+quote attached and step 6b is still yours to perform.
 
 ## Anti-goals for an agent driving this API
 

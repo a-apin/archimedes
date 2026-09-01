@@ -5025,21 +5025,25 @@ button:where(.tag) {
 	width: 100%;
 }
 
+/* MOBILE-FIRST (#1642): the base rule IS the phone layout — one column,
+   source order, no rail. The two-column brief+rail grid and the sticky rail
+   are the ENHANCEMENT, and live in the "#1642 — Generate, mobile-first" block
+   at the end of this file behind `min-width: 900px`. Do not move the grid
+   back up here: a desktop base + a max-width collapse is exactly the shape
+   #1642 replaced. */
 .generate-workbench {
 	display: grid;
-	grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
-	gap: 22px;
+	grid-template-columns: 1fr;
+	gap: 18px;
 	align-items: start;
 }
 
 .generate-brief {
-	padding: clamp(22px, 3vw, 34px);
+	padding: 18px;
 	border-top: 3px solid var(--app-action) !important;
 }
 
 .generate-context-rail {
-	position: sticky;
-	top: 88px;
 	display: grid;
 	gap: 14px;
 }
@@ -5088,24 +5092,9 @@ button:where(.tag) {
 	text-align: left;
 }
 
-.generate-example {
-	width: 100%;
-	padding: 8px 10px;
-	border: 1px solid var(--glass-border);
-	border-radius: 3px;
-	background: transparent;
-	color: var(--text-2);
-	font-size: 0.82rem;
-	line-height: 1.4;
-	text-align: left;
-	cursor: pointer;
-}
-
-.generate-example:hover {
-	border-color: var(--app-verify);
-	background: rgba(121, 201, 183, 0.045);
-	color: var(--text-1);
-}
+/* `.generate-example` (the retired "Examples — click to fill" list) was
+   deleted here with its markup in #1642; its replacement is
+   `.generate-surprise-btn` in the #1642 block at the end of this file. */
 
 .generate-advanced-toggle {
 	display: flex;
@@ -5341,13 +5330,15 @@ button:where(.tag) {
 }
 
 @media (max-width: 900px) {
-	.generate-workbench,
+	/* `.generate-workbench` / `.generate-context-rail` left this block in
+	   #1642 — they no longer need un-collapsing here because they are never
+	   collapsed in the first place (single column and static are their base
+	   state; see the #1642 block at the end of this file). */
 	.passport-workspace,
 	.portfolio-workspace {
 		grid-template-columns: 1fr;
 	}
 
-	.generate-context-rail,
 	.passport-authority,
 	.portfolio-activity {
 		position: static;
@@ -5425,7 +5416,9 @@ button:where(.tag) {
 		display: none;
 	}
 
-	.generate-brief,
+	/* `.generate-brief` left this block in #1642: 18px is now its BASE padding
+	   (mobile-first), so a max-width override that widened it back to 20px on
+	   the narrowest screens was backwards. It scales UP at min-width instead. */
 	.passport-panel,
 	.passport-deploy {
 		padding: 20px;
@@ -8075,7 +8068,6 @@ body:has(.public-site) {
 	border-color: var(--glass-border);
 }
 
-.generate-example:hover,
 .portfolio-page .vault-card-clickable:hover,
 .portfolio-page .trace-card:hover {
 	border-color: var(--app-action);
@@ -9551,6 +9543,7 @@ body:has(.public-site) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+<<<<<<< HEAD
    Strategy Passport redesign — issue #1646
    ═══════════════════════════════════════════════════════════════════════════
 
@@ -9792,5 +9785,162 @@ body:has(.public-site) {
 
 	.passport-papers__table tbody th.passport-papers__title {
 		min-width: 9rem;
+=======
+   #1642 — Generate page: mobile-first layout + Surprise Me
+   ══════════════════════════════════════════════════════════════════════════
+   Appended as one component-scoped block at the END of this file by
+   agreement with the other UI builders working in App.css concurrently.
+   Every selector below is prefixed `.generate-*`; nothing here reaches
+   another page's markup.
+
+   Read the ladder bottom-up, because that is the order it was designed in:
+
+     BASE (no media query)  = the 375px phone. One column, full-bleed
+                              controls, 44px targets, source order.
+     min-width: 560px       = large phone / small tablet. The two control
+                              rows (Surprise, submit) go horizontal.
+     min-width: 900px       = desktop. The brief+rail two-column grid and
+                              the sticky rail arrive HERE and only here.
+
+   The base rules for `.generate-workbench`, `.generate-brief` and
+   `.generate-context-rail` are up at their original site (~line 5207); this
+   block carries the enhancements plus everything new. There is deliberately
+   no `max-width` rule for Generate anywhere in the file — a max-width
+   collapse of a desktop base is the shape #1642 replaced.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Grid items default to `min-width: auto`, so one unbreakable string (a
+   settlement receipt hash, a wide model table) stretches the column and
+   scrolls the whole page sideways. This is the rule that keeps a 375px
+   viewport free of horizontal scroll. */
+.generate-workbench > * {
+	min-width: 0;
+}
+
+.generate-brief .generate-submit-status {
+	min-width: 0;
+}
+
+/* Receipts and addresses are unbreakable by nature — break them anywhere
+   rather than let one push the layout wider than the screen. */
+.generate-brief code {
+	overflow-wrap: anywhere;
+}
+
+/* ── Surprise Me ──────────────────────────────────────────────────────────
+   The only example-related control on the page. Full-width on a phone
+   because a 44px target that also spans the column is the easiest thing to
+   hit with a thumb; it shrinks to its content at 560px. */
+.generate-surprise {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 8px;
+}
+
+.generate-surprise-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	width: 100%;
+	/* 44px, not the WCAG 2.2 AA floor of 24px: this is a thumb target on a
+	   phone, and ui/test/a11y.test.js asserts the floor is cleared. */
+	min-height: 44px;
+	padding: 0 14px;
+	border: 1px solid var(--glass-border);
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-2);
+	font-size: 0.86rem;
+	line-height: 1.3;
+	text-align: center;
+	cursor: pointer;
+}
+
+.generate-surprise-btn:hover:not(:disabled) {
+	border-color: var(--app-verify);
+	background: var(--accent-muted);
+	color: var(--text-1);
+}
+
+.generate-surprise-btn:disabled {
+	cursor: not-allowed;
+	opacity: 0.5;
+}
+
+.generate-surprise-hint {
+	color: var(--text-3);
+}
+
+.generate-brief-guide-link {
+	color: var(--accent);
+	text-decoration: underline;
+}
+
+/* ── Gating-banner slot (#1643 mounts here) ───────────────────────────────
+   `:empty` keeps the slot from reserving space while #1643 is unlanded, so
+   this PR changes nothing visually by leaving the mount point in place. */
+.generate-gate-slot {
+	margin-bottom: 12px;
+}
+
+.generate-gate-slot:empty {
+	display: none;
+	margin-bottom: 0;
+}
+
+/* ── Submit row ───────────────────────────────────────────────────────────
+   Two-selector specificity (0,2,0) so these win over the single-class
+   UnoCSS utilities on the same element regardless of stylesheet order. */
+.generate-brief .generate-submit-row {
+	flex-direction: column;
+	align-items: stretch;
+}
+
+.generate-brief .generate-submit-btn {
+	width: 100%;
+	min-height: 44px;
+}
+
+@media (min-width: 560px) {
+	.generate-brief {
+		padding: 22px;
+	}
+
+	.generate-surprise {
+		flex-direction: row;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.generate-surprise-btn {
+		width: auto;
+	}
+
+	.generate-brief .generate-submit-row {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.generate-brief .generate-submit-btn {
+		width: auto;
+	}
+}
+
+@media (min-width: 900px) {
+	.generate-workbench {
+		grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+		gap: 22px;
+	}
+
+	.generate-brief {
+		padding: clamp(24px, 3vw, 34px);
+	}
+
+	.generate-context-rail {
+		position: sticky;
+		top: 88px;
+>>>>>>> origin/main
 	}
 }
