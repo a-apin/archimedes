@@ -841,7 +841,7 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
           {DELETION_RETAINED.map((row) => <li key={row.table}>{row.label}</li>)}
         </ul>
         <p className="caption mb-3">
-          Anything already published to a blockchain or pinned to IPFS stays there — no deletion here
+          Anything already published to a blockchain stays there — no deletion here
           can reach it. Server and load-balancer logs age out on their own schedule rather than being
           pulled out per account.
         </p>

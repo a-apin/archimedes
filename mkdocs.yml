@@ -189,6 +189,7 @@ nav:
       - adr/debate-society-sole-generation-pipeline.md
       - adr/num-trials-self-containment.md
       - adr/aurora-postgres-alembic-datastore.md
+      - adr/ipfs-pinning-not-live.md
 
   - Plans and roadmaps:
       - account-authentication.md

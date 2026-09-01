@@ -55,7 +55,6 @@ from archimedes.chain.client import chain_client
 from archimedes.chain.constants import MAX_MANAGEMENT_FEE_BPS, MAX_PERFORMANCE_FEE_BPS
 from archimedes.chain.executor import InsufficientLiquidityError, chain_executor, compute_trade_id
 from archimedes.chain.oracle_updater import OracleUpdater
-from archimedes.chain.provenance_publisher import pin_public_provenance
 from archimedes.chain.trace_publisher import trace_publisher
 from archimedes.chain.v_check import VCheck
 from archimedes.execution import core as execution_core
@@ -1528,20 +1527,20 @@ class StrategyRunner:
         trade_block: int | None = None,
         claimed_execution_time: int | None = None,
     ) -> None:
-        """Reveal phase: pin public provenance to IPFS, then reveal the SAME trace.
+        """Reveal phase: publish the SAME committed trace on-chain after settlement.
 
         ``trace`` is the exact object committed in the commit phase — we do NOT rebuild
         it, and we must NOT touch any field in ``_HASH_FIELDS`` (``portfolio_after``
         included: mutating it here was the #903 "Hash mismatch" revert). Only the
         non-hashed settlement annotations below are safe to set. Steps:
-          1. Pin the PUBLIC provenance layer (papers/methodology/rigor — not executable
-             params) to IPFS → CID. Degrades loudly to hash-only if PINATA_JWT is unset.
-          2. Wait out the remainder of the claimedExecutionTime window — the contract
+          1. Wait out the remainder of the claimedExecutionTime window — the contract
              requires reveal-block timestamp >= claimedExecutionTime, and trades settle
              in seconds on Arc, so an immediate reveal is structurally too early (#903).
-          3. reveal(trace_id, cid, canonicalBytes) — contract recomputes keccak256 and
-             enforces commit block < execution < reveal block.
-          4. Fall back to publishTrace if the deployed registry is pre-v1.5 (#588).
+          2. reveal(trace_id, storagePointer="", canonicalBytes) — hash-only. The
+             registry's ``storagePointer`` is empty: we do not pin traces to a public
+             gateway. The on-chain keccak256 is the integrity anchor; the full JSON
+             lives in the off-chain store. Re-enabling a pin needs the owner to seed a
+             live JWT in SSM and rebuild this path (``docs/adr/ipfs-pinning-not-live.md``).
         """
         # Annotate the (already-committed) trace with trade settlement data. These
         # fields are NOT in the hashed canonical set (_HASH_FIELDS), so adding them
@@ -1555,17 +1554,8 @@ class StrategyRunner:
 
         reveal_tx = None
         reveal_block = None
-        ipfs_cid = None
         if not DRY_RUN:
-            # ── 1. Pin public provenance to IPFS (loud-degrade if unconfigured) ──
-            try:
-                ipfs_cid, _payload = await pin_public_provenance(trace)
-                if ipfs_cid:
-                    logger.info("[tick %s] Public provenance pinned: cid=%s", tick_id, ipfs_cid)
-            except Exception as e:
-                logger.error("[tick %s] IPFS pin FAILED (continuing hash-only): %s", tick_id, e)
-
-            # ── 2. Reveal on-chain, anchoring the CID as the storage pointer ──
+            # Hash-only reveal: storagePointer is empty. We do not pin.
             # #1043: gated on the lease AFTER the claimedExecutionTime wait
             # (below) so a loss that happens DURING that wait — which can run
             # up to ~_COMMIT_EXECUTION_LEAD_S + skew seconds, independent of
@@ -1585,7 +1575,7 @@ class StrategyRunner:
                             await asyncio.sleep(wait_s)
                     if self._lease_ok:
                         reveal_tx, reveal_block = await trace_publisher.reveal(
-                            trace_id, trace, storage_pointer=ipfs_cid or ""
+                            trace_id, trace, storage_pointer=""
                         )
                     else:
                         logger.error(
@@ -1611,16 +1601,15 @@ class StrategyRunner:
                     )
                 if reveal_tx:
                     logger.info(
-                        "[tick %s] REVEAL anchored: tx=%s block=%s cid=%s",
+                        "[tick %s] REVEAL anchored: tx=%s block=%s (hash-only storagePointer)",
                         tick_id,
                         reveal_tx[:16],
                         reveal_block,
-                        ipfs_cid,
                     )
             except Exception as e:
                 logger.error("[tick %s] REVEAL publish FAILED: %s", tick_id, e)
 
-        # Persist off-chain with full temporal binding + IPFS pointer
+        # Persist off-chain with full temporal binding. storagePointer is empty.
         try:
             off_chain_data = {
                 "id": trace.id,
@@ -1644,8 +1633,10 @@ class StrategyRunner:
                 "trace_hash": trace.trace_hash,
                 "arc_tx_hash": reveal_tx,
                 "is_verified": reveal_tx is not None,
-                # IPFS provenance pointer (T1.4)
-                "ipfs_cid": ipfs_cid,
+                # Registry storagePointer. Empty on the live path (#1526): we do not
+                # pin. Historical records and on-chain backfill may still populate
+                # this field; the name is leftover from the unused pin design.
+                "ipfs_cid": None,
                 # Temporal binding fields. The "chain" source — and any True binding —
                 # require the REAL commit-reveal path: trace_id is non-None ONLY when
                 # ReasoningTraceRegistry.commit() minted an on-chain id. Gating on
@@ -1893,9 +1884,9 @@ class StrategyRunner:
             return
 
         # ── The retry itself, from the persisted canonical bytes ──
-        # storage_pointer is NOT part of the hash binding, so a missing CID can
-        # never block verification: reuse the pinned one when we have it,
-        # otherwise reveal hash-only rather than failing the reconciliation.
+        # storage_pointer is NOT part of the hash binding, so an empty pointer
+        # can never block verification. Reuse a historical pointer if the
+        # record already has one; otherwise reveal hash-only (#1526).
         storage_pointer = record.get("ipfs_cid") or ""
         try:
             reveal_tx, reveal_block = await trace_publisher.reveal(onchain_id, trace, storage_pointer=storage_pointer)

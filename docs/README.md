@@ -23,7 +23,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`architecture.md`](architecture.md) | current | Dan Browne | 2026-08-31 | System architecture map. ECS Fargate + ALB + CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1. Every claim is a link to a file. Amended 2026-08-31 for the leaderboard research/live-paper split (#1563), ratified `num_trials` self-containment (#1560), the four-state `paper_rag` signal, and `deploy.yml`'s explicit rollout verdict (#1532/#1544). |
+| [`architecture.md`](architecture.md) | current | Dan Browne | 2026-09-01 | System architecture map. ECS Fargate + ALB + CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1. Every claim is a link to a file. Amended 2026-09-01: reveal is hash-only, no IPFS pin (#1526). |
 | [`reference/file-tree.md`](reference/file-tree.md) | reference | Dan Browne | 2026-07-14 | Repository map generated alongside the architecture map. |
 | [`reference/flow-diagram.mmd`](reference/flow-diagram.mmd) | reference | Dan Browne | 2026-07-14 | Request/generation flow, Mermaid source (`flow-diagram.svg`, `file-tree.svg` render it). |
 | [`database-architecture.md`](database-architecture.md) | current | Dan Browne | 2026-08-31 | Data stores, schemas, migration posture. The § 2.3 table list is a 2026-06-28 cutover inventory and has drifted ~15 tables — `backend/archimedes/db.py` is the live source; see `database-relations.md` for FKs and deletion policy. |
@@ -113,8 +113,8 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 |---|---|---|---|---|
 | [`arc-integration.md`](arc-integration.md) | current | Dan Browne | 2026-07-28 | Arc testnet reference and Circle integration. |
 | [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md) | spec | Dan Browne | 2026-07-28 | Vault lifecycle and trade-window semantics. |
-| [`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md) | spec | Dan Browne | — | Commit-before-trade reasoning-trace anchoring. Contract review: Bogdan Sivochkin. |
-| [`specs/ipfs-reasoning-traces-design-note.md`](specs/ipfs-reasoning-traces-design-note.md) | design note | Dan Browne | — | IPFS pinning for reasoning traces. Not a spec. |
+| [`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md) | spec | Dan Browne | 2026-09-01 | Commit-before-trade reasoning-trace anchoring. Live `storagePointer` is empty (hash-only); IPFS pinning is not live ([ADR](adr/ipfs-pinning-not-live.md)). Contract review: Bogdan Sivochkin. |
+| [`specs/ipfs-reasoning-traces-design-note.md`](specs/ipfs-reasoning-traces-design-note.md) | archived (superseded) | Dan Browne | 2026-09-01 | Proposed IPFS pinning via Pinata. Superseded by [`adr/ipfs-pinning-not-live.md`](adr/ipfs-pinning-not-live.md): the pin client was never wired into prod and is now removed. |
 | [`specs/execution-trading-agent-society-spec.md`](specs/execution-trading-agent-society-spec.md) | draft | Dan Browne | 2026-06-28 | Execution/trading agent society. Seed-and-refine draft. |
 
 ## Security
@@ -145,7 +145,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-08-31 | ADR index and status vocabulary. All twenty-two records are listed there. |
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-09-01 | ADR index and status vocabulary. All twenty-three records are listed there. |
 | [`adr/unlicense-public-domain.md`](adr/unlicense-public-domain.md) | accepted | Dan Browne | initial commit | The Unlicense as a public-domain dedication, and its ownership/contributor consequences. |
 | [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
 | [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
@@ -168,6 +168,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/strategy-dsl-hardening-over-lean4.md`](adr/strategy-dsl-hardening-over-lean4.md) | accepted | Dan Browne | 2026-08-30 | No Lean 4 on the emission path; harden the existing closed-enum DSL instead. Sandbox reserved for inexpressible shapes; languages re-evaluated only on a trigger. |
 | [`adr/market-data-sourcing.md`](adr/market-data-sourcing.md) | accepted | Dan Browne | 2026-08-31 | Market data is sourced **by surface**: Tiingo (Free tier, for testing) for backtesting and paid analysis; yfinance for the free, ungated Explore viewer, which sells and redistributes nothing. Flags a **Tiingo commercial plan as a mainnet prerequisite**, and records that the split is reversible by build — a full vendor swap is a config + adapter change, not surgery (#1218). |
 | [`adr/lambda-generation-offload.md`](adr/lambda-generation-offload.md) | proposed (verdict: defer) | Dan Browne | 2026-08-30 | Measured spike (#1411): a real Lambda container built from the production backend image reaches Redis/Aurora/Bedrock/MiniLM from inside the VPC, but cold start is 13.6 s steady-state and 51 s after a deploy. Defers the lane; adopts the lane-agnostic worker entrypoint and the measured-cost model, and records why the quote seam is `_price()` rather than `quote()`. |
+| [`adr/ipfs-pinning-not-live.md`](adr/ipfs-pinning-not-live.md) | accepted | Dan Browne | 2026-09-01 | Reveal is hash-only (empty `storagePointer`). The Pinata pin path is removed, not half-wired — `PINATA_JWT` was never in prod ECS secrets (#1526). |
 
 ## Plans and roadmaps (intent, not state)
 

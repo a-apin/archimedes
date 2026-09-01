@@ -196,8 +196,10 @@ rationales and keep the flattering one. Archimedes anchors **before**:
    on the `ReasoningTraceRegistry`.
 2. **Trade** — the vault's `rebalance()` **reverts unless that commitment exists**. The
    ordering is enforced by the contract, not by our code being well-behaved.
-3. **Reveal** — after settlement, the full trace is published (IPFS-pointed) and the contract
-   itself re-hashes the content to verify it matches the commitment.
+3. **Reveal** — after settlement, the full trace is published off-chain and the contract
+   itself re-hashes the content to verify it matches the commitment. The on-chain keccak256
+   is the integrity anchor; we do not pin traces to IPFS
+   ([ADR](../adr/ipfs-pinning-not-live.md)).
 
 **Verify card:** Open any decision in *Reasoning* and check two things: the content hash
 matches, and commit block < trade block < reveal block. This proves the trace existed before
