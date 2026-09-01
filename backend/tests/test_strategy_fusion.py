@@ -40,6 +40,8 @@ from archimedes.agents.strategy_fusion import (
 )
 from archimedes.models.portfolio import RiskProfile
 
+from tests.db_isolation import isolated_empty_sqlite
+
 # ── Self-contained fixture corpus (frozen manifest schema) ──────
 
 _FIXTURE_ROWS = [
@@ -228,10 +230,17 @@ def test_loader_no_file_returns_empty(tmp_path):
     assert load_corpus(tmp_path / "does_not_exist.jsonl") == []
 
 
-def test_loader_env_override(monkeypatch, manifest):
+def test_loader_env_override(monkeypatch, manifest, tmp_path):
+    """path=None prefers a non-empty DB over ``ARCHIMEDES_CORPUS_MANIFEST``.
+
+    Isolate onto an empty papers table so this measures the 4-paper env
+    fixture, not a sibling TestClient/lifespan seed of ~18k rows
+    (18752-vs-4 on Quality Gate). The env var is the file-fallback
+    location, not a DB bypass — production still wants the DB.
+    """
     monkeypatch.setenv("ARCHIMEDES_CORPUS_MANIFEST", str(manifest))
-    # path=None → resolves via ARCHIMEDES_CORPUS_MANIFEST.
-    assert len(load_corpus()) == 4
+    with isolated_empty_sqlite(tmp_path):
+        assert len(load_corpus()) == 4
 
 
 # ── Deterministic steering / candidate selection ────────────────

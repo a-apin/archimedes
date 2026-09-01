@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +53,10 @@ from archimedes.services.strategy_dsl import DSLError, validate_strategy_spec
 from archimedes.services.strategy_signal_evaluator import GLOBAL_ASSETS
 
 logger = logging.getLogger(__name__)
+
+# Serializes load_corpus's DB/file branch. See the comment inside load_corpus:
+# concurrent full-corpus ORM loads abort the interpreter (#1632, prod rev 214).
+_CORPUS_LOAD_LOCK = threading.Lock()
 
 # ── The three paper knobs (#1636) ───────────────────────────────────────────
 #
@@ -641,31 +646,41 @@ def load_corpus(path: Path | None = None) -> list[CorpusPaper]:
     if path is not None:
         return _load_corpus_from_file(path)
 
-    # DB path first
-    try:
-        from archimedes.services.corpus_service import load_papers_from_db
+    # Serialized: two threads running this branch CONCURRENTLY is the #1632
+    # abort. Prod rev 214 died with two executor threads both inside
+    # load_papers_from_db's session teardown (SQLAlchemy _detach_states /
+    # InstanceState._cleanup), piled up by abandoned /health corpus probes on a
+    # cold task. The lock makes the race unrepresentable for every caller —
+    # generation, warmers, anything — not just the probe path (which no longer
+    # loads at all; /health reads count_corpus_papers instead). The cost is a
+    # waiting thread, which is exactly the safe outcome: the interpreter never
+    # dies from waiting.
+    with _CORPUS_LOAD_LOCK:
+        # DB path first
+        try:
+            from archimedes.services.corpus_service import load_papers_from_db
 
-        db_rows = load_papers_from_db()
-        if db_rows:
-            papers = [
-                CorpusPaper(
-                    arxiv_id=r["arxiv_id"],
-                    title=r["title"],
-                    abstract=r["abstract"],
-                    primary_category=r.get("primary_category", ""),
-                    categories=tuple(r.get("categories", [])),
-                    published=r.get("published", ""),
-                )
-                for r in db_rows
-                if r.get("arxiv_id") and (r.get("title") or r.get("abstract"))
-            ]
-            logger.info("fusion: loaded %d corpus papers from DB", len(papers))
-            return papers
-    except Exception as exc:
-        logger.debug("fusion: DB corpus load failed, falling back to file: %s", exc)
+            db_rows = load_papers_from_db()
+            if db_rows:
+                papers = [
+                    CorpusPaper(
+                        arxiv_id=r["arxiv_id"],
+                        title=r["title"],
+                        abstract=r["abstract"],
+                        primary_category=r.get("primary_category", ""),
+                        categories=tuple(r.get("categories", [])),
+                        published=r.get("published", ""),
+                    )
+                    for r in db_rows
+                    if r.get("arxiv_id") and (r.get("title") or r.get("abstract"))
+                ]
+                logger.info("fusion: loaded %d corpus papers from DB", len(papers))
+                return papers
+        except Exception as exc:
+            logger.debug("fusion: DB corpus load failed, falling back to file: %s", exc)
 
-    # File fallback
-    return _load_corpus_from_file(path)
+        # File fallback
+        return _load_corpus_from_file(path)
 
 
 def _load_corpus_from_file(path: Path | None = None) -> list[CorpusPaper]:
