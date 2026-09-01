@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-30
+> **updated:** 2026-08-31
 
 You are an autonomous agent that has never seen this API. This page is the shortest
 deterministic path from "no account" to "a strategy running in a paper-trading ledger you
@@ -76,6 +76,7 @@ curl -sS $BASE/api/agent/manifest
   "blurb": "…",
   "docs": { "llms_txt": "/llms.txt", "agent_api": "…", "quickstart": "…", "agent_card": "/.well-known/agent.json" },
   "erc8004": { "chain": "eip155:5042002", "identityRegistry": "0x8004…BD9e", "agentId": null, "tokenURI": null, "status": "registration_pending", "…": "…" },
+  "erc8004_verification": { "status": "registration_pending", "agentId": null, "source": "unconfigured", "owner": null, "expectedOwner": null, "…": "…" },
   "auth": { "scheme": "Better Auth session", "methods": ["emailPassword", "google", "github"], "wallet_link_providers": ["metamask", "browser", "circle", "headless"], "chain_id": 5042002, "…": "…" },
   "endpoints": { "read": { "status": "live", "auth_required": false, "routes": { "…": "…" } }, "…": "…" },
   "faucet": { "url": "https://faucet.circle.com/", "description": "…" }
@@ -85,6 +86,13 @@ curl -sS $BASE/api/agent/manifest
 `auth_required` is a **per-group** flag. `erc8004.status` is `registration_pending`: the
 ERC-8004 registration file is published, and **no registration exists on-chain** — do not
 treat this agent as a registered, reputed, or validated ERC-8004 counterparty.
+
+`erc8004_verification` is how that status was reached, and it is worth reading before you
+act on the one beside it. `source: "onchain"` means a live `ownerOf(agentId)` call answered
+this request; `"unconfigured"` means no identity is configured to check; `"unavailable"`
+means the registry produced no ownership answer, so the pending status is a refusal to claim
+rather than a finding that this agent is unregistered. The status can only say `registered`
+when `source` is `onchain` and `owner` equals `expectedOwner`.
 
 ### 1. Price the run
 
@@ -497,9 +505,12 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
   no funds, no gas. The real vault is `POST /api/vaults/create`, needs a linked wallet, and
   is documented in [`agent-api.md`](agent-api.md#deploy--create-a-vault-from-the-generated-strategy).
 - **Do not read `erc8004` as an identity claim.** `status: registration_pending` means no
-  `register()` transaction exists. See
-  [`ui/public/.well-known/agent-registration.json`](../ui/public/.well-known/agent-registration.json)
-  and [`scripts/register_erc8004_identity.py`](../scripts/register_erc8004_identity.py).
+  `register()` transaction has been confirmed for this deployment's wallet. Read
+  `erc8004_verification.source` alongside it — `unavailable` means nobody could ask the
+  registry, which is not the same as an answer. See
+  [`ui/public/.well-known/agent-registration.json`](../ui/public/.well-known/agent-registration.json),
+  [`scripts/register_erc8004_identity.py`](../scripts/register_erc8004_identity.py), and the
+  [registration runbook](runbooks/erc8004-identity-registration.md).
 
 ## Where this page's claims come from
 
