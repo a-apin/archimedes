@@ -6,15 +6,17 @@ All contract calls route through this client.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from aiohttp import ClientError, ClientTimeout
+from aiohttp import ClientError, ClientResponseError, ClientTimeout
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from pydantic import field_validator, model_validator
@@ -24,7 +26,15 @@ from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers import AsyncHTTPProvider
 from web3.providers.rpc.utils import ExceptionRetryConfiguration
 
-from archimedes.deadline import run_with_deadline
+from archimedes.chain.rate_limit import (
+    DEFAULT_BASE_BACKOFF_SECONDS,
+    DEFAULT_MAX_BACKOFF_SECONDS,
+    HTTP_TOO_MANY_REQUESTS,
+    RateLimitBackoff,
+    RpcRateLimited,
+    retry_after_seconds,
+)
+from archimedes.deadline import drain_abandoned, run_with_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +172,15 @@ class ChainSettings(BaseSettings):
     # blip while leaving each attempt ~1.4s, roughly 9x the live Arc round trip.
     # ARC_RPC_RETRIES overrides.
     rpc_retries: int = 2
+    # 429 backoff knobs (#1594). The Arc RPC rate-limits our egress IP, and
+    # every ECS task shares ONE of those (the NAT gateway), so its per-IP limit
+    # is a FLEET-wide budget — task churn multiplies RPC pressure on itself.
+    # These two are env-overridable (ARC_RPC_RATE_LIMIT_BASE_BACKOFF_SECONDS /
+    # ARC_RPC_RATE_LIMIT_MAX_BACKOFF_SECONDS) specifically so the numbers can be
+    # tuned during an incident without a code change; the semantics — doubling
+    # window, full jitter, Retry-After as a floor — live in chain/rate_limit.py.
+    rpc_rate_limit_base_backoff_seconds: float = DEFAULT_BASE_BACKOFF_SECONDS
+    rpc_rate_limit_max_backoff_seconds: float = DEFAULT_MAX_BACKOFF_SECONDS
 
     # ── Two-chain split (#1240) ────────────────────────────────────────────
     # Payments (USDC / x402 / Gateway / PaymentSplitter) and execution (vault,
@@ -402,25 +421,191 @@ class BoundedAsyncHTTPProvider(AsyncHTTPProvider):
     read — ``ChainClient.is_connected`` maps it to ``False``, ``oracle_health``
     records it as a read error. No caller learns a *different* answer than it
     would have; it just learns one in bounded time.
+
+    **It is also 429-aware (#1594).** ``raise_for_status=True`` on web3's session
+    turns Arc's throttle into a ``ClientResponseError`` that is a subclass of
+    ``ClientError`` — which is in this client's retry set — so web3 already
+    retried a "you are sending too much" response, immediately, on a fixed
+    unjittered schedule, adding to the burst that caused it. Two behaviours are
+    layered on top here, both outside web3's retry loop:
+
+    * **Backoff with full jitter before a retry**, spent from THIS call's
+      remaining budget so the documented total is still the total.
+    * **A cooldown that fails the next request fast** rather than sending it.
+      During the incident every ECS task shared one NAT egress IP, so Arc's
+      per-IP limit was a fleet-wide budget and each cold start's RPC burst
+      throttled the fleet it was joining. A request skipped during a cooldown
+      fails as :class:`RpcRateLimited` — an honest, named error, never a
+      fabricated success — and costs the fleet nothing.
+
+    See chain/rate_limit.py for why a throttle is not just another transport
+    error and why the jitter is load-bearing rather than cosmetic.
     """
 
-    def __init__(self, *args: Any, total_budget_seconds: float, **kwargs: Any) -> None:
+    # How long ``disconnect`` waits for deadline-abandoned calls to unwind before
+    # it gives up and quarantines the session instead of closing it (#1632). Sized
+    # off the same clock the strays are on: a stray is at worst one full
+    # ``total_budget_seconds`` behind, and a shutdown that waits a couple of
+    # seconds is invisible next to ECS's 30s SIGTERM grace.
+    TEARDOWN_DRAIN_SECONDS: float = 2.0
+
+    def __init__(
+        self,
+        *args: Any,
+        total_budget_seconds: float,
+        rate_limit_backoff: RateLimitBackoff | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._total_budget_seconds = total_budget_seconds
+        self._rate_limit = rate_limit_backoff or RateLimitBackoff()
+
+    async def disconnect(self) -> None:
+        """Close the provider's sessions — but NEVER out from under a stray (#1632).
+
+        ``AsyncHTTPProvider.disconnect`` walks the session cache and closes every
+        session. That is unconditional, and this provider is precisely the object
+        that also *abandons* calls, so before this override the abandonment path
+        satisfied the one condition #1632 says must never hold: **an abandoned
+        call sharing a session object whose lifecycle the abandoner controls.**
+
+        Measured, not assumed (transcript in the PR): with one deadline-abandoned
+        ``eth_chainId`` in flight against a loopback RPC, the provider's connector
+        held exactly one acquired protocol, and ``disconnect()`` took it to::
+
+            BEFORE  session.closed=False  connector.closed=False  acquired=1
+            AFTER   session.closed=True   connector.closed=True   acquired=0
+
+        ``BaseConnector._close`` does that by calling ``proto.close()`` on every
+        entry of ``_acquired`` — the stray's live transport included — and then
+        clearing the set.
+
+        Scope of what is proven, because #1632 is explicit that its cause is a
+        *hypothesis*: the teardown-under-a-live-reader above is measured. The step
+        from there to SIGSEGV is not — no crash was reproduced here or anywhere,
+        on plain HTTP the stray unwound without incident, and this override does
+        not make the segfault reproducible. What it does is remove the ordering
+        that would make one possible, which is worth doing on its own terms: an
+        in-flight request whose transport is closed under it is a bug whether or
+        not it is *the* bug, and it is cheap to stop doing.
+
+        So the order is inverted: **drain first, close second, and if the drain
+        does not reach zero, do not close at all.** Declining is the safe branch —
+        a quarantined session leaks a socket in a process that is on its way out,
+        which costs nothing next to freeing a buffer a native reader still holds.
+        Quarantine is also stable rather than merely deferred: returning early
+        leaves the session in web3's cache, so it keeps a strong reference and
+        cannot become garbage while the stray is alive (``Connection.__del__``
+        would otherwise close the transport from a GC pass — the same free, minus
+        the stack frame that would tell you where it happened).
+
+        Not chosen, and why — the other two options #1632 lists:
+
+        * *Per-call sessions.* Sound in principle, but it pays a TCP+TLS handshake
+          on every JSON-RPC, and web3 7.16 caches by ``(loop id, endpoint)`` inside
+          ``HTTPSessionManager``, so getting there means fighting the library on
+          the hot path to fix a shutdown-ordering bug.
+        * *A dedicated never-closed session for strays.* Unsound as stated: you
+          cannot migrate an in-flight request onto a different session after the
+          fact, and #1593's stall is in ``async_lock`` — BEFORE the session is in
+          hand — so at abandonment time there is frequently no particular session
+          the stray owns yet. Quarantining "the current one" would sometimes
+          quarantine a session the stray never touches while it later picks up the
+          replacement.
+
+        Draining has neither problem: it makes no claim about *which* session a
+        stray holds, only that no stray is holding anything when we start freeing.
+        """
+        remaining = await drain_abandoned(self.TEARDOWN_DRAIN_SECONDS)
+        if remaining:
+            logger.error(
+                "SESSION_QUARANTINED: %d abandoned RPC call(s) still in flight after a "
+                "%.1fs drain — NOT closing %s's sessions. Freeing a connection a stray "
+                "still holds is the #1632 segfault; leaking one is not.",
+                remaining,
+                self.TEARDOWN_DRAIN_SECONDS,
+                self.endpoint_uri,
+            )
+            return
+        await super().disconnect()
 
     async def make_request(self, method: Any, params: Any) -> Any:
-        return await run_with_deadline(
-            super().make_request(method, params),
-            self._total_budget_seconds,
+        inner = super().make_request
+        return await self._request_backing_off_on_429(
+            lambda: inner(method, params),
             label=f"eth-rpc {method}",
         )
 
     async def make_batch_request(self, batch_requests: Any) -> Any:
-        return await run_with_deadline(
-            super().make_batch_request(batch_requests),
-            self._total_budget_seconds,
+        inner = super().make_batch_request
+        return await self._request_backing_off_on_429(
+            lambda: inner(batch_requests),
             label=f"eth-rpc batch({len(batch_requests)})",
         )
+
+    async def _request_backing_off_on_429(self, call: Any, *, label: str) -> Any:
+        """Run ``call()`` under the total budget, backing off on HTTP 429.
+
+        ``call`` is a zero-argument callable returning a fresh awaitable —
+        callable rather than awaitable because a retry needs a *new* request,
+        and because nothing should be constructed before the deadline is armed
+        (same contract as ``HealthProbeCache.probe``).
+
+        The budget is spent, never extended: every attempt and every backoff
+        sleep comes out of the same ``total_budget_seconds`` deadline, so a
+        throttled endpoint can make this call *fail sooner* but never make it
+        take longer than the number ``rpc_timeout_seconds`` documents. That
+        matters because /health's probe budgets are sized against it.
+        """
+        deadline = time.monotonic() + self._total_budget_seconds
+
+        cooling = self._rate_limit.remaining()
+        if cooling > 0:
+            # Loud, greppable literal for a CloudWatch metric filter, matching
+            # the HEALTH_CHAIN_DISCONNECTED / HEALTH_ORACLE_STALE convention.
+            logger.warning(
+                "RPC_RATE_LIMIT_COOLDOWN: %s not sent — endpoint asked for %.2fs more backoff (consecutive_429=%d)",
+                label,
+                cooling,
+                self._rate_limit.consecutive,
+            )
+            raise RpcRateLimited(
+                f"{label} skipped: Arc RPC returned 429 and asked for {cooling:.2f}s more backoff "
+                f"(consecutive_429={self._rate_limit.consecutive})"
+            )
+
+        while True:
+            remaining = deadline - time.monotonic()
+            try:
+                result = await run_with_deadline(call(), max(0.0, remaining), label=label)
+            except ClientResponseError as exc:
+                if exc.status != HTTP_TOO_MANY_REQUESTS:
+                    raise
+                delay = self._rate_limit.note_rate_limited(retry_after_seconds(exc.headers))
+                budget_left = deadline - time.monotonic()
+                logger.warning(
+                    "RPC_RATE_LIMITED: %s got HTTP 429 (consecutive_429=%d) — backing off %.2fs "
+                    "with %.2fs of budget left",
+                    label,
+                    self._rate_limit.consecutive,
+                    delay,
+                    budget_left,
+                )
+                if delay >= budget_left:
+                    # No honest way to retry inside the promise this call made.
+                    # Re-raise the endpoint's own answer rather than blowing the
+                    # budget or inventing a value; the cooldown set above is
+                    # what protects the NEXT caller.
+                    raise
+                await asyncio.sleep(delay)
+                continue
+
+            # Only a completed response clears the backoff. A timeout or a
+            # connection error propagates from run_with_deadline untouched and
+            # leaves the consecutive count alone — neither is evidence that the
+            # endpoint has stopped throttling us.
+            self._rate_limit.note_success()
+            return result
 
 
 class ChainClient:
@@ -442,6 +627,14 @@ class ChainClient:
             BoundedAsyncHTTPProvider(
                 self.settings.arc_rpc_url,
                 total_budget_seconds=self.settings.rpc_timeout_seconds,
+                # 429-aware backoff (#1594). web3's own retry set already
+                # contains ClientResponseError, so without this a throttle was
+                # retried like a connection reset — immediately, unjittered,
+                # by every task behind the shared NAT IP at once.
+                rate_limit_backoff=RateLimitBackoff(
+                    base_seconds=self.settings.rpc_rate_limit_base_backoff_seconds,
+                    max_seconds=self.settings.rpc_rate_limit_max_backoff_seconds,
+                ),
                 request_kwargs={"timeout": ClientTimeout(total=per_attempt)},
                 # Passed explicitly, never left to default: web3's default is five
                 # attempts, which multiplies rpc_timeout_seconds by five and breaks

@@ -4,6 +4,7 @@ import CorpusGraph from './CorpusGraph'
 import CorpusKG from './CorpusKG'
 import { cleanLatex } from '../utils/latex'
 import { apiGet } from '../api'
+import { runCatalogFetch, scheduleCatalogFetch } from '../corpusSearch'
 import { KNOWLEDGE_GRAPH_TAB_ENABLED } from '../featureFlags'
 
 // The Topic Clusters tab is filtered out at build time unless the flag is on
@@ -55,28 +56,51 @@ export default function CorpusExplorer() {
 
   useEffect(() => { fetchOverview() }, [fetchOverview])
 
-  // Fetch papers catalog
-  const fetchPapers = useCallback(async () => {
+  // Fetch papers catalog.
+  //
+  // `signal` is optional so the Retry button can still call this directly; the
+  // debounced path always supplies one. See ../corpusSearch.js for why the
+  // aborted-after-resolve check has to happen after every await.
+  const fetchPapers = useCallback(async (signal) => {
     setLoading(true)
     setCatalogError(false)
-    try {
-      const params = new URLSearchParams({ page: String(page), limit: '20' })
-      if (search) params.set('search', search)
-      if (categoryFilter) params.set('category', categoryFilter)
+    const params = new URLSearchParams({ page: String(page), limit: '20' })
+    if (search) params.set('search', search)
+    if (categoryFilter) params.set('category', categoryFilter)
+    const outcome = await runCatalogFetch(signal, {
       // Trailing slash matters: FastAPI 307-redirects /api/papers → /api/papers/,
       // and the browser silently drops the query string on the redirect, so the
       // catalog rendered "0 papers found" despite the backend having 10000.
-      const data = await apiGet(`/api/papers/?${params}`)
-      setPapers(data.papers || [])
-      setTotalPapers(data.total || 0)
-    } catch {
-      setPapers([])
-      setCatalogError(true)
-    }
-    setLoading(false)
+      fetchPage: s => apiGet(`/api/papers/?${params}`, { signal: s }),
+      onResult: data => {
+        setPapers(data.papers || [])
+        setTotalPapers(data.total || 0)
+      },
+      onError: () => {
+        setPapers([])
+        setCatalogError(true)
+      },
+    })
+    // A superseded request leaves `loading` alone on purpose: the request that
+    // replaced it is still in flight and already set it, so clearing it here
+    // would flash "not loading" mid-type. The successor owns the reset.
+    if (outcome !== 'superseded') setLoading(false)
   }, [page, search, categoryFilter])
 
-  useEffect(() => { fetchPapers() }, [fetchPapers])
+  // One AbortController and one 300 ms timer per render of this effect; the
+  // cleanup cancels both. Eight keystrokes therefore produce seven cancels and
+  // one request, instead of eight requests racing each other (#1665). Page and
+  // category changes take the same path — they are single clicks, so the 300 ms
+  // is invisible, and routing every catalog fetch through one scheduler is what
+  // makes "the newest request always wins" true rather than nearly true.
+  useEffect(() => scheduleCatalogFetch(fetchPapers), [fetchPapers])
+
+  // Wrapped, not passed bare as `onRetry={fetchPapers}`: as an onClick handler
+  // it would receive the click event in its `signal` parameter, and that event
+  // would then be handed to `fetch` as an AbortSignal. Retry is a deliberate
+  // click, so it runs immediately and without a controller rather than through
+  // the debounce.
+  const retryPapers = useCallback(() => { fetchPapers() }, [fetchPapers])
 
   // Fetch paper detail
   const openPaper = async (arxivId) => {
@@ -129,7 +153,7 @@ export default function CorpusExplorer() {
       {tab === 'catalog' && (
         <CatalogTab
           papers={papers} total={totalPapers} page={page} loading={loading}
-          catalogError={catalogError} onRetry={fetchPapers}
+          catalogError={catalogError} onRetry={retryPapers}
           search={search} setSearch={setSearch}
           categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter}
           setPage={setPage} openPaper={openPaper}

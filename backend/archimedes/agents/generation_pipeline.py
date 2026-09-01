@@ -431,6 +431,15 @@ class _CandidateResult:
     # is no debate on those paths, so there is nothing to attach. Read by
     # ``_persist_debate_transcripts`` below; never touches ``_HASH_FIELDS``.
     debate_transcript: list[dict[str, Any]] | None = None
+    # (#1636) The deterministic per-paper tally derived from that transcript —
+    # ``[{arxiv_id, title, cited_by, citations, discarded_by, discard_reasons,
+    # verdict}]`` over every paper that entered a proposer prompt. Computed by
+    # ``debate_engine._aggregate_paper_verdicts`` (0 tokens) and stamped onto
+    # every entry, same as the transcript. ``None`` on every non-debate path.
+    # NOT persisted: the transcript table's column holds the turn list and this
+    # issue explicitly carries no migration, so today this is an in-process +
+    # SSE-visible record only. Durable storage is follow-up work.
+    debate_paper_verdicts: list[dict[str, Any]] | None = None
 
 
 def _is_deployable(c: _CandidateResult) -> bool:
@@ -728,6 +737,38 @@ class _Emitter:
         ts = datetime.now(UTC).isoformat()
         body = {"event": event, "data": {"ts": ts, "job_id": self.job_id, **payload}}
         return await self.store.push_event(self.job_id, body)
+
+
+async def _abort_if_cancel_requested(store: JobStore, job_id: str, stage: str) -> None:
+    """Stage-boundary poll of the shared cancellation flag (#1667).
+
+    The Cancel button writes a Redis flag (``JobStore.request_cancel``) rather
+    than reaching for an in-process task handle, because the task serving the
+    POST is usually NOT the task running this pipeline. This is the other half
+    of that contract: between stages — i.e. before each block of real LLM /
+    backtest spend — the runner asks the shared store whether the user has
+    cancelled, and raises ``CancelledError`` if so. ``run_generation``'s
+    existing ``except asyncio.CancelledError`` branch then emits the terminal
+    event and records the status, exactly as for a locally-cancelled task.
+
+    Fail-soft on a read error: an unreachable Redis must not crash the run into
+    PIPELINE_CRASH, and the flag is durable, so the next stage boundary retries.
+    A store that predates this surface (a test double) is skipped the same way.
+    """
+    checker = getattr(store, "is_cancel_requested", None)
+    if checker is None:
+        logger.debug("cancel-poll skipped at %s — store exposes no cancel surface", stage)
+        return
+    try:
+        requested = await checker(job_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("cancel-poll failed at stage boundary %s for job %s — retrying next boundary", stage, job_id)
+        return
+    if requested:
+        logger.info("job %s: cancel flag observed at stage boundary %s — stopping the pipeline", job_id, stage)
+        raise asyncio.CancelledError(f"cancelled by user before stage {stage}")
 
 
 # ── Fixture path (deterministic; used in tests + when LLM unavailable) ────
@@ -1079,10 +1120,17 @@ async def run_generation(
     # cancelled paths too — every path where a strategy row already exists.
     strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
 
-    await store.update_status(job_id, "running")
-    await emit.emit("job_queued", brief=brief.model_dump())
-
     try:
+        # Stage boundary 0 (#1667): a job cancelled while it waited behind the
+        # admission gate must not be promoted back to `running` and start
+        # spending. The flag landed before this task ever woke up, so this is
+        # the boundary that catches it — inside the try, so the CancelledError
+        # branch below records the terminal state and the meter unbinds.
+        await _abort_if_cancel_requested(store, job_id, "start")
+
+        await store.update_status(job_id, "running")
+        await emit.emit("job_queued", brief=brief.model_dump())
+
         # Real LLM validation step (live path only). The fixture path skips
         # the validator so tests stay hermetic.
         with meter.stage("brief_validation"):
@@ -1167,6 +1215,7 @@ async def run_generation(
         fixture_mode = os.getenv("GENERATION_PIPELINE_FIXTURE", "").lower() in ("1", "true") or (
             not use_live and os.getenv("TESTING")
         )
+        await _abort_if_cancel_requested(store, job_id, "pipeline_select")
         with meter.stage("pipeline_select"):
             debate_can_run = use_live and await asyncio.to_thread(_debate_can_run, brief)
         if debate_can_run:
@@ -1240,6 +1289,10 @@ async def run_generation(
         candidates: list[_CandidateResult] = []
         for i, regime in enumerate(regimes):
             candidate_id = f"cand_{regime}" if dual_regime else f"cand_{i + 1}"
+            # The token-burn boundary: each pass through this loop is a full
+            # debate (sequential adversarial LLM turns + per-proposal
+            # backtests). Never start another one after a cancel.
+            await _abort_if_cancel_requested(store, job_id, f"candidate_generation:{candidate_id}")
             try:
                 # The society's own sub-phases (corpus load, proposal fan-out,
                 # adversarial transcript, per-proposal backtests) are timed
@@ -1320,6 +1373,8 @@ async def run_generation(
             meter.set_meta("outcome", "no_candidates")
             await store.update_status(job_id, "error", error="no candidates generated")
             return
+
+        await _abort_if_cancel_requested(store, job_id, "rigor_gate")
 
         # Patch PBO across the candidate set (library-level metric — Bailey
         # et al. CSCV needs N≥2 to be meaningful; the helper handles N<2
@@ -1431,6 +1486,7 @@ async def run_generation(
         # emit a DSL spec (weights={}) scored by evaluate_fusion_spec, or are a
         # populated ABSTAIN — so they skip the static backtester too (T1.1).
         _static_skip = ("fusion", "debate", "debate_abstain")
+        await _abort_if_cancel_requested(store, job_id, "backtest_persist")
         with meter.stage("backtest_persist"):
             await asyncio.gather(
                 *[

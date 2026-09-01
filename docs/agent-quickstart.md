@@ -15,27 +15,40 @@ want the full surface** — the wallet-link handshake in detail, the real on-cha
 the marketplace, the `agent_journey.py` reference harness. This page is narrower: nothing
 below creates a vault or puts capital on-chain.
 
-**It is not free.** Generation sits behind a live x402 paywall in production:
-`GET /api/generate/quote` answers `payment_required: true`, `dry_run: false`,
-`price: "$2.000000"` — so step 6 charges **$2.00 testnet USDC per run and settles for
-real**, from a wallet you link and fund first (steps 6a–6b). The code *defaults* are the
-opposite of that — the paywall is off and dry-run is on unless a deploy turns them on —
-so a local checkout is free while production is not, and **step 1 against the host you
-are actually calling is the only thing that tells you which one you are on.** One step is
-not autonomous: funding the wallet goes through Circle's faucet, which today needs a
-human.
+**Your first three generations are free once your email is verified; after that it is
+not.** An account is required for every generation and there is no wallet-only path, but a
+**wallet is not required for the first `FREE_GENERATIONS_PER_ACCOUNT` (default 3)
+generations on a verified account**, lifetime (#1643 — this reverses the 2026-08-19
+"wallet before the first generation" directive earlier revisions of this page documented;
+the email-verification condition is the owner's 2026-08-31 amendment). **If you cannot
+receive and click a verification link, you have no free tier** — go straight to the wallet
+path (steps 6a–6b); it works from generation #1 for an unverified account. From generation
+#4, generation sits behind a live x402 paywall in production: `GET /api/generate/quote` answers
+`payment_required: true`, `dry_run: false`, `price: "$2.000000"` — so step 6 then charges
+**$2.00 testnet USDC per run and settles for real**, from a wallet you link and fund first
+(steps 6a–6b). The code *defaults* are the opposite of that — the paywall is off and
+dry-run is on unless a deploy turns them on — so a local checkout never charges while
+production does, and **step 1 against the host you are actually calling is the only thing
+that tells you which one you are on.** One step is not autonomous: funding the wallet goes
+through Circle's faucet, which today needs a human.
 
 Conventions used below:
 
 - `$BASE` is `https://archimedes-arc.com` in production, `http://localhost:8080` locally.
-- `-c/-b /tmp/agora.jar` is the session cookie jar. One jar for the whole run; it is the
-  only auth mechanism (there is no bearer token for this API).
+- `-c/-b /tmp/agora.jar` is the session cookie jar. One jar for the whole run.
+- **Or skip the jar entirely.** Every step below marked `cookie` also accepts
+  `-H "Authorization: Bearer $ARCHIMEDES_KEY"` — a long-lived API key you mint once at
+  step 4b. Same account, same limits, same paywall; no jar, and no re-sending your
+  password when the 7-day cookie expires. If you are writing CI, do step 4b and use the
+  header everywhere.
 - Response bodies are shown **shape-first**: field names and types are exact, values are
   illustrative. `…` means "more fields of the same kind that this page does not depend on."
   **The one exception is step 1** — its values are the live production ones, because there
   the value *is* the decision.
 - A non-browser `User-Agent` classifies you as an external agent in the telemetry
-  middleware. Send one; it costs nothing and makes your traffic legible.
+  middleware. Send one; it costs nothing and makes your traffic legible. **A key does
+  better:** a keyed call classifies as `agent_type: "keyed"` from the credential itself,
+  which is an identity rather than a guess about a header you chose.
 
 ---
 
@@ -46,11 +59,13 @@ Conventions used below:
 | 0 | Discover | `GET /api/agent/manifest` | none |
 | 1 | Price the run | `GET /api/generate/quote` | none |
 | 2 | Create an account | `POST /api/auth/sign-up/email` | none |
+| 2a | Verify your email — this is what unlocks the 3 free generations | click the link in the mail sent at step 2; `POST /api/auth/send-verification-email` re-sends it | none |
 | 3 | Sign in (get the cookie) | `POST /api/auth/sign-in/email` | none |
 | 4 | Confirm the session | `GET /api/auth/get-session` | cookie |
-| 5 | Check your quota | `GET /api/account/usage` | cookie |
+| 4b | Mint an API key — once, if you are automating | `POST /api/account/keys` | cookie **only** |
+| 5 | Check your quota + free generations left | `GET /api/account/usage` | cookie **or key** |
 | 6 | Submit the brief | `POST /api/generate/start` | cookie |
-| 6a | Link a wallet — once, if step 1 said `true` | `POST /api/wallets/challenge` then `POST /api/wallets/verify` | cookie |
+| 6a | Link a wallet — once, after the free generations run out | `POST /api/wallets/challenge` then `POST /api/wallets/verify` | cookie |
 | 6b | Pay the $2 and retry | `POST /api/generate/start` + `Payment-Signature` | cookie + wallet |
 | 7 | Watch it run | `GET /api/generate/stream/{job_id}` | cookie |
 | 7b | …or poll instead | `GET /api/generate/jobs/{job_id}` | cookie |
@@ -61,6 +76,9 @@ Conventions used below:
 
 Step 9 is not optional. Step 8's verdict is the *generation-time* one; step 9 is the live
 gate the server enforces. They can disagree, and step 9 wins.
+
+Every row that says `cookie` accepts a key instead, **except step 4b itself** — see there
+for why.
 
 ---
 
@@ -122,10 +140,37 @@ whether the rest of the journey costs money.
 host you asked*:
 
 - **`payment_required: true`** (production today) — step 6 needs a linked, funded wallet
-  and a signed payment. Unlinked → `409 wallet_link_required`; linked but unsigned →
-  `402`. Steps 6a and 6b are that path, and **`dry_run: false` means the $2 settles for
-  real** rather than being waved through unverified.
+  and a signed payment **once your account's free generations are used up, or immediately
+  if your email is not verified** (see the box below). Unlinked and out of free runs →
+  `409 wallet_link_required`; linked but unsigned → `402`. Steps 6a and 6b are that path,
+  and **`dry_run: false` means the $2 settles for real** rather than being waved through
+  unverified.
 - **`payment_required: false`** — step 6 needs no wallet and no payment; skip 6a and 6b.
+
+> **Your first few generations are free, wallet or not — once your email is verified
+> (#1643).** An *account* is required for every generation — there is no
+> wallet-only-without-account path — but a **wallet is not**, for the first
+> `FREE_GENERATIONS_PER_ACCOUNT` (default **3**) generations on that account, lifetime,
+> **provided the account's email is verified**. So against production the sequence is:
+> sign up (step 2), verify the emailed link (step 2a), sign in (step 3), then step 6 works
+> immediately, three times, with no wallet and no payment. Steps 6a/6b apply from
+> generation #4 onward, unchanged.
+>
+> **An unverified account has no free tier and is not blocked either** — it simply gets the
+> wallet + payment path from generation #1. The 409 it receives names both ways out
+> (verify, or link a wallet) and carries `free_generations_locked_reason:
+> "email_unverified"` so a client can tell that case from a genuinely exhausted allowance.
+> Verification is the cheaper unlock where an inbox is available; where it is not — the
+> honest case for many agents — the wallet path is the whole answer, and the free tier is
+> not something to wait for.
+>
+> This **reverses** the 2026-08-19 directive that earlier revisions of this page
+> documented ("a wallet is required before the first generation"); the verification
+> condition is the owner's 2026-08-31 amendment to it. Read your remaining allowance and
+> lock state from `GET /api/account/usage` (step 5) rather than counting locally — that
+> endpoint reads the same ledger, and applies the same lock predicate, the gate enforces.
+> `free_generations_remaining: null` there means *unknown* (the ledger could not be read),
+> never *zero*; retry rather than assuming you are locked out.
 
 Do not carry an answer over from another host or from the source. The code *defaults* are
 `GENERATION_PAYMENT_REQUIRED` unset (paywall off) and `PAYMENTS_DRY_RUN=true` (nothing
@@ -178,10 +223,84 @@ curl -sS -b /tmp/agora.jar $BASE/api/auth/get-session
 A bare `null` (still HTTP 200) means not authenticated — that is the signal, not an error.
 If you see `null` here, every cookie-gated step below will 401; fix it now.
 
+### 4b. Mint an API key — do this once, then stop carrying a jar
+
+Optional for a one-shot run; **do it if anything about your caller is unattended.** The
+cookie from step 3 expires in seven days, and the only way to refresh it is to re-send your
+account password. A key does not expire, is revocable on its own, and turns every
+remaining step into one header.
+
+```bash
+curl -sS -b /tmp/agora.jar -X POST $BASE/api/account/keys \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ci-nightly"}'
+```
+
+```json
+{
+  "id": "9f3c1a77b204de51",
+  "name": "ci-nightly",
+  "prefix": "archim_9f3c1a77b204de51",
+  "created_at": "2026-08-31T20:14:03.118Z",
+  "last_used_at": null,
+  "revoked_at": null,
+  "key": "archim_9f3c1a77b204de51_KtQ8yv…"
+}
+```
+
+**`key` is shown exactly once and is never recoverable.** The server keeps only a salted
+hash of it, so nobody — including us — can read it back to you. Store it now; if you lose
+it, revoke it and mint another.
+
+```bash
+export ARCHIMEDES_KEY='archim_9f3c1a77b204de51_KtQ8yv…'
+```
+
+From here on, **every step below that shows `-b /tmp/agora.jar` works with one header
+instead.** Step 6 is the one you will actually run in CI:
+
+```bash
+# with the jar (steps 3 + 4 first, and again every 7 days):
+curl -sS -b /tmp/agora.jar -X POST $BASE/api/generate/start -H 'Content-Type: application/json' -d "$BRIEF"
+
+# with a key (step 4b once, ever):
+curl -sS -H "Authorization: Bearer $ARCHIMEDES_KEY" -X POST $BASE/api/generate/start -H 'Content-Type: application/json' -d "$BRIEF"
+```
+
+What a key is **not**: it is not a way around anything. It resolves to the same account
+the cookie resolves to, so the daily caps, the rate limits, the paywall and the wallet
+precondition all apply identically — a keyed `POST /api/generate/start` returns the same
+`402` with the same quote a cookie call returns. It is a different *credential*, not a
+different *tier*.
+
+The one thing a key cannot do is manage keys. `POST`/`GET`/`DELETE` on
+`/api/account/keys` require a session cookie and answer `403` to a key, so a leaked key
+cannot mint itself successors that survive your revoking the one you know about.
+
+List with `GET /api/account/keys` (session cookie, as above):
+
+```bash
+curl -sS -b /tmp/agora.jar $BASE/api/account/keys
+```
+
+Revoke with `DELETE /api/account/keys/{key_id}` — `204`, and idempotent:
+
+```bash
+export KEY_ID=9f3c1a77b204de51
+curl -sS -b /tmp/agora.jar -X DELETE $BASE/api/account/keys/$KEY_ID
+```
+
+The list never contains a key — only `prefix` (`archim_<id>`, which identifies a key and
+cannot be used as one), `created_at`, `last_used_at` (minute resolution) and `revoked_at`.
+Revocation takes effect on the **next** request that presents the key; there is no cache
+and no grace period. Up to 25 live keys per account.
+
 ### 5. Check your quota before spending a generation
 
 ```bash
 curl -sS -b /tmp/agora.jar $BASE/api/account/usage
+# …or, with a key:
+curl -sS -H "Authorization: Bearer $ARCHIMEDES_KEY" $BASE/api/account/usage
 ```
 
 ```json
@@ -190,7 +309,11 @@ curl -sS -b /tmp/agora.jar $BASE/api/account/usage
   "user_id": "…",
   "user": { "used": 0, "cap": 10, "unlimited": false, "remaining": 10, "error": null },
   "ip":   { "used": 0, "cap": 25, "unlimited": false, "remaining": 25, "error": null },
-  "quote": { "payment_required": true, "…": "the same object step 1 returned" }
+  "quote": { "payment_required": true, "…": "the same object step 1 returned" },
+  "free_generations_allowance": 3,
+  "free_generations_remaining": 3,
+  "free_generations_error": null,
+  "free_generations_locked_reason": null
 }
 ```
 
@@ -199,8 +322,27 @@ Both caps must pass. `used: null` with `error: "quota_backend_unavailable"` is a
 increments anything.
 
 The caps are stacked **underneath** the paywall and enforced **before** it, so a
-quota-blocked caller is refused `429` without ever being asked to pay. Passing them is not
-a free run: on a `payment_required: true` host you still owe the $2 at step 6.
+quota-blocked caller is refused `429` without ever being asked to pay.
+
+**`free_generations_*` is a different axis from the two caps above and neither replaces
+the other.** `user`/`ip` are *daily* volume caps that reset every UTC day;
+`free_generations_remaining` is your account's *lifetime* allowance of generations that
+need no wallet and no payment at all (#1643). Both apply: with free generations left you
+are still refused `429` once the daily cap is hit. `free_generations_remaining: null` with
+`free_generations_error` set is the same honest unknown as `used: null` — it is not a
+zero, so do not treat it as "locked out"; retry.
+
+**`free_generations_locked_reason` is a third, separate fact: whether the remaining slots
+can be spent right now.** `null` means they can. `"email_unverified"` means the account's
+email is not verified, so the count is real but not yet spendable — verify (step 2a) and
+it becomes available without any of it being consumed. Read the pair, never one alone:
+`remaining: 3` with a lock is *not* "3 free runs available", and a lock is *not* an error
+(`free_generations_error` stays `null`). A reason string this page does not list is still
+a lock — treat it as "not spendable, cause unknown" and take the wallet path.
+
+Once `free_generations_remaining` reaches `0` on a `payment_required: true` host — or
+immediately, if `free_generations_locked_reason` is set and you cannot clear it — step 6
+starts costing $2 and steps 6a/6b become mandatory.
 
 ### 6. Submit the brief
 
@@ -223,20 +365,27 @@ control characters. `model` is optional and defaults to the server's free model 
 premium model without an entitlement is a **402**, and the request is refused rather than
 silently downgraded.
 
-**HTTP 202 is only what a `payment_required: false` host returns here.** Against
-production, this exact call answers `409 wallet_link_required` (no wallet on the account)
-or `402` (wallet linked, nothing signed) — those are the paywall, not an error in your
-request, and your brief was not run. Steps 6a and 6b clear them; the body above is
-unchanged and gets replayed verbatim at 6b.
+**On a `payment_required: true` host, this call returns 202 for your account's first three
+generations — once the account's email is verified — and starts refusing afterwards** —
+`409 wallet_link_required` (no wallet on the account; its
+`free_generations_locked_reason` tells you whether the blocker is an unverified email or a
+spent allowance) or `402` (wallet linked, nothing signed). Those are the paywall, not an error in
+your request, and your brief was not run. Steps 6a and 6b clear them; the body above is
+unchanged and gets replayed verbatim at 6b. On a `payment_required: false` host every call
+is 202 and no allowance is spent at all. `GET /api/account/usage` (step 5) is how you tell
+which side of the gate you are on before submitting.
 
 The server refuses in a deliberate order, so read the status before reacting: `429` for the
 daily cap, then `429 generation_queue_full`, then `409`, then `402`. **You are never asked
 to pay for a slot that does not exist, and a quota-blocked or queue-blocked call takes no
 money** — the `generation_queue_full` body says so in as many words.
 
-### 6a. Link a wallet — once per account, if step 1 said `true`
+### 6a. Link a wallet — once per account, after the free generations run out
 
-Skip this entirely when `payment_required` is `false`. You need a wallet you control the
+Skip this entirely when `payment_required` is `false`, and skip it until step 5 reports
+`free_generations_remaining: 0` **or a `free_generations_locked_reason` you cannot clear**
+(an agent with no reachable inbox cannot verify an email, and that is a normal case, not a
+failure — this step is then required from generation #1). You need a wallet you control the
 key for; `provider: "headless"` is the one of the four an API caller can use.
 
 ```bash
@@ -472,7 +621,9 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 
 | Status | Body | What happened | Fix |
 |---|---|---|---|
-| **401** | `{"detail": "Authentication required"}` + `WWW-Authenticate: Session` | No valid session cookie on a cookie-gated route | Redo steps 3–4. Signing up (step 2) does **not** sign you in; only step 3 sets the cookie. Check the jar is passed with `-b`. |
+| **401** | `{"detail": "Authentication required"}` + `WWW-Authenticate: Session` | No valid credential on a gated route — no session cookie, **or** an API key that is unknown, malformed, or revoked | Redo steps 3–4. Signing up (step 2) does **not** sign you in; only step 3 sets the cookie. Check the jar is passed with `-b`. If you are using a key: the header must be exactly `Authorization: Bearer archim_…`, and a revoked key 401s from the next call onward — mint a new one at step 4b. A wrong key and an unknown key are the same answer on purpose. |
+| **403** | `{"detail": "API keys cannot manage API keys. …"}` | You called `/api/account/keys` with `Authorization: Bearer archim_…` | Use the session cookie for key management. This is containment, not a bug: a leaked key must not be able to issue successors. |
+| **409** | `{"detail": {"reason": "api_key_limit_reached", "message": "…"}}` | 25 live keys already | Revoke one (`DELETE /api/account/keys/{key_id}`) before minting another. |
 | **402** | `{"detail": {"reason": "payment_required", "message": "…", "quote": {…}}}` + `PAYMENT-REQUIRED` header | The generation paywall is on and no `Payment-Signature` was presented | **Expected on production** — step 6b, not a bug. Sign the x402 requirements in the header with your **linked** wallet and retry with `Payment-Signature` (plus an `Idempotency-Key`). `GET /api/generate/quote` → `payment_required` tells you which host you are on; only when it is `false` can this not happen. |
 | **409** | `{"detail": {"reason": "idempotency_key_already_used", "message": "…"}}` | The `Idempotency-Key` you replayed already paid for a generation that started | Do not re-sign. That run exists — find it via `GET /api/generate/jobs/{job_id}`; use a fresh key for a genuinely new run. |
 | **402** | `{"detail": "Model '…' is a premium (Anthropic) model and requires an entitlement. …"}` | You named a premium `model` without entitlement | Omit `model` (the free default is used) or name an allowlisted free model. The request is **not** silently downgraded. |
@@ -483,7 +634,8 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 | **429** | `{"detail": {"reason": "generation_daily_cap", "scope": "user", "cap": 10, "message": "…"}}` | Daily generation cap hit, per account (`scope: "user"`) or per IP (`scope: "ip"`) | Wait for the daily reset. Call step 5 **before** step 6 to see this coming; the caps it reports are the caps enforced. |
 | **429** | `{"detail": {"reason": "generation_queue_full", "message": "… No payment was taken. …"}}` | The generation wait queue is full | Retry in a few minutes. No payment was taken — admission control runs before the paywall. |
 | **429** | `{"detail": "Rate limit exceeded. Please slow down and try again later."}` + `X-RateLimit-*` | Per-route request-rate limit (`/api/generate/start` 5/min, `/api/paper/deployments` 10/min) | Back off. This is requests-per-minute, distinct from the daily cap above — same status, different `detail` shape, different fix. |
-| **409** | `{"detail": {"reason": "wallet_link_required", "message": "…"}}` | Payment is required but your account has no linked wallet | **Expected on production** — do step 6a: `POST /api/wallets/challenge` → `POST /api/wallets/verify` ([`agent-api.md`](agent-api.md#optional-eip-4361-wallet-link)). Funding the wallet currently needs a human at the faucet, so linking an empty one only moves you to the 402. |
+| **409** | `{"detail": {"reason": "wallet_link_required", "free_generations_locked_reason": null, "message": "…"}}` | Your account's free generations are used up (#1643) and it has no linked wallet | **Expected on production from generation #4** — do step 6a: `POST /api/wallets/challenge` → `POST /api/wallets/verify` ([`agent-api.md`](agent-api.md#optional-eip-4361-wallet-link)). Funding the wallet currently needs a human at the faucet, so linking an empty one only moves you to the 402. Check `free_generations_remaining` at step 5 first: if it is `null` the ledger was unreadable, not exhausted. |
+| **409** | `{"detail": {"reason": "wallet_link_required", "free_generations_locked_reason": "email_unverified", "message": "…"}}` | Your email is not verified, so the free allowance is locked — and the account has no wallet either | **Two ways out, and the message names both.** Verify the emailed link (step 2a; `POST /api/auth/send-verification-email` re-sends it) to unlock the 3 free runs with nothing spent, **or** do step 6a and pay per run. The `reason` is deliberately the same string as the row above so existing clients keep working; branch on `free_generations_locked_reason` to tell the two apart. |
 | **404** | `{"detail": "Strategy not found"}` / `{"detail": "Paper deployment not found"}` | Missing **or** not yours — the two are deliberately indistinguishable | Confirm the id came from a call made with this same session. Existence is private; a 404 here is not proof the id is wrong. |
 | **503** | `{"detail": {"reason": "payment_config_missing", "message": "…"}}` | Payments are enabled but not fully configured server-side | Not caller-fixable. Retry later; it fails closed rather than letting the request through free. |
 
@@ -495,6 +647,18 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
   host. `GET /api/generate/quote` is the only authority, it is public, and it costs you
   nothing to ask — the source defaults disagree with production on purpose, so reading the
   code instead of the endpoint gets you the wrong answer.
+- **Do not assume the free tier is yours before step 5 says so.** The allowance unlocks on
+  a verified email; `free_generations_remaining: 3` alongside
+  `free_generations_locked_reason: "email_unverified"` means three runs are waiting, not
+  three runs available. If you have no inbox to verify with, budget for the wallet path
+  from generation #1 rather than discovering it at the 409.
+- **Do not treat an API key as a lighter-weight credential.** It is the full account. Put
+  it in an environment variable or a secret store, never in a URL, a query string, a
+  committed file, or a log line — the server never logs it and neither should you. If it
+  leaks, `DELETE /api/account/keys/{key_id}` ends it on the next request.
+- **Do not expect a key to get you past anything.** Same caps, same rate limits, same
+  paywall, same wallet precondition. If you are looking for a way around the 402, the key
+  is not it.
 - **Do not re-sign an x402 payment to retry.** A fresh signature is a fresh real charge.
   Carry an `Idempotency-Key`, and let an undelivered run's credit pay for the next attempt.
 - **Do not treat a `pending` or `fail` rigor gate as a pass.** A gate that never says no is
