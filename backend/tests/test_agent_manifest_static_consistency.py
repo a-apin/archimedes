@@ -57,6 +57,15 @@ async def _served_statuses() -> dict[str, str]:
     }
 
 
+async def _manifest() -> dict:
+    from archimedes.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/agent/manifest")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
 async def test_both_surfaces_describe_the_same_capability_groups():
     """A group on one surface and not the other is drift too, not just a status gap."""
     static, served = _static_statuses(), await _served_statuses()
@@ -161,6 +170,57 @@ def test_the_chain_id_reader_sees_every_structured_field():
     assert len(advertised) >= 2, (
         f"only {len(advertised)} chain id(s) parsed; the document names more. "
         "A partial reader would let a nested one drift."
+    )
+
+
+async def test_the_two_surfaces_carry_the_same_prose_description():
+    """Statuses were pinned in #1448; the SENTENCE was not, and it drifted next.
+
+    ``agent.json``'s ``description`` and the manifest's ``blurb`` are the same
+    sentence served two ways, and both said a strategy is "executed in a
+    non-custodial USDC vault on the Arc testnet" — present tense, on the two
+    surfaces built for agent consumers, while no user vault has ever been
+    created (#1650). Fixing one and not the other would leave an agent's answer
+    depending on which surface it happened to read, which is the exact defect
+    the status checks above exist to prevent.
+
+    Equality, not substring: a served blurb that merely *contains* the static
+    description would let the served one append a claim of its own.
+    """
+    static = json.loads(STATIC_MANIFEST.read_text(encoding="utf-8"))["description"]
+    served = (await _manifest())["blurb"]
+    assert served == static, (
+        "the static agent card and the served manifest describe the product differently:\n"
+        f"  .well-known/agent.json: {static!r}\n"
+        f"  /api/agent/manifest:    {served!r}"
+    )
+
+
+@pytest.mark.parametrize("surface", ["static", "served"])
+async def test_neither_surface_claims_present_tense_vault_execution(surface: str):
+    """#1650's acceptance, pinned by value on both surfaces.
+
+    Separate from the equality test on purpose: that one also passes if BOTH
+    surfaces regress to the old sentence together — the same reasoning as
+    ``test_the_groups_that_were_stale_are_not_still_advertised_as_pending``.
+
+    The positive half matters as much as the negative one. #1650's anti-goal is
+    that the vault roadmap mention must SURVIVE ("future tense is honest and
+    good marketing"), so deleting the sentence is not a fix and does not pass
+    here.
+    """
+    if surface == "static":
+        text = json.loads(STATIC_MANIFEST.read_text(encoding="utf-8"))["description"]
+    else:
+        text = (await _manifest())["blurb"]
+
+    assert "executed in" not in text.lower(), (
+        f"the {surface} surface states present-tense vault execution again: {text!r}. "
+        "No user vault has ever been created and the journey is gated off every shipped surface."
+    )
+    assert "is roadmap, not shipped" in text, (
+        f"the {surface} surface no longer frames vault execution as roadmap: {text!r}. "
+        "Do not delete the mention — state it in the future tense (#1650 anti-goal)."
     )
 
 

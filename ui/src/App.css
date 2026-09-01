@@ -9107,6 +9107,112 @@ body:has(.public-site) {
 	}
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Library loading skeleton + gate-pending chip — issue #1645
+   ---------------------------------------------------------------------------
+   APPENDED BLOCK. Several builders are editing this file concurrently, so this
+   block is scoped to the Library page's own components (`.lib-skeleton*`,
+   `.lib-chip-checking`), touches no existing rule, and stays at the end of the
+   file. Anything added after it should follow the same convention.
+
+   Rendered by `StrategyListSkeleton` in ui/src/components/Strategies.jsx while
+   the two strategy-list fetches are in flight, replacing the bare "Loading…"
+   caption that used to sit where the table was about to be.
+
+   NO GRADIENT. The first cut of this block used a `linear-gradient` sweep for
+   the shimmer, which ui/test/public-visuals.test.js rejects with a file-wide
+   `assert.doesNotMatch(css, /gradient\(/i)` — the calm-precision rule is that
+   this product's surfaces are flat. It pulses opacity instead, the same idiom
+   `@keyframes pulse` already uses above.
+
+   The pulse needs no `prefers-reduced-motion` rule of its own: the block at
+   line ~9281 above zeroes `animation-duration` for every descendant of
+   `.app-site` with `!important` (so source order does not matter), and the
+   Library renders inside it (Layout.jsx: `shell app-site`). Both checked by
+   grep before relying on them. The bars also carry a visible flat
+   `--surface-2` tint, so with animation disabled they still read as
+   placeholders rather than disappearing.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.lib-skeleton-rows {
+	border: 1px solid var(--glass-border);
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.lib-skeleton-row {
+	display: grid;
+	grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) 72px 72px;
+	gap: 14px;
+	align-items: center;
+	padding: 14px;
+	border-bottom: 1px solid var(--glass-border);
+}
+
+.lib-skeleton-row:last-child {
+	border-bottom: 0;
+}
+
+.lib-skeleton-bar {
+	height: 11px;
+	border-radius: 5px;
+	background: var(--surface-2);
+	animation: lib-skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+.lib-skeleton-name {
+	width: 100%;
+}
+
+.lib-skeleton-meta {
+	width: 78%;
+}
+
+.lib-skeleton-num {
+	width: 100%;
+	justify-self: end;
+}
+
+/* Staggered so the rows read as one surface filling in rather than as every
+   bar blinking in lockstep. */
+.lib-skeleton-row:nth-child(2n) .lib-skeleton-bar {
+	animation-delay: 0.16s;
+}
+
+.lib-skeleton-row:nth-child(3n) .lib-skeleton-bar {
+	animation-delay: 0.32s;
+}
+
+@keyframes lib-skeleton-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+
+	50% {
+		opacity: 0.45;
+	}
+}
+
+@media (max-width: 700px) {
+	.lib-skeleton-row {
+		grid-template-columns: minmax(0, 2fr) 64px;
+	}
+
+	.lib-skeleton-row .lib-skeleton-meta,
+	.lib-skeleton-row .lib-skeleton-num:last-child {
+		display: none;
+	}
+}
+
+/* The deployability chip's "we have not asked yet" state. Deliberately quieter
+   than every real verdict the chip can render — it is the absence of a verdict,
+   not a verdict of its own. */
+.lib-chip-checking {
+	font-variant-numeric: tabular-nums;
+	opacity: 0.75;
+}
+
 /* ============================================================
    #1647 — Cookie / browser-storage consent (component-scoped)
 

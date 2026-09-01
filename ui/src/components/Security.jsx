@@ -12,8 +12,10 @@ export default function Security() {
 						</h1>
 						<p className="security-hero__lede">
 							Archimedes separates account identity, wallet proof, and the
-							service credentials its own agents run under. These controls
-							describe current code—not a promise that failure is impossible.
+							service credentials its own agents run under. Generation is a
+							paid call on this testnet, and that boundary is described here
+							too. These controls describe current code—not a promise that
+							failure is impossible.
 						</p>
 					</div>
 					<ul className="security-status" aria-label="Current product status">
@@ -27,7 +29,11 @@ export default function Security() {
 						</li>
 						<li>
 							<span>Value at risk</span>
-							<strong>No real funds</strong>
+							<strong>Testnet USDC only</strong>
+						</li>
+						<li>
+							<span>Paid surface</span>
+							<strong>Generation — quoted live</strong>
 						</li>
 					</ul>
 				</div>
@@ -105,9 +111,11 @@ export default function Security() {
 							<div>
 								<h3>Account access is checked at three layers.</h3>
 								<p>
-									Production cookies are HttpOnly and Secure. nginx, the UI
-									route guard, and FastAPI independently protect private
-									surfaces.
+									Production session cookies are HttpOnly, Secure, and
+									SameSite=Lax. nginx, the UI route guard, and FastAPI
+									independently protect private surfaces. Four browse pages are
+									deliberately anonymous, and the edge and client halves of
+									that carve-out list are kept in lockstep.
 								</p>
 							</div>
 						</li>
@@ -133,14 +141,33 @@ export default function Security() {
 							</div>
 						</li>
 						<li>
+							<span>Payment</span>
+							<div>
+								<h3>Generation is a paid call, bound to the wallet you proved.</h3>
+								<p>
+									Starting a generation without a signed payment returns HTTP
+									402 carrying the full x402 requirements, and the same terms —
+									price, asset, chain, recipient, and whether the rail is live
+									or dry — are published anonymously at GET /api/generate/quote,
+									so they are readable before anything is signed. The payer
+									inside the signed authorization must be the wallet linked to
+									the account; a mismatch is refused before any settlement
+									round-trip. An operator kill switch refuses service rather
+									than serving the paid product unpaid. Paper trading is free.
+								</p>
+							</div>
+						</li>
+						<li>
 							<span>Edge</span>
 							<div>
 								<h3>Browser and API ingress is constrained.</h3>
 								<p>
-									Same-origin rules, a hash-restricted script policy, HSTS,
-									anti-framing headers, limited browser permissions, and
-									separate read/write rate limits reduce common web attack
-									paths.
+									Same-origin defaults, a script policy admitting same-origin
+									bundles plus one hashed inline bootstrap, HSTS, framing denied
+									outright, and a permissions policy that turns off geolocation,
+									microphone, and camera. Two per-IP request-rate zones run at
+									the edge — the tighter one on the credential surface — with
+									tighter per-route limits on expensive endpoints behind them.
 								</p>
 							</div>
 						</li>
@@ -159,11 +186,19 @@ export default function Security() {
 						<li>
 							<span>Provenance</span>
 							<div>
-								<h3>Reasoning records are content-hashed and anchored on Arc.</h3>
+								<h3>
+									The agent&apos;s rebalance decisions are content-hashed and
+									anchored on Arc.
+								</h3>
 								<p>
 									A published trace can be re-hashed and compared against its
 									on-chain anchor. That proves the record was not rewritten
-									afterwards—it does not prove the reasoning was good.
+									afterwards—it does not prove the reasoning was good. Two
+									limits the sentence would otherwise hide: a generation run
+									computes the same kind of hash but will only be anchored in a
+									later version, and a decision that produced no transaction has
+									no anchor to check. A trace reports which case it is rather
+									than implying the first.
 								</p>
 							</div>
 						</li>
@@ -185,14 +220,23 @@ export default function Security() {
 					</div>
 					<ul>
 						<li>
-							<strong>Testnet:</strong> Arc public testnet only. No real funds
-							should be used.
+							<strong>Testnet:</strong> Arc public testnet only, and the USDC in
+							play is faucet USDC. Do not connect a wallet holding mainnet
+							assets.
 						</li>
 						<li>
 							<strong>No execution:</strong> Archimedes does not trade with
-							capital today. Generation, the rigor gate, paper trading, and trace
-							anchoring are what run; nothing here should be read as a claim that
-							funds are being managed.
+							capital today. Paid generation, the rigor gate, paper trading, and
+							the agent&apos;s trace anchoring are what run; nothing here should
+							be read as a claim that funds are being managed.
+						</li>
+						<li>
+							<strong>Live charge:</strong> the generation paywall is on and not
+							in dry-run, so a signed payment settles testnet USDC for real —
+							anyone can confirm that anonymously at GET /api/generate/quote. A
+							settled fee lands in a platform-operated wallet Archimedes signs
+							for through its payment provider. It is a fee, not a balance held
+							for you, and there is nothing there to withdraw.
 						</li>
 						<li>
 							<strong>Model risk:</strong> Generation is LLM-driven and can be
@@ -233,12 +277,42 @@ export default function Security() {
 						<h2 id="evidence-title">Read controls at source.</h2>
 						<p>
 							Security posture should be reviewable, not accepted from copy.
+							Every sentence above has a row in the claims ledger naming the file
+							that makes it true.
 						</p>
 					</div>
 					<ul>
 						<li>
 							<a href="/architecture">System architecture</a>
 							<span>Identity, services, and chain boundary</span>
+						</li>
+						<li>
+							<a
+								href="https://github.com/a-apin/archimedes/blob/main/docs/claims-ledger.md"
+								target="_blank"
+								rel="noreferrer"
+							>
+								Claims ledger
+							</a>
+							<span>Each claim on this page, and the code behind it</span>
+						</li>
+						<li>
+							<a href="/api/generate/quote" target="_blank" rel="noreferrer">
+								Live generation quote
+							</a>
+							<span>
+								The paywall&apos;s own state, readable without an account
+							</span>
+						</li>
+						<li>
+							<a
+								href="https://github.com/a-apin/archimedes/blob/main/backend/archimedes/services/generation_payment.py"
+								target="_blank"
+								rel="noreferrer"
+							>
+								Generation paywall
+							</a>
+							<span>The 402, the payer binding, and the kill switch</span>
 						</li>
 						<li>
 							<a
