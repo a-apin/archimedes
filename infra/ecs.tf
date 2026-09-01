@@ -504,10 +504,10 @@ resource "aws_ecs_task_definition" "backend" {
       # condition = HEALTHY` below — an image-only HEALTHCHECK isn't visible
       # to the ECS agent for container-dependency purposes.
       healthCheck = {
-        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
-        interval    = 30
-        timeout     = 5
-        retries     = 3
+        command  = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+        interval = 30
+        timeout  = 5
+        retries  = 3
         # 90s: must cover request-path warmup (#1713, 60s budget) so ECS
         # ignores /health failures while uvicorn is not yet listening.
         # deploy.yml clones the live task-def and does not apply this file;
