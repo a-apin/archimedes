@@ -564,8 +564,7 @@ function RigorGateSection({ leaderboard, leaderboardError }) {
 					}}
 				>
 					How many curated-library strategies currently pass is unestablished —
-					the live gate is the only authority, and this page will never quote a
-					count.{" "}
+					the live gate is the only authority, and this page will never quote a count.{" "}
 					{leaderboardError ? (
 						<span style={{ color: "var(--text-4)" }}>
 							Live leaderboard size unavailable right now.
