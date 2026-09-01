@@ -81,11 +81,6 @@ from archimedes.services.strategy_signal_evaluator import (
 )
 from archimedes.services.vix_regime_detector import VixRegimeDetector
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    stream=sys.stdout,
-)
 logger = logging.getLogger(__name__)
 
 INTERVAL = int(os.getenv("AGENT_INTERVAL_SECONDS", "300"))
@@ -172,6 +167,70 @@ _DRIFT_THRESHOLD = 0.15
 # signals) — the regime then degrades honestly to "unknown". Distinct from the
 # *endogenous* ensemble consensus (issue #659); traces carry both.
 _MARKET_REGIME_UNKNOWN = "unknown"
+
+
+def compute_trades(
+    portfolio: Portfolio,
+    targets: list[TargetAllocation],
+) -> list[TradeOrder]:
+    """Diff current portfolio vs target weights → trade list.
+
+    THE one implementation. ``StrategyRunner._compute_trades`` and the
+    marketplace publisher/subscriber path (``archimedes.marketplace.service``)
+    are both one-line callers of this function — the marketplace used to carry a
+    hand-ported copy that never received the #1080 unpriced-holding skip below
+    (#1719). Any new caller adapts its inputs to this signature; it does not
+    fork the loop again.
+
+    Second of the two gates described at ``_DRIFT_THRESHOLD``: the targets
+    arriving here are already cadence-gated per strategy by the evaluator, so
+    this is purely a cost filter on how far the vault has drifted — never the
+    thing that decides when a strategy may change its mind.
+    """
+    current_weights = portfolio.weights_dict
+    target_map = {t.symbol: t for t in targets}
+
+    # Holdings whose oracle price couldn't be read report weight 0 BY
+    # CONSTRUCTION (#1080) — the balance is real, the value is unknown.
+    # Trading on that fake 0 would buy more of an unpriceable asset every
+    # tick (current 0 vs target >0, forever) or size a blind sell. Skip.
+    unpriced = {h.symbol for h in portfolio.holdings if not getattr(h, "priced", True)}
+
+    trades: list[TradeOrder] = []
+    all_symbols = set(target_map.keys()) | set(current_weights.keys())
+
+    for sym in all_symbols:
+        if sym in unpriced:
+            logger.warning(
+                "vault %s: skipping trade for %s — oracle price unavailable; holding weight "
+                "is 0 by construction, not truth; refusing to size a trade against it (#1080)",
+                portfolio.vault_address[:10],
+                sym,
+            )
+            continue
+        current_w = current_weights.get(sym, 0.0)
+        target = target_map.get(sym)
+        target_w = target.weight if target else 0.0
+        token_addr = target.token_address if target else ""
+
+        drift = target_w - current_w
+        if abs(drift) < _DRIFT_THRESHOLD:
+            continue
+
+        usdc_value = abs(drift) * portfolio.total_value_usdc
+        direction = TradeDirection.BUY if drift > 0 else TradeDirection.SELL
+
+        trades.append(
+            TradeOrder(
+                symbol=sym,
+                token_address=token_addr,
+                direction=direction,
+                amount=round(usdc_value, 6),
+                estimated_usdc_value=round(usdc_value, 2),
+            )
+        )
+
+    return trades
 
 
 def _compute_confidence(all_signals: list[StrategySignals]) -> float:
@@ -1370,55 +1429,11 @@ class StrategyRunner:
     ) -> list[TradeOrder]:
         """Diff current portfolio vs target weights → trade list.
 
-        Second of the two gates described at ``_DRIFT_THRESHOLD``: the targets
-        arriving here are already cadence-gated per strategy by the evaluator, so
-        this is purely a cost filter on how far the vault has drifted — never the
-        thing that decides when a strategy may change its mind.
+        One-line delegate to the module-level :func:`compute_trades`, which the
+        marketplace path also calls (#1719). Kept as a method so the vault
+        pipeline and its tests read unchanged.
         """
-        current_weights = portfolio.weights_dict
-        target_map = {t.symbol: t for t in targets}
-
-        # Holdings whose oracle price couldn't be read report weight 0 BY
-        # CONSTRUCTION (#1080) — the balance is real, the value is unknown.
-        # Trading on that fake 0 would buy more of an unpriceable asset every
-        # tick (current 0 vs target >0, forever) or size a blind sell. Skip.
-        unpriced = {h.symbol for h in portfolio.holdings if not getattr(h, "priced", True)}
-
-        trades: list[TradeOrder] = []
-        all_symbols = set(target_map.keys()) | set(current_weights.keys())
-
-        for sym in all_symbols:
-            if sym in unpriced:
-                logger.warning(
-                    "vault %s: skipping trade for %s — oracle price unavailable; holding weight "
-                    "is 0 by construction, not truth; refusing to size a trade against it (#1080)",
-                    portfolio.vault_address[:10],
-                    sym,
-                )
-                continue
-            current_w = current_weights.get(sym, 0.0)
-            target = target_map.get(sym)
-            target_w = target.weight if target else 0.0
-            token_addr = target.token_address if target else ""
-
-            drift = target_w - current_w
-            if abs(drift) < _DRIFT_THRESHOLD:
-                continue
-
-            usdc_value = abs(drift) * portfolio.total_value_usdc
-            direction = TradeDirection.BUY if drift > 0 else TradeDirection.SELL
-
-            trades.append(
-                TradeOrder(
-                    symbol=sym,
-                    token_address=token_addr,
-                    direction=direction,
-                    amount=round(usdc_value, 6),
-                    estimated_usdc_value=round(usdc_value, 2),
-                )
-            )
-
-        return trades
+        return compute_trades(portfolio, targets)
 
     # ─── Commit-Reveal Trace ────────────────────────────────────
 
@@ -2493,6 +2508,17 @@ if __name__ == "__main__":
     # Lives under __main__ so importing this module in tests never loads .env.
     # (Copilot #765)
     from dotenv import load_dotenv
+
+    # Root-logger config lives here for the same reason: this module is now
+    # imported by the API process (marketplace/service.py calls the canonical
+    # compute_trades, #1719), and an import must not reconfigure the importer's
+    # logging. Running as `python -m archimedes.chain.agent_runner` still lands
+    # here, so the standalone runner logs exactly as before.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stdout,
+    )
 
     load_dotenv("../.env", override=False)
     load_dotenv(".env", override=False)
