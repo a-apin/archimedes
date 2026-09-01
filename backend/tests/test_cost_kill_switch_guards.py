@@ -358,14 +358,17 @@ def _budget_notifications(tf_path: Path = COST_TF) -> list[dict[str, str]]:
 def test_budget_has_exactly_the_three_documented_thresholds():
     notifications = _budget_notifications()
     thresholds = sorted(int(n["threshold"]) for n in notifications)
-    assert thresholds == [50, 80, 120], (
-        "The ladder is 50% notify / 80% notify / 120% KILL. Found "
+    assert thresholds == [50, 80, 100, 120], (
+        "The ladder is 50/80/100% notify / 120% KILL. Found "
         f"{thresholds}. Dropping a rung removes a warning the owner is "
-        "supposed to get before anything shuts itself off."
+        "supposed to get before anything shuts itself off. (100 exists because "
+        "the Budgets API allows ONE SNS subscriber per notification — "
+        "CreationLimitExceededException, 2026-09-01 — so the kill rung cannot "
+        "also carry the human topic; the human hears at 100 instead.)"
     )
 
 
-@pytest.mark.parametrize("threshold", [50, 80, 120])
+@pytest.mark.parametrize("threshold", [50, 80, 100, 120])
 def test_every_threshold_is_actual_not_forecast(threshold):
     notification = next(n for n in _budget_notifications() if int(n["threshold"]) == threshold)
     assert notification["notification_type"] == '"ACTUAL"', (
@@ -389,12 +392,24 @@ def test_notify_rungs_go_to_the_existing_alerts_topic_and_not_the_kill_topic(thr
 
 
 def test_kill_rung_reaches_the_kill_topic_and_still_tells_a_human():
-    notification = next(n for n in _budget_notifications() if int(n["threshold"]) == 120)
-    subscribers = notification["subscriber_sns_topic_arns"]
-    assert "aws_sns_topic.cost_kill_switch.arn" in subscribers, "120% must invoke the Lambda"
-    assert "aws_sns_topic.alerts.arn" in subscribers, (
-        "120% must ALSO publish to the human alerts topic, so a broken Lambda "
-        "cannot turn a shutdown-worthy bill into silence."
+    """The redundancy moved: Budgets allows ONE SNS subscriber per notification
+    (CreationLimitExceededException on the 2026-09-01 apply), so 120% carries
+    the Lambda topic ALONE, and "a broken Lambda cannot mean silence" is held
+    by two other wires this test pins: the 100% rung mails the human first,
+    and the EstimatedCharges tripwire fires BOTH topics at the same boundary.
+    """
+    kill = next(n for n in _budget_notifications() if int(n["threshold"]) == 120)
+    assert kill["subscriber_sns_topic_arns"] == "[aws_sns_topic.cost_kill_switch.arn]", (
+        "120% must invoke the Lambda, and ONLY the Lambda — a second subscriber "
+        "is rejected by the Budgets API and would fail the apply."
+    )
+    human = next(n for n in _budget_notifications() if int(n["threshold"]) == 100)
+    assert human["subscriber_sns_topic_arns"] == "[aws_sns_topic.alerts.arn]", (
+        "100% is where the human hears the budget is blown before the kill fires."
+    )
+    tripwire = _read(COST_TF)
+    assert "aws_sns_topic.alerts.arn" in tripwire and "aws_sns_topic.cost_kill_switch.arn" in tripwire, (
+        "the tripwire must still reach both topics — that is the broken-Lambda redundancy now"
     )
 
 
