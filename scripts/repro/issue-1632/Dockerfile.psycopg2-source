@@ -1,0 +1,43 @@
+# The B half of the #1632 A/B: the SAME prod image, with psycopg2 rebuilt from
+# source against the system libpq/libssl instead of the `psycopg2-binary` wheel
+# that bundles its own OpenSSL.
+#
+# Derived from the already-built image rather than re-running the full
+# `pip install -r requirements.txt`, so the ONLY difference between the two
+# variants is the psycopg2 flavour — torch, web3, aiohttp and the rest are the
+# byte-identical layers of the A half. That is what makes the comparison mean
+# something.
+ARG BASE_IMAGE=archimedes-repro1632:binary
+FROM ${BASE_IMAGE}
+
+# Must match the psycopg2-binary version in the base image (run.sh reads it off
+# the A image and passes it in) so the A/B differs in flavour, not in version.
+ARG PSYCOPG2_VERSION=2.9.12
+
+USER root
+
+# libpq-dev pulls libpq5, which the compiled extension needs at RUNTIME too —
+# so this image keeps the toolchain installed. It is a diagnostic image, never
+# a deploy artifact; the production Dockerfile already has gcc + libpq-dev in
+# its builder stage, so the real fix costs no runtime bloat there.
+# NOTE FOR THE FIX PR: `gcc libpq-dev` alone is NOT enough — python:3.12-slim
+# ships gcc without the libc headers, so compiling psycopg2 dies on
+# `Python.h:23: fatal error: stdlib.h: No such file or directory`. libc6-dev is
+# required. backend/Dockerfile's builder stage currently installs only
+# `gcc libpq-dev` and gets away with it because psycopg2-BINARY is a prebuilt
+# wheel that never compiles; switching that requirement to source-built
+# psycopg2 without adding libc6-dev will break the image build.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev libpq-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /deps/psycopg2 /deps/psycopg2_binary.libs /deps/psycopg2_binary-*.dist-info \
+    && pip install --no-cache-dir --no-binary psycopg2 --target=/deps "psycopg2==${PSYCOPG2_VERSION}"
+
+# Fail the build rather than silently ship a still-bundled variant: if
+# psycopg2_binary.libs survived, the A/B would be comparing an image with
+# itself.
+RUN test ! -d /deps/psycopg2_binary.libs \
+    && ldd /deps/psycopg2/_psycopg*.so | grep -q '/lib/.*libpq.so.5' \
+    && echo "verified: psycopg2 links the system libpq"
+
+USER nonroot

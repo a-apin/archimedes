@@ -1,0 +1,64 @@
+# Repro rig for issue #1632 — see README.md. Driven by run.sh, not by hand.
+#
+# Deliberately NOT the repo's docker-compose.yml `localdb` profile: that
+# postgres runs with ssl=off, and prod's DATABASE_URL (no `sslmode`) means
+# libpq's default `prefer` negotiates TLS against Aurora. A plaintext local DB
+# would never exercise psycopg2-binary's bundled libssl, which is the thing
+# under test. Everything else — image tag, major version, credentials shape —
+# mirrors that service.
+services:
+  postgres:
+    image: postgres:18-alpine # same image/major as docker-compose.yml (prod Aurora 18.3)
+    environment:
+      POSTGRES_USER: archimedes
+      POSTGRES_PASSWORD: repro1632
+      POSTGRES_DB: archimedes
+    # NB: ssl is switched on by initdb-ssl.sh writing postgresql.conf, NOT here
+    # — options passed on the command line also reach the entrypoint's
+    # bootstrap server, which runs before the cert exists and would refuse to
+    # start. See the comment in initdb-ssl.sh.
+    command: ["postgres", "-c", "max_connections=200"]
+    volumes:
+      - ./initdb-ssl.sh:/docker-entrypoint-initdb.d/00-ssl.sh:ro
+      - ./.certs:/repro-ssl:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archimedes"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # No named volume on purpose: every `down -v` gives the next variant a
+    # virgin data dir, so the A/B halves cannot contaminate each other.
+
+  harness:
+    # run.sh sets REPRO_IMAGE to archimedes-repro1632:binary or :source.
+    image: ${REPRO_IMAGE:-archimedes-repro1632:binary}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # No `sslmode` — byte-for-byte the shape of prod's SSM DATABASE_URL, so
+      # libpq picks `prefer` here exactly as it does against Aurora.
+      DATABASE_URL: postgresql://archimedes:repro1632@postgres:5432/archimedes
+      PYTHONFAULTHANDLER: "1"
+      PYTHONUNBUFFERED: "1"
+      MARKET_DATA_PROVIDER: yfinance
+      # TTL 0 => every read is a freshness miss => EVERY iteration reaches
+      # _write_cached_ohlcv + commit. Without this, the fixed-ticker half of
+      # REPRO_TICKER_MODE=mixed warms the cache and stops writing after its
+      # first pass, halving the executemany volume under test.
+      MARKET_DATA_CACHE_TTL_HOURS: "0"
+      REPRO_DURATION_S: ${REPRO_DURATION_S:-1800}
+      REPRO_WRITERS: ${REPRO_WRITERS:-2}
+      REPRO_BARS: ${REPRO_BARS:-2600}
+      REPRO_TLS_CLIENTS: ${REPRO_TLS_CLIENTS:-8}
+      REPRO_TICKER_MODE: ${REPRO_TICKER_MODE:-mixed}
+      REPRO_RECYCLE_EVERY: ${REPRO_RECYCLE_EVERY:-25}
+      # Every knob the driver reads MUST be listed here — a variable set on the
+      # host but absent from this block silently never reaches the container,
+      # and the run reports the default while looking like it honoured you.
+      REPRO_DISABLE_MITIGATION: ${REPRO_DISABLE_MITIGATION:-1}
+      REPRO_TLS_URLS: ${REPRO_TLS_URLS:-}
+    volumes:
+      # Mounted, not baked: iterating on the driver must not mean a 2.7 GB rebuild.
+      - ./repro_1632.py:/repro/repro_1632.py:ro
+    command: ["python", "/repro/repro_1632.py"]

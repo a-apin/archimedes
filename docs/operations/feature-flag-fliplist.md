@@ -191,6 +191,7 @@ require them.
 | `TESTING` | test harness | Forces hermetic paths (fixture pipeline, `refresh_enabled()` off). Never set in a deployed environment. |
 | `PAPER_TRACE_BACKFILL_MAX` | tunable | Default 500. |
 | `REVENUE_SWEEP_INTERVAL_S` / `REVENUE_SWEEP_MIN_USDC` | tunable | Only consulted once `REVENUE_SWEEP_ENABLED=true`. |
+| `REPRO_DISABLE_MITIGATION` | diagnostic harness | Read **only** by [`scripts/repro/issue-1632/repro_1632.py`](../../scripts/repro/issue-1632/repro_1632.py), the #1632 reproduction rig, and injected only by its own `docker-compose.repro.yml`. Default `1` monkeypatches the #1725/#1728 OHLCV write chunking + lock off inside the harness process so it drives the pre-mitigation crash shape; `0` leaves them on. No deployed service reads it, and nothing in `infra/` sets it — flipping it in production would do nothing. Delete this row with the harness once #1632 has a proven cause. |
 
 ---
 
