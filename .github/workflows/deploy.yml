@@ -113,11 +113,26 @@
 #    config.
 #
 # 3. VERIFY OIDC TRUST POLICY IS LOCKED TO THIS REPO.
-#    The role trust policy must restrict token.actions.githubusercontent.com
-#    to `repo:a-apin/archimedes:*` (or tighter: `:ref:refs/heads/main`).
-#    Without that condition, any GitHub repo's Actions can assume the role.
+#    The role trust policy must restrict token.actions.githubusercontent.com to
+#    THIS repository on `:ref:refs/heads/main`. Without that condition, any
+#    GitHub repo's Actions can assume the role.
+#    The `sub` claim it must match is minted by GitHub in one of two shapes, and
+#    this repo currently gets the ID-QUALIFIED one:
+#        repo:aprin-labs/archimedes:ref:refs/heads/main                       (plain)
+#        repo:aprin-labs@284008417/archimedes@1236816811:ref:refs/heads/main   (id-qualified, current)
+#    The role trusts BOTH, so a GitHub-side toggle of that format cannot break
+#    deploys; main-only stays the rule. Incident 2026-09-01: after the org
+#    rename a-apin -> aprin-labs, a trust policy naming only the plain new name
+#    failed every deploy for ~3h with `Not authorized to perform
+#    sts:AssumeRoleWithWebIdentity` — the real subject was in CloudTrail, on the
+#    failed AssumeRoleWithWebIdentity event, as `userIdentity.userName`.
+#    Authoritative prefix:
+#      gh api repos/aprin-labs/archimedes/actions/oidc/customization/sub --jq .sub_claim_prefix
 #    Verify with: aws iam get-role --role-name archimedes-github-deploy
 #    and inspect AssumeRolePolicyDocument's Condition block.
+#    After ANY rename/transfer, re-point the role (it is NOT Terraform-managed —
+#    infra/scripts/setup-github-oidc.sh is the source of truth):
+#      AWS_PROFILE=<admin-profile> bash infra/scripts/setup-github-oidc.sh --apply
 
 name: Build, Push & Deploy
 
@@ -227,7 +242,7 @@ jobs:
         #
         # *** ACTION REQUIRED (Dan): add the `VITE_CIRCLE_CLIENT_KEY` repo
         # secret (Settings → Secrets and variables → Actions → Secrets, repo
-        # `a-apin/archimedes`) before the first real image build after this
+        # `aprin-labs/archimedes`) before the first real image build after this
         # PR merges — until then this build-arg resolves to an empty string
         # (same as today) and the wallet UI ships broken. ***
         #
