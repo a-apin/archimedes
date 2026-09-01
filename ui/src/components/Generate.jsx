@@ -1441,7 +1441,15 @@ export default function Generate({ onNavigate, onStageChange }) {
 
 			{/* ── 2. JOB REGISTER ── */}
 			<section className="generate-register" aria-label="Generation register">
-				<GenerationStatus activeJobId={lastJobId} onDrillIn={handleDrillIn} />
+				{/* `onNavigate` was already in this component's scope (line ~92) and
+				    threaded into GenerationStream, but never into the job register —
+				    so a finished generation could only reopen its own stream, never
+				    the strategy it produced (#1646). */}
+				<GenerationStatus
+					activeJobId={lastJobId}
+					onDrillIn={handleDrillIn}
+					onNavigate={onNavigate}
+				/>
 			</section>
 		</div>
 	);
