@@ -785,12 +785,18 @@ def _stream_progress(client: httpx.Client, job_id: str, *, deadline: float, on_e
     return None
 
 
-def _poll_until_terminal(client: httpx.Client, job_id: str, *, deadline: float) -> dict | None:
+def _poll_until_terminal(client: httpx.Client, job_id: str, *, deadline: float) -> tuple[dict | None, str]:
     """Poll ``GET /api/generate/jobs/{job_id}`` until terminal or out of time.
 
     This is the documented fallback surface (#1292) and it is also the final
     authority in the happy path: whatever the stream said, the job record is
     what the server actually believes.
+
+    Returns ``(summary, why)`` where ``why`` is ``"terminal"``, ``"timeout"``, or
+    ``"auth"``. The caller needs to tell those apart to stay honest: a session
+    that expires mid-run stops the polling in about a second, and reporting that
+    as "stopped waiting after 900s" would be a false statement about what the
+    command actually did.
     """
     summary: dict | None = None
     while True:
@@ -803,11 +809,11 @@ def _poll_until_terminal(client: httpx.Client, job_id: str, *, deadline: float) 
             if isinstance(body, dict):
                 summary = body
                 if body.get("state") in _TERMINAL_JOB_STATES:
-                    return summary
+                    return summary, "terminal"
         elif response is not None and response.status_code in (401, 403):
-            return summary  # authentication is the caller's problem to report
+            return summary, "auth"
         if time.monotonic() > deadline:
-            return summary
+            return summary, "timeout"
         time.sleep(_POLL_INTERVAL_SECONDS)
 
 
@@ -1141,7 +1147,23 @@ def generate(
 
     # The job record is the authority, always — including after a clean stream.
     with _http_client(api_url, cookies=cookies, headers=headers) as client:
-        summary = _poll_until_terminal(client, job_id, deadline=deadline)
+        summary, why_stopped = _poll_until_terminal(client, job_id, deadline=deadline)
+
+    if why_stopped == "auth":
+        # The session expired while the job was running. Say that, rather than
+        # letting it fall through to the wait-budget message below, which would
+        # report a timeout that did not happen. The job is unaffected.
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.AUTH,
+            error="session_expired",
+            message=(
+                f"session expired or was revoked while job {job_id} was running. "
+                "Run `archimedes login` again — the job itself is unaffected."
+            ),
+            extra={"job_id": job_id, "events": events},
+        )
 
     state = (summary or {}).get("state")
     strategy_id = (summary or {}).get("best_strategy_id") or (terminal_event or {}).get("strategy_id")

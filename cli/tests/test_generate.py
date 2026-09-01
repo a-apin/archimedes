@@ -614,6 +614,22 @@ class TestTerminalFailures:
             assert false_claim not in lowered
         assert "/api/generate/credits" in result.output
 
+    def test_a_session_expiring_mid_run_is_not_reported_as_a_wait_timeout(self, runner, monkeypatch):
+        """A 401 on the job poll stops the wait in about a second. Reporting that as
+        "stopped waiting after 900s" would describe something the command did not do,
+        so it exits AUTH with the real reason and says the job is unaffected."""
+        _seed_session()
+        _install(
+            monkeypatch,
+            _base_routes(start=httpx.Response(202, json=_STARTED), job=httpx.Response(401)),
+            stream_body=_sse([("agent_iteration", {"stage": "debate"})]),
+        )
+        result = runner.invoke(main, ["generate", "momentum"])
+        assert result.exit_code == AUTH
+        assert result.exit_code != STILL_RUNNING
+        assert "stopped waiting" not in result.output
+        assert "job itself is unaffected" in result.output
+
     def test_a_client_side_timeout_is_not_reported_as_a_failed_job(self, runner, monkeypatch):
         """Exit 8, not 7. The job is still running server-side; saying it failed
         would be a false claim about work that may yet succeed."""
