@@ -95,26 +95,26 @@ class TestRewritePinsTheKillSwitch:
         """The incident shape: live last-good never heard of the flag."""
         out = _rewrite(_last_good_task_def(paper_advance=None))
         env = _backend_env(out)
-        assert env["PAPER_ADVANCE_ENABLED"] == "false"
+        assert env["PAPER_ADVANCE_ENABLED"] == "true"
         assert env["APP_ENV"] == "production"
         assert env["PAPER_TRADING"] == "true"
 
     def test_an_existing_true_is_overwritten_not_left_alone(self):
         out = _rewrite(_last_good_task_def(paper_advance="true"))
         env = _backend_env(out)
-        assert env["PAPER_ADVANCE_ENABLED"] == "false"
+        assert env["PAPER_ADVANCE_ENABLED"] == "true"
         names = [
             e["name"] for e in next(c for c in out["containerDefinitions"] if c["name"] == "backend")["environment"]
         ]
         assert names.count("PAPER_ADVANCE_ENABLED") == 1
 
     def test_already_false_is_not_duplicated(self):
-        out = _rewrite(_last_good_task_def(paper_advance="false"))
+        out = _rewrite(_last_good_task_def(paper_advance="true"))
         names = [
             e["name"] for e in next(c for c in out["containerDefinitions"] if c["name"] == "backend")["environment"]
         ]
         assert names.count("PAPER_ADVANCE_ENABLED") == 1
-        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "false"
+        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "true"
 
     def test_nginx_and_auth_are_not_given_the_flag(self):
         out = _rewrite(_last_good_task_def())
@@ -192,7 +192,7 @@ class TestRewritePinsTheKillSwitch:
         )
         assert result.returncode == 0, result.stderr
         out = json.loads(result.stdout)
-        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "false"
+        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "true"
 
 
 class TestDeployYmlIsThePathThatShips:
@@ -218,7 +218,7 @@ class TestDeployYmlIsThePathThatShips:
         turn the tick back on via CI.
         """
         source = REWRITE_PY.read_text(encoding="utf-8")
-        assert 'PAPER_ADVANCE_VALUE = "false"' in source
+        assert 'PAPER_ADVANCE_VALUE = "true"' in source
         assert "#1632" in source
         mod = _load_rewrite()
-        assert mod.PAPER_ADVANCE_VALUE == "false"
+        assert mod.PAPER_ADVANCE_VALUE == "true"

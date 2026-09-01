@@ -204,13 +204,13 @@ class TestSwitchIsPulledInTheDeployedConfig:
     tests and the comments together.
     """
 
-    def test_ecs_task_definition_pins_it_false_with_the_incident_named(self):
+    def test_ecs_task_definition_arms_the_tick_with_the_lift_recorded(self):
         from pathlib import Path
 
         ecs_tf = Path(__file__).resolve().parents[3] / "infra" / "ecs.tf"
         source = ecs_tf.read_text()
 
-        assert '{ name = "PAPER_ADVANCE_ENABLED", value = "false" }' in source, (
+        assert '{ name = "PAPER_ADVANCE_ENABLED", value = "true" }' in source, (
             "the #1632 mitigation is not pinned in the deployed task definition"
         )
         # The comment is load-bearing: an unexplained "false" is how a

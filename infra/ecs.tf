@@ -592,7 +592,7 @@ resource "aws_ecs_task_definition" "backend" {
         # in services/paper_trading.py; row in
         # docs/operations/feature-flag-fliplist.md.
         # ------------------------------------------------------------------
-        { name = "PAPER_ADVANCE_ENABLED", value = "false" },
+        { name = "PAPER_ADVANCE_ENABLED", value = "true" },
         # Daily generation caps (services/generation_quota.py, #1194 rev a).
         # Plumbed here EXPLICITLY: a cap that silently falls back to its
         # code default because it was never added to the task definition is a

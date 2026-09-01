@@ -30,7 +30,7 @@ import sys
 from typing import Any
 
 PAPER_ADVANCE_NAME = "PAPER_ADVANCE_ENABLED"
-PAPER_ADVANCE_VALUE = "false"
+PAPER_ADVANCE_VALUE = "true"
 BACKEND_CONTAINER = "backend"
 
 # Same drop-list the previous inline jq used. These fields come back from
