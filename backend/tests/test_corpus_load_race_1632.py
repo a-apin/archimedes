@@ -22,7 +22,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
 from archimedes.agents import strategy_fusion
 
 
@@ -41,9 +40,7 @@ class TestLoadCorpusIsSerialized:
             time.sleep(0.05)  # wide-open window: unlocked, 4 threads WILL overlap here
             with gauge:
                 in_flight -= 1
-            return [
-                {"arxiv_id": "2401.00001", "title": "t", "abstract": "a", "published": "2024-01-01"}
-            ]
+            return [{"arxiv_id": "2401.00001", "title": "t", "abstract": "a", "published": "2024-01-01"}]
 
         import archimedes.services.corpus_service as corpus_service
 
@@ -64,10 +61,9 @@ class TestLoadCorpusIsSerialized:
 class TestHealthProbeDoesNotLoadTheCorpus:
     @pytest.fixture()
     def client(self):
-        from fastapi.testclient import TestClient
-
         from archimedes.main import app
         from archimedes.services.health_cache import health_probe_cache
+        from fastapi.testclient import TestClient
 
         health_probe_cache.clear()
         with TestClient(app) as c:
