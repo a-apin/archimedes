@@ -21,11 +21,31 @@ import {
   UNKNOWN_RIGOR_TITLE,
 } from '../rigorGateStatus.js'
 import { signClass } from '../signClass.js'
+import { metricsSourceNote } from '../metricsSource.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
 function DeployabilityChip({ deploy, level, gatePending }) {
+  // Vaults are out of the MVP cut (#1266) — and EVERY branch below answers a
+  // VAULT question. "deployable" / "needs level N" / "blocked" all grade a
+  // strategy against `/api/selection-bias/gate`, the same verdict the vault
+  // deploy gate reads (`api/vaults_routes.py::_deployable_levels`). With the
+  // roadmap flag off there is no vault to deploy into, so every one of those
+  // chips grades a strategy against a capability the shipped build does not
+  // have. On the Examples tab that is what put a red `blocked` pill on
+  // hand-curated reference implementations.
+  //
+  // Suppressing only the red branch was the other option, and it is worse: it
+  // would leave the green "deployable" claim standing on a surface where
+  // nothing can be deployed — the flattering half of a verdict kept and the
+  // rest hidden. The whole chip belongs to the flag, and comes back intact
+  // (blocked branch included) under VITE_ROADMAP_SURFACES=true.
+  //
+  // The gate FETCH is gated on the same flag in load() below: a hidden
+  // annotation that still costs the page its slowest request is the #1324
+  // defect, not a fix.
+  if (!ROADMAP_SURFACES_ENABLED) return null
   // #1645: the Library now renders rows as soon as the strategy list resolves,
   // without waiting for the (much slower) /api/selection-bias/gate call. During
   // that window there is no entry for this row yet — and a SILENTLY ABSENT chip
@@ -79,6 +99,20 @@ function DeployabilityChip({ deploy, level, gatePending }) {
 }
 
 const STATUS_ORDER = ['live', 'validated', 'candidate', 'retired']
+
+// A one-word provenance mark that rides directly under a row's headline
+// number. `metricsSourceNote` allow-lists only the sources that are NOT a run
+// made here (see ../metricsSource.js), so a real persisted backtest renders
+// unmarked and an unknown/absent value makes no claim in either direction.
+function MetricsSourceTag({ source }) {
+  const note = metricsSourceNote(source)
+  if (!note) return null
+  return (
+    <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }} title={note.title}>
+      {note.label}
+    </div>
+  )
+}
 
 function downloadStrategy(strategy, format) {
   let content, filename, type
@@ -329,6 +363,11 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
               (DSR conf=<MetricValue metric="dsr_p_value" value={s.dsr_p_value} row={s} surface="Library table" />)
             </div>
           )}
+          {/* Sharpe is the representative field of the whole display block —
+              the backend derives `display_metrics_source` from it because one
+              link of the fallback chain populates all of them — so one mark in
+              this cell describes the row's numbers, not four repeats. */}
+          <MetricsSourceTag source={s.display_metrics_source} />
         </td>
         <td className={`mono ${signClass(s.cagr)}`} style={{ textAlign: 'right' }}>
           <MetricValue metric="cagr" value={s.cagr} row={s} surface="Library table" />
@@ -593,7 +632,7 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
         <DeployabilityChip deploy={deploy} level={level} gatePending={gatePending} />
       </div>
       <div className="lib-card-stats">
-        <div><div className="caption">Sharpe</div><div className="mono"><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library card" /></div></div>
+        <div><div className="caption">Sharpe</div><div className="mono"><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library card" /></div><MetricsSourceTag source={s.display_metrics_source} /></div>
         <div><div className="caption">CAGR</div><div className={`mono ${signClass(s.cagr)}`}><MetricValue metric="cagr" value={s.cagr} row={s} surface="Library card" /></div></div>
         <div><div className="caption">Max DD</div><div className="mono negative"><MetricValue metric="max_drawdown" value={s.max_drawdown} row={s} surface="Library card" /></div></div>
         <div title={genCost.title}><div className="caption">Gen tokens</div><div className={genCost.measured ? 'mono' : 'caption'}>{genCost.label}</div></div>
@@ -895,7 +934,16 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
     // the 2026-08-30 external product review ("0 of 20 examples pass").
     const seedPromise = apiGet('/api/strategies/?limit=100')
     const genPromise = apiGet('/api/strategies/generated')
-    const gatePromise = apiGet('/api/selection-bias/gate')
+    // Deployability is a VAULT question and vaults are out of the MVP cut
+    // (#1266): DeployabilityChip returns null with the flag off, so an
+    // unconditional call here would spend the slowest request on the page
+    // (this route recomputes the whole cohort gate — ~8-10s, and 504-ing
+    // against prod on 2026-08-31) on an annotation nothing renders. Same
+    // ternary shape, and the same reason, as publishedPromise below: gating
+    // the render while still hitting the hidden API every load is the exact
+    // defect #1324 was filed against. The empty payload keeps every consumer
+    // downstream — deployMap, gateLoading, the gateError banner — unchanged.
+    const gatePromise = ROADMAP_SURFACES_ENABLED ? apiGet('/api/selection-bias/gate') : Promise.resolve({ strategies: [] })
     // Kept on one line deliberately: ui/test/routes.test.js's #1324 guard
     // anchors on this exact expression, and reformatting it would silently
     // disarm someone else's regression test rather than break it loudly.
@@ -1203,12 +1251,44 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
 
       {activeTab === 'examples' && (
         <>
+          {/* This tab is REFERENCE MATERIAL, and the intro has to say so before
+              the reader starts reading the rows as scores. The previous copy
+              ("see what a rigor-gate verdict looks like") invited exactly the
+              opposite reading, and the rows obliged: 34 hand-curated
+              implementations of published papers, each one carrying a red
+              failure pill next to numbers nobody re-ran here.
+
+              Three claims, each of which has to stay true:
+                1. what they are — reference implementations, to learn the card
+                   format; not fusion-engine output;
+                2. what a missing verdict means — a curated example is graded
+                   only once a backtest has actually been run for it (the live
+                   gate needs persisted returns), so "no verdict" is a state,
+                   not a failure, and the passport is where the verdict lives;
+                3. where the numbers come from — the mark under each row's
+                   Sharpe, driven by the API's own `display_metrics_source`
+                   (see ../metricsSource.js), so this paragraph never has to
+                   generalise about rows it cannot see. */}
           <div className="caption mb-3 text-[var(--text-3)] leading-relaxed">
-            <strong>Example strategies</strong> — hand-curated single-paper implementations
-            from published research. <em>Not</em> outputs of the fusion engine. Included
-            so you can read a strategy card, understand the metrics, and see what a
-            rigor-gate verdict looks like. They're also the candidate pool the curated-library
-            path of Generate picks and weights from.
+            <p style={{ marginBottom: 6 }}>
+              <strong>Example strategies</strong> — hand-curated reference implementations
+              of single published papers. They are here to be read: open one to learn the
+              card format — what each field means, which paper it came from, and where a
+              verdict appears once there is one. They are <em>not</em> outputs of the
+              fusion engine.
+            </p>
+            <p style={{ marginBottom: 6 }}>
+              They are <strong>not a scoreboard</strong>. A curated example is graded only
+              once a backtest has been run for it here; until then it carries no verdict,
+              and an absent verdict is not a failure. The numbers beside them are not all
+              measurements either: where a row's metrics trace to a stored fixture snapshot
+              rather than to a backtest run here, the row is marked <strong>fixture</strong>.
+              A strategy's passport is its verdict of record.
+            </p>
+            <p>
+              Generate's curated-library path picks and weights its candidates from this
+              same set.
+            </p>
           </div>
           {loading && <StrategyListSkeleton />}
           {/* Gated on !loadError, matching the Published branch below (#1356
