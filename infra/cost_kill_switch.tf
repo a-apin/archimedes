@@ -285,15 +285,32 @@ resource "aws_budgets_budget" "cost_kill_switch" {
     subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
   }
 
-  # Rung 3 — KILL. Publishes to BOTH topics: the kill topic invokes the Lambda,
-  # the alerts topic makes sure a human hears the same thing through the same
-  # channel as rungs 1 and 2 even if the Lambda itself is broken.
+  # Rung 3 — the human "budget exceeded" signal, one step before the kill.
+  # Exists because the API constraint below forces the kill rung to carry the
+  # Lambda topic alone, so this is where a person hears it through the same
+  # channel as rungs 1 and 2.
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alerts.arn]
+  }
+
+  # Rung 4 — KILL. ONE subscriber, and that is an AWS API constraint, not a
+  # choice: CreateNotification rejects a second SNS subscriber per notification
+  # (CreationLimitExceededException, learned on the 2026-09-01 first apply).
+  # The "a broken Lambda cannot mean silence" property this rung used to carry
+  # via a second topic lives elsewhere now, twice over: the 100% rung above
+  # mails a human before this fires, and the EstimatedCharges tripwire
+  # (billing_estimated_charges_high) fires BOTH topics at the same dollar
+  # boundary — CloudWatch alarms, unlike Budgets notifications, allow it.
   notification {
     comparison_operator       = "GREATER_THAN"
     threshold                 = 120
     threshold_type            = "PERCENTAGE"
     notification_type         = "ACTUAL"
-    subscriber_sns_topic_arns = [aws_sns_topic.cost_kill_switch.arn, aws_sns_topic.alerts.arn]
+    subscriber_sns_topic_arns = [aws_sns_topic.cost_kill_switch.arn]
   }
 }
 
