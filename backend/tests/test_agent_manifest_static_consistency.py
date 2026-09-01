@@ -7,12 +7,17 @@ Two surfaces describe the same API to an agent:
 - ``GET /api/agent/manifest`` — the served manifest, built in
   ``api/agent_manifest_routes.py``.
 
-They drifted. PR #1447 corrected the served manifest's ``deploy`` /
-``marketplace`` / ``monitor`` groups from "landing with the T3.2 redeploy
-(#588)" to ``live``, because the redeploy landed 2026-07-09 and #588 closed
-2026-07-14. The static file kept asserting the stale state in seven places, so
-an agent that discovered us the well-known way was told three live capabilities
-were unavailable — for over a month.
+    They drifted. PR #1447 corrected the served manifest's ``deploy`` /
+    ``marketplace`` / ``monitor`` groups from "landing with the T3.2 redeploy
+    (#588)" to ``live``, because the redeploy landed 2026-07-09 and #588 closed
+    2026-07-14. The static file kept asserting the stale state in seven places, so
+    an agent that discovered us the well-known way was told three live capabilities
+    were unavailable — for over a month.
+
+    The 2026-09-01 copy-honesty pass then moved those three groups from ``live``
+    to ``roadmap``: the routes resolve, but marketplace is not a public surface
+    and no user vault has ever been created. This test still connects the two
+    files. The value they must agree on is now ``roadmap``, not ``live``.
 
 Nothing connected the two files, so nothing noticed. This test is that
 connection: the drift is the defect, not either value on its own.
@@ -107,7 +112,21 @@ def test_the_groups_that_were_stale_are_not_still_advertised_as_pending(group: s
     """
     status = _static_statuses()[group]
     assert "588" not in status, f"{group} still cites #588, which closed 2026-07-14"
-    assert status == "live", f"{group} advertises {status!r}"
+    assert status == "roadmap", (
+        f"{group} advertises {status!r}; deploy / marketplace / monitor are not "
+        "a public surface (no user vault, marketplace is not shipped)"
+    )
+
+
+def test_marketplace_skills_are_not_advertised_as_live():
+    """Marketplace is not a public surface. Skills that told an agent it could
+    publish or subscribe as a live journey were the same over-claim as
+    ``endpoints.marketplace.status: "live"``."""
+    doc = json.loads(STATIC_MANIFEST.read_text(encoding="utf-8"))
+    skills = {s["id"]: s for s in doc["skills"]}
+    for skill_id in ("publish", "subscribe"):
+        status = skills[skill_id]["status"]
+        assert status == "roadmap", f"skills[{skill_id}].status is {status!r}, not 'roadmap'"
 
 
 def _static_chain_ids() -> list[int]:

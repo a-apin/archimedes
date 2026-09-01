@@ -660,7 +660,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
 app = FastAPI(
     title="Archimedes",
-    description="Agentic trading, grounded in research — settled on Arc.",
+    description="Research-grounded strategy generation with a visible rigor gate on Arc public testnet.",
     version="0.1.0",
     docs_url=_docs_url,
     openapi_url=_openapi_url,
@@ -1769,7 +1769,7 @@ async def health_amm(response: Response):
 async def root():
     return {
         "name": "Archimedes",
-        "tagline": "Agentic trading, grounded in research — settled on Arc.",
+        "tagline": "Research-grounded strategy generation with a visible rigor gate on Arc public testnet.",
         "docs": _docs_url or "disabled (production)",
         # Agent-discoverability pointers (additive, backwards-compatible — see /llms.txt
         # and docs/agent-api.md for the full agent-facing contract).

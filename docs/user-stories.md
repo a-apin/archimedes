@@ -2,18 +2,19 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-31
+> **updated:** 2026-09-01
 > **superseded-by:** —
 
-> **Re-verified 2026-08-31** against the live system (`GET /api/health`), not against
-> memory. The spine below is unchanged and still canonical. Three MVP-scope claims were
-> wrong and are corrected in place, each marked inline: the `/generate` "fusion preview"
-> surface (superseded by the debate society,
+> **Re-verified 2026-09-01** against the shipped single-user MVP. The spine below is
+> still canonical as a *story*. **Generate, rigor-gate, and explore are shipped.**
+> **Execute and monitor (non-custodial vaults on Arc) are roadmap, not shipped
+> product** — written in the future tense in this file. Paper trading is the honest
+> execute substitute when it is used, and is not vault proof. See `CLAUDE.md` § Project
+> and #1469. Three earlier MVP-scope claims were already corrected in place: the
+> `/generate` "fusion preview" surface (superseded by the debate society,
 > [ADR](adr/debate-society-sole-generation-pipeline.md)), "GLM-backed" (live LLM is
 > `bedrock_converse` / `amazon.nova-micro-v1:0`,
-> [ADR](adr/glm-to-bedrock-llm-migration.md)), and the curated-library size. Vault
-> execution reads as present tense throughout this doc because it was written that way on
-> Day 9; it is **roadmap, not shipped product** — see `CLAUDE.md` § Project and #1469.
+> [ADR](adr/glm-to-bedrock-llm-migration.md)), and the curated-library size.
 
 > **Status:** Day-9 rewrite (2026-05-20). The spine is locked; this rewrite refocuses
 > the doc around **who the user is and what they're trying to do**, with the
@@ -27,17 +28,20 @@
 
 **Archimedes is a research-grounded strategy-generation instrument for non-experts who
 want their idle USDC to compound thoughtfully** — fusing what you want with current
-market conditions and 10,000 q-fin research papers into novel strategies, gating them
-through selection-bias rigor (so you only see what's defensibly real), executing them
-into your non-custodial vault on Arc, and surfacing every reasoning step so you can
-inspect what worked and what didn't.
+market conditions and the live q-fin research corpus (row count: `GET /health`
+`corpus_papers` / `corpus_db_count`; do not freeze a number here) into novel
+strategies, gating them through selection-bias rigor (so you only see what's
+defensibly real), and letting you inspect the evidence. Executing a passing
+strategy into a non-custodial vault on Arc is **roadmap**. The shipped path is
+generate → rigor-gate → explore on Arc public testnet (chain `5042002`).
 
 > **Testnet reality (read this first).** Arc has **no mainnet** — it's testnet-only
 > (Circle's docs list mainnet as "upcoming"; the public testnet "mirrors mainnet
-> behavior, no real assets"). The honest user story is *"try the full flow on the Arc
-> public testnet with faucet USDC"* (<https://faucet.circle.com/>, 20 USDC / 2h,
-> USDC-is-gas) — **no real funds at risk, by design.** This is a strength, not a
-> hedge: it's the correct posture for an Arc-stage project. Real-funds custody,
+> behavior, no real assets"). The honest user story is *"try generate → rigor-gate →
+> explore on the Arc public testnet"* (<https://faucet.circle.com/>, 20 USDC / 2h,
+> USDC-is-gas). **No mainnet money.** Generation still settles real testnet USDC —
+> read `GET /api/generate/quote` (prod answers `dry_run: false`). This is a strength,
+> not a hedge: it's the correct posture for an Arc-stage project. Real-funds custody,
 > mainnet, and the regulatory architecture are the mainnet / business-plan roadmap.
 
 ## The primary archetype — the **capable non-expert**
@@ -102,10 +106,15 @@ product that demonstrates the wedge without needing the judge to read the deck f
                    only what clears it is admitted to your library
         │
         ▼
-   ③ EXECUTE       allocate it into a non-custodial vault (testnet USDC on Arc)
+   ③ EXECUTE       (roadmap) allocate it into a non-custodial vault
+                   (testnet USDC on Arc). Not shipped. Paper trading,
+                   when used, is the honest substitute — simulated,
+                   not vault / ERC-4626 proof.
         │
         ▼
-   ④ MONITOR       portfolio, results, and the agent's on-chain reasoning
+   ④ MONITOR       (roadmap) portfolio, results, and the agent's
+                   on-chain reasoning — after a user vault exists.
+                   Generation is not anchored on-chain today.
         │
         ▼
    ⑤ EXPLORE       your compounding library + the underlying research,
@@ -128,18 +137,34 @@ Each step, expressed as the story the user is living:
 > was tried. If it passes, the verdict cards (DSR, PBO, OOS Sharpe, look-ahead
 > audit) are visible with plain-English explanations next to each."*
 
-### ③ Execute
+### ③ Execute (roadmap)
 
-> *"I deposit testnet USDC into a non-custodial vault that runs the strategy. The
-> only step that needs my wallet. The vault tells me, in advance, what authorities
-> the agent has (rebalance, yes; withdraw-to-platform, never). I confirm. Done."*
+> *"When vault execution ships, I will deposit testnet USDC into a non-custodial
+> vault that runs the strategy. The only step that will need my wallet. The vault
+> will tell me, in advance, what authorities the agent has (rebalance, yes;
+> withdraw-to-platform, never). I confirm. Done."*
+>
+> **Today this is not reachable.** The `Vault` / `VaultFactory` contracts are
+> deployed, the UI journey is gated off every public surface
+> (`ROADMAP_SURFACES_ENABLED`, off by default), and no user vault has been
+> deployed. Paper trading is the honest execute substitute when it is used.
+> Two books, neither is vault validation
+> ([PR #1704 comment](https://github.com/a-apin/archimedes/pull/1704#issuecomment-5493036672)):
+> `paper_daily_returns` is the graded track record the rigor gate sees;
+> `paper_agent_trades` is an executor ledger / signal-state index (not on
+> `main`). Do not round this up into “paper trading validates the vault.”
 
-### ④ Monitor
+### ④ Monitor (roadmap)
 
-> *"I check in. I see how my portfolio is performing, what the agent has done
-> recently, and why. Every rebalance has a reasoning trace I can open — what market
-> conditions it saw, what papers it referenced, what it decided. The full trace is
-> hashed and anchored on Arc — I can verify it wasn't rewritten."*
+> *"When a user vault exists, I will check in. I will see how my portfolio is
+> performing, what the agent has done recently, and why. Every rebalance will
+> have a reasoning trace I can open — what market conditions it saw, what papers
+> it referenced, what it decided. The full trace will be hashed and anchored on
+> Arc — I can verify it wasn't rewritten."*
+>
+> **Today generation is not anchored on-chain.** A generation run computes a
+> provenance hash and does not write it to `ReasoningTraceRegistry`. Commit /
+> reveal is the vault-path mechanism, and that path is not live.
 
 ### ⑤ Explore (Library + Learnings)
 
@@ -152,9 +177,11 @@ Each step, expressed as the story the user is living:
 
 ## The canonical click path
 
-The spine above is the story. This is the same story as routes and clicks — seven steps
-from a cold landing page to a verified on-chain decision. Relocated here from `README.md`
-(2026-08-20) so the click path and the spine stay in one place.
+The spine above is the story. This is the same story as routes and clicks. The
+**shipped** demo path is landing → sign-in → generate → strategy passport → explore.
+The CreateVaultModal / DepositFlow / portfolio / verify-on-chain tail is **roadmap**
+— keep it in the diagram so the story stays whole, and do not walk a reviewer through
+it as if it ships.
 
 ```mermaid
 flowchart LR
@@ -162,16 +189,16 @@ flowchart LR
   A[/sign-in/]
   G[/app/generate/]
   ST[/app/strategy/:id/]
-  CV{CreateVaultModal}
-  DF{DepositFlow stepper}
-  P[/app/portfolio/]
+  CV{CreateVaultModal — roadmap}
+  DF{DepositFlow stepper — roadmap}
+  P[/app/portfolio/ — roadmap]
   R[/app/reasoning?trace_id=X/]
-  V{Verify on-chain}
+  V{Verify on-chain — roadmap}
 
   L -- 'Open app →' --> A
   A -- account session --> G
   G -- submit brief; SSE stream completes --> ST
-  ST -- 'Deploy as Vault →' (linked wallet required) --> CV
+  ST -- 'Deploy as Vault → roadmap' --> CV
   CV -- create succeeds --> DF
   DF -- 3 signatures: approve → deposit → setTargetAllocations --> P
   P -- click activity trace --> R
@@ -322,26 +349,28 @@ bearing for trust.
   rejected. The gate is a *bar*, not a guarantee. We surface the verdict and the
   inputs that produced it.
 
-## Judge happy-path (the ~3-min demo, read-only until deposit)
+## Judge happy-path (the ~3-min demo, read-only)
 
-1. Landing → **Generate** (no wallet). Describe a goal, click Generate.
+1. Landing → **Generate** (no wallet). Describe a goal, click Generate. Generation
+   settles real testnet USDC — read `GET /api/generate/quote`.
 2. **Generated result** — see a paper-grounded strategy with the rigor verdict
-   visible. Open the passport. Verify a paper citation. Click "Verify trace."
-3. **Library** — see other strategies (Tier-1 + rejected). Open one of the rejected
+   visible. Open the passport. Verify a paper citation. Generation is **not**
+   anchored on-chain; do not click "Verify trace" expecting a generation tx.
+3. **Library** — see other strategies (examples + rejected). Open one of the rejected
    ones, see why it failed the gate. (This is the honesty proof point.)
-4. **Learnings** — see which strategies have performed well and which haven't, with
-   the agent's reasoning available for each. (The "we don't hide losses" proof.)
-5. **Vault detail** (or "Deploy" CTA on the generated strategy) — show the
-   non-custodial vault structure, the agent's authorities.
-6. **Wallet wall** appears **only at Deposit** — the single gated action.
+4. **Explore / Corpus** — the shipped third step of generate → rigor-gate → explore.
+5. **Vault detail / Deploy CTA** — **roadmap**, not in the live demo. Do not present
+   CreateVaultModal as shipped. No user vault has been deployed.
 
 ## Scope
 
-**In (the MVP we ship & demo):** the single-user spine end-to-end, one user at a
-time, hosted, **on the Arc public testnet with faucet USDC (no real funds)**. The
-curated reference library plus the generator-produced strategies. The DB-backed
-10,000-paper q-fin corpus + the live Corpus Explorer. The rigor gate with real 22-year
-SPY data. On-chain reasoning traces via the deployed `ReasoningTraceRegistry`.
+**In (the MVP we ship & demo):** the single-user generate → rigor-gate → explore path,
+hosted, **on the Arc public testnet**. No mainnet money; generation fee is real
+testnet USDC. The curated reference library plus the generator-produced strategies.
+The DB-backed q-fin corpus (live count: `GET /health` `corpus_papers` /
+`corpus_db_count` — the corpus probe can timeout; do not freeze a number here) +
+the live Corpus Explorer. The rigor gate with real 22-year SPY data. Generation
+decisions are **not** anchored on-chain today.
 
 > **Corrected 2026-08-31.** Two claims in this paragraph were stale.
 > **(a) "GLM-backed"** — the live LLM is `bedrock_converse` / `amazon.nova-micro-v1:0`

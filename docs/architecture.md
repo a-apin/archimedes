@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-31
+> **updated:** 2026-09-01
 > **superseded-by:** —
 
 > Identity and deploy topology amended for Better Auth account ownership (2026-08). (2026-07-14)
@@ -46,7 +46,7 @@
                      └──────────────────────────────────────────────────────────────┘
 ```
 
-Product spine (canonical, [`docs/user-stories.md`](user-stories.md)): **generate → rigor-gate → execute → monitor → explore**.
+Product spine (canonical, [`docs/user-stories.md`](user-stories.md)): **generate → rigor-gate → (roadmap: execute → monitor) → explore**. Generate, rigor-gate, and explore are shipped. Vault execute/monitor is roadmap.
 
 ---
 
@@ -117,7 +117,7 @@ the machine-readable claim-integrity surface the new page should read from.
 |---|---|---|
 | LLM seam | [`services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) | Multi-provider **Converse** backend: AWS Bedrock **Amazon Nova Micro** default; BYOK; local-Ollama single-user path. `response.model` is provenance-of-record |
 | Corpus retrieval | [`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py) | Stage-2 **query-time** rerank over the keyword-filtered candidates — nothing is read from a stored embedding index (none exists). `all-MiniLM-L6-v2` when the model loads in-process, lexical TF-IDF cosine otherwise. **(2026-08-31)** `paper_rag` has four states — `live` (a model object is loaded in *this* process) · `ready` (weights on disk, nothing has retrieved yet — deliberately **not** live, since presence on disk is not proof) · `degraded` (load attempted and failed) · `disabled`. Prod currently reports `ready`, and the two claims are published separately so neither can stand in for the other: `paper_rerank_model_live` is the process fact, `corpus_embedded_at_rest` the corpus one (false, derived from the schema — #1488, #778). 150-candidate cap, bounded embedding cache, `torch.set_num_threads(1)` (the #885 outage guardrails) |
-| Corpus ingest | [`services/corpus_service.py`](../backend/archimedes/services/corpus_service.py), [`services/arxiv_corpus.py`](../backend/archimedes/services/arxiv_corpus.py), [`services/arxiv_pipeline.py`](../backend/archimedes/services/arxiv_pipeline.py) | 10,000-paper JSONL manifest seed into Postgres |
+| Corpus ingest | [`services/corpus_service.py`](../backend/archimedes/services/corpus_service.py), [`services/arxiv_corpus.py`](../backend/archimedes/services/arxiv_corpus.py), [`services/arxiv_pipeline.py`](../backend/archimedes/services/arxiv_pipeline.py) | JSONL manifest seed into Postgres (live count: `GET /health` `corpus_papers` / `corpus_db_count`) |
 | KB pipeline | [`services/kb_runner.py`](../backend/archimedes/services/kb_runner.py), [`services/kb_artifacts.py`](../backend/archimedes/services/kb_artifacts.py) | Scheduled runner triggering SPECTER2 embeddings / HDBSCAN clusters / REBEL+SciSpacy KG builds (the "KB pipeline"); artifacts served by `corpus_routes` |
 | Rigor gate | [`services/live_rigor_gate.py`](../backend/archimedes/services/live_rigor_gate.py) | **Single source of truth** for `passes_rigor_gate`: four-state pass/fail/pending/**degenerate**, computed live from persisted real returns — never a cached boolean (issue #821, the #1 rule) |
 | Rigor math | [`services/rigor_evaluator.py`](../backend/archimedes/services/rigor_evaluator.py), [`services/_rigor_helpers.py`](../backend/archimedes/services/_rigor_helpers.py), [`services/sharpe_statistics.py`](../backend/archimedes/services/sharpe_statistics.py), [`services/rigor_profiles.py`](../backend/archimedes/services/rigor_profiles.py), [`services/rigor_cache.py`](../backend/archimedes/services/rigor_cache.py) | DSR, PBO, walk-forward OOS, look-ahead audit; strictness profiles |
@@ -244,11 +244,11 @@ Runbook: [`infra/runbooks/ecs-fargate-cutover.md`](../infra/runbooks/ecs-fargate
 
 ## 5. Flow — Corpus (papers → retrievable knowledge)
 
-1. **Seed**: 10,000-paper JSONL manifest → Postgres (`services/corpus_service.py::seed_from_manifest`, boot-time in `main.py:139`).
+1. **Seed**: committed JSONL manifest → Postgres (`services/corpus_service.py::seed_from_manifest`, boot-time in `main.py:139`). Live counts: `GET /health` `corpus_papers` / `corpus_db_count` — do not freeze a number here; the corpus probe can timeout.
 2. **Seed writes text, and stops there**: metadata + abstracts land in Postgres; the `papers` schema carries no vector column, so there is nothing stored for a query to look up. Ranking is computed per request instead (§2.3). The ingest-time vectorisation described in [`docs/corpus-architecture.md`](corpus-architecture.md) is the target design, not the deployed one.
 3. **KB pipeline** ([`services/kb_runner.py`](../backend/archimedes/services/kb_runner.py), own compose service / scheduled-Fargate target (PR #1071, merged; apply pending)): SPECTER2 embeddings, HDBSCAN clusters, REBEL+SciSpacy knowledge graph → artifacts → [`api/corpus_routes.py`](../backend/archimedes/api/corpus_routes.py). With no artifact, `/graph` raises **503 `kb_artifact_not_found`** and `/kg/*` returns **empty entity/relation sets** — neither synthesises from arXiv metadata (#201). `corpus_kg_built` flag in `/health`; both behaviours pinned by `backend/tests/test_corpus_claim_integrity.py`.
 4. **Retrieval at generate time**: keyword filter → query-time rerank (§2.3).
-5. **Honest state** (verified against prod 2026-08-19): all 10,000 rows are present with title + abstract, but there are **no embeddings** (no embedding column anywhere in the schema), `corpus_meta` = 0 rows, and `kg_entities`/`kg_relations` = 0/0 — so retrieval is **lexical**, and the KG/graph endpoints 503. What is missing is the artifact layer, not the papers (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
+5. **Honest state**: the `papers` table holds metadata + abstracts (live row count is `GET /health` `corpus_db_count`, not a number frozen in this file). There are **no embeddings** (no embedding column anywhere in the schema), `corpus_meta` = 0 rows, and `kg_entities`/`kg_relations` = 0/0 — so retrieval is **lexical**, and the KG/graph endpoints 503. What is missing is the artifact layer, not the papers (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
 
 ## 6. Flow — Identity / accounts + linked wallets
 

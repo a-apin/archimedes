@@ -40,9 +40,10 @@ not. The locked spine is [`docs/user-stories.md`](docs/user-stories.md).
   settlement is stubbed behind `PAYMENTS_DRY_RUN` pending mainnet. Single-user MVP —
   multi-user library and social features are roadmap.
 - **Arc testnet only** (chain `5042002`). Faucet USDC comes from
-  <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas). **No real money is at
-  risk, by design.** Arc has no mainnet yet; mainnet launch, real-funds custody, and the
-  regulatory architecture are roadmap.
+  <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas). **No mainnet
+  money.** Generation still settles real testnet USDC — read `GET /api/generate/quote`
+  (prod answers `dry_run: false`). Arc has no mainnet yet; mainnet launch, real-funds
+  custody, and the regulatory architecture are roadmap.
 
 ## The rigor gate
 
@@ -189,7 +190,8 @@ re-derive from one of those.
 
 - **The corpus is arXiv preprints, not peer-reviewed papers**, and it holds metadata and
   abstracts only — the row count `/health` publishes as `corpus_papers` is a manifest
-  import, not a measure of anything analysed. Candidate selection over it is a **keyword
+  import, not a measure of anything analysed. Do not freeze that count in prose; the
+  corpus probe can timeout. Candidate selection over it is a **keyword
   filter**. Only that already-selected candidate set is then re-scored, at request time,
   across title and abstract — by `all-MiniLM-L6-v2` when that model is loaded in-process, by
   lexical TF-IDF when it is not. Nothing is precomputed: the `papers` schema carries title
@@ -218,8 +220,7 @@ re-derive from one of those.
   as anchored.
 
 Every public claim this repo makes, with a per-claim verdict and the `file:line` that backs
-it, is tracked in [`docs/claims-ledger.md`](docs/claims-ledger.md) — including the ones
-still marked over-claimed.
+it, is tracked in [`docs/claims-ledger.md`](docs/claims-ledger.md).
 
 ## Contributing
 

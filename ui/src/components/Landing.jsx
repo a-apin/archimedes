@@ -179,12 +179,12 @@ const FAQS = [
 	{
 		question: "Does Archimedes trade for me?",
 		answer:
-			"No. Today Archimedes generates, gates, and records strategies, and can run them against paper trading. It does not execute with capital, and it never takes the other side of a trade.",
+			"No. Today Archimedes generates, gates, and records strategies. Paper trading, when used, is simulated and is not on-chain execution proof: paper_daily_returns is the graded track record the rigor gate sees; paper_agent_trades is an executor ledger, not marked-to-market, and is not on this deployment. Neither is ERC-4626 proof. Do not round this up into “paper trading validates on-chain execution.” It never takes the other side of a trade.",
 	},
 	{
 		question: "Is this running with real money?",
 		answer:
-			"No. Archimedes currently runs on Arc public testnet with faucet USDC. It is a research prototype, not a production investment product.",
+			"No mainnet money. Archimedes runs on Arc public testnet. Generation settles real testnet USDC — read GET /api/generate/quote (prod answers dry_run: false). Faucet USDC is not mainnet cash. It is a research prototype, not a production investment product.",
 	},
 ];
 
@@ -759,7 +759,7 @@ function PublicFooter() {
 				</nav>
 			</div>
 			<div className="public-shell public-footer__base">
-				<span>Research prototype. No real funds.</span>
+				<span>Research prototype. No mainnet money. Generation fee is real testnet USDC.</span>
 				<span>Past performance does not guarantee future results.</span>
 			</div>
 		</footer>

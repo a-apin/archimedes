@@ -6,13 +6,14 @@
 > [`docs/specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md) and
 > [`docs/specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md);
 > together they describe the three load-bearing intelligence layers of Archimedes.
-> **Status:** current · **updated:** 2026-08-31. Reflects what's actually shipped on
-> `main` after #95 (engine v2), #97 (the 10k seed) and #1635 (uncapped to 18,907 +
-> canonical harvest terms), #105 + #108 (rigor wedge), #106 (DB-backed corpus), and
-> #93 (Corpus Explorer UI).
+> **Status:** current · **updated:** 2026-09-01. Reflects what's actually shipped on
+> `main` after #95 (engine v2), #97 (the original 10k seed) and #1635 (uncapped harvest),
+> #105 + #108 (rigor wedge), #106 (DB-backed corpus), and
+> #93 (Corpus Explorer UI). Live row counts: `GET /health` `corpus_papers` /
+> `corpus_db_count`. Do not freeze a number here; the corpus probe can timeout.
 
-> **Claim-integrity note (verified against production 2026-08-19, issue #778).** Layer 1
-> is real: the manifest rows (18,907 after #1635) with title + abstract are in Postgres. Layers 2 and 3 are **not**:
+> **Claim-integrity note (issue #778).** Layer 1
+> is real: the committed manifest rows with title + abstract are in Postgres. Layers 2 and 3 are **not**:
 > there is no embedding column anywhere in the schema, `corpus_meta` holds 0 rows, and
 > `kg_entities`/`kg_relations` are 0/0. Where this document describes embeddings, clusters,
 > or a knowledge graph as part of the substrate, read that as the **target design**, not the
@@ -28,7 +29,7 @@
 │  LAYER 1 — SEED (committed, deterministic)                       │
 │  data/corpus/manifest.jsonl                                      │
 │  Curated arXiv metadata snapshot — ships with the repo           │
-│  Boot-time floor. 18,907 papers, 28 MB. No network required.     │
+│  Boot-time floor. Committed JSONL. No network required.          │
 └──────────────────────────────────────────────────────────────────┘
                               │
                               ▼ (idempotent upsert at every startup)
@@ -226,7 +227,7 @@ point at specific papers that informed it. **That's the rigor wedge externalized
 
 ### Wired and live
 
-- [x] DB-backed `papers` + `corpus_meta` (18,907 rows as of #1635 — ask `/health`, not this line)
+- [x] DB-backed `papers` + `corpus_meta` (live row count: `GET /health` `corpus_db_count`)
 - [x] Idempotent seed at every startup
 - [x] `intake_from_arxiv()` function (no scheduler — operator-triggered)
 - [x] DB-first read path through `strategy_fusion.load_corpus()`

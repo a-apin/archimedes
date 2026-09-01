@@ -20,7 +20,7 @@ export default function PublicLayout({ user, children }) {
 			<div className="public-announcement" role="note">
 				<span>Research prototype</span>
 				<strong>Arc public testnet</strong>
-				<span>No real funds</span>
+				<span>No mainnet money</span>
 			</div>
 			<header className="public-header">
 				<div className="public-header__inner">
