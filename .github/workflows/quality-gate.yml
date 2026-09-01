@@ -365,9 +365,13 @@ jobs:
         run: |
           pip install --quiet pip-audit==2.10.1
           # Current Vyper already contains both fixes; advisory ranges falsely
-          # include 0.4.3. See backend/requirements.txt for full rationale.
+          # include 0.4.3. PYSEC-2026-3609 / PYSEC-2026-3654 (pymdown-extensions,
+          # also via titanoboa) are unreachable and the fix version is
+          # unsatisfiable against titanoboa's exact mkdocs-material pin. See
+          # backend/requirements-base.txt for full rationale on both pairs.
           pip-audit -r backend/requirements.txt --format json --progress-spinner=off \
             --ignore-vuln PYSEC-2023-142 --ignore-vuln PYSEC-2025-33 \
+            --ignore-vuln PYSEC-2026-3609 --ignore-vuln PYSEC-2026-3654 \
             > /tmp/pip_audit.json || true
           python3 - <<'EOF'
           import json, os

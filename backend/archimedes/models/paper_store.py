@@ -345,3 +345,95 @@ class PaperMark(Base):
         UniqueConstraint("deployment_id", "ts", "granularity", name="uq_paper_marks_dep_ts_gran"),
         Index("ix_paper_marks_dep_ts", "deployment_id", "ts"),
     )
+
+
+#: Direction of one agent-driven paper trade. Deliberately the SAME two literals
+#: ``models.portfolio.TradeDirection`` uses — the venue writes ``.value``, so a
+#: paper row and a vault trade name a buy the same way.
+AGENT_TRADE_BUY = "buy"
+AGENT_TRADE_SELL = "sell"
+
+
+class PaperAgentTrade(Base):
+    """One trade the AGENT TICK LOOP decided for one paper deployment (#1410).
+
+    **This table is not the track record, and it is not a valuation.**
+    ``paper_daily_returns`` remains the append-only ledger produced by the
+    graded replay, and ``paper_marks`` remains the mark-to-market surface;
+    #1410's third anti-goal is "do NOT change paper-trading valuation math" and
+    nothing here writes to either. What this table records is *who decided
+    what, and why* when the vault's own decision loop — signal FSM → aggregated
+    target weights → diff against current positions → trades — is pointed at a
+    paper deployment instead of a vault. That loop had zero vaults to run
+    against, so it had zero validation; this is where its output becomes
+    inspectable.
+
+    **Weights, never dollars.** ``PaperDeployment`` has no notional/capital
+    column — there is no deployed capital amount anywhere in this system (see
+    ``PaperMark``'s docstring, which refuses to render "$10,347" for the same
+    reason). So a trade is stored as the portfolio FRACTION that moved:
+    ``prior_weight`` → ``target_weight``, with ``weight_delta`` their signed
+    distance. Rendering a dollar size would require inventing the notional, and
+    an invented number next to a track record is the exact class of claim this
+    product exists to oppose.
+
+    **Positions are the fold of this ledger.** ``PaperVenue.read_portfolio``
+    replays these rows from an all-cash start rather than caching a position
+    blob, for the same reason ``strategy_signal_evaluator`` derives position
+    state by replay rather than persisting it: a pure function of an
+    append-only ledger cannot be double-advanced, cannot silently reset on
+    restart, and needs no reconciliation.
+
+    KNOWN LIMIT, stated because this table's whole job is honest provenance:
+    the folded position is a SIGNAL-STATE book, not a marked-to-market one.
+    Between ticks the recorded weights do not move with prices, so the drift
+    this venue can see is drift the SIGNALS created — never drift a price move
+    created. That means the paper venue exercises the signal→weights→diff→trade
+    mechanic faithfully and does NOT exercise price-drift-triggered
+    rebalancing. Closing it would mean this table growing a second opinion
+    about what a paper portfolio is worth, alongside ``paper_marks``; that is a
+    deliberate non-goal here, not an oversight.
+
+    Provenance columns are what make a row a claim rather than a number:
+    ``tick_id`` (which agent tick), ``decided_at`` (when), ``signal_strategy_id``
+    / ``signal_state`` / ``signal_reason`` (which signal, in what state, and the
+    evaluator's own words for why), and ``spec_hash`` (which deployed spec
+    produced the signal — the deployment's ``spec_json``, not the strategy
+    row's, which can be regenerated later).
+    """
+
+    __tablename__ = "paper_agent_trades"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    deployment_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("paper_deployments.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The agent tick that produced this trade. Not nullable: a trade that
+    #: cannot name its tick is exactly the thing #1410 asked this table to make
+    #: impossible.
+    tick_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(4), nullable=False)
+    prior_weight: Mapped[float] = mapped_column(Float, nullable=False)
+    target_weight: Mapped[float] = mapped_column(Float, nullable=False)
+    #: Signed: positive is a buy, negative is a sell. Stored rather than derived
+    #: from the two weights so the row still reads correctly if a later change
+    #: alters how weights are rounded.
+    weight_delta: Mapped[float] = mapped_column(Float, nullable=False)
+    #: Which strategy's signal drove this leg. Nullable only for the USDC leg of
+    #: a rebalance, which no strategy votes on — it is the residual.
+    signal_strategy_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    signal_state: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    signal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    spec_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+    __table_args__ = (
+        # One row per (deployment, tick, symbol). A tick that is somehow applied
+        # twice writes nothing the second time instead of doubling a position —
+        # the same "a re-run is a no-op, not a duplicate" rule paper_marks and
+        # paper_decision_traces already follow.
+        UniqueConstraint("deployment_id", "tick_id", "symbol", name="uq_paper_agent_trades_dep_tick_symbol"),
+        Index("ix_paper_agent_trades_dep_decided", "deployment_id", "decided_at"),
+    )

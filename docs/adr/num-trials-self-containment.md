@@ -2,7 +2,7 @@
 
 > **Audience:** Archimedes team
 > **Status:** **Accepted** — ratified 2026-08-31 by Önder Akkaya (portfolio math), [#1555](https://github.com/a-apin/archimedes/issues/1555) outcome 3; see "Ratification" below
-> **Date:** 2026-07-09 (reversal shipped); spec addendum 2026-07-14; amended 2026-08-19 (fixture-leak class); ratified + four corrections folded in 2026-08-31 (#1555)
+> **Date:** 2026-07-09 (reversal shipped); spec addendum 2026-07-14; amended 2026-08-19 (fixture-leak class); ratified + four corrections folded in 2026-08-31 (#1555); amended 2026-09-01 (#1654 option 1)
 > **Owner:** Dan Browne (quant reviewer of record: Önder Akkaya)
 > **Supersedes:** the `N + library_size` DSR convention from [#770](https://github.com/a-apin/archimedes/issues/770) / #811 / [#820](https://github.com/a-apin/archimedes/issues/820)
 > **Superseded-by:** —
@@ -154,12 +154,10 @@ headline claim is "`num_trials` is self-contained," deliberately not "the gate i
   passes the per-strategy gate (adjusted p 0.319 / 0.319 / 0.536, all
   `board_fdr_significant: false`). That is not a contradiction in the math — the gate
   answers "sound on its own evidence," the board FDR answers "distinguishable from the
-  field's multiple testing," and both can be true — but nothing under `ui/src/` reads
-  `board_fdr*`, so the public badge currently stands alone while the served correction
-  that qualifies it stays invisible. **The open item is therefore a product decision, not
-  a spec or a wiring ticket**: decide what the ranking surface says when the board-level
-  correction disqualifies every row the badge approves — and decide it before anything
-  leans on the badge as a public claim.
+  field's multiple testing," and both can be true. **The product decision is recorded
+  and the wiring has shipped** — option 1 on
+  [#1654](https://github.com/a-apin/archimedes/issues/1654) (2026-09-01 amendment below);
+  remaining work is none unless a new ranking surface shows an unqualified badge.
   (Evidence: [Önder's prod pull](https://github.com/a-apin/archimedes/issues/1555#issuecomment-5471987448),
   #1555 thread; no pass count quoted, per the standing rule — the point stands on the
   adjusted p-values, a property of the correction rather than of the return data.)
@@ -227,7 +225,8 @@ a formula off by 10× from the right one.
   event), but the count is rarely reported and would be a guess. `num_trials = 1` is the
   honest floor; the residual author-side selection bias is a known, unmodelled term.
 - **Keep a portfolio-level correction inside the gate — rejected** as answering the wrong
-  question at the wrong surface; see the open gap above.
+  question at the wrong surface; the ranking-surface disclosure is recorded as option 1
+  of [#1654](https://github.com/a-apin/archimedes/issues/1654) (2026-09-01 amendment).
 
 ## Amendment (2026-08-19): the fixture-leak class
 
@@ -274,9 +273,36 @@ out-of-line — and each edit is dated where it lands:
 3. **The Leaderboard/Marketplace "open gap" reframed** (Consequences): board-level BH FDR
    is computed and served — and, per the reviewer's post-ratification prod pull, currently
    disagrees with the per-strategy gate on every strategy (min adjusted p 0.319
-   board-wide). The open item is the product decision on what the ranking surface says,
-   made before the badge is leaned on publicly — not a spec, and no longer merely wiring.
+   board-wide). The open item *as of this stamp* was the product decision on what the
+   ranking surface says, made before the badge is leaned on publicly — not a spec, and no
+   longer merely wiring. *(Closed 2026-09-01: option 1 recorded on #1654; see the
+   amendment below.)*
 4. **Decision #5 rewritten**: it cited the `N_eff` form that #1558 showed to be the wrong
    functional form and #1559 removed. Found during the stamp, not in the review — the
    document claimed the code did something it no longer does. (A matching stale comment in
    `selection_bias_routes.py` was corrected in the same commit.)
+
+## Amendment (2026-09-01): #1654 records option 1 — board FDR on the ranking surface
+
+[#1654](https://github.com/a-apin/archimedes/issues/1654) asked what the ranking surface
+shows when board-level Benjamini–Hochberg FDR disagrees with the per-strategy gate on
+every passing strategy. **Option 1 is chosen.** Surface `board_fdr_*` on the ranking
+surface alongside the per-strategy badge, with the two-questions explanation: the gate
+answers "is this strategy statistically sound on its own evidence?"; board FDR answers
+"is this strategy distinguishable from the field's multiple testing?" They can both be
+true. Board FDR is **advisory** and **never flips the badge** (`passes_all`). The
+passport stays out — Decision #3: the passport carries only per-strategy information.
+
+This is not a new call. Owner decision on
+[#1564](https://github.com/a-apin/archimedes/issues/1564) (comment 2026-08-31) plus
+[PR #1580](https://github.com/a-apin/archimedes/pull/1580) already moved the board FDR
+block onto `GET /api/leaderboard` and rendered it in
+[`ui/src/components/Leaderboard.jsx`](../../ui/src/components/Leaderboard.jsx) with the
+sentence "Not yet distinguishable from selection noise at board level." An uncorrected
+row is an em-dash, never a verdict. `ui/test/leaderboard-board-fdr.test.js` pins that
+copy. The #1654 filing that no `ui/src/` file referenced `board_fdr` is stale against
+that wiring.
+
+**Decision recorded, wiring shipped.** Remaining work is none unless a new ranking
+surface shows an unqualified badge. The BH correction is unchanged; `compute_board_level_fdr`
+is not muted. No curated-library pass rate is quoted.

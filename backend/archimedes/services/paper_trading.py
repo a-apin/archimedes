@@ -1087,6 +1087,16 @@ async def paper_advance_loop() -> None:
     it as an in-process asyncio task: a C abort in psycopg2/web3 on the
     OHLCV cache write (#1632) kills the interpreter, and ``/health`` lives
     in that same interpreter. See :func:`arm_paper_advance_for_web_tier`.
+
+    Two independent passes run per cycle, in this order and in separate
+    try/excepts (#1410):
+
+      1. ``advance_all`` — the ledger. The user's track record, replayed on the
+         graded engine. This is the one that must not be missed.
+      2. ``advance_agent_execution`` — the agent tick loop pointed at paper
+         deployments, writing to ``paper_agent_trades`` and nothing else. New
+         here, additive, and deliberately downstream: if it breaks, the ledger
+         has already advanced.
     """
     import asyncio
 
@@ -1122,6 +1132,30 @@ async def paper_advance_loop() -> None:
                 logger.info("paper advance: %s", summary)
         except Exception as exc:
             logger.warning("paper advance: cycle failed (%s: %s) — will retry next tick", type(exc).__name__, exc)
+
+        # Agent-driven paper execution (#1410) — the vault's own tick loop
+        # pointed at paper deployments, on this cadence, in this process. Kept
+        # OUTSIDE the try above, and given its own, so the two cannot take each
+        # other down in either direction: the LEDGER is the user's track record
+        # and must advance even if the agent experiment is broken, and the
+        # agent's own bad cycle must not be reported as a ledger failure.
+        # It also stays out of `advance_all`, which is a pure, hermetically
+        # tested function that callers other than this loop rely on.
+        try:
+            from archimedes.services.paper_agent_execution import advance_agent_execution
+
+            with get_session() as session:
+                agent_summary = await advance_agent_execution(session)
+                session.commit()
+            logger.info("paper agent execution: %s", agent_summary)
+        except Exception as exc:
+            logger.warning(
+                "paper agent execution: cycle failed (%s: %s) — will retry next tick; "
+                "the ledger advance above is unaffected",
+                type(exc).__name__,
+                exc,
+            )
+
         await asyncio.sleep(interval_s)
 
 
