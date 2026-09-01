@@ -337,15 +337,33 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     # whose _compute() is the only production caller of update_rigor_gate_fields(),
     # i.e. the only thing that ever persisted these columns anyway.
 
-    # 2. Seed papers table from manifest.jsonl (idempotent)
-    try:
-        from archimedes.services.corpus_service import seed_from_manifest
+    # 2. Seed papers table from manifest.jsonl (idempotent) — IN THE BACKGROUND.
+    # This ran synchronously here until 2026-09-01, which was survivable at
+    # 10,000 manifest rows and stopped being survivable at 18,907 (#1635): a
+    # fresh prod task spent minutes bulk-seeding Aurora BEFORE binding, blew
+    # the ALB health window, was killed mid-seed, and the replacement repeated
+    # it — the rollout-crawl/502-flap incident of this date (failedTasks=2,
+    # rollout budget exceeded). The seed is idempotent and every consumer
+    # reads the papers TABLE (not the manifest), so nothing needs it to have
+    # finished before the app serves: until it completes, the corpus is
+    # merely yesterday's size, honestly reported by /health's corpus counts.
+    # A worker thread, not a loop task: seed_from_manifest is synchronous
+    # blocking DB work, and the whole point is keeping the serving loop free.
+    def _seed_corpus_in_background() -> None:
+        try:
+            from archimedes.services.corpus_service import seed_from_manifest
 
-        inserted = seed_from_manifest()
-        if inserted > 0:
-            _logger.info("startup: seeded %d new papers from manifest", inserted)
-    except Exception as exc:
-        _logger.warning("startup: corpus seed failed (non-fatal): %s", exc)
+            inserted = seed_from_manifest()
+            if inserted > 0:
+                _logger.info("startup: seeded %d new papers from manifest (background)", inserted)
+            else:
+                _logger.info("startup: corpus manifest already fully seeded (background check)")
+        except Exception as exc:
+            _logger.warning("startup: background corpus seed failed (non-fatal): %s", exc)
+
+    import threading
+
+    threading.Thread(target=_seed_corpus_in_background, name="corpus-seed", daemon=True).start()
 
     # 2a. Seed provider examples into strategy_store (idempotent, D1).
     # Each provider example gets a StrategyRecord keyed by its 32-char
