@@ -707,6 +707,38 @@ test("tour pagination dots meet the 24px minimum target", () => {
 	assert.doesNotMatch(onboardingTour, /role="tab"/);
 });
 
+test("Generate's primary controls meet the target minimum at phone width", () => {
+	// #1642 made Generate mobile-first, which means its two primary controls
+	// — submit and "Surprise me" — are thumb targets first and mouse targets
+	// second. Same 24px WCAG 2.2 AA floor as the tour dots above.
+	//
+	// The check reads the PHONE rules specifically: everything in the #1642
+	// block before its first `@media` is the base (no-media-query) tier, i.e.
+	// what a 375px viewport gets. A min-height added only inside
+	// `min-width: 560px` would satisfy a whole-file grep and still leave the
+	// phone short, so slicing the base tier out is the point of this test.
+	const BANNER = "#1642 — Generate page: mobile-first layout + Surprise Me";
+	const blockStart = css.indexOf(BANNER);
+	assert.ok(blockStart > 0, "the #1642 Generate block is missing from App.css");
+	const phoneBase = css.slice(blockStart).split("@media")[0];
+
+	const MIN_TARGET_PX = 24;
+	for (const selector of ["\\.generate-surprise-btn", "\\.generate-brief \\.generate-submit-btn"]) {
+		const height = numPx(cssBlock(phoneBase, selector), "min-height");
+		assert.ok(
+			height >= MIN_TARGET_PX,
+			`${selector} is ${height}px at phone width, below the ${MIN_TARGET_PX}px minimum`,
+		);
+	}
+
+	// A rule guards nothing if the markup does not carry the class.
+	assert.match(generate, /className="generate-surprise-btn"/);
+	assert.match(generate, /className="btn btn-primary generate-submit-btn"/);
+	// Both live inside .generate-brief, which is what makes the two-selector
+	// submit rule apply at all.
+	assert.match(generate, /className="card generate-brief"/);
+});
+
 test("knowledge-graph pan and zoom have single-pointer alternatives", () => {
 	// Pan was drag-only and zoom wheel-only; "Reset view" only ever returns to
 	// the origin.
