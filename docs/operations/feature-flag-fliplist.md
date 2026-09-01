@@ -123,6 +123,7 @@ require them.
 | `PRICE_SOURCE` | mode selector | `"cascade"` in `infra/ecs.tf` (flipped 2026-07-04, Pyth live). Code default stays `"yfinance"` for local/CI safety. Reader: [`services/price_source.py:62`](../../backend/archimedes/services/price_source.py). |
 | `PRICE_CROSSCHECK_BAND_BPS` / `PRICE_CROSSCHECK_MAX_STALENESS_SECONDS` | tunable | 5000 bps (50%) / 345600 s (4 d). Only bite while `PRICE_SOURCE=cascade`. Band tuning owned by Önder. |
 | `MARKET_DATA_PROVIDER` | mode selector | Default `"yfinance"`. |
+| `ORACLE_CRYPTO_SOURCE` | mode selector | Default `"coingecko"` (CoinGecko primary, `MARKET_DATA_PROVIDER` seam as fallback). Also `coingecko_only` / `provider` / `provider_only`. Unset in `infra/*` — the default IS the pre-#1710 happy path. Reader: [`chain/oracle_updater.py`](../../backend/archimedes/chain/oracle_updater.py) (`_crypto_source_order`). **Gotcha:** `provider`/`provider_only` with `MARKET_DATA_PROVIDER=tiingo` cannot price this leg — Tiingo serves daily bars only and raises `NotImplementedError` for intraday. |
 | `GENERATION_PRICE_USD` | tunable | `"2.00"` in `infra/ecs.tf`. Flat `flat_v1` pricing until #1217's measured budget replaces it behind the same `quote()` seam. |
 | `GENERATION_PAYMENT_RECIPIENT` | required config | Terraform variable (#1414). Flag-on with no recipient is a deliberate 503, never a free pass. |
 | `GENERATION_DAILY_CAP_PER_USER` / `_PER_IP` | tunable | `100` / `200` in `infra/ecs.tf`. Both layers must pass; `<= 0` disables a layer. |

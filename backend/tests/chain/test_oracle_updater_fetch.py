@@ -150,14 +150,27 @@ class TestFetchCrypto:
         by_symbol = {r.symbol: r.price_usd for r in results}
         assert by_symbol["sBTC"] == 64000.0
 
-    async def test_coingecko_error_is_swallowed(self, updater):
-        # A non-200 / raising session must not crash — returns [] for that symbol.
+    async def test_coingecko_error_is_swallowed(self, updater, monkeypatch):
+        """A raising session must not crash the cycle.
+
+        Pinned to ``ORACLE_CRYPTO_SOURCE=coingecko_only`` (#1710) so this keeps
+        asserting exactly what it always asserted — the CoinGecko leg alone,
+        returning [] on failure. The DEFAULT mode now consults the provider
+        seam after a CoinGecko miss, which is a different contract and is
+        covered by ``test_oracle_crypto_source.py``; leaving this test on the
+        default would silently turn it into a LIVE yfinance fetch (it has no
+        provider double), which is both non-hermetic and no longer a test of
+        this leg.
+        """
+        monkeypatch.setenv("ORACLE_CRYPTO_SOURCE", "coingecko_only")
         session_cm = MagicMock()
         session_cm.__aenter__ = AsyncMock(side_effect=RuntimeError("network down"))
         session_cm.__aexit__ = AsyncMock(return_value=False)
         with patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm):
             results = await updater._fetch_crypto(datetime.now(UTC))
         assert results == []
+        # Not silent: the symbol carries a named reason for _log_push_exclusions.
+        assert "network down" in updater._source_miss_reasons["sBTC"]
 
 
 class TestFetchMarketSnapshot:
