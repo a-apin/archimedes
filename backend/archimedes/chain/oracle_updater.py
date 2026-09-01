@@ -362,9 +362,11 @@ class OracleUpdater:
         from archimedes.chain.client import chain_client
 
         oracle_addresses = chain_client.settings.oracle_addresses
-        # (symbol, human price, 6-dec int, Circle tx id) per accepted submission,
-        # pending on-chain confirmation.
-        submitted: list[tuple[str, float, int, str]] = []
+        # (symbol, human price, 6-dec int, Circle tx id, state already reported
+        # by the create-transaction call itself — None when the submission was
+        # still in flight) per accepted submission, pending on-chain
+        # confirmation.
+        submitted: list[tuple[str, float, int, str, str | None]] = []
         confirmed_tx_ids: list[str] = []
 
         async with aiohttp.ClientSession() as session:
@@ -488,7 +490,7 @@ class OracleUpdater:
                         tx_id = data.get("id") if isinstance(data, dict) else None
                         state = data.get("state") if isinstance(data, dict) else None
                         if tx_id and state not in _TX_FAILURE_STATES:
-                            submitted.append((price.symbol, price.price_usd, price_int, tx_id))
+                            submitted.append((price.symbol, price.price_usd, price_int, tx_id, state))
                             logger.info(
                                 f"Submitted {price.symbol} price {price.price_usd:.2f} → Circle tx {tx_id}"
                                 + (f" ({state})" if state else "")
@@ -508,8 +510,29 @@ class OracleUpdater:
             # counts as pushed; anything else leaves the cached deviation
             # reference untouched and is logged loudly so a stuck oracle is
             # visible to operators, never masked.
-            for symbol, price_usd, price_int, tx_id in submitted:
-                state = await self._poll_circle_tx(session, tx_id)
+            for symbol, price_usd, price_int, tx_id, submit_state in submitted:
+                # The create-transaction call itself can already report a
+                # terminal-success state (#1711: an idempotency-key dedup hit
+                # on a tx that completed several cycles ago — unchanged price,
+                # e.g. an equity synth over a weekend, keeps producing the
+                # same idempotency key). Re-polling that tx via
+                # `_poll_circle_tx` (`/transactions?pageSize=50`) is not just
+                # wasteful, it is WRONG: that endpoint only returns the most
+                # recent 50 transactions account-wide, so an already-resolved
+                # tx from a prior cycle can have scrolled off the window by
+                # the time this poll runs. `_poll_circle_tx` would then report
+                # "TIMEOUT" for a push that had already succeeded — logging a
+                # false error AND feeding the wedge tracker below, which after
+                # `_tx_max_repolls` consecutive false hits abandons a
+                # perfectly good tx and submits a genuinely NEW on-chain
+                # transaction for a price already pushed, burning gas for
+                # nothing. A submit-time terminal-success state is already
+                # authoritative — narrow the parse to trust it instead of
+                # re-deriving the same fact from a narrower, staler view.
+                if submit_state in _TX_SUCCESS_STATES:
+                    state = submit_state
+                else:
+                    state = await self._poll_circle_tx(session, tx_id)
                 was_reseed = symbol in self._pending_reseed
                 if state in _TX_SUCCESS_STATES:
                     self._last_pushed_price_int[symbol] = price_int

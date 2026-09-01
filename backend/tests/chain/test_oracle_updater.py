@@ -473,6 +473,106 @@ class TestSubmissionResponseParsing:
         assert any("Circle API error" in m for m in error_messages), error_messages
 
 
+# ── Dedup-hit COMPLETE must skip the re-poll entirely (#1711) ──────────────
+
+
+@pytest.mark.usefixtures("circle_creds")
+class TestDedupHitCompleteSkipsRepoll:
+    """#1525 fixed the create-transaction response's OWN grading (200/COMPLETE
+    is a success, not an error). But the confirmation phase then unconditionally
+    re-polled every submission via `_poll_circle_tx`, which only inspects the
+    most recent 50 transactions account-wide — so a dedup-hit tx that actually
+    completed several cycles ago (unchanged price, e.g. an equity synth over a
+    weekend keeps reproducing the same idempotency key) can have scrolled off
+    that window by the time the poll runs. The captured production symptom
+    (issue #1711): `Circle API error for sSPY (200): {'data': {'id':
+    'c94fa26b-...', 'state': 'COMPLETE'}}` re-logged every cycle for a push
+    that had already succeeded — and, left unbounded, the false TIMEOUT this
+    produced would feed the wedge tracker into abandoning a perfectly good tx
+    and submitting a genuinely NEW on-chain transaction, burning gas for a
+    price already pushed. The fix: a submit-time terminal-success state is
+    already authoritative, so it must never be re-derived from that narrower,
+    staler view."""
+
+    def _updater_with_dedup_hit(self, tx_id: str, state: str = "COMPLETE"):
+        updater = OracleUpdater()
+        updater._circle_public_key = "cached-pem"
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"data": {"id": tx_id, "state": state}})
+        return updater, _mock_aiohttp_session(post_response=resp)
+
+    async def test_exact_captured_payload_skips_repoll_and_logs_info(self, caplog):
+        # The exact shape from the issue's live log line: HTTP 200, a
+        # dedup-hit tx id, state already COMPLETE.
+        tx_id = "c94fa26b-1234-5678-9abc-def012345678"
+        updater, (session_cm, _session) = self._updater_with_dedup_hit(tx_id)
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            # If the fix regresses and this gets called, make the regression
+            # loud: TIMEOUT is exactly what a scrolled-off-the-window poll
+            # would return for an already-complete tx in production.
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="TIMEOUT")) as poll,
+            caplog.at_level(logging.INFO, logger="archimedes.chain.oracle_updater"),
+        ):
+            result = await updater.push_prices_on_chain([good])
+
+        assert result == tx_id
+        assert updater._last_pushed_price_int["sSPY"] == _int6(110.0)
+        poll.assert_not_called()  # submit-time COMPLETE is authoritative — no re-poll
+        assert "sSPY" not in updater._wedge_tracking
+        error_messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert not error_messages, error_messages
+        info_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert any(tx_id in m and "COMPLETE" in m for m in info_messages), info_messages
+
+    async def test_repeated_dedup_hits_never_trigger_wedge_retry(self):
+        # Gas-waste guard: an unchanged weekend price reproduces the identical
+        # idempotency key every cycle, so Circle keeps returning the SAME
+        # dedup-hit 200/COMPLETE for MANY consecutive cycles — well past
+        # ORACLE_TX_MAX_REPOLLS. None of that may ever be misread as a wedge:
+        # a real retry here is a real on-chain forceless setPrice tx, i.e. real
+        # gas spent on a price that was already pushed.
+        tx_id = "c94fa26b-1234-5678-9abc-def012345678"
+        updater, (session_cm, _session) = self._updater_with_dedup_hit(tx_id)
+        updater._tx_max_repolls = 10
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="TIMEOUT")) as poll,
+        ):
+            for _ in range(25):  # well past the 10-cycle abandonment threshold
+                result = await updater.push_prices_on_chain([good])
+                assert result == tx_id
+
+        poll.assert_not_called()
+        assert updater._wedge_tracking == {}
+        assert updater._tx_retry_salt.get("sSPY", 0) == 0  # no retry ever fired
+
+    async def test_non_terminal_submission_still_polls_normally(self, caplog):
+        # Regression guard: this fix must not swallow the normal path — a
+        # submission that is genuinely still in flight (no terminal state yet)
+        # must still go through the real confirmation poll.
+        tx_id = "tx-in-flight"
+        updater, (session_cm, _session) = self._updater_with_dedup_hit(tx_id, state="PENDING")
+        good = _price(symbol="sSPY", usd=110.0)
+        with (
+            patch("archimedes.chain.oracle_updater.aiohttp.ClientSession", return_value=session_cm),
+            patch("archimedes.chain.oracle_updater._encrypt_entity_secret", return_value="ciphertext"),
+            patch.object(updater, "_get_reference_price_int", AsyncMock(return_value=(_int6(100.0), True))),
+            patch.object(updater, "_poll_circle_tx", AsyncMock(return_value="COMPLETE")) as poll,
+        ):
+            result = await updater.push_prices_on_chain([good])
+
+        assert result == tx_id
+        poll.assert_called_once()
+        assert updater._last_pushed_price_int["sSPY"] == _int6(110.0)
+
+
 # ── Wedged-tx abandonment (#1525) ──────────────────────────────────────────
 
 
