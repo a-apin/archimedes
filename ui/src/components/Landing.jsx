@@ -558,7 +558,7 @@ function EvidenceLedger() {
 				<nav className="public-proof-strip__links" aria-label="Evidence links">
 					<a href="/architecture">System architecture</a>
 					<a
-						href="https://github.com/a-apin/archimedes"
+						href="https://github.com/aprin-labs/archimedes"
 						target="_blank"
 						rel="noreferrer"
 					>
@@ -736,7 +736,7 @@ function PublicFooter() {
 					<a href="/llms.txt">Agent API</a>
 					<a href="/.well-known/agent.json">Agent manifest</a>
 					<a
-						href="https://github.com/a-apin/archimedes"
+						href="https://github.com/aprin-labs/archimedes"
 						target="_blank"
 						rel="noreferrer"
 					>
@@ -746,7 +746,7 @@ function PublicFooter() {
 				<nav aria-label="Project links">
 					<strong>Project</strong>
 					<a
-						href="https://github.com/a-apin/archimedes/blob/main/LICENSE"
+						href="https://github.com/aprin-labs/archimedes/blob/main/LICENSE"
 						target="_blank"
 						rel="noreferrer"
 					>

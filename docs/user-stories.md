@@ -149,7 +149,7 @@ Each step, expressed as the story the user is living:
 > (`ROADMAP_SURFACES_ENABLED`, off by default), and no user vault has been
 > deployed. Paper trading is the honest execute substitute when it is used.
 > Two books, neither is vault validation
-> ([PR #1704 comment](https://github.com/a-apin/archimedes/pull/1704#issuecomment-5493036672)):
+> ([PR #1704 comment](https://github.com/aprin-labs/archimedes/pull/1704#issuecomment-5493036672)):
 > `paper_daily_returns` is the graded track record the rigor gate sees;
 > `paper_agent_trades` is an executor ledger / signal-state index (not on
 > `main`). Do not round this up into “paper trading validates the vault.”

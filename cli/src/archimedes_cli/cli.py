@@ -133,7 +133,7 @@ def _unavailable(command: str, *, as_json: bool, lands_in: str = "unscheduled") 
         click.echo(json.dumps(payload))
     else:
         click.echo(message, err=True)
-        click.echo("See https://github.com/a-apin/archimedes for progress.", err=True)
+        click.echo("See https://github.com/aprin-labs/archimedes for progress.", err=True)
     sys.exit(exits.NOT_IMPLEMENTED)
 
 

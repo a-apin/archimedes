@@ -161,8 +161,8 @@ async def get_agent_manifest():
         ),
         "docs": {
             "llms_txt": "/llms.txt",
-            "agent_api": "https://github.com/a-apin/archimedes/blob/main/docs/agent-api.md",
-            "quickstart": "https://github.com/a-apin/archimedes/blob/main/docs/agent-quickstart.md",
+            "agent_api": "https://github.com/aprin-labs/archimedes/blob/main/docs/agent-api.md",
+            "quickstart": "https://github.com/aprin-labs/archimedes/blob/main/docs/agent-quickstart.md",
             "agent_card": "/.well-known/agent.json",
         },
         # On-chain identity leg — pending, and says so. See erc8004_identity().

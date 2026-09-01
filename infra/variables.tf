@@ -37,7 +37,7 @@ variable "project_name" {
 variable "repo_url" {
   description = "GitHub repo HTTPS URL for cloning on the instance"
   type        = string
-  default     = "https://github.com/a-apin/archimedes.git"
+  default     = "https://github.com/aprin-labs/archimedes.git"
 }
 
 # AMI for the backend auto-scaling group (issue #155, OPTIONAL virality tier).

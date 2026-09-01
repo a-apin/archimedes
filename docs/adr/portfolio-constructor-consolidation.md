@@ -7,7 +7,7 @@
 > **Supersedes:** —
 > **Superseded-by:** —
 > **Question being decided:** Which portfolio-construction path is canonical — the legacy `kelly_portfolio` + old generic `portfolio_constructor`, or a new dual-signal implementation that throttles by market regime × ensemble consensus?
-> **Related:** [#659](https://github.com/a-apin/archimedes/issues/659) (consensus rename), [#660](https://github.com/a-apin/archimedes/issues/660) (regime detector), `backend/archimedes/services/portfolio_constructor.py`, `backend/archimedes/chain/agent_runner.py`.
+> **Related:** [#659](https://github.com/aprin-labs/archimedes/issues/659) (consensus rename), [#660](https://github.com/aprin-labs/archimedes/issues/660) (regime detector), `backend/archimedes/services/portfolio_constructor.py`, `backend/archimedes/chain/agent_runner.py`.
 
 ## TL;DR
 

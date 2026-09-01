@@ -4,7 +4,7 @@ Two ways to authenticate as an account, in this order:
 
 1. **``ARCHIMEDES_API_KEY``** → sent as ``Authorization: Bearer <key>``. This is the
    scoped-API-key lane opened by owner decision **D3** on
-   `PR #1653 <https://github.com/a-apin/archimedes/pull/1653>`_ and implemented on branch
+   `PR #1653 <https://github.com/aprin-labs/archimedes/pull/1653>`_ and implemented on branch
    ``dbrowneup/1653-scoped-api-keys`` (``docs/api/api-keys.md`` there). **That branch is
    not merged to ``main`` at the time of writing**, so against today's production a bearer
    key resolves to no user and the API answers ``401``. The header is written now, exactly

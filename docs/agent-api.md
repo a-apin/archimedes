@@ -13,7 +13,7 @@ Two reasons this matters:
    human would hit, fast and repeatably.
 2. **The agent-user segment** — an agent that sends a non-browser `User-Agent` is
    classified as an external agent by the telemetry middleware and its
-   `generation_started` is attributed in the conversion funnel ([#787](https://github.com/a-apin/archimedes/issues/787)).
+   `generation_started` is attributed in the conversion funnel ([#787](https://github.com/aprin-labs/archimedes/issues/787)).
    An agent holding an **API key** does better: it is classified `keyed` from the
    credential itself rather than from a header it chose.
 
@@ -426,10 +426,10 @@ request sent — unless the winning candidate's LIVE GATE read above is
 and sends nothing. Pass `--deploy` to actually call the endpoint. The default
 stays OFF, but the original reason no longer holds: the T3.2 redeploy landed
 2026-07-09 and issue
-[#588](https://github.com/a-apin/archimedes/issues/588) (whether the repo's
+[#588](https://github.com/aprin-labs/archimedes/issues/588) (whether the repo's
 cached ABI matches the live deployed bytecode) closed 2026-07-14. The
 `deploy` group has been `live` in the served manifest since
-[#1447](https://github.com/a-apin/archimedes/pull/1447). It stays OFF now for
+[#1447](https://github.com/aprin-labs/archimedes/pull/1447). It stays OFF now for
 the ordinary reason: this call spends gas and creates a real on-chain vault,
 so it should be an explicit act, not a default.
 
@@ -487,7 +487,7 @@ not part of the key lane itself.
 
 **Correction (2026-08-31).** An earlier version of this section said funnel
 segmentation by `agent_type` "remains open work". That was true when it was
-written and is not true now: [#788](https://github.com/a-apin/archimedes/issues/788)
+written and is not true now: [#788](https://github.com/aprin-labs/archimedes/issues/788)
 shipped, and `GET /api/metrics/funnel` returns a per-stage `by_agent_type`
 breakdown over `internal` / `keyed` / `external` / `human`. What is still open is
 **interpretation**: before the API-key lane, an authenticated agent was

@@ -13,8 +13,8 @@
 
 site_name: Archimedes
 site_url: https://docs.archimedes-arc.com
-repo_url: https://github.com/a-apin/archimedes
-repo_name: a-apin/archimedes
+repo_url: https://github.com/aprin-labs/archimedes
+repo_name: aprin-labs/archimedes
 edit_uri: edit/main/docs/
 
 docs_dir: docs

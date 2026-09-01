@@ -30,7 +30,7 @@ pass moved the remaining `OVER-CLAIMED` generation-on-chain tags to `CHANGED`.
 Two things this file deliberately does **not** do. It does not quote a curated-library
 pass count — `CLAUDE.md` forbids it and the live gate is the only authority. And it does
 not fix copy: `OVER-CLAIMED` rows are findings, and the fix is a separate change per
-[#1241](https://github.com/a-apin/archimedes/issues/1241)'s own sequencing.
+[#1241](https://github.com/aprin-labs/archimedes/issues/1241)'s own sequencing.
 
 ## Method
 
@@ -63,7 +63,7 @@ checks that recur:
 | "Arc census live — ≥N reported instances" | `TRUE` | `ui/src/components/Landing.jsx:504` renders "Live census unavailable · No cached count substituted" when `GET /api/config/contracts` fails or the pool count is unreadable. The count is a floor by construction (`:16` scopes it to five core fields). |
 | The page quotes no strategy pass count and no performance number | `TRUE` | The only percentage on the page is "70/30" — a methodology parameter, not a result. Deliberate; see `ui/src/components/Landing.jsx:90`. |
 | Footer / announcement — "No real funds" | `CHANGED` | Was an unqualified "No real funds" on `PublicLayout.jsx` and the Landing footer, which read as *nothing you sign moves value* after the generation paywall shipped (`dry_run: false`). Narrowed to no mainnet money; generation fee is real testnet USDC: `ui/src/components/PublicLayout.jsx:23`, `ui/src/components/Landing.jsx:762`. |
-| "Does Archimedes trade for me?" paper-trading split | `CHANGED` | Landing FAQ no longer names the unmerged `paper_agent_trades` table as a visitor path. `ui/src/components/Landing.jsx:182` says simulated paper trading grades `paper_daily_returns`, not on-chain execution proof. The two-book split from [PR #1704](https://github.com/a-apin/archimedes/pull/1704#issuecomment-5493036672) lives on machine surfaces (`agent.json` paper note), which state that table is not on main. |
+| "Does Archimedes trade for me?" paper-trading split | `CHANGED` | Landing FAQ no longer names the unmerged `paper_agent_trades` table as a visitor path. `ui/src/components/Landing.jsx:182` says simulated paper trading grades `paper_daily_returns`, not on-chain execution proof. The two-book split from [PR #1704](https://github.com/aprin-labs/archimedes/pull/1704#issuecomment-5493036672) lives on machine surfaces (`agent.json` paper note), which state that table is not on main. |
 
 ## Security page — `ui/src/components/Security.jsx`
 
@@ -197,8 +197,8 @@ unset, so the boundary holds under both answers.
 
 The owner's framing, recorded here because the ledger is where the public position lives.
 The decision record is `docs/adr/market-data-sourcing.md`, added by the now-merged
-[#1218](https://github.com/a-apin/archimedes/issues/1218) work — open as
-[PR #1627](https://github.com/a-apin/archimedes/pull/1627), not merged as of 2026-08-31.
+[#1218](https://github.com/aprin-labs/archimedes/issues/1218) work — open as
+[PR #1627](https://github.com/aprin-labs/archimedes/pull/1627), not merged as of 2026-08-31.
 The rows below are marked `PENDING ADR MERGE` until it lands, and they should be re-pointed
 at the ADR then; the guard in `backend/tests/test_claims_ledger.py` fails the moment the
 file appears, so that re-pointing cannot be forgotten. Checked against that PR's diff:

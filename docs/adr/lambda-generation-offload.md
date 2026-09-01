@@ -1,7 +1,7 @@
 # ADR: Offloading generation to Lambda — measured, and deferred
 
 > **Audience:** Archimedes team
-> **Status:** Proposed — verdict **DEFER** (spike for [#1411](https://github.com/a-apin/archimedes/issues/1411); feeds [#1217](https://github.com/a-apin/archimedes/issues/1217))
+> **Status:** Proposed — verdict **DEFER** (spike for [#1411](https://github.com/aprin-labs/archimedes/issues/1411); feeds [#1217](https://github.com/aprin-labs/archimedes/issues/1217))
 > **Date:** 2026-08-30
 > **Owner:** Dan Browne
 > **Supersedes:** —
