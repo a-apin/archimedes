@@ -130,8 +130,9 @@ class _MechanismBackend:
         self._source_ids = list(source_ids if source_ids is not None else _ALL_IDS)
 
     def complete(self, system: str, user: str) -> str:
-        # The prompt itself is asserted in test_strategy_fusion.py; this stub
-        # only has to answer in the proposal's output shape.
+        # The prompt's paper_mechanisms schema + the omit-don't-pad rule are
+        # asserted by test_the_prompts_carry_the_mechanism_map_contract below;
+        # this stub only has to answer in the proposal's output shape.
         return json.dumps(
             {
                 "strategy_name": "Single-mechanism crossover",
@@ -141,7 +142,7 @@ class _MechanismBackend:
                 "novelty_rationale": "The combination is unpublished.",
                 "risk_notes": "Pre-backtest; the rigor gate still applies.",
                 "paper_mechanisms": self._mechanisms,
-                "strategy_spec": dict(_SINGLE_MECHANISM_SPEC),
+                "strategy_spec": {**_SINGLE_MECHANISM_SPEC, "source_arxiv_ids": list(self._source_ids)},
             }
         )
 
@@ -175,6 +176,51 @@ def _use_tmp_db(tmp_path, monkeypatch):
 
 
 # ── 1. The mapping ──────────────────────────────────────────────────────────
+
+
+def test_a_mechanism_for_a_paper_the_proposal_does_not_cite_is_dropped(monkeypatch):
+    """The id half of the map is anti-hallucination, same shape as ``valid_ids``.
+
+    An entry naming a paper the proposal did not cite — a real corpus paper it
+    left out, or an id that exists nowhere — is dropped, never repaired into
+    the citation list. Without this, a model could claim mechanisms for papers
+    it never fused and the count would credit them. MUTATION: delete the
+    ``cited_ids`` filter in ``StrategyFusion.propose`` — ``2403.00003`` survives
+    and the count reads 2.
+    """
+    mechanisms = [
+        {"arxiv_id": "2401.00001", "mechanism": "trend filter", "spec_elements": ["sma_200"]},
+        # A real corpus paper this proposal does NOT cite.
+        {"arxiv_id": "2403.00003", "mechanism": "vol band", "spec_elements": ["sma_200"]},
+        # An id that exists nowhere.
+        {"arxiv_id": "2499.99999", "mechanism": "invented", "spec_elements": ["sma_200"]},
+    ]
+
+    proposal = _propose(monkeypatch, mechanisms, source_ids=["2401.00001", "2402.00002"])
+
+    assert proposal.status == "ok"
+    assert proposal.source_arxiv_ids == ["2401.00001", "2402.00002"], "the citation list is not padded from the map"
+    assert [e["arxiv_id"] for e in proposal.paper_mechanisms] == ["2401.00001"]
+    assert proposal.distinct_mechanism_papers == 1
+
+
+def test_the_prompts_carry_the_mechanism_map_contract():
+    """Scope item 1's first half lives in prompt text, so it is pinned here.
+
+    The proposer prompt must ask for ``paper_mechanisms`` with ``spec_elements``
+    and state the omit-don't-pad rule; the spec-repair prompt (which emits only
+    the spec) must say ``paper_mechanisms`` is NOT a spec key, and must not ask
+    for the map itself — a repair that re-emitted the map would be the model
+    self-reporting twice.
+    """
+    from archimedes.agents.strategy_fusion import _SPEC_CONTRACT, _SPEC_REPAIR_SYSTEM, _SYSTEM_PROMPT
+
+    assert '"paper_mechanisms": [' in _SYSTEM_PROMPT
+    assert '"spec_elements": [' in _SYSTEM_PROMPT
+    assert "OMIT that id from `source_arxiv_ids`" in _SYSTEM_PROMPT
+    assert "paper_mechanisms is a TOP-LEVEL field of the proposal, NOT a key inside strategy_spec" in _SPEC_CONTRACT
+    assert _SPEC_CONTRACT in _SPEC_REPAIR_SYSTEM
+    assert '"paper_mechanisms": [' not in _SPEC_REPAIR_SYSTEM
 
 
 def test_unattributed_citation_does_not_count_as_a_mechanism_paper(monkeypatch, caplog):
