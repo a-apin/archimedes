@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 
 import pytest
 from archimedes.models.chat import Base
 from archimedes.models.corpus_store import PaperRecord
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 
@@ -463,3 +464,142 @@ class TestAuthorLegGuardIsScopedToTheAuthorLeg:
             "the structural-character guard leaked out of the author leg and broke prose search"
         )
         assert result["papers"][0]["arxiv_id"] == "2601.50003"
+
+
+class TestSearchIssuesOneQuery:
+    """The search predicate is evaluated ONCE per request, not twice (#1665).
+
+    `list_papers` used to run `query.count()` and then a separately-planned
+    page query over the same filter, so a single keystroke made the database
+    evaluate three unanchored `ILIKE '%term%'` legs across the papers table
+    twice, back to back. `count(*) OVER ()` carries the match count on every
+    returned row, so both come out of one statement and one scan.
+
+    These tests read the SQL the ORM actually emits rather than trusting the
+    source, because "one query" is exactly the kind of property that a later
+    refactor re-breaks invisibly — the results stay correct, only the cost
+    doubles.
+    """
+
+    @staticmethod
+    @contextmanager
+    def _captured_sql(session):
+        """Every statement the session's engine executes inside the block."""
+        statements: list[str] = []
+        engine = session.get_bind()
+
+        def _record(_conn, _cursor, statement, _params, _context, _executemany):
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _record)
+        try:
+            yield statements
+        finally:
+            event.remove(engine, "before_cursor_execute", _record)
+
+    @staticmethod
+    def _search_statements(statements):
+        """Statements that actually evaluate the search predicate.
+
+        SQLite renders `ilike` as `lower(x) LIKE lower(?)`, Postgres as
+        `ILIKE` — matching on `LIKE` covers both. The cheap
+        `_any_paper_processed` existence probe carries no LIKE and is
+        correctly excluded.
+        """
+        return [s for s in statements if "LIKE" in s.upper()]
+
+    def test_a_search_evaluates_the_predicate_once(self, session, monkeypatch):
+        from archimedes.api import papers_routes
+
+        for i in range(5):
+            _add_paper(session, f"2601.60{i:03d}", authors=["Ada Lovelace"], title=f"Momentum study {i}")
+        _add_paper(session, "2601.60999", authors=["Alan Turing"], title="Unrelated work")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        with self._captured_sql(session) as statements:
+            result = asyncio.run(
+                papers_routes.list_papers(page=1, page_size=20, category=None, search="momentum", processed_only=True)
+            )
+
+        # The answer must still be right — a fast wrong count is worse than a
+        # slow right one.
+        assert result["total"] == 5
+        assert len(result["papers"]) == 5
+
+        searches = self._search_statements(statements)
+        assert len(searches) == 1, (
+            f"the search predicate was evaluated {len(searches)} times, expected 1:\n" + "\n---\n".join(searches)
+        )
+        # ...and the one statement really is doing both jobs, rather than the
+        # count having been dropped.
+        only = searches[0].upper()
+        assert "OVER (" in only, f"the surviving statement carries no window function:\n{searches[0]}"
+        assert "LIMIT" in only, f"the surviving statement is not the paged query:\n{searches[0]}"
+
+    def test_the_count_is_the_full_match_count_not_the_page_size(self, session, monkeypatch):
+        """The window counts the filtered set, not the returned page.
+
+        `count(*) OVER ()` is evaluated before OFFSET/LIMIT; getting that wrong
+        would silently cap "N papers found" at page_size, which is the exact
+        bug #1451 fixed on the frontend.
+        """
+        from archimedes.api import papers_routes
+
+        for i in range(25):
+            _add_paper(session, f"2601.61{i:03d}", authors=["Ada Lovelace"], title=f"Momentum study {i}")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=1, page_size=10, category=None, search="momentum", processed_only=True)
+        )
+        assert result["total"] == 25, "the window count reported the page, not the match set"
+        assert len(result["papers"]) == 10
+
+    def test_an_out_of_range_page_still_reports_the_true_total(self, session, monkeypatch):
+        """The one case a window function cannot answer, and the fallback for it.
+
+        A window over zero returned rows reports zero. Left unhandled, `?page=9`
+        of a 25-match query would render "0 papers found" while page 1 renders
+        "25" — the UI contradicting itself depending on where you are in the
+        pagination. The count() fallback is paid here and only here.
+        """
+        from archimedes.api import papers_routes
+
+        for i in range(25):
+            _add_paper(session, f"2601.62{i:03d}", authors=["Ada Lovelace"], title=f"Momentum study {i}")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        result = asyncio.run(
+            papers_routes.list_papers(page=9, page_size=10, category=None, search="momentum", processed_only=True)
+        )
+        assert result["papers"] == []
+        assert result["total"] == 25, "an out-of-range page reported 0 matches for a query with 25"
+
+    def test_the_hot_path_pays_no_second_pass_when_the_page_is_empty_at_page_one(self, session, monkeypatch):
+        """A genuine zero-match search must NOT trigger the fallback count.
+
+        This is the every-keystroke case while a user is still typing a term
+        that matches nothing yet — the most common search of all — so paying a
+        second scan here would undo the fix on precisely the hottest path.
+        """
+        from archimedes.api import papers_routes
+
+        _add_paper(session, "2601.63001", authors=["Ada Lovelace"], title="Unrelated work")
+        session.commit()
+        monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
+
+        with self._captured_sql(session) as statements:
+            result = asyncio.run(
+                papers_routes.list_papers(
+                    page=1, page_size=20, category=None, search="zzzznonsense", processed_only=True
+                )
+            )
+
+        assert result["total"] == 0
+        searches = self._search_statements(statements)
+        assert len(searches) == 1, (
+            f"a zero-match search on page 1 fell through to a second pass ({len(searches)} statements)"
+        )

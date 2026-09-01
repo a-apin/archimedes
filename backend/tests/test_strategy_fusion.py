@@ -18,9 +18,13 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 from archimedes.agents.strategy_fusion import (
+    DEFAULT_MAX_PAPERS,
+    FUSE_TARGET_MIN,
+    FUSION_MAX_PAPERS,
     MIN_PAPERS,
     SUPPORTED_UNIVERSE,
     CorpusPaper,
@@ -32,6 +36,7 @@ from archimedes.agents.strategy_fusion import (
     fusion_enabled,
     load_corpus,
     select_candidates,
+    select_candidates_scored,
 )
 from archimedes.models.portfolio import RiskProfile
 
@@ -322,11 +327,18 @@ def test_propose_survives_array_wrapped_object(monkeypatch, corpus):
 
 
 def test_prompt_demands_at_least_two_papers(monkeypatch, corpus):
+    """#1636 rewrote this rule. The prompt used to say the literal "AT LEAST
+    TWO" and nothing else — no target, no penalty for stopping at two, which
+    is why two was what came back. It now names BOTH numbers: the target we
+    ask for (FUSE_TARGET_MIN) and the floor that actually rejects
+    (MIN_PAPERS). The floor half of the old assertion is what survives."""
     monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
     backend = _MockBackend()
     svc = StrategyFusion(backend=backend, corpus=corpus)
     svc.propose(FusionBrief(asset_classes=["equities", "rates", "vol"]))
-    assert "AT LEAST TWO" in backend.system
+    assert f"NEVER fewer than {MIN_PAPERS}" in backend.system
+    assert f"AT LEAST {FUSE_TARGET_MIN}" in backend.system
+    assert "AT LEAST TWO" not in backend.system  # the old anchor-on-two rule is gone
 
 
 # ── Insufficient corpus / >=2 floor declines ────────────────────
@@ -747,3 +759,177 @@ def test_broad_paper_filter_classes_still_report_as_gaps_on_full_fallback(monkey
     assert proposal.status == "ok"
     assert proposal.universe_source == "full"
     assert proposal.universe_gaps == []
+
+
+# ── #1636 — "ask for 5, allow 30, keep 2 as the honest floor" ────────────────
+#
+# Generated strategies cited two papers almost every time. Not truncation:
+# `max_papers` was retrieval width AND the fusion budget, the prompt anchored
+# on "AT LEAST TWO", and the >=2 gate made two a pass rather than a signal.
+# The four tests below are the issue's machine-checkable acceptance criteria.
+# The safeguard they exist to protect: a 30-paper set comes off a LEXICAL
+# substring filter, so the tail is plausibly noise. Forcing five citations
+# against that tail makes the model fabricate mechanisms, and a fabricated
+# mechanism in the provenance record reads downstream as evidence depth. A
+# justified two beats a padded five, so shortfall is logged, never blocked.
+
+_WIDE_EQUITY_ROWS = [
+    {
+        "arxiv_id": f"2601.{i:05d}",
+        "title": f"Cross-Sectional Equity Momentum, Study {i}",
+        "authors": ["W. Wide"],
+        "primary_category": "q-fin.PM",
+        "categories": ["q-fin.PM"],
+        "published": f"2026-01-{(i % 28) + 1:02d}",
+        "abstract": (f"Trend and momentum in the cross-section of stock returns, portfolio construction study {i}."),
+    }
+    for i in range(1, 28)
+]
+
+# Exactly three papers a narrow "fx" steer can match — the thin-steer probe.
+# Deliberately carries no equity vocabulary, and the equity rows above carry no
+# fx/currency/carry-trade vocabulary, so neither steer bleeds into the other.
+_WIDE_FX_ROWS = [
+    {
+        "arxiv_id": f"2602.{i:05d}",
+        "title": f"Currency Carry Trade Dynamics {i}",
+        "authors": ["N. Narrow"],
+        "primary_category": "q-fin.TR",
+        "categories": ["q-fin.TR"],
+        "published": f"2026-02-{i:02d}",
+        "abstract": f"A currency carry trade study on major exchange rate pairs, part {i}.",
+    }
+    for i in range(1, 4)
+]
+
+
+@pytest.fixture
+def wide_corpus(tmp_path):
+    """30 papers: 27 equity + 3 fx. Wide enough to exercise the raised ceiling,
+    and shaped so a narrow steer matches exactly three."""
+    p = tmp_path / "wide.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in [*_WIDE_EQUITY_ROWS, *_WIDE_FX_ROWS]), encoding="utf-8")
+    papers = load_corpus(p)
+    assert len(papers) == 30
+    return papers
+
+
+@pytest.fixture
+def keyword_only_retrieval(monkeypatch):
+    """Pin retrieval to the keyword path for the #1636 tests below.
+
+    Explicitly requested, never autouse — the module's existing ranking tests
+    run with the semantic rerank ON and must keep doing so. The rerank re-sorts
+    but never re-sizes the candidate set, so the counts asserted below are the
+    same either way; pinning it off keeps these tests hermetic (no
+    sentence-transformers load) and their ordering stable.
+    """
+    monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "false")
+
+
+def test_candidate_set_reaches_target_when_corpus_allows(keyword_only_retrieval, wide_corpus):
+    """The ceiling was 6, so `max_papers=30` was silently a 6-paper prompt.
+    Retrieval width now actually reaches 30 when the corpus has 30."""
+    brief = FusionBrief(asset_classes=[], max_papers=30)
+    assert brief.paper_budget == 30
+    assert len(select_candidates(brief, wide_corpus)) == 30
+
+
+def test_prompt_states_the_fuse_target_and_the_hard_floor(keyword_only_retrieval, monkeypatch, wide_corpus):
+    """The prompt must carry THREE distinct numbers — the floor that rejects,
+    the target we ask for, and the width of the set — plus the shortfall
+    justification rule. Anchoring on one number is what produced two papers."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    backend = _MockBackend()
+    StrategyFusion(backend=backend, corpus=wide_corpus).propose(FusionBrief(asset_classes=[], max_papers=30))
+
+    assert str(FUSE_TARGET_MIN) in backend.system
+    assert "justify" in backend.system.lower()
+
+    sent = json.loads(backend.user)
+    assert len(sent["candidate_papers"]) == 30
+    assert sent["user_steer"]["target_papers_to_fuse"] == FUSE_TARGET_MIN == 5
+    assert sent["user_steer"]["min_papers_to_fuse"] == MIN_PAPERS == 2
+
+
+def test_two_paper_fusion_still_accepted_but_flagged(keyword_only_retrieval, monkeypatch, caplog, wide_corpus):
+    """The non-negotiable safeguard. A model that cites 2 of 30 is ACCEPTED —
+    MIN_PAPERS stays the only hard reject — but the shortfall is recorded, so
+    "cited 2" is distinguishable from "cited 2 of 30" without re-reading the
+    prompt. Delete the shortfall log line and this fails."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+    caplog.set_level(logging.WARNING, logger="archimedes.agents.strategy_fusion")
+
+    # _MockBackend cites exactly the first 2 candidates (+ one hallucinated id
+    # that the valid_ids filter drops) — a 2-of-30 answer.
+    proposal = StrategyFusion(backend=_MockBackend(), corpus=wide_corpus).propose(
+        FusionBrief(asset_classes=[], max_papers=30)
+    )
+
+    assert proposal.status == "ok"
+    assert proposal.is_actionable is True
+    assert len(proposal.source_arxiv_ids) == 2
+    assert proposal.papers_offered == 30
+    assert proposal.is_shortfall is True
+
+    shortfall_lines = [r.getMessage() for r in caplog.records if "shortfall" in r.getMessage()]
+    assert shortfall_lines, "a below-target citation count must leave a shortfall log line"
+    assert "2 paper(s) of 30 offered" in shortfall_lines[0]
+
+
+def test_thin_steer_degrades_honestly_not_by_padding(keyword_only_retrieval, wide_corpus):
+    """A steer only three papers can satisfy yields THREE. The raised ceiling
+    must never be reached by relaxing the asset filter to backfill the tail —
+    that would put q-fin noise in front of the model as if it were evidence."""
+    brief = FusionBrief(asset_classes=["fx"], max_papers=30)
+    picked = select_candidates(brief, wide_corpus)
+    assert len(picked) == 3
+    assert all(p.arxiv_id.startswith("2602.") for p in picked)
+
+
+def test_min_papers_stays_two_and_is_below_the_fuse_target():
+    """The anti-goal, pinned. Raising MIN_PAPERS to 5 turns retrieval thinness
+    into a failed generation instead of a narrower strategy."""
+    assert MIN_PAPERS == 2
+    assert MIN_PAPERS < FUSE_TARGET_MIN < FUSION_MAX_PAPERS
+    # And the default is above the target, so the model has room to reject a
+    # paper without that being automatically a shortfall.
+    assert FUSE_TARGET_MIN < DEFAULT_MAX_PAPERS <= FUSION_MAX_PAPERS
+
+
+def test_select_candidates_scored_preserves_the_rerank_floats(monkeypatch, corpus):
+    """`ranked = [c for c, _s in scored]` discarded the similarity at the exact
+    moment it was computed, so nothing downstream could ever cut at a floor
+    instead of a rank. The scores now survive the call."""
+
+    def _fake_augment(_direction, candidates):
+        return [(c, 0.5 + i / 10) for i, c in enumerate(candidates)]
+
+    monkeypatch.setattr("archimedes.services.paper_rag.augment_candidate_scores", _fake_augment)
+    brief = FusionBrief(asset_classes=[], max_papers=3)
+    scored = select_candidates_scored(brief, corpus)
+
+    assert [s for _p, s in scored] == pytest.approx([0.5, 0.6, 0.7])
+    # ... and the paper-only view is unchanged for every existing caller.
+    assert [p.arxiv_id for p, _s in scored] == [p.arxiv_id for p in select_candidates(brief, corpus)]
+
+
+def test_preselected_candidates_are_used_verbatim(keyword_only_retrieval, monkeypatch, corpus):
+    """The wasted double-rerank: the debate proposer selects WITH a regime_bias
+    and then propose() re-ran select_candidates over that set WITHOUT it,
+    discarding the ordering the steer had just paid for."""
+    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
+
+    def _must_not_run(*a, **k):
+        raise AssertionError("propose() must not re-select over a pre-selected candidate set")
+
+    monkeypatch.setattr("archimedes.agents.strategy_fusion.select_candidates", _must_not_run)
+
+    picked = [corpus[1], corpus[0]]  # a deliberately non-default order
+    backend = _MockBackend()
+    proposal = StrategyFusion(backend=backend, candidates=picked).propose(FusionBrief())
+
+    assert proposal.status == "ok"
+    assert proposal.papers_offered == 2
+    sent = json.loads(backend.user)
+    assert [p["arxiv_id"] for p in sent["candidate_papers"]] == [corpus[1].arxiv_id, corpus[0].arxiv_id]

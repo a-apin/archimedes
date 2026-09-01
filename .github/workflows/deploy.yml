@@ -67,13 +67,17 @@
 # infra/ecr.tf — not part of this PR); build-and-push fails with a clear
 # `::error::` if a repo doesn't exist yet rather than a bare AWS API error.
 #
-# Box-side prerequisite (NOT applied by this PR — tracked in #1039 chunk 2):
-# the EC2 instance role (`archimedes-backend-role`) needs
+# HISTORICAL (superseded by the ECS Fargate cutover; corrected 2026-08-31,
+# #1044). This paragraph described a box-side `docker compose pull` deploy:
+# the EC2 instance role (`archimedes-backend-role`) needing
 # ecr:GetAuthorizationToken + ecr:BatchGetImage + ecr:GetDownloadUrl +
-# ecr:BatchCheckLayerAvailability on repository/archimedes*, and the box needs
-# `awscli` installed, so `docker compose pull` can authenticate to ECR. The
-# deploy step fails closed with an explicit error if either is missing — see
-# docs/deployment.md § "Production deploy flow".
+# ecr:BatchCheckLayerAvailability on repository/archimedes*, plus `awscli` on
+# the box. THAT PATH NO LONGER EXISTS. This workflow deploys by registering
+# ECS task definitions with explicit image URIs (see the `deploy-ecs` job) and
+# never invokes compose; `deploy-runners.yml` uses raw `docker pull`/`docker
+# tag` over SSM for the residual oracle/agent box. Nothing in CI or production
+# reads `docker-compose.yml`'s `image:` keys — it is a local-development file,
+# and #1044 made its refs registry-less so it stays that way.
 #
 # Required GitHub Variables (or hardcoded below):
 #   AWS_ROLE_ARN — arn:aws:iam::037613907429:role/archimedes-github-deploy
@@ -207,10 +211,12 @@ jobs:
         # Env-parity fix (PR #1041 correctness pass, 2026-07-07): this is NOT
         # just a boot/smoke validation image — the SAME `:ci`-tagged image
         # built here is tagged + pushed to ECR verbatim below ("Tag + push
-        # nginx image"; no separate rebuild happens for the push), and BOTH
-        # live deploy targets (the EC2 box's `docker compose pull`, #1039 P1,
-        # and the Fargate `deploy-ecs` job) serve whatever landed in ECR —
-        # never a locally-rebuilt image. Leaving VITE_* build-args at the
+        # nginx image"; no separate rebuild happens for the push), and the
+        # live deploy target (the Fargate `deploy-ecs` job below) serves
+        # whatever landed in ECR — never a locally-rebuilt image. (The second
+        # target this comment used to name, the EC2 box's `docker compose
+        # pull`, was retired by the Fargate cutover; corrected 2026-08-31,
+        # #1044.) Leaving VITE_* build-args at the
         # Dockerfile's empty defaults (the prior state of this step) means
         # the shipped JS bundle has no Circle client key baked in and the
         # wallet / passkey / Circle SDK UI breaks on every real deploy, not

@@ -75,10 +75,40 @@ domain identity (`ecs_task_ses_send` in `infra/ecs.tf`). A failed send is
 deliberately fail-soft (loud log, signup proceeds) so a sandboxed or degraded
 SES never 500s registration.
 
+**Nothing about either mail flow has been validated against a real inbox** — in the sandbox
+a send to any address that is not an individually-verified destination identity is rejected
+by SES and swallowed fail-soft, so no signal has ever reached a user either way. The
+procedure for that validation, and the six findings from the 2026-08-31 code-truth audit
+that gate the flip, are in
+[`runbooks/email-verification-validation.md`](runbooks/email-verification-validation.md).
+Three facts from that audit belong here because they change what a reader of this section
+should expect:
+
+- **Token lifetimes are 1 hour**, for both the verification link and the reset link, and
+  both are now pinned explicitly in `auth/auth.js` rather than inherited from a library
+  default (`emailVerification.expiresIn`, `emailAndPassword.resetPasswordTokenExpiresIn`).
+- **A verification link is a one-time bearer sign-in credential.**
+  `autoSignInAfterVerification` is on, so whoever opens the URL first gets a live session
+  without a password; a second open verifies nothing and mints nothing. A verification token
+  is a stateless JWT with no stored row, so only expiry closes that window — unlike a reset
+  token, which is a real `auth_verifications` row consumed on first use, with its identifier
+  stored hashed (`verification.storeIdentifier: 'hashed'`).
+- **`sendVerificationEmail` is fire-and-forget**, for the same anti-enumeration reason as
+  `sendResetPassword` below and one that is specific to it: `POST
+  /api/auth/send-verification-email` is reachable with no session, and Better Auth defends
+  it with a 500 ms constant-time floor that an awaited SES round trip walked straight
+  through (measured 504 ms unknown vs 922 ms known-and-unverified against a 900 ms mailer).
+
 Independently of enforcement, disposable accounts are bounded by three layers:
 
 1. Better Auth's production rate limiter: `/sign-up/email` at 3 per 10
-   minutes (`auth/auth.js` `rateLimit.customRules`).
+   minutes (`auth/auth.js` `rateLimit.customRules`). **Caveat — this layer does not
+   currently work as described in production** ([#1691](https://github.com/a-apin/archimedes/issues/1691)):
+   the limiter keys every bucket on the client IP, and behind CloudFront → ALB → nginx no
+   client IP resolves (Better Auth trusts a forwarded header only when it carries exactly
+   one value, and each hop appends one), so the bucket is shared by every caller rather
+   than held per address. It bounds total rate, not per-abuser rate. Layers 2 and 3 are
+   unaffected and do key per address.
 2. nginx's `/api/auth/` `limit_req` zone.
 3. Decisively: the **per-IP daily generation cap**
    (`backend/archimedes/services/generation_quota.py`). Generation is the

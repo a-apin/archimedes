@@ -20,6 +20,13 @@ Also guarded: the workflow's `paths:` filter (a wiki regeneration that does not
 trigger the build never reaches the site) and its `--strict` flag (dropping it
 turns a broken-link failure back into a silent warning).
 
+And, since #1634, **where** it is served from: our own S3 + CloudFront
+(`docs-site/infra/main.tf`), not GitHub Pages. That half has its own way of
+rotting — a workflow that builds but publishes nowhere, a terraform root no
+gate parses, a runbook still describing console steps that do nothing — so the
+last section here checks the workflow, the terraform and `infra-gate.yml`
+against each other rather than each on its own.
+
 Hermetic: reads committed YAML and markdown off disk. No DB, Redis, RPC,
 network, or `.env`. `yaml` is available in the CI unit-test image because
 `backend/requirements.txt` pins `uvicorn[standard]`, whose `standard` extra
@@ -37,6 +44,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MKDOCS_YML = REPO_ROOT / "mkdocs.yml"
 DOCS_INDEX = REPO_ROOT / "docs" / "README.md"
 DOCS_SITE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docs-site.yml"
+INFRA_GATE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "infra-gate.yml"
+DOCS_SITE_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "docs-site-setup.md"
+
+#: The terraform root that serves the site, and the bucket it creates (#1634).
+#: Written down here so the workflow, the terraform and the gate can be checked
+#: against one another rather than each being read on its own.
+DOCS_SITE_TF_ROOT = "docs-site/infra"
+DOCS_SITE_TF = REPO_ROOT / "docs-site" / "infra" / "main.tf"
+DOCS_BUCKET = "archimedes-docs-site-037613907429"
 
 #: Human-written index of the agent-generated section, and the nav label above it.
 PROVENANCE_DOC = "agent-wiki.md"
@@ -164,6 +180,30 @@ def test_section_index_is_in_the_docs_index() -> None:
 # ── the workflow that publishes it ───────────────────────────────────────────────────
 
 
+def _executable(job_name: str) -> str:
+    """Everything a job actually *runs*, with YAML and shell comments stripped out.
+
+    A raw `"aws s3 sync" in DOCS_SITE_WORKFLOW.read_text()` is not a guard: this
+    workflow explains its own steps in prose, so the phrase is in a comment two
+    lines above the command, and deleting the command leaves the assertion
+    passing. (Demonstrated on this branch: removing the sync step's command left
+    the whole module green until this helper existed.) Only `run:` bodies, `env:`
+    values and `with:` values count as executed, and `#` lines inside a `run:`
+    block scalar are dropped for the same reason.
+
+    Note the asymmetry with `test_nothing_still_points_at_github_pages`, which
+    deliberately scans the raw text: there, a leftover *mention* of
+    `deploy-pages` is itself the defect, so prose has to be in scope.
+    """
+    workflow = yaml.safe_load(DOCS_SITE_WORKFLOW.read_text(encoding="utf-8"))
+    job = workflow["jobs"][job_name]
+    parts: list[str] = [str(v) for v in (job.get("env") or {}).values()]
+    for step in job["steps"]:
+        parts.extend(str(v) for v in (step.get("with") or {}).values())
+        parts.extend(line for line in str(step.get("run", "")).splitlines() if not line.lstrip().startswith("#"))
+    return "\n".join(parts)
+
+
 def test_workflow_rebuilds_the_site_when_the_wiki_changes() -> None:
     workflow = yaml.safe_load(DOCS_SITE_WORKFLOW.read_text(encoding="utf-8"))
     # PyYAML parses the unquoted key `on:` as the boolean True (YAML 1.1); GitHub
@@ -182,10 +222,77 @@ def test_workflow_rebuilds_the_site_when_the_wiki_changes() -> None:
 
 
 def test_workflow_builds_strict() -> None:
-    text = DOCS_SITE_WORKFLOW.read_text(encoding="utf-8")
-    assert "mkdocs build --strict" in text, (
+    assert "mkdocs build --strict" in _executable("build"), (
         "docs-site.yml no longer builds with --strict. Without it a link into docs/ or openwiki/ "
         "that names a missing file is a warning nobody reads instead of a failed build."
+    )
+
+
+# ── where it is served from (#1634) ──────────────────────────────────────────────────
+#
+# Dan's hosting call, recorded on #1634 on 2026-08-31: our own S3 + CloudFront
+# (``docs-site/infra``), not GitHub Pages. The three tests below keep that call
+# from silently reverting — the failure mode is not a broken build but a docs
+# push that publishes nowhere, or publishes to a host we do not control.
+
+
+def test_nothing_still_points_at_github_pages() -> None:
+    """The Pages plumbing is gone from both the workflow and the runbook.
+
+    Leaving any of it behind is how the migration half-reverts: a `deploy-pages`
+    step that errors on every docs push, a `DOCS_SITE_ENABLED` variable nobody
+    can flip to anything useful, or a runbook that still tells the next operator
+    to point DNS at `a-apin.github.io`.
+    """
+    for path in (DOCS_SITE_WORKFLOW, DOCS_SITE_RUNBOOK):
+        text = path.read_text(encoding="utf-8")
+        for token in ("deploy-pages", "upload-pages-artifact", "DOCS_SITE_ENABLED", "a-apin.github.io"):
+            assert token not in text, (
+                f"{path.relative_to(REPO_ROOT)} still names {token!r}. The docs site is served from "
+                "docs-site/infra (S3 + CloudFront), not GitHub Pages — see issue #1634."
+            )
+
+
+def test_workflow_publishes_to_the_docs_bucket_and_invalidates_the_edge() -> None:
+    """A sync with no invalidation looks green and serves the previous build.
+
+    CloudFront fronts the bucket with the AWS managed CachingOptimized policy, so
+    an `s3 sync` on its own leaves the old pages at the edge for hours. Both
+    halves have to be in the workflow, against the bucket terraform actually
+    creates.
+    """
+    script = _executable("deploy")
+    assert DOCS_BUCKET in script, (
+        f"docs-site.yml's deploy job does not name the docs bucket ({DOCS_BUCKET}) that "
+        "docs-site/infra/main.tf creates."
+    )
+    assert "aws s3 sync" in script, "docs-site.yml no longer syncs the built site to S3 — nothing publishes."
+    assert "create-invalidation" in script, (
+        "docs-site.yml syncs to S3 but never invalidates CloudFront: the edge would keep serving the "
+        "previous build while the workflow reported success."
+    )
+    assert DOCS_BUCKET in DOCS_SITE_TF.read_text(encoding="utf-8"), (
+        f"docs-site/infra/main.tf no longer creates {DOCS_BUCKET}, but docs-site.yml still syncs to it."
+    )
+
+
+def test_infra_gate_covers_the_docs_site_root() -> None:
+    """A terraform root nothing parses is a root that breaks at `apply`.
+
+    infra-gate.yml needs the new root in BOTH places: the `paths:` filter (or the
+    job never fires on the PR that breaks it) and `matrix.dir` (or the run is
+    green having parsed two other roots).
+    """
+    gate = yaml.safe_load(INFRA_GATE_WORKFLOW.read_text(encoding="utf-8"))
+    triggers = gate.get("on", gate.get(True))  # PyYAML reads the bare `on:` key as True
+    assert f"{DOCS_SITE_TF_ROOT}/**" in triggers["pull_request"]["paths"], (
+        f"infra-gate.yml's paths filter does not include '{DOCS_SITE_TF_ROOT}/**' — a PR that breaks "
+        "the docs-site terraform would not run the gate that parses it."
+    )
+    dirs = gate["jobs"]["infra-gate"]["strategy"]["matrix"]["dir"]
+    assert DOCS_SITE_TF_ROOT in dirs, (
+        f"infra-gate.yml's matrix does not include '{DOCS_SITE_TF_ROOT}' — the gate would report green "
+        "having formatted and validated only the other roots."
     )
 
 
