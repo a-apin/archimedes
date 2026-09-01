@@ -238,8 +238,9 @@ cd ui && npm ci && npm run dev
 ## Running the test suite
 
 > **The default suite is hermetic — no docker stack required.** Tests must pass with no
-> `.env` and no live Postgres / Redis / RPC; that is a hard convention ([`CLAUDE.md`](CLAUDE.md)
-> § Testing conventions), and CI runs them exactly that way. Only tests marked
+> `.env` and no live Postgres / Redis / RPC; that is a hard convention
+> ([`docs/testing-conventions.md`](docs/testing-conventions.md)), and CI runs them exactly
+> that way. Only tests marked
 > `-m integration` need running services; they are excluded from the default run.
 >
 > Use `docker compose up -d --build` when you want the *stack* (to click through the app,
