@@ -21,6 +21,11 @@ import {
   UNKNOWN_RIGOR_TITLE,
 } from '../rigorGateStatus.js'
 import { signClass } from '../signClass.js'
+// The library status pill lives in a plain module so it can be executed by a
+// test (#1747) — `.jsx` is not importable under `node --test`. It consumes the
+// four-state rigor_gate_status, so a row nothing graded can no longer render a
+// green "Live".
+import { statusTag, statusLabel } from '../libraryStatus.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
@@ -114,21 +119,6 @@ function downloadStrategy(strategy, format) {
   const a = document.createElement('a')
   a.href = url; a.download = filename; a.click()
   URL.revokeObjectURL(url)
-}
-
-function statusTag(status, passesRigor) {
-  if (status === 'live' && passesRigor === false) return 'tag-muted'
-  if (status === 'live') return 'tag-positive'
-  if (status === 'validated') return 'tag-accent'
-  if (status === 'pending_backtest') return 'tag-warning'
-  return 'tag-muted'
-}
-
-function statusLabel(status, passesRigor) {
-  if (status === 'live' && passesRigor === false) return 'Reference only — gate failed'
-  if (status === 'pending_backtest') return 'Pending Backtest'
-  if (!status) return 'Candidate'
-  return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
 // No local number formatter lives here any more. Every metric this file renders
@@ -289,10 +279,10 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
         <td>
           <div className="flex items-center gap-1.5 flex-wrap">
             <span
-              className={`tag ${statusTag(s.status, s.passes_rigor_gate)}`}
+              className={`tag ${statusTag(s.status, s.passes_rigor_gate, s.rigor_gate_status)}`}
               title={s.status === 'pending_backtest' ? 'Generated but the rigor gate has not scored real metrics yet — DSR / PBO / OOS Sharpe pending a backtest run.' : undefined}
             >
-              {statusLabel(s.status, s.passes_rigor_gate)}
+              {statusLabel(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
             </span>
             {/* These UnoCSS icons render as a CSS mask on an empty <span>, so
                 without role/aria-label they contribute nothing to the
@@ -585,10 +575,10 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
       </div>
       <div className="lib-card-badges">
         <span
-          className={`tag ${statusTag(s.status, s.passes_rigor_gate)}`}
+          className={`tag ${statusTag(s.status, s.passes_rigor_gate, s.rigor_gate_status)}`}
           title={s.status === 'pending_backtest' ? 'Generated but the rigor gate has not scored real metrics yet — DSR / PBO / OOS Sharpe pending a backtest run.' : undefined}
         >
-          {statusLabel(s.status, s.passes_rigor_gate)}
+          {statusLabel(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
         </span>
         <DeployabilityChip deploy={deploy} level={level} gatePending={gatePending} />
       </div>
@@ -742,11 +732,15 @@ function coerceGenerated(row) {
   // the title. Never row.created_at — that is when the STRATEGY was generated,
   // and printing it under a paper citation invented a publication date.
   const paperYear = typeof citedPaper?.resolved_year === 'number' ? citedPaper.resolved_year : null
-  // rigor_verdict is the real shape the backend persists (see
-  // StrategyRecord.to_dict() in backend/archimedes/models/strategy_store.py
-  // and generation_pipeline.py ~line 1272): {dsr, dsr_p_value, pbo,
-  // oos_sharpe, passing}. Read from there rather than nonexistent top-level
-  // fields — fall back to null only when rigor_verdict itself is absent.
+  // rigor_verdict is the GENERATION-TIME fusion verdict the backend persists on
+  // StrategyRecord ({dsr, dsr_p_value, pbo, oos_sharpe, passing}). It is NOT a
+  // rigor-gate result: a different gate produced it, at synthesis time, and
+  // nothing re-derives it after a backtest. #1747 — every rigor CLAIM this row
+  // renders (the pill, the check/X, DSR, PBO, OOS, dsr_p) now comes from the
+  // server's LIVE four-state verdict instead, and this blob is read for exactly
+  // one thing: whether any statistics exist at all, which decides the
+  // "rejected" → "pending_backtest" relabel below. Do not re-source a metric
+  // from it.
   const verdict = row.rigor_verdict || null
   const hasRealMetrics = verdict?.dsr != null || row.sharpe_ratio != null
   // Honest status mapping: the generation pipeline persists status="rejected"
@@ -772,19 +766,29 @@ function coerceGenerated(row) {
     methodology_summary: row.thesis || '',
     status: honestStatus,
     asset_universe: row.asset_universe || [],
-    sharpe_ratio: null,
+    // Served by /api/strategies/generated from the live gate run that produced
+    // the badge below, and served as null unless that run reached a pass/fail —
+    // so the numbers and the pill always describe the same event (#1747). They
+    // used to come from `verdict` (the synthesis blob above), which is how a row
+    // could print a passing DSR beside a "gate failed" pill.
+    sharpe_ratio: row.sharpe_ratio ?? null,
     cagr: null,
     max_drawdown: null,
     correlation_to_spy: null,
-    deflated_sharpe_ratio: verdict?.dsr ?? null,
-    pbo_score: verdict?.pbo ?? null,
-    out_of_sample_sharpe: verdict?.oos_sharpe ?? null,
+    deflated_sharpe_ratio: row.deflated_sharpe_ratio ?? null,
+    pbo_score: row.pbo_score ?? null,
+    out_of_sample_sharpe: row.out_of_sample_sharpe ?? null,
     paper_claimed_sharpe: null,
     backtest_start: null,
     backtest_end: null,
     is_backtest_placeholder: true,
-    passes_rigor_gate: verdict ? Boolean(verdict.passing) : null,
-    dsr_p_value: verdict?.dsr_p_value ?? null,
+    // The rigor badge. A LITERAL boolean from the server or nothing: `null` is
+    // the honest "no verdict", and the four-state below says which non-verdict
+    // it was. Anything looser — Boolean(...) over a missing field, or a fall
+    // back to the synthesis verdict's `passing` — manufactures a claim.
+    passes_rigor_gate: typeof row.passes_rigor_gate === 'boolean' ? row.passes_rigor_gate : null,
+    rigor_gate_status: row.rigor_gate_status ?? null,
+    dsr_p_value: row.dsr_p_value ?? null,
     // No real backtest has run yet on a pre-backtest hypothesis, so there is
     // no CI to report — honestly null, on the real field names (#1361).
     sharpe_ci_lower: null,

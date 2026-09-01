@@ -772,6 +772,16 @@ async def list_generated_strategies(
     canonical user; verified linked wallet handles legacy ``owner_wallet`` rows.
     Legacy ownerless rows remain invisible until purged (scripts/purge_orphan_generated.py)
     or published. Curated examples live on GET /api/strategies/ and stay public.
+
+    **The rigor badge on each row is a LIVE gate verdict (#1747)**, overlaid
+    below as ``rigor_gate_status`` (four-state) + ``passes_rigor_gate`` (the
+    fail-closed boolean coupled to it) + the four rigor numbers from that same
+    run. The row's own ``status`` and ``rigor_verdict`` are left on the wire
+    unchanged and are NOT the badge: they are the generation-time fusion
+    verdict, which is a different gate and is never re-derived after a backtest.
+    ``StrategyRecord.status`` is deliberately not written back — what the
+    synthesis gate thought is a fact worth keeping, and rewriting it has readers
+    (marketplace trending) outside this route.
     """
 
     from sqlalchemy import and_, or_
@@ -821,6 +831,64 @@ async def list_generated_strategies(
                 d["can_publish"] = r.id in publishable
                 d["generation_cost"] = costs.get(r.id)
                 page.append(d)
+            # ── Badge truth (#1747) ──────────────────────────────────────────
+            # `StrategyRecord.to_dict()` carries `status` and `rigor_verdict`,
+            # and BOTH are the GENERATION-TIME fusion verdict:
+            # `models/strategy_store.py` sets `status = "live" if
+            # rigor_verdict["passing"] else "rejected"` on the same write and
+            # nothing re-derives either after a backtest. The Library read them
+            # as its badge, so `status === 'live'` and `passes_rigor_gate ===
+            # true` were the SAME fact wearing two names — which is why the
+            # demotion rule the pill already had ("live" + gate failed →
+            # "Reference only") could never fire on this tab, and 21 rows the
+            # passport calls gate-failed rendered "Live ✓".
+            #
+            # Overlay a LIVE verdict instead. Not the stored
+            # `strategy_passports.passes_rigor_gate` either: that column is
+            # mixed-vintage (generation-time fusion verdict first, live re-grade
+            # only sometimes after) with no provenance column to tell the two
+            # apart — see `_live_generated_rigor`, which runs the same gate the
+            # Deploy ladder runs, batched for the page.
+            #
+            # Fail-closed by construction: a row with no `strategy_passports`
+            # row, or with too few persisted returns for the gate to run, is
+            # `pending`/None — never a boolean, and never green.
+            page_ids = [d["id"] for d in page]
+            passports = {}
+            if page_ids:
+                from archimedes.models.strategy_passport_record import StrategyPassportRecord
+
+                passports = {
+                    p.id: p
+                    for p in session.query(StrategyPassportRecord).filter(StrategyPassportRecord.id.in_(page_ids)).all()
+                }
+            verdicts = _live_generated_rigor(session, [i for i in page_ids if i in passports])
+            for d in page:
+                verdict, rigor_result = verdicts.get(d["id"], (None, None))
+                gate_status = verdict.status if verdict is not None else "pending"
+                d["rigor_gate_status"] = gate_status
+                # COUPLED to the four-state, never a separate stored boolean:
+                # `passes` is True only for "pass", and "pending" is not a
+                # boolean at all (a row nothing graded has no verdict to report,
+                # and `false` there would accuse it of failing).
+                d["passes_rigor_gate"] = None if gate_status == "pending" else (gate_status == "pass")
+                # The numbers come from the SAME gate run as the badge (#1187 /
+                # #868 rule, already enforced on the curated path in
+                # `_to_strategy_response`): a row that was not graded — pending,
+                # or degenerate, where the series carries no variance to grade —
+                # prints em-dashes, never the generation-time fusion verdict's
+                # DSR/PBO beside a non-pass pill.
+                graded = gate_status in ("pass", "fail")
+                d["deflated_sharpe_ratio"] = rigor_result.deflated_sharpe if (graded and rigor_result) else None
+                d["dsr_p_value"] = rigor_result.dsr_p_value if (graded and rigor_result) else None
+                d["pbo_score"] = rigor_result.pbo_score if (graded and rigor_result) else None
+                d["out_of_sample_sharpe"] = rigor_result.oos_sharpe if (graded and rigor_result) else None
+                # Display Sharpe is a descriptive backtest stat, not a gate
+                # output, so it comes from the passport row the gate re-graded —
+                # but it is still withheld unless that grading happened, so the
+                # headline number and the badge describe the same event.
+                passport = passports.get(d["id"])
+                d["sharpe_ratio"] = passport.sharpe_ratio if (graded and passport is not None) else None
             # Citation truth: ``StrategyRecord.to_dict()`` returns source_papers
             # exactly as stored — arxiv_id, no title — so the Library card had no
             # real paper title to print and printed the generated strategy's own
@@ -1291,6 +1359,125 @@ def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, boo
     if record.sharpe_ratio is None:
         return "pending", True
     return ("pass" if bool(record.passes_rigor_gate) else "fail"), False
+
+
+def _live_generated_rigor(
+    session, strategy_ids: list[str]
+) -> dict[str, tuple[RigorGateVerdict, RigorGateResult | None]]:
+    """LIVE four-state gate verdicts (+ the result each was reduced from) for a
+    page of GENERATED strategy ids — one ``run_rigor_gate`` per row, over that
+    row's OWN persisted returns and its OWN persisted grading context.
+
+    This is the batched form of ``selection_bias_routes._generated_strategy_rigor``
+    (:676), and it is deliberately a re-use of that function's data path rather
+    than a second opinion about it: the same ``num_trials`` PROVENANCE rule
+    (``_num_trials_for_generated_row`` — a stored N is trusted only from a
+    pipeline that tracks its own selection pool), the same persisted
+    ``library_pbo`` with ``pbo_library_size`` left unset (no cohort-size
+    relaxation for a strategy that has no cohort), and the same look-ahead
+    triple from ``verdict_from_persisted_row`` (a retired ``self_attested``
+    boolean is a claim, not an audit, and does not deploy anything). Diverging
+    on any of those would let the Library badge and the Deploy gate disagree
+    about the same strategy — which is the #1747 defect one layer down.
+
+    **Why not the stored ``strategy_passports.passes_rigor_gate``.** That column
+    is MIXED-VINTAGE: its first writer is the generation-time FUSION verdict
+    (``generation_pipeline._persist_candidate`` writes
+    ``bool(c.rigor_verdict["passing"])``), and the post-backtest live re-grade
+    only replaces it when the refresh path actually reaches its write — both of
+    whose call sites swallow exceptions. There is no provenance column telling
+    the two apart, so reading it cannot distinguish "a gate ran and passed this"
+    from "a language model's synthesis-time score said passing". Running the
+    gate here is the only way the badge is a gate result.
+
+    **Cost, stated honestly.** ONE ``get_all_daily_returns`` and ONE
+    ``latest_backtests_by_strategy`` for the whole page — never per row — plus
+    one in-process ``run_rigor_gate`` per row that HAS enough persisted returns
+    to grade. The gate run is not cached (the returns are what a cache key would
+    have to be built from, and reading them is the expensive half — see
+    ``get_all_daily_returns``'s own note), so page cost scales with the number
+    of GRADEABLE rows on the page, bounded by this route's ``limit`` (<=200,
+    default 50). Rows with no persisted series cost nothing beyond the two
+    reads. Caching this per page is a real follow-up; serving a stale pass is
+    not an acceptable way to avoid it.
+
+    Any DB or gate failure degrades to ``pending`` for the affected rows — never
+    to a pass. Ids absent from the returned map are the caller's "no verdict"
+    case.
+    """
+    if not strategy_ids:
+        return {}
+
+    from archimedes.services.backtest_repository import (
+        get_all_daily_returns,
+        latest_backtests_by_strategy,
+    )
+    from archimedes.services.dsl_lookahead_audit import verdict_from_persisted_row
+
+    # The gate's own minimum, imported rather than re-typed as a literal 10:
+    # a badge that graded on fewer returns than the gate accepts would be a
+    # different gate wearing the same name.
+    from archimedes.services.live_rigor_gate import _MIN_RETURNS_FOR_GATE
+    from archimedes.services.rigor_evaluator import run_rigor_gate
+
+    try:
+        returns_by_id = get_all_daily_returns(session, strategy_ids) or {}
+        latest_by_id = latest_backtests_by_strategy(session, strategy_ids) or {}
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        logger.warning(
+            "generated badge: persisted-context read failed (%s) — whole page → pending",
+            type(exc).__name__,
+        )
+        # A failed statement aborts the surrounding Postgres transaction; the
+        # rest of this request still has reads to do. (sqlite tolerates it,
+        # which is why this is written down rather than left to the suite.)
+        _rollback_quietly(session)
+        return {}
+
+    graded: dict[str, tuple[RigorGateVerdict, RigorGateResult | None]] = {}
+    for sid in strategy_ids:
+        daily = returns_by_id.get(sid) or []
+        if len(daily) < _MIN_RETURNS_FOR_GATE:
+            # Genuinely pre-backtest: the gate cannot run, so the badge is
+            # "unknown". Never a boolean, and never the stored one.
+            graded[sid] = (RigorGateVerdict.pending(), None)
+            continue
+        latest = latest_by_id.get(sid)
+        num_trials, _num_trials_scope = _num_trials_for_generated_row(
+            latest.backtest_engine if latest else None,
+            latest.num_trials_in_selection if latest else None,
+        )
+        look_ahead_passed, look_ahead_status, look_ahead_reason = verdict_from_persisted_row(
+            latest.look_ahead_audit_passed if latest else False,
+            latest.look_ahead_audit_source if latest else None,
+        )
+        try:
+            result = run_rigor_gate(
+                strategy_id=sid,
+                daily_returns=daily,
+                num_trials=num_trials,
+                # Persisted, per-row PBO — never a cohort recompute over other
+                # people's strategies. pbo_library_size stays unset on purpose
+                # (see _generated_strategy_rigor): the power-floor RELAXES
+                # criterion 4, and a single strategy has no cohort to earn that.
+                library_pbo=latest.pbo_score if latest else None,
+                look_ahead_audit_passed=look_ahead_passed,
+                look_ahead_status=look_ahead_status,
+                look_ahead_not_run_reason=look_ahead_reason,
+                # None on purpose: run_rigor_gate derives the in-sample
+                # denominator from the first 70% of this same series. Passing a
+                # full-sample Sharpe makes the OOS/IS cliff trivially passable.
+                in_sample_sharpe=None,
+                average_correlation=0.0,
+                # strictness_level intentionally omitted — the default IS the
+                # strictest level, which is the badge bar (#821).
+            )
+        except Exception as exc:  # pragma: no cover — defensive; gate-level failure
+            logger.warning("generated badge: live gate failed for %s (→ pending): %s", sid, exc)
+            graded[sid] = (RigorGateVerdict.pending(), None)
+            continue
+        graded[sid] = (RigorGateVerdict.from_result(result), result)
+    return graded
 
 
 def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_NOT_PREFETCHED) -> StrategyResponse:
