@@ -34,10 +34,11 @@ the review named in the code has not happened.
 
 ## Index
 
-Twenty-one records. Status and date are authoritative in each ADR's front-matter block;
+Twenty-three records. Status and date are authoritative in each ADR's front-matter block;
 this table mirrors them. (The count read "eighteen" while the table already held nineteen —
 the `generation-payment-credit-not-refund` row landed 2026-08-29 without a count bump.
-Corrected here, and bumped again for `lambda-generation-offload` on 2026-08-30.)
+Corrected here, and bumped again for `lambda-generation-offload` on 2026-08-30 and
+`ipfs-pinning-not-live` on 2026-09-01.)
 
 | ADR | Status | Date | Owner | Decision |
 |---|---|---|---|---|
@@ -63,6 +64,7 @@ Corrected here, and bumped again for `lambda-generation-offload` on 2026-08-30.)
 | [`strategy-dsl-hardening-over-lean4.md`](strategy-dsl-hardening-over-lean4.md) | Accepted | 2026-08-30 | Dan Browne | Why the generator's emission target stays the **closed-enum JSON DSL, hardened**, and **not Lean 4** — the no-generated-code property is already structural; a restricted sandbox is reserved for shapes the DSL cannot express |
 | [`market-data-sourcing.md`](market-data-sourcing.md) | Accepted | 2026-08-31 | Dan Browne | Why market data is sourced **per surface** — Tiingo (starting on the Free tier, for testing) for backtesting and paid analysis, yfinance for the free, ungated Explore viewer that sells and redistributes nothing. Flags a **Tiingo commercial plan as a mainnet prerequisite** and records that the split is reversible by build (#1218, #1282, #1455) |
 | [`lambda-generation-offload.md`](lambda-generation-offload.md) | **Proposed — verdict DEFER** | 2026-08-30 | Dan Browne | Why generation does **not** move to Lambda yet, measured on a real VPC-attached container built from the production image: no dependency or size blocker, but a **13.6 s** steady-state / **51 s** post-deploy cold start on a ~48 s job. Adopts the lane-agnostic worker entrypoint + the measured-cost model, and corrects the quote seam from `quote()` to `_price()` (#1411, feeds #1217) |
+| [`ipfs-pinning-not-live.md`](ipfs-pinning-not-live.md) | Accepted | 2026-09-01 | Dan Browne | Reasoning-trace reveal is **hash-only** (empty `storagePointer`). The Pinata pin path is removed, not half-wired: `PINATA_JWT` was never in prod ECS secrets, and public copy must not claim IPFS pinning (#1526) |
 
 ### Open review debt
 

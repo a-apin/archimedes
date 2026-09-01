@@ -7,7 +7,7 @@ back for it, so that executed trade's reasoning could never become
 on-chain-verifiable.
 
 Hermetic, boundary-mocked exactly like ``test_agent_runner_commit_reveal.py`` /
-``test_agent_runner_tick.py``: chain client, executor, trace_publisher, IPFS pin,
+``test_agent_runner_tick.py``: chain client, executor, trace_publisher,
 provider and the Redis state store are all mocked. No network, no RPC, no Redis.
 
 The dangling records under test are NOT hand-written dicts — they are produced by
@@ -56,7 +56,6 @@ def runner_env():
         patch("archimedes.chain.agent_runner.trace_publisher") as mock_tp,
         patch("archimedes.chain.agent_runner.default_provider"),
         patch("archimedes.chain.agent_runner.AgentStateStore"),
-        patch("archimedes.chain.agent_runner.pin_public_provenance", new=AsyncMock(return_value=(None, None))),
         patch("archimedes.chain.agent_runner.DRY_RUN", False),
     ):
         from archimedes.chain.agent_runner import StrategyRunner
