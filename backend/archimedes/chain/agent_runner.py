@@ -58,12 +58,13 @@ from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.chain.provenance_publisher import pin_public_provenance
 from archimedes.chain.trace_publisher import trace_publisher
 from archimedes.chain.v_check import VCheck
+from archimedes.execution import core as execution_core
+from archimedes.execution.venue import ChainVenue
 from archimedes.interfaces.math import IRegimeDetector
 from archimedes.models.portfolio import (
     Portfolio,
     RiskProfile,
     TargetAllocation,
-    TradeDirection,
     TradeOrder,
 )
 from archimedes.models.regime import EnsembleConsensus, RegimeClassification
@@ -135,36 +136,11 @@ RUNNER_NAME = "agent_runner"
 LEASE_TTL_MS = int(os.getenv("AGENT_LEASE_TTL_MS", "180000"))  # 3 min
 LEASE_RENEW_INTERVAL_S = int(os.getenv("AGENT_LEASE_RENEW_S", "50"))  # ~ttl/3
 
-# Drift threshold for rebalance trigger.
-#
-# CADENCE GATE FIRST, DRIFT THRESHOLD WITHIN THE OPEN WINDOW (divergence audit
-# F3). These are two different gates on two different objects and they compose
-# in this order:
-#
-#   1. CADENCE, per strategy, upstream of here. A DSL strategy declares
-#      ``rebalance_frequency`` (daily / weekly / monthly). The live evaluator
-#      now honours it — strategy_signal_evaluator._replay_position_state only
-#      re-decides entry/exit on cadence-eligible bars and HOLDS the position
-#      through the rest, mirroring DSLStrategy._should_rebalance in the
-#      backtest. A monthly strategy therefore emits the SAME per-asset weight on
-#      every one of the ~288 ticks a day between its decision bars, so it
-#      contributes no new drift here. Before that fix the live path never read
-#      ``rebalance_frequency`` at all and a monthly spec was effectively re-run
-#      every tick, with _DRIFT_THRESHOLD as the only thing standing between it
-#      and a trade.
-#
-#      Note the gate holds the strategy's VOTE rather than skipping it:
-#      aggregate_signals averages every bound strategy's weight, so a strategy
-#      that simply stopped emitting on off-cadence ticks would silently change
-#      every OTHER co-bound strategy's effective allocation in the vault.
-#
-#   2. DRIFT, per vault, below. Once the vault's aggregated target weights are
-#      built, a leg only trades when it has drifted at least this far from the
-#      target. This is a cost/no-op filter on an ALREADY cadence-gated target —
-#      it does not, and must not, decide WHEN a strategy is allowed to change
-#      its mind. A vault binding a daily strategy alongside a monthly one still
-#      rebalances daily, because the daily strategy is due; that is correct.
-_DRIFT_THRESHOLD = 0.15
+# Drift threshold for rebalance trigger. The constant and the reasoning behind
+# it moved to ``execution.core.DRIFT_THRESHOLD`` (#1410) so the paper venue
+# cannot run a different one; re-exported under the old name because this
+# module's tests and comments refer to it.
+_DRIFT_THRESHOLD = execution_core.DRIFT_THRESHOLD
 
 # The exogenous market regime is detected each tick by VixRegimeDetector
 # (issue #660) and written to KEY_REGIME. This is the value used only when that
@@ -345,6 +321,13 @@ class StrategyRunner:
         self.portfolio_constructor: PortfolioConstructor = PortfolioConstructor()
         self._synth_addrs = chain_client.settings.synth_addresses
         self._usdc_addr = chain_client.settings.usdc_address
+        # The vault side of the #1410 executor boundary. Built from the SAME
+        # snapshotted address maps this runner has always used, so target
+        # construction resolves exactly the addresses it did before.
+        self.venue = ChainVenue(
+            usdc_address=self._usdc_addr,
+            synth_addresses=self._synth_addrs,
+        )
         self._known_vaults: set[str] = set()  # Vaults we've already seen
         # Dedup: track last reasoning per vault to avoid publishing identical traces
         self._last_reasoning: dict[str, str] = {}  # vault_address → reasoning text
@@ -1339,27 +1322,13 @@ class StrategyRunner:
     def _weights_to_targets(
         self, weights: dict[str, float], all_signals: list[StrategySignals] | None = None
     ) -> list[TargetAllocation]:
-        """Convert weight dict → TargetAllocation list."""
-        # Build symbol → strategy_ids map from signals
-        symbol_strategies: dict[str, list[str]] = {}
-        if all_signals:
-            for ss in all_signals:
-                for sig in ss.signals:
-                    symbol_strategies.setdefault(sig.asset, []).append(ss.strategy_id)
+        """Convert weight dict → TargetAllocation list.
 
-        targets: list[TargetAllocation] = []
-        for symbol, weight in weights.items():
-            token_address = self._usdc_addr if symbol == "USDC" else self._synth_addrs.get(symbol, "")
-
-            targets.append(
-                TargetAllocation(
-                    symbol=symbol,
-                    token_address=token_address,
-                    weight=weight,
-                    strategy_ids=symbol_strategies.get(symbol, []),
-                )
-            )
-        return targets
+        Delegates to the venue-independent core (#1410). The body that used to
+        live here now runs for the paper venue too, which is the whole point —
+        a copy kept here would be free to drift from the one paper trades on.
+        """
+        return execution_core.weights_to_targets(weights, all_signals, self.venue)
 
     # ─── Trade computation ─────────────────────────────────────────
 
@@ -1370,55 +1339,10 @@ class StrategyRunner:
     ) -> list[TradeOrder]:
         """Diff current portfolio vs target weights → trade list.
 
-        Second of the two gates described at ``_DRIFT_THRESHOLD``: the targets
-        arriving here are already cadence-gated per strategy by the evaluator, so
-        this is purely a cost filter on how far the vault has drifted — never the
-        thing that decides when a strategy may change its mind.
+        Delegates to ``execution.core.compute_trades`` (#1410) — same body, same
+        ``DRIFT_THRESHOLD``, now shared with the paper venue.
         """
-        current_weights = portfolio.weights_dict
-        target_map = {t.symbol: t for t in targets}
-
-        # Holdings whose oracle price couldn't be read report weight 0 BY
-        # CONSTRUCTION (#1080) — the balance is real, the value is unknown.
-        # Trading on that fake 0 would buy more of an unpriceable asset every
-        # tick (current 0 vs target >0, forever) or size a blind sell. Skip.
-        unpriced = {h.symbol for h in portfolio.holdings if not getattr(h, "priced", True)}
-
-        trades: list[TradeOrder] = []
-        all_symbols = set(target_map.keys()) | set(current_weights.keys())
-
-        for sym in all_symbols:
-            if sym in unpriced:
-                logger.warning(
-                    "vault %s: skipping trade for %s — oracle price unavailable; holding weight "
-                    "is 0 by construction, not truth; refusing to size a trade against it (#1080)",
-                    portfolio.vault_address[:10],
-                    sym,
-                )
-                continue
-            current_w = current_weights.get(sym, 0.0)
-            target = target_map.get(sym)
-            target_w = target.weight if target else 0.0
-            token_addr = target.token_address if target else ""
-
-            drift = target_w - current_w
-            if abs(drift) < _DRIFT_THRESHOLD:
-                continue
-
-            usdc_value = abs(drift) * portfolio.total_value_usdc
-            direction = TradeDirection.BUY if drift > 0 else TradeDirection.SELL
-
-            trades.append(
-                TradeOrder(
-                    symbol=sym,
-                    token_address=token_addr,
-                    direction=direction,
-                    amount=round(usdc_value, 6),
-                    estimated_usdc_value=round(usdc_value, 2),
-                )
-            )
-
-        return trades
+        return execution_core.compute_trades(portfolio, targets)
 
     # ─── Commit-Reveal Trace ────────────────────────────────────
 
