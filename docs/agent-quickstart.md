@@ -28,14 +28,20 @@ human.
 Conventions used below:
 
 - `$BASE` is `https://archimedes-arc.com` in production, `http://localhost:8080` locally.
-- `-c/-b /tmp/agora.jar` is the session cookie jar. One jar for the whole run; it is the
-  only auth mechanism (there is no bearer token for this API).
+- `-c/-b /tmp/agora.jar` is the session cookie jar. One jar for the whole run.
+- **Or skip the jar entirely.** Every step below marked `cookie` also accepts
+  `-H "Authorization: Bearer $ARCHIMEDES_KEY"` — a long-lived API key you mint once at
+  step 4b. Same account, same limits, same paywall; no jar, and no re-sending your
+  password when the 7-day cookie expires. If you are writing CI, do step 4b and use the
+  header everywhere.
 - Response bodies are shown **shape-first**: field names and types are exact, values are
   illustrative. `…` means "more fields of the same kind that this page does not depend on."
   **The one exception is step 1** — its values are the live production ones, because there
   the value *is* the decision.
 - A non-browser `User-Agent` classifies you as an external agent in the telemetry
-  middleware. Send one; it costs nothing and makes your traffic legible.
+  middleware. Send one; it costs nothing and makes your traffic legible. **A key does
+  better:** a keyed call classifies as `agent_type: "keyed"` from the credential itself,
+  which is an identity rather than a guess about a header you chose.
 
 ---
 
@@ -48,7 +54,8 @@ Conventions used below:
 | 2 | Create an account | `POST /api/auth/sign-up/email` | none |
 | 3 | Sign in (get the cookie) | `POST /api/auth/sign-in/email` | none |
 | 4 | Confirm the session | `GET /api/auth/get-session` | cookie |
-| 5 | Check your quota | `GET /api/account/usage` | cookie |
+| 4b | Mint an API key — once, if you are automating | `POST /api/account/keys` | cookie **only** |
+| 5 | Check your quota | `GET /api/account/usage` | cookie **or key** |
 | 6 | Submit the brief | `POST /api/generate/start` | cookie |
 | 6a | Link a wallet — once, if step 1 said `true` | `POST /api/wallets/challenge` then `POST /api/wallets/verify` | cookie |
 | 6b | Pay the $2 and retry | `POST /api/generate/start` + `Payment-Signature` | cookie + wallet |
@@ -61,6 +68,9 @@ Conventions used below:
 
 Step 9 is not optional. Step 8's verdict is the *generation-time* one; step 9 is the live
 gate the server enforces. They can disagree, and step 9 wins.
+
+Every row that says `cookie` accepts a key instead, **except step 4b itself** — see there
+for why.
 
 ---
 
@@ -178,10 +188,84 @@ curl -sS -b /tmp/agora.jar $BASE/api/auth/get-session
 A bare `null` (still HTTP 200) means not authenticated — that is the signal, not an error.
 If you see `null` here, every cookie-gated step below will 401; fix it now.
 
+### 4b. Mint an API key — do this once, then stop carrying a jar
+
+Optional for a one-shot run; **do it if anything about your caller is unattended.** The
+cookie from step 3 expires in seven days, and the only way to refresh it is to re-send your
+account password. A key does not expire, is revocable on its own, and turns every
+remaining step into one header.
+
+```bash
+curl -sS -b /tmp/agora.jar -X POST $BASE/api/account/keys \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ci-nightly"}'
+```
+
+```json
+{
+  "id": "9f3c1a77b204de51",
+  "name": "ci-nightly",
+  "prefix": "archim_9f3c1a77b204de51",
+  "created_at": "2026-08-31T20:14:03.118Z",
+  "last_used_at": null,
+  "revoked_at": null,
+  "key": "archim_9f3c1a77b204de51_KtQ8yv…"
+}
+```
+
+**`key` is shown exactly once and is never recoverable.** The server keeps only a salted
+hash of it, so nobody — including us — can read it back to you. Store it now; if you lose
+it, revoke it and mint another.
+
+```bash
+export ARCHIMEDES_KEY='archim_9f3c1a77b204de51_KtQ8yv…'
+```
+
+From here on, **every step below that shows `-b /tmp/agora.jar` works with one header
+instead.** Step 6 is the one you will actually run in CI:
+
+```bash
+# with the jar (steps 3 + 4 first, and again every 7 days):
+curl -sS -b /tmp/agora.jar -X POST $BASE/api/generate/start -H 'Content-Type: application/json' -d "$BRIEF"
+
+# with a key (step 4b once, ever):
+curl -sS -H "Authorization: Bearer $ARCHIMEDES_KEY" -X POST $BASE/api/generate/start -H 'Content-Type: application/json' -d "$BRIEF"
+```
+
+What a key is **not**: it is not a way around anything. It resolves to the same account
+the cookie resolves to, so the daily caps, the rate limits, the paywall and the wallet
+precondition all apply identically — a keyed `POST /api/generate/start` returns the same
+`402` with the same quote a cookie call returns. It is a different *credential*, not a
+different *tier*.
+
+The one thing a key cannot do is manage keys. `POST`/`GET`/`DELETE` on
+`/api/account/keys` require a session cookie and answer `403` to a key, so a leaked key
+cannot mint itself successors that survive your revoking the one you know about.
+
+List with `GET /api/account/keys` (session cookie, as above):
+
+```bash
+curl -sS -b /tmp/agora.jar $BASE/api/account/keys
+```
+
+Revoke with `DELETE /api/account/keys/{key_id}` — `204`, and idempotent:
+
+```bash
+export KEY_ID=9f3c1a77b204de51
+curl -sS -b /tmp/agora.jar -X DELETE $BASE/api/account/keys/$KEY_ID
+```
+
+The list never contains a key — only `prefix` (`archim_<id>`, which identifies a key and
+cannot be used as one), `created_at`, `last_used_at` (minute resolution) and `revoked_at`.
+Revocation takes effect on the **next** request that presents the key; there is no cache
+and no grace period. Up to 25 live keys per account.
+
 ### 5. Check your quota before spending a generation
 
 ```bash
 curl -sS -b /tmp/agora.jar $BASE/api/account/usage
+# …or, with a key:
+curl -sS -H "Authorization: Bearer $ARCHIMEDES_KEY" $BASE/api/account/usage
 ```
 
 ```json
@@ -472,7 +556,9 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 
 | Status | Body | What happened | Fix |
 |---|---|---|---|
-| **401** | `{"detail": "Authentication required"}` + `WWW-Authenticate: Session` | No valid session cookie on a cookie-gated route | Redo steps 3–4. Signing up (step 2) does **not** sign you in; only step 3 sets the cookie. Check the jar is passed with `-b`. |
+| **401** | `{"detail": "Authentication required"}` + `WWW-Authenticate: Session` | No valid credential on a gated route — no session cookie, **or** an API key that is unknown, malformed, or revoked | Redo steps 3–4. Signing up (step 2) does **not** sign you in; only step 3 sets the cookie. Check the jar is passed with `-b`. If you are using a key: the header must be exactly `Authorization: Bearer archim_…`, and a revoked key 401s from the next call onward — mint a new one at step 4b. A wrong key and an unknown key are the same answer on purpose. |
+| **403** | `{"detail": "API keys cannot manage API keys. …"}` | You called `/api/account/keys` with `Authorization: Bearer archim_…` | Use the session cookie for key management. This is containment, not a bug: a leaked key must not be able to issue successors. |
+| **409** | `{"detail": {"reason": "api_key_limit_reached", "message": "…"}}` | 25 live keys already | Revoke one (`DELETE /api/account/keys/{key_id}`) before minting another. |
 | **402** | `{"detail": {"reason": "payment_required", "message": "…", "quote": {…}}}` + `PAYMENT-REQUIRED` header | The generation paywall is on and no `Payment-Signature` was presented | **Expected on production** — step 6b, not a bug. Sign the x402 requirements in the header with your **linked** wallet and retry with `Payment-Signature` (plus an `Idempotency-Key`). `GET /api/generate/quote` → `payment_required` tells you which host you are on; only when it is `false` can this not happen. |
 | **409** | `{"detail": {"reason": "idempotency_key_already_used", "message": "…"}}` | The `Idempotency-Key` you replayed already paid for a generation that started | Do not re-sign. That run exists — find it via `GET /api/generate/jobs/{job_id}`; use a fresh key for a genuinely new run. |
 | **402** | `{"detail": "Model '…' is a premium (Anthropic) model and requires an entitlement. …"}` | You named a premium `model` without entitlement | Omit `model` (the free default is used) or name an allowlisted free model. The request is **not** silently downgraded. |
@@ -495,6 +581,13 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
   host. `GET /api/generate/quote` is the only authority, it is public, and it costs you
   nothing to ask — the source defaults disagree with production on purpose, so reading the
   code instead of the endpoint gets you the wrong answer.
+- **Do not treat an API key as a lighter-weight credential.** It is the full account. Put
+  it in an environment variable or a secret store, never in a URL, a query string, a
+  committed file, or a log line — the server never logs it and neither should you. If it
+  leaks, `DELETE /api/account/keys/{key_id}` ends it on the next request.
+- **Do not expect a key to get you past anything.** Same caps, same rate limits, same
+  paywall, same wallet precondition. If you are looking for a way around the 402, the key
+  is not it.
 - **Do not re-sign an x402 payment to retry.** A fresh signature is a fresh real charge.
   Carry an `Idempotency-Key`, and let an undelivered run's credit pay for the next attempt.
 - **Do not treat a `pending` or `fail` rigor gate as a pass.** A gate that never says no is

@@ -51,6 +51,7 @@ if os.getenv("PUBLIC_DOMAIN"):
 from archimedes.api.account_auth import better_auth_session_middleware, require_current_user
 from archimedes.api.account_usage_routes import account_usage_router
 from archimedes.api.agent_manifest_routes import agent_manifest_router
+from archimedes.api.api_key_routes import api_key_router
 from archimedes.api.corpus_routes import corpus_router
 from archimedes.api.explore_routes import explore_router
 from archimedes.api.features_routes import features_router
@@ -724,6 +725,11 @@ app.include_router(portfolio_router, dependencies=[Depends(require_current_user)
 app.include_router(selection_bias_router)
 app.include_router(rigor_verify_router)
 app.include_router(account_usage_router)
+# Key management is session-gated inside the router (an API key cannot manage
+# API keys — see account_auth.require_session_credential), so it is deliberately
+# NOT wrapped in a router-level require_current_user: the stricter dependency
+# already lives on each route and a second one here would only obscure it.
+app.include_router(api_key_router)
 app.include_router(payment_router)
 app.include_router(papers_router)
 app.include_router(user_router, dependencies=[Depends(require_current_user)])
