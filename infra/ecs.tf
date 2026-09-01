@@ -373,10 +373,15 @@ resource "aws_iam_role_policy" "ecs_task_exec_command" {
 # ── IAM — extend the EXISTING CI deploy role with ECS deploy permissions ───
 # `archimedes-github-deploy` is deliberately NOT Terraform-managed (created
 # out-of-band by infra/scripts/setup-github-oidc.sh — see that script's own
-# "tighten once ECS exists" comment). This attaches a SEPARATE, additively-
-# named inline policy ("archimedes-ecs-deploy", distinct from the script's own
-# "archimedes-deploy" policy) so Terraform and the script each own a disjoint
-# policy name on the same role — no state fights, no clobbering.
+# "tighten once ECS exists" comment). That script, not Terraform, also owns the
+# role's TRUST policy: after any org/repo rename or transfer it must be re-run
+# (`--apply`) or every deploy fails at "Configure AWS credentials (OIDC)" —
+# incident 2026-09-01, written up in that script's header.
+#
+# This attaches a SEPARATE, additively-named inline policy
+# ("archimedes-ecs-deploy", distinct from the script's own "archimedes-deploy"
+# policy) so Terraform and the script each own a disjoint policy name on the
+# same role — no state fights, no clobbering.
 #
 # NOT wired into any CI workflow step yet (deploy.yml still only builds/pushes
 # to ECR — the box-pull path from build-chunk 1). This is the IAM

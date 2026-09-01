@@ -212,7 +212,7 @@ so an admin can apply or audit it declaratively (audit #10 / issues #519, #526).
 ./scripts/setup-branch-protection.sh            # dry-run: print the payload, apply nothing
 ./scripts/setup-branch-protection.sh --apply    # apply (needs repo admin)
 ./scripts/setup-branch-protection.sh --verify    # print the currently-applied protection
-# or, raw:  gh api repos/a-apin/archimedes/branches/main/protection
+# or, raw:  gh api repos/aprin-labs/archimedes/branches/main/protection
 ```
 
 What it enforces: the two hard-block CI checks (`Backend — unit tests`, `Ruff — format +
