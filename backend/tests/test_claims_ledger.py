@@ -330,21 +330,34 @@ class TestLedgerClaimsMatchTheTree:
             "leaderboard. Either the move was reverted or the ledger row is wrong."
         )
 
-    def test_published_exit_codes_still_omit_incomplete(self):
-        """The ledger's CLI row says the published manifest under-publishes its own contract.
+    def test_the_published_exit_code_table_covers_every_code_the_cli_defines(self):
+        """Successor to ``test_published_exit_codes_still_omit_incomplete``.
 
-        `exits.py` defines `INCOMPLETE = 4` and `cli.py` exits with it, but `manifest.py`'s
-        `EXIT_CODES` — the machine-readable table an agent branches on — stops at `3`. This
-        is the same self-retiring shape as the OVER-CLAIMED pins: fixing the manifest turns
-        this red, which forces the ledger row to move in the same change.
+        That test was a self-retiring pin: it asserted the manifest's ``EXIT_CODES``
+        still stopped at ``3`` while ``exits.py`` defined ``INCOMPLETE = 4``, and it
+        instructed whoever fixed the manifest to move the ledger row and delete it.
+        The CLI ``generate`` work did exactly that — it published ``4`` and added
+        ``5``–``8`` — so the pin is retired and the ledger row is now ``CHANGED``.
+
+        What replaces it is the guard the original defect actually wanted: not "is
+        this one omission still present" but "can an omission happen again". Adding
+        a code to ``exits.py`` without publishing it now fails here. The CLI's own
+        suite asserts the same invariant from the other side
+        (``cli/tests/test_manifest.py``); this copy exists because the ledger row
+        rests on it and CI runs the backend suite on every PR, including ones that
+        touch ``cli/`` without running the CLI suite.
         """
         manifest = (REPO_ROOT / "cli/src/archimedes_cli/manifest.py").read_text(encoding="utf-8")
-        block = re.search(r"EXIT_CODES\s*=\s*\{(.*?)\}", manifest, re.DOTALL)
+        exits_src = (REPO_ROOT / "cli/src/archimedes_cli/exits.py").read_text(encoding="utf-8")
+        block = re.search(r"EXIT_CODES\s*=\s*\{(.*?)\n\}", manifest, re.DOTALL)
         assert block is not None, "EXIT_CODES table not found in manifest.py — the ledger row cites it"
-        assert '"4"' not in block.group(1), (
-            "manifest.py's EXIT_CODES now publishes exit code 4. Good — that was the defect "
-            "the ledger's CLI row recorded. Move that row from OVER-CLAIMED to CHANGED, cite "
-            "the PR that fixed it, and delete this test."
+        published = set(re.findall(r'"(\d+)":', block.group(1)))
+        defined = set(re.findall(r"^[A-Z_]+ = (\d+)$", exits_src, re.MULTILINE))
+        assert defined, "no exit codes parsed from exits.py — the parser broke, not the contract"
+        assert defined <= published, (
+            f"exits.py defines codes the manifest does not publish: {sorted(defined - published)}. "
+            "The machine-readable table is what a CI job branches on; an unpublished code is an "
+            "undocumented one."
         )
 
     def test_open_overclaims_are_still_present(self):
