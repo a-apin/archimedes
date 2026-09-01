@@ -108,6 +108,16 @@ export default function PublicLayout({ user, children }) {
 						<strong>Resources</strong>
 						<a href="/llms.txt">Agent API</a>
 						<a href="/.well-known/agent.json">Agent manifest</a>
+						{/* The docs site moved here with the rest of the footer when
+						    the landing page stopped carrying its own (#1634 link,
+						    guarded by ui/test/docs-link.test.js). */}
+						<a
+							href="https://docs.archimedes-arc.com/"
+							target="_blank"
+							rel="noreferrer"
+						>
+							Docs
+						</a>
 						<a
 							href="https://github.com/a-apin/archimedes"
 							target="_blank"
