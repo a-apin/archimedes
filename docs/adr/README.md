@@ -58,7 +58,7 @@ Corrected here, and bumped again for `lambda-generation-offload` on 2026-08-30.)
 | [`chainlink-primary-oracle.md`](chainlink-primary-oracle.md) | Accepted | 2026-07-01 | Dan Browne (reviewer: Bogdan Sivochkin) | Why on-chain prices are **Chainlink-primary** with a thin, bounded admin fallback that **degrades (not reverts)** on feed outage (#724) |
 | [`ec2-to-ecs-fargate-cutover.md`](ec2-to-ecs-fargate-cutover.md) | Accepted | 2026-07-09 | Dan Browne | Why the serving tier moved from one docker-compose EC2 box to an **ECS Fargate** service behind the existing ALB (#1039, #1056–#1059) |
 | [`debate-society-sole-generation-pipeline.md`](debate-society-sole-generation-pipeline.md) | Accepted | 2026-07-09 | Dan Browne | Why the **debate society is the only generation path** — no routing tree, no flag, no silent fallback (#1064/#1074) |
-| [`num-trials-self-containment.md`](num-trials-self-containment.md) | Accepted (ratified 2026-08-31, #1555; option 1 board FDR 2026-09-01, #1654) | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1`. **Board FDR** is on the ranking surface via [#1580](https://github.com/a-apin/archimedes/pull/1580): advisory, never flips `passes_all`, not on the passport |
+| [`num-trials-self-containment.md`](num-trials-self-containment.md) | Accepted (ratified 2026-08-31, #1555; option 1 board FDR 2026-09-01, #1654) | 2026-07-09 | Dan Browne (quant reviewer: Önder Akkaya) | Why a strategy's DSR trial count depends **only on that strategy** — never `N + library_size`; curated single-paper strategies grade at `num_trials = 1`. **Option 1 recorded (#1654):** board FDR is ranking-surface and advisory; wiring shipped ([#1564](https://github.com/a-apin/archimedes/issues/1564) / [PR #1580](https://github.com/a-apin/archimedes/pull/1580), `Leaderboard.jsx`); never flips the badge; passport stays out |
 | [`aurora-postgres-alembic-datastore.md`](aurora-postgres-alembic-datastore.md) | Accepted | 2026-07-28 | Dan Browne | Why **Aurora PostgreSQL Serverless v2 (18.3)** is the system of record, **Alembic** the only schema-change mechanism, **Redis 7.1** ephemeral-only |
 | [`strategy-dsl-hardening-over-lean4.md`](strategy-dsl-hardening-over-lean4.md) | Accepted | 2026-08-30 | Dan Browne | Why the generator's emission target stays the **closed-enum JSON DSL, hardened**, and **not Lean 4** — the no-generated-code property is already structural; a restricted sandbox is reserved for shapes the DSL cannot express |
 | [`market-data-sourcing.md`](market-data-sourcing.md) | Accepted | 2026-08-31 | Dan Browne | Why market data is sourced **per surface** — Tiingo (starting on the Free tier, for testing) for backtesting and paid analysis, yfinance for the free, ungated Explore viewer that sells and redistributes nothing. Flags a **Tiingo commercial plan as a mainnet prerequisite** and records that the split is reversible by build (#1218, #1282, #1455) |
@@ -71,12 +71,16 @@ None open.
 - ~~The `num-trials-self-containment.md` portfolio-math sign-off~~ — **resolved
   2026-08-31**: ratified by Önder Akkaya
   ([#1555](https://github.com/a-apin/archimedes/issues/1555), outcome 3), with four
-  corrections folded into the ADR.
+  corrections folded into the ADR. (History of the residual, as of that stamp: the
+  served board-level BH FDR disagreed with the per-strategy gate on every strategy —
+  min adjusted p 0.319 board-wide — and the ranking-surface product decision was
+  still open. That sentence is no longer current; see the next item.)
 - ~~Board-level BH FDR ranking-surface product decision~~ — **resolved 2026-09-01**:
-  option 1 on [#1654](https://github.com/a-apin/archimedes/issues/1654). Board FDR is
-  on the ranking surface via [#1580](https://github.com/a-apin/archimedes/pull/1580)
-  (`Leaderboard.jsx`); advisory; never flips `passes_all`; not on the passport. See
-  the 2026-09-01 amendment in
+  option 1 is recorded ([#1654](https://github.com/a-apin/archimedes/issues/1654));
+  wiring shipped ([#1564](https://github.com/a-apin/archimedes/issues/1564) /
+  [PR #1580](https://github.com/a-apin/archimedes/pull/1580), `Leaderboard.jsx`).
+  Board FDR is ranking-surface and advisory; never flips the badge (`passes_all`);
+  passport stays out. See the 2026-09-01 amendment in
   [`num-trials-self-containment.md`](num-trials-self-containment.md).
 
 ## When to add an ADR
