@@ -56,6 +56,9 @@ infra/.terraform/
 infra/.terraform.lock.hcl
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
+# Lambda zips built at plan time by data.archive_file (infra/cost_kill_switch.tf).
+# Build output, not source — the source is infra/lambda/**/*.py.
+infra/.build/
 
 # Lambda deployment packages built by `data "archive_file"` at plan time from
 # the (tracked) sources beside them — a build artifact, and a binary one, so

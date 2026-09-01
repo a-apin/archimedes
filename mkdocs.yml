@@ -92,6 +92,7 @@ nav:
   - Product:
       - user-stories.md
       - agent-api.md
+      - specs/agent-native-onboarding-spec.md
       - asset-universe.md
       - demo-script-lepton.md
 
