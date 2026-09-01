@@ -555,9 +555,8 @@ class TestPinPathStaysGone:
     def test_agent_runner_does_not_import_or_call_a_pin_client(self):
         from pathlib import Path
 
-        from archimedes.chain import agent_runner
-
-        source = Path(agent_runner.__file__).read_text(encoding="utf-8")
+        source = Path(__file__).resolve().parents[1] / "archimedes" / "chain" / "agent_runner.py"
+        text = source.read_text(encoding="utf-8")
         needles = (
             "provenance_publisher",
             "pinata_client",
@@ -566,7 +565,7 @@ class TestPinPathStaysGone:
         )
         offenders = [
             f"{n}: {line.strip()}"
-            for n, line in enumerate(source.splitlines(), start=1)
+            for n, line in enumerate(text.splitlines(), start=1)
             if any(needle in line for needle in needles)
         ]
         assert offenders == [], (
