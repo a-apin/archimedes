@@ -8,8 +8,10 @@
 #
 # What this creates:
 #   1. An IAM OIDC identity provider for token.actions.githubusercontent.com
-#   2. A deploy role whose trust policy ONLY accepts a-apin/archimedes on
-#      refs/heads/main (build-on-deploy), assumed via sts:AssumeRoleWithWebIdentity.
+#   2. A deploy role whose trust policy ONLY accepts ${GITHUB_ORG}/${GITHUB_REPO}
+#      on refs/heads/main (build-on-deploy), via sts:AssumeRoleWithWebIdentity.
+#      Re-run this after renaming or transferring the repo — see the note by
+#      GITHUB_ORG for why deploys break silently otherwise.
 #   3. A STARTER permissions policy (ECR push + SSM SendCommand + EC2 describe),
 #      plus the docs-site publish grants (#1634): sync into the
 #      docs-site/infra bucket and invalidate its CloudFront distribution.
@@ -30,8 +32,14 @@ set -euo pipefail
 # ACCOUNT_ID/REGION are not hardcoded — auto-detected from the active profile (override via env).
 ACCOUNT_ID="${ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)}"
 REGION="${AWS_REGION:-us-east-1}"
-GITHUB_ORG="a-apin"
-GITHUB_REPO="archimedes"
+# The OIDC `sub` claim carries the repository's CURRENT owner/name. Renaming or
+# transferring the repo changes the claim, the trust policy below stops matching,
+# and every deploy dies at "Configure AWS credentials (OIDC)" with
+# `Not authorized to perform sts:AssumeRoleWithWebIdentity` before a byte is built.
+# Git keeps working throughout, because GitHub redirects clones and STS does not.
+# So: re-run this script after any rename. Override via env for a fork.
+GITHUB_ORG="${GITHUB_ORG:-aprin-labs}"
+GITHUB_REPO="${GITHUB_REPO:-archimedes}"
 DEPLOY_BRANCH_SUB="repo:${GITHUB_ORG}/${GITHUB_REPO}:ref:refs/heads/main"
 ROLE_NAME="archimedes-github-deploy"
 OIDC_URL="token.actions.githubusercontent.com"
@@ -49,6 +57,29 @@ do_() { printf '  + %s\n' "$*"; if $APPLY; then eval "$*"; fi; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 [ -n "$ACCOUNT_ID" ] || { echo "ERROR: could not resolve ACCOUNT_ID (set AWS_PROFILE / export ACCOUNT_ID)"; exit 1; }
 $APPLY && echo ">>> APPLY MODE — account ${ACCOUNT_ID}" || echo ">>> DRY RUN — re-run with --apply to execute."
+
+# ─── 0. The trust policy must name the repo GitHub will actually mint tokens for ──
+# A wrong org here is not a visible error: the role is written successfully and
+# every later deploy fails at the credentials step instead. `gh` knows the
+# canonical owner/name (a local git remote does not — it still resolves through
+# GitHub's rename redirect), so cross-check against it and refuse to write a
+# policy that cannot match. Skipped, not failed, when gh is missing or unauthed:
+# an absent optional tool should not block a valid run.
+say "Repo identity cross-check"
+if command -v gh >/dev/null 2>&1 && ACTUAL_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" && [ -n "$ACTUAL_REPO" ]; then
+  if [ "$ACTUAL_REPO" = "${GITHUB_ORG}/${GITHUB_REPO}" ]; then
+    echo "  ok: GitHub reports ${ACTUAL_REPO}, matching the configured trust subject"
+  else
+    echo "ERROR: this script would trust 'repo:${GITHUB_ORG}/${GITHUB_REPO}:...', but GitHub" >&2
+    echo "       reports the repository as '${ACTUAL_REPO}'." >&2
+    echo "       The OIDC sub claim uses the name GitHub reports, so that policy could never" >&2
+    echo "       match and every deploy would fail at 'Configure AWS credentials (OIDC)'." >&2
+    echo "       Fix GITHUB_ORG/GITHUB_REPO (or export them) and re-run." >&2
+    exit 1
+  fi
+else
+  echo "  skipped: gh unavailable or unauthenticated — cannot confirm ${GITHUB_ORG}/${GITHUB_REPO}"
+fi
 
 # ─── 1. OIDC provider ─────────────────────────────────────────────────────────
 say "GitHub OIDC identity provider"
