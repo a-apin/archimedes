@@ -20,8 +20,12 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 
+import pytest
 from archimedes.agents import strategy_fusion
+
+from tests.db_isolation import redirect_to_tmp_sqlite
 
 
 class TestLoadCorpusIsSerialized:
@@ -89,23 +93,67 @@ class TestHealthProbeDoesNotLoadTheCorpus:
 
 
 class TestCountMatchesTheEmbargoRule:
-    def test_sql_count_agrees_with_the_python_filter(self, monkeypatch):
-        """The COUNT and apply_outcome_embargo answer identically on the same rows."""
-        from datetime import date, timedelta
+    """``count_corpus_papers`` answers what the old probe's ``len(load_corpus())`` did.
 
-        from archimedes.services.embargo_filter import apply_outcome_embargo
+    Driven against a real ``papers`` table (tmp-file sqlite via
+    ``tests/db_isolation``), never a Python list checked against itself: the
+    SQL COUNT and ``load_papers_from_db`` — whose rows go through
+    ``apply_outcome_embargo`` — must agree on the SAME stored rows, including
+    both edges of the embargo boundary.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_db(self, tmp_path):
+        yield from redirect_to_tmp_sqlite(tmp_path)
+
+    @staticmethod
+    def _seed(rows: list[tuple[str, str]]) -> None:
+        from archimedes.db import get_session
+        from archimedes.models.corpus_store import PaperRecord
+
+        with get_session() as session:
+            for arxiv_id, published in rows:
+                session.add(PaperRecord(arxiv_id=arxiv_id, title=f"t {arxiv_id}", abstract="a", published=published))
+            session.commit()
+
+    def test_sql_count_agrees_with_load_papers_from_db_on_both_embargo_edges(self):
+        from archimedes.services.corpus_service import count_corpus_papers, load_papers_from_db
+
+        def day(n: int) -> str:
+            return (date.today() - timedelta(days=n)).isoformat()
+
+        self._seed(
+            [
+                ("old.1", day(40)),
+                ("edge.in", day(30)),  # exactly embargo_days old: apply_outcome_embargo KEEPS it (<=)
+                ("edge.in.ts", day(30) + "T23:59:59Z"),  # same day, arXiv's timestamp form
+                ("edge.out", day(29)),  # one day inside the embargo: dropped
+                ("fresh.1", day(10)),
+                ("blank", ""),  # no date: dropped, fail closed
+            ]
+        )
+
+        loaded = load_papers_from_db(embargo_days=30, apply_decay=False)
+        assert sorted(p["arxiv_id"] for p in loaded) == ["edge.in", "edge.in.ts", "old.1"]
+
+        # THE assertion: the scalar the probe reports IS the size of the corpus
+        # generation would load. Mutations that fail it: `<` for `<=` at the
+        # cutoff (reads 1 low on the edge day), dropping the != '' clause
+        # (reads 1 high), comparing against today instead of the cutoff.
+        assert count_corpus_papers(embargo_days=30) == len(loaded) == 3
+
+    def test_an_unparseable_date_can_only_make_the_count_read_high(self):
+        """The documented delta: SQL cannot parse, so garbage that sorts as old is counted.
+
+        ``apply_outcome_embargo`` drops it (fail closed). The honest direction
+        for a health number is over-reporting by the unparseable rows — never a
+        fabricated low — and this pins that the delta is exactly those rows.
+        """
+        from archimedes.services.corpus_service import count_corpus_papers, load_papers_from_db
 
         old = (date.today() - timedelta(days=40)).isoformat()
-        fresh = (date.today() - timedelta(days=10)).isoformat()
-        rows = [
-            {"arxiv_id": "a1", "published": old},
-            {"arxiv_id": "a2", "published": fresh},  # inside the embargo → dropped
-            {"arxiv_id": "a3", "published": ""},  # unparseable → dropped (fail closed)
-        ]
-        kept = apply_outcome_embargo(rows, embargo_days=30)
-        assert [r["arxiv_id"] for r in kept] == ["a1"]
+        self._seed([("old.1", old), ("garbage.old", "1999-99-99"), ("garbage.new", "9999-99-99")])
 
-        # The SQL mirror: published != "" AND published < cutoff.
-        cutoff = (date.today() - timedelta(days=30)).isoformat()
-        sql_kept = [r for r in rows if r["published"] and r["published"] < cutoff]
-        assert [r["arxiv_id"] for r in sql_kept] == ["a1"]
+        loaded = load_papers_from_db(embargo_days=30, apply_decay=False)
+        assert [p["arxiv_id"] for p in loaded] == ["old.1"]
+        assert count_corpus_papers(embargo_days=30) == len(loaded) + 1  # garbage.old, and only it
