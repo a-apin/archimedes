@@ -797,14 +797,41 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
     }
 
 
-def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _CandidateResult:
+def _make_entry(
+    candidate_id: str,
+    proposal: Any,
+    ev: Any,
+    *,
+    regime: str,
+    evidence_by_id: dict[str, dict[str, str]] | None = None,
+) -> _CandidateResult:
     """One leaderboard entry — a fully-populated ``_CandidateResult``.
 
     ``has_real_rigor=True`` (carries C-rigor's real backtest) so the downstream
     ``_patch_pbo`` and buy-and-hold gather correctly SKIP it (keyed on
     ``has_real_rigor``), preserving the CSCV PBO from ``evaluate_fusion_spec``.
+
+    ``evidence_by_id`` (#1739) is the ``{arxiv_id: {"title", "published"}}`` map
+    ``_propose_pool`` already built — the only place in the run that knows a
+    cited paper's TITLE. Without it every ``source_papers`` entry shipped
+    ``"title": ""`` and the Library card had nothing but an id to print.
+    Defaults to ``None`` (→ blank titles, the old behaviour) so the pure
+    ranking tests can call ``build_leaderboard`` without an evidence map.
     """
     spec = proposal.strategy_spec or {}
+    # (#1739) The server-filtered paper→mechanism map, keyed for the join
+    # below. First entry per id wins; a cited paper with no entry is carried
+    # with an empty mechanism, which is the honest "cited but unattributed"
+    # record (never dropped — dropping it would hide the shortfall).
+    mechanisms = getattr(proposal, "paper_mechanisms", None) or []
+    mech_by_id: dict[str, dict[str, Any]] = {}
+    for entry in mechanisms:
+        if not isinstance(entry, dict):
+            continue
+        arxiv_id = str(entry.get("arxiv_id", "") or "")
+        if arxiv_id and arxiv_id not in mech_by_id:
+            mech_by_id[arxiv_id] = entry
+    titles = evidence_by_id or {}
     # Real per-bar returns for the live gate (#788/#818, mirrors the fusion
     # path): without return_series, _persist_real_returns SKIPS the winner and
     # the passport reads "pending" forever even though C-rigor just ran a real
@@ -816,7 +843,15 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         strategy_name=proposal.strategy_name or "Debate candidate",
         thesis=proposal.thesis,
         asset_universe=list(spec.get("asset_universe", []) or []),
-        source_papers=[{"arxiv_id": a, "title": ""} for a in proposal.source_arxiv_ids],
+        source_papers=[
+            {
+                "arxiv_id": a,
+                "title": (titles.get(a) or {}).get("title", ""),
+                "mechanism": str((mech_by_id.get(a) or {}).get("mechanism", "") or ""),
+                "spec_elements": list((mech_by_id.get(a) or {}).get("spec_elements", []) or []),
+            }
+            for a in proposal.source_arxiv_ids
+        ],
         weights={},  # debate emits a DSL spec, not a static weight vector
         reasoning=proposal.fusion_reasoning or proposal.novelty_rationale or "",
         rigor_verdict=_rigor_verdict_dict(ev),
@@ -836,6 +871,11 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         # live agent runner later loads it to evaluate a deployed generated
         # strategy under its own signal rule instead of silently skipping it.
         strategy_spec=spec or None,
+        # (#1739) The budget-vs-used pair and the per-paper prose, carried onto
+        # the candidate instead of ending at a log line / a write-only field.
+        papers_offered=int(getattr(proposal, "papers_offered", 0) or 0),
+        distinct_mechanism_papers=int(getattr(proposal, "distinct_mechanism_papers", 0) or 0),
+        fusion_reasoning=str(getattr(proposal, "fusion_reasoning", "") or ""),
     )
 
 
@@ -935,6 +975,7 @@ def build_leaderboard(
     base_id: str,
     regime_force_abstain: bool = False,
     regime_reason: str = "",
+    evidence_by_id: dict[str, dict[str, str]] | None = None,
 ) -> list[_CandidateResult]:
     """Deterministic C-regime gate → C-null cull + rank → top-N leaderboard.
 
@@ -943,6 +984,11 @@ def build_leaderboard(
     market regime structurally overrides candidate consensus (Hierarchy-of-Truth).
     Otherwise: C-null cull → rank → leaderboard (leader keeps ``base_id``,
     alternatives get ``base_id_alt{n}``). Pure + deterministic — directly tested.
+
+    ``evidence_by_id`` (#1739) is threaded through to ``_make_entry`` purely so
+    a cited paper's TITLE reaches ``source_papers``; it never influences
+    ranking, culling, or the abstain paths. Optional, so the pure ranking tests
+    keep calling this with rigor results alone.
     """
     if regime_force_abstain:
         return [
@@ -966,7 +1012,13 @@ def build_leaderboard(
     # candidate set can't balloon when the pool is large.
     survivors = survivors[: _leaderboard_max()]
     return [
-        _make_entry(base_id if i == 0 else f"{base_id}_alt{i}", p, ev, regime=regime)
+        _make_entry(
+            base_id if i == 0 else f"{base_id}_alt{i}",
+            p,
+            ev,
+            regime=regime,
+            evidence_by_id=evidence_by_id,
+        )
         for i, (p, ev) in enumerate(survivors)
     ]
 
@@ -1102,6 +1154,7 @@ async def _run_debate_leaderboard(
         base_id=candidate_id,
         regime_force_abstain=regime_gate["force_abstain"],
         regime_reason=regime_gate["reason"],
+        evidence_by_id=evidence_by_id,
     )
     # Stamp the ONE transcript this run produced onto every entry (winner AND
     # the tail Considered Alternatives) — build_leaderboard is pure and knows
