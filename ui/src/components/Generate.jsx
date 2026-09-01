@@ -3,10 +3,12 @@ import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
 import FreeGenerationBanner from "./FreeGenerationBanner";
+import ResendVerificationControl from "./ResendVerificationControl";
 import { SURPRISE_BRIEFS } from "../data/surpriseBriefs";
 import { pickSurpriseBrief } from "../data/pickSurpriseBrief";
 import { ASSET_GROUPS, SUPPORTED_ASSETS } from "../data/assetUniverse";
 import { apiGet, apiPostWithMeta } from "../api";
+import { deriveWalletGateView } from "../freeGenerations";
 import { getAddress } from "../config";
 import { listLinkedWallets } from "../linked-wallets";
 import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
@@ -110,7 +112,7 @@ const RISK_PROFILES = [
 
 // ─────────────────────────────────────────────────────────────
 
-export default function Generate({ onNavigate, onStageChange }) {
+export default function Generate({ onNavigate, onStageChange, user }) {
 	// ── Brief form state ──
 	const [intent, setIntent] = useState("");
 	const [starting, setStarting] = useState(false);
@@ -165,6 +167,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// banner never survives a retry.
 	const [paymentStatus, setPaymentStatus] = useState(PAYMENT_STATUS.NONE);
 	const [paymentMessage, setPaymentMessage] = useState("");
+	// Human view of a 409 wallet_link_required — derived once from the error
+	// so the panel never dumps the agent/curl `detail.message` (#1658 leftover).
+	const [walletGateView, setWalletGateView] = useState(null);
 	// The parsed PAYMENT-REQUIRED requirements from the active 402 (or an
 	// error state if the header was missing/malformed/had no supported
 	// option) — see ../generateQuote.js's derivePaymentRequirements. Null
@@ -419,6 +424,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 	const resetPaymentStepState = () => {
 		setPaymentStatus(PAYMENT_STATUS.NONE);
 		setPaymentMessage("");
+		setWalletGateView(null);
 		setPaymentRequirements(null);
 		setPaymentRequirementsAt(0);
 		setPaywallQuoteRaw(null);
@@ -467,7 +473,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 					setPaymentRequirements(derivePaymentRequirements(extractPaymentRequiredHeader(e.headers)));
 					setPaymentRequirementsAt(Date.now());
 				} else {
-					setPaymentMessage(paymentErrorMessage(e));
+					// 409 wallet_link_required. Same anti-dump rule as 402: the
+					// backend message names POST /api/... paths for agents.
+					setWalletGateView(deriveWalletGateView(e));
 				}
 			} else {
 				setStartError(startErrorMessage(e, "Failed to start generation"));
@@ -495,11 +503,17 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// succeeded outright (paywall off), else the freshly parsed requirements.
 	const refreshPaymentRequirements = async () => {
 		try {
-			const { receipt: settledReceipt } = await submitStart();
+			const { data, receipt: settledReceipt } = await submitStart();
 			resetPaymentStepState();
 			setNoSettlementNotice(!settledReceipt);
 			if (GENERATION_QUOTE_ENABLED) fetchQuote();
 			fetchCredits();
+			// Same contract as startJob / finishStart: an accepted job takes
+			// the user into the stream. Returning null without this used to
+			// leave the armed pay button beside a quiet table-row update —
+			// the exact "reads as a failed start" shape enterStartedJob exists
+			// to close.
+			enterStartedJob(data);
 			return null;
 		} catch (e) {
 			const fresh = derivePaymentRequirements(extractPaymentRequiredHeader(e.headers));
@@ -666,9 +680,15 @@ export default function Generate({ onNavigate, onStageChange }) {
 			if (isActivationRefusal(e)) {
 				setPayStep("confirm");
 			} else {
-				setPaymentMessage(
-					paymentErrorMessage(e, e?.shortMessage || e?.message || "Payment failed — try again."),
-				);
+				const gate = deriveWalletGateView(e);
+				if (gate) {
+					setPaymentStatus(PAYMENT_STATUS.WALLET_LINK_REQUIRED);
+					setWalletGateView(gate);
+				} else {
+					setPaymentMessage(
+						paymentErrorMessage(e, e?.shortMessage || e?.message || "Payment failed — try again."),
+					);
+				}
 			}
 		} finally {
 			setPaying(false);
@@ -1147,7 +1167,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 					    not have to touch the same lines. #1642 builds no gating
 					    logic — if this div is still empty, #1643 has not landed. */}
 					<div className="generate-gate-slot" data-generate-gate-slot>
-						<FreeGenerationBanner />
+						<FreeGenerationBanner email={user?.email} />
 					</div>
 
 					{/* `generate-submit-row` (not a bare flex utility chain) because
@@ -1174,7 +1194,8 @@ export default function Generate({ onNavigate, onStageChange }) {
 						>
 						{paymentStatus === PAYMENT_STATUS.WALLET_LINK_REQUIRED ? (
 							<div className="info-box warning" style={{ flex: 1 }}>
-								<strong>Wallet link required.</strong> {paymentMessage}
+								<strong>{walletGateView?.title ?? "Wallet link required"}.</strong>{" "}
+								{walletGateView?.message}
 								{payerMismatch && (
 									<p
 										className="caption mb-0"
@@ -1185,7 +1206,11 @@ export default function Generate({ onNavigate, onStageChange }) {
 										{shortAddr(payerMismatch.linked)}. Switch your wallet's
 										active account to that one, or link the connected one below.
 									</p>
-								)}{" "}
+								)}
+								{walletGateView?.offerResend && (
+									<ResendVerificationControl email={user?.email} />
+								)}
+								{" "}
 								<button
 									type="button"
 									onClick={() =>
