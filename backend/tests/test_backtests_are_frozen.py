@@ -18,18 +18,20 @@ remaining way to produce a curated backtest is the manual CLI
 (``python -m archimedes.scripts.run_backtests``), run out-of-band —
 ``docs/runbooks/curated-backtests.md``.
 
-**Why a source-text guard.** The property being guarded is *"this code path
+**Why a static-source guard.** The property being guarded is *"this code path
 does not exist"*. Booting the whole app and waiting three minutes to observe
 the absence of a refresh is both slower and weaker than asserting the module is
-gone and the lifespan does not name it — the same reasoning as
-``test_lifespan_no_rigor_backfill.py``, whose shape this test follows.
+gone, the lifespan does not name it, and nothing but the CLI reaches the runner
+— the same reasoning as ``test_lifespan_no_rigor_backfill.py``, whose shape
+this test follows.
 
-Hermetic: an import and ``inspect.getsource``. No DB, no network, no yfinance,
-no app boot.
+Hermetic: an import, ``inspect.getsource``, and ``ast.parse``. No DB, no
+network, no yfinance, no app boot.
 """
 
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
 from pathlib import Path
@@ -77,7 +79,11 @@ def test_backtest_scheduler_file_is_gone() -> None:
 
 
 def test_lifespan_does_not_arm_a_backtest_refresh() -> None:
-    code = "\n".join(_code_lines(_lifespan_source()))
+    # Lower-cased before the scan: the flag spellings are upper-case
+    # (``BACKTEST_REFRESH_ENABLED``), so a case-sensitive scan would let a
+    # re-added ``os.getenv("BACKTEST_REFRESH_ENABLED")`` reader walk straight
+    # past this guard.
+    code = "\n".join(_code_lines(_lifespan_source())).lower()
     assert "backtest_refresh" not in code, (
         "the FastAPI lifespan arms a backtest refresh again (#1760). Every new "
         "ECS task boots into that loop, it runs run_backtests() for the whole "
@@ -103,7 +109,7 @@ def test_no_module_schedules_a_backtest_refresh() -> None:
     offenders: list[str] = []
     for path in sorted(package_root.rglob("*.py")):
         text = path.read_text(encoding="utf-8", errors="replace")
-        code = "\n".join(_code_lines(text))
+        code = "\n".join(_code_lines(text)).lower()
         if "backtest_refresh" in code or "backtest_scheduler" in code:
             offenders.append(str(path.relative_to(package_root)))
     assert not offenders, (
@@ -112,4 +118,79 @@ def test_no_module_schedules_a_backtest_refresh() -> None:
         "everywhere — a curated backtest is produced by an explicit operator run "
         "(docs/runbooks/curated-backtests.md), a generated one exactly once at "
         "generation. Policy: docs/adr/backtests-are-frozen-evidence.md."
+    )
+
+
+# ── the rebrand-proof half ───────────────────────────────────────────────
+#
+# Every scan above is pinned to the retired loop's own spelling. A loop that
+# does exactly what #1760 retired, under a name nobody thought to ban —
+# ``services/evidence_freshness.py::curated_evidence_tick`` — walks past all
+# three. The token bans are still worth keeping (they name the incident, and
+# they are what a reader greps for), but the property that actually holds is
+# behavioural: producing a curated backtest means reaching ``run_backtests``,
+# whatever the caller is called, so that is the choke point to guard.
+
+_RUN_BACKTESTS_OWNER = "scripts/run_backtests.py"
+_RUN_BACKTESTS_MODULE = "archimedes.scripts.run_backtests"
+
+
+def _reaches_run_backtests(tree: ast.Module) -> list[tuple[int, str]]:
+    """Sites in one parsed module that import, call, or dynamically name the CLI.
+
+    AST rather than a text scan so that *comments and prose do not trip it* —
+    same escape hatch as :func:`_code_lines` above. A tombstone comment
+    explaining why there is no refresh is not a call site; a docstring naming
+    the dotted module path is treated as one, because that is what a dynamic
+    import looks like from here.
+    """
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _RUN_BACKTESTS_MODULE:
+                    found.append((node.lineno, f"import {alias.name}"))
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == _RUN_BACKTESTS_MODULE:
+                found.append((node.lineno, f"from {module} import ..."))
+            elif any(alias.name == "run_backtests" for alias in node.names):
+                found.append((node.lineno, f"from {module or '.'} import run_backtests"))
+        elif isinstance(node, ast.Call):
+            func = node.func
+            called = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+            if called == "run_backtests":
+                found.append((node.lineno, "run_backtests(...)"))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _RUN_BACKTESTS_MODULE in node.value:
+            found.append((node.lineno, f"{_RUN_BACKTESTS_MODULE!r} in a string literal"))
+    return found
+
+
+def test_only_the_cli_reaches_run_backtests() -> None:
+    """``scripts/run_backtests.py`` is the only site that may reach the runner.
+
+    This is the guard the runbook's "no boot hook, on any tier" constraint
+    actually rests on. A rebranded loop passes every token scan above, but it
+    cannot produce a backtest without arriving here.
+
+    Generated strategies are backtested inside the generation pipeline, which
+    reaches the analytics engine directly and never calls ``run_backtests`` —
+    so the CLI genuinely is the only legitimate caller, and this test needs no
+    allow-list beyond the owner file itself.
+    """
+    package_root = Path(inspect.getfile(main_module)).resolve().parent
+    offenders: list[str] = []
+    for path in sorted(package_root.rglob("*.py")):
+        rel = path.relative_to(package_root).as_posix()
+        if rel == _RUN_BACKTESTS_OWNER:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        offenders.extend(f"{rel}:{lineno} ({what})" for lineno, what in _reaches_run_backtests(tree))
+    assert not offenders, (
+        "these sites import or call run_backtests outside the CLI: "
+        f"{offenders}. #1760 retired boot-time and periodic backtest refresh under "
+        "EVERY name, not just the two the scans above ban — a curated backtest is "
+        "produced by an explicit operator run (docs/runbooks/curated-backtests.md), "
+        "a generated one exactly once at generation. Policy: "
+        "docs/adr/backtests-are-frozen-evidence.md."
     )

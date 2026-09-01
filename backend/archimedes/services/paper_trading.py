@@ -1083,9 +1083,9 @@ async def paper_advance_loop() -> None:
     never take the app down. Interval defaults to daily — the ledger law makes
     extra runs harmless (idempotent appends).
 
-    This is the ONLY forward-looking clock in the product, and that is on
-    purpose: performance after publication is the ledger's job. Backtests do
-    not have a clock at all (#1760,
+    This clock is the point of the ledger: performance after publication is
+    the thing that is supposed to move with time. Backtests are the opposite
+    — they have no clock at all, by policy (#1760,
     ``docs/adr/backtests-are-frozen-evidence.md``).
 
     Run this only in a dedicated interpreter (``python -m

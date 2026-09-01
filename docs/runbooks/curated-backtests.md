@@ -119,7 +119,7 @@ Two runs at once are not corrupting — content-hash dedup makes the second one'
 idempotent — but they are two full-library computations and, if one is on a serving task,
 exactly the CPU contention #1760 was about. Run one at a time.
 
-### The four things to check before you trust the run
+### The five things to check before you trust the run
 
 1. **Exit code 0.** A nonzero exit means the script itself failed; per-strategy failures do
    **not** change the exit code — they show up in the summary.
@@ -138,6 +138,19 @@ exactly the CPU contention #1760 was about. Run one at a time.
    `SPY` operation, `$100,000` initial cash, 10 bps costs, 5 bps slippage
    (`_read_config()`). If you override any of them, the rows you produce state a *different*
    window from the rest of the library — say so wherever the numbers get used.
+5. **Which image actually ran.** `--task-definition archimedes-migrate` resolves to that
+   family's last **Terraform-applied** revision, whose image tag is `var.backend_image_tag` =
+   `latest` ([`../../infra/ecs_migrate.tf`](../../infra/ecs_migrate.tf),
+   [`../../infra/variables.tf`](../../infra/variables.tf)). CI re-registers only the
+   `archimedes-backend` family, but it does push `:latest` alongside `:<commit-sha>` on every
+   deploy — so the run executes current `main`, which is **not necessarily the digest the
+   service is serving**. This ADR's whole thesis is that a backtest is dated evidence, so
+   record what produced it:
+
+   ```bash
+   aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+     --query 'tasks[0].containers[0].imageDigest' --output text
+   ```
 
 ### Alternative: `aws ecs execute-command` into a running task
 
@@ -178,8 +191,12 @@ change to the ADR, not a change to this runbook.
 
 - **No clock.** No cron, no interval, no cadence, no `BACKTEST_MAX_AGE_HOURS`. Backtest age
   is not a reason to re-run a backtest.
-- **No boot hook.** Nothing in the FastAPI lifespan, on any tier, may schedule this. Guarded
-  by [`../../backend/tests/test_backtests_are_frozen.py`](../../backend/tests/test_backtests_are_frozen.py).
+- **No boot hook, under any name.** Nothing in the FastAPI lifespan, on any tier, may schedule
+  this. Guarded at the choke point by
+  [`../../backend/tests/test_backtests_are_frozen.py`](../../backend/tests/test_backtests_are_frozen.py):
+  `scripts/run_backtests.py` is the only site under `backend/archimedes/` permitted to import or
+  call `run_backtests`, so renaming the loop does not get past it. (The same test also bans the
+  `backtest_refresh` / `backtest_scheduler` spellings outright, case-insensitively.)
 - **Never in the serving process.** Not `asyncio.to_thread`, not a subprocess of the web
   container. A one-off task, or an operator's shell.
 - **Never for generated strategies.** They are backtested once, at generation. If a generated

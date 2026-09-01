@@ -14,7 +14,7 @@
 
 - A **generated** strategy is backtested exactly once, at generation, as part of the pipeline that grades it. It is correct from the beginning or it does not ship.
 - A **curated** strategy is backtested when its strategy file changes, when a data-quality defect is fixed, or when the owner asks — always by an explicit out-of-band run of `python -m archimedes.scripts.run_backtests`, never from the web tier.
-- **No periodic refresh, no boot hook, no staleness check, anywhere.** The web tier's only remaining scheduled work is the paper-trading advance tick.
+- **No periodic refresh, no boot hook, no staleness check, anywhere.** No backtest is on a clock. The web tier's other scheduled work is untouched by this decision: the paper-trading advance arm (isolated to a child process), the opt-in revenue sweep (`REVENUE_SWEEP_ENABLED`, off today), and one tick loop per rehydrated marketplace publisher.
 - Forward performance is the **paper-trading ledger's** job. That is the surface that is supposed to move with time; the backtest is not.
 
 ## Context
@@ -85,7 +85,7 @@ The answer to a stale board is a **runbook someone runs, plus an honest surface 
 - **"Latest" stops moving.** A strategy's board numbers change only when someone changed the strategy or fixed the data — which is the only reason a number *should* change. The #1746 Sharpe-drift class disappears.
 - **~155 rows per strategy stop accumulating.** New rows arrive at the rate of real changes, which makes [`../runbooks/backtest-results-retention.md`](../runbooks/backtest-results-retention.md) a one-time cleanup rather than a recurring chore, and makes the archive-then-prune keep-rules meaningful.
 - **The failure mode is visible.** A stale board is now a `pending` passport and a runbook nobody ran — legible — instead of a daily job dying silently at a `PermissionError` for six weeks.
-- **One less thing on the 1-vCPU serving task.** The web tier's scheduled work is now the paper-advance tick alone, and that one already refuses to run in-process.
+- **One less thing on the 1-vCPU serving task.** The heaviest scheduled work — a full-library `run_backtests()` in the serving process — is gone. What still ticks on the web tier is the paper-advance arm, which refuses to run in-process ([`../../backend/archimedes/services/paper_trading.py`](../../backend/archimedes/services/paper_trading.py) `arm_paper_advance_for_web_tier`); the opt-in revenue sweep ([`../../backend/archimedes/services/revenue_sweep.py`](../../backend/archimedes/services/revenue_sweep.py) `revenue_sweep_loop`, hourly, off today); and one `_run_loop` per rehydrated marketplace publisher. None of them re-runs a backtest. This ADR does not adjudicate those three — it removes the one that took the fleet down.
 
 ### Negative / costs we accept
 
@@ -105,6 +105,7 @@ The answer to a stale board is a **runbook someone runs, plus an honest surface 
 
 ## Verification
 
-- `services/backtest_scheduler.py` does not exist; nothing under `backend/archimedes/` names `backtest_refresh` or `backtest_scheduler` outside comments — asserted by [`../../backend/tests/test_backtests_are_frozen.py`](../../backend/tests/test_backtests_are_frozen.py).
+- `services/backtest_scheduler.py` does not exist; nothing under `backend/archimedes/` names `backtest_refresh` or `backtest_scheduler` outside comments, in any case — asserted by [`../../backend/tests/test_backtests_are_frozen.py`](../../backend/tests/test_backtests_are_frozen.py).
+- **The ban is on the behaviour, not on two spellings.** `scripts/run_backtests.py` is the only site under `backend/archimedes/` that imports or calls `run_backtests` — an AST assertion in the same test. A rebranded loop (`services/evidence_freshness.py::curated_evidence_tick`) passes every token scan and still trips this one, because it cannot produce a backtest without reaching the runner.
 - The FastAPI lifespan's source contains no backtest refresh — same test, same shape as [`../../backend/tests/test_lifespan_no_rigor_backfill.py`](../../backend/tests/test_lifespan_no_rigor_backfill.py).
 - The four `BACKTEST_*` knobs appear nowhere in the tree's actionable flag tables — enforced in both directions by [`../../backend/tests/test_feature_flag_fliplist_drift.py`](../../backend/tests/test_feature_flag_fliplist_drift.py).
