@@ -25,6 +25,7 @@ import {
 	UNKNOWN_RIGOR_LABEL,
 	UNKNOWN_RIGOR_TITLE,
 } from "../rigorGateStatus.js";
+import { formatStrategySpec, tokenizeJson } from "../strategySpec.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
@@ -39,6 +40,245 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 // No local number formatter lives here any more. Every metric this file renders
 // goes through MetricValue / metricDomain.js (#1651) — see the note in
 // Strategies.jsx; ui/test/metric-domain.test.js fails if `fmt`/`fmtPct` return.
+
+// ── Source-papers table (#1646) ────────────────────────────────────────────
+//
+// Every paper feeding a strategy belongs in ONE table with fixed columns, not
+// a stack of cards that grows unbounded. The passport spec has said so since
+// day one (docs/specs/strategy-passport-spec.md: "All N PaperRefs as a table
+// (single-paper strategies show one row; fusion strategies show N)"; "DO NOT
+// collapse fusion strategies to a scalar paper field for UI convenience …
+// the UI table is the right primitive"). What shipped instead was two
+// divergent card layouts — one for `papers.length > 1`, one scalar-field
+// fallback below it — which is why a 6-paper strategy pushed the backtest
+// panel off the bottom of the screen.
+//
+// These helpers are deliberately defensive about how EMPTY the data is today.
+// Authors, venue, year, DOI, citation count and contribution are structurally
+// NULL for every generated row on `main` right now: the generation path stores
+// arXiv ids and titles and nothing else, and `contribution` has no writer at
+// all. Filling those columns is issue #1637's job (the association contract);
+// this table's job is to render honestly whatever #1637 has landed at read
+// time. So: blanks are em-dashes, never zeroes or "Unknown", and a footnote
+// names the columns that are empty for EVERY row so a reader does not conclude
+// a paper has no authors when the truth is that nobody recorded them.
+
+function fmtAuthors(authors) {
+	const list = Array.isArray(authors) ? authors.filter(Boolean) : [];
+	if (list.length === 0) return null;
+	return list.length > 3 ? `${list.slice(0, 3).join(", ")} et al.` : list.join(", ");
+}
+
+function paperByline(p) {
+	const parts = [fmtAuthors(p.authors), p.venue || null, p.year != null ? String(p.year) : null];
+	return parts.filter(Boolean).join(" · ") || null;
+}
+
+/** Normalized paper rows for the table, newest contract first.
+ *
+ * `papers[]` is the contract. The legacy `paper_*` scalars are read ONLY when
+ * `papers[]` is empty — a payload shape old enough to predate the list, or a
+ * curated row whose passport carries scalars but no refs. Reading them as a
+ * fallback rather than as a separate layout is what collapses the two
+ * divergent card branches into one table.
+ */
+function paperRows(s) {
+	const refs = Array.isArray(s.papers) ? s.papers : [];
+	if (refs.length > 0) return refs;
+
+	const legacy = {
+		arxiv_id: s.paper_arxiv_id ?? null,
+		title: s.paper_title ?? "",
+		authors: s.paper_authors ?? [],
+		venue: s.paper_venue ?? null,
+		year: s.paper_year ?? null,
+		doi: s.paper_doi ?? null,
+		citation_count: s.paper_citation_count ?? null,
+		contribution: null,
+	};
+	const hasAnything =
+		Boolean(legacy.arxiv_id) ||
+		Boolean((legacy.title || "").trim()) ||
+		Boolean(legacy.doi) ||
+		legacy.year != null;
+	return hasAnything ? [legacy] : [];
+}
+
+// Which columns are empty across EVERY row. Computed rather than hardcoded so
+// the footnote shrinks by itself as #1637 backfills each field — a hardcoded
+// "authors are never recorded" line would become a false claim the day it is.
+const COLUMN_LABELS = {
+	byline: "authors, venue and year",
+	source: "arXiv id and DOI",
+	citations: "citation counts",
+	contribution: "per-paper contribution",
+};
+
+function blankColumns(rows) {
+	const seen = { byline: false, source: false, citations: false, contribution: false };
+	for (const p of rows) {
+		if (fmtAuthors(p.authors) || p.venue || p.year != null) seen.byline = true;
+		if (p.arxiv_id || p.doi) seen.source = true;
+		if (p.citation_count != null) seen.citations = true;
+		if ((p.contribution || "").trim()) seen.contribution = true;
+	}
+	return Object.keys(COLUMN_LABELS).filter((k) => !seen[k]);
+}
+
+function joinWords(items) {
+	if (items.length <= 1) return items.join("");
+	return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+function PapersTable({ papers, methodologyHash }) {
+	const rows = papers;
+	const blanks = blankColumns(rows);
+
+	return (
+		<div className="card passport-panel passport-papers">
+			<div className="passport-papers__head">
+				<div className="label">
+					{rows.length === 1 ? "Source paper" : `Fused from ${rows.length} papers`}
+				</div>
+				{rows.length > 1 && (
+					<p className="caption text-[var(--text-3)]">
+						One methodology synthesized from every row below.
+					</p>
+				)}
+			</div>
+
+			<div className="passport-papers__scroll">
+				<table className="passport-papers__table">
+					<caption className="sr-only">
+						Research papers this strategy was derived from
+					</caption>
+					<thead>
+						<tr>
+							<th scope="col">Paper</th>
+							<th scope="col">Authors · venue · year</th>
+							<th scope="col">Source</th>
+							<th scope="col" className="passport-papers__num">
+								Cited by
+							</th>
+							<th scope="col">Contribution</th>
+						</tr>
+					</thead>
+					<tbody>
+						{rows.map((p, idx) => {
+							const title = (p.title || "").trim();
+							const byline = paperByline(p);
+							const contribution = (p.contribution || "").trim();
+							return (
+								<tr key={p.arxiv_id || p.doi || `${title}-${idx}`}>
+									<th scope="row" className="passport-papers__title">
+										{/* An unrecorded title falls back to the arXiv id rather
+										    than rendering an empty pair of quotation marks, which
+										    is what the old card layout printed for a null title. */}
+										{title || p.arxiv_id || "—"}
+									</th>
+									<td>{byline || "—"}</td>
+									<td className="passport-papers__source">
+										{p.arxiv_id ? (
+											<a
+												href={`https://arxiv.org/abs/${p.arxiv_id}`}
+												target="_blank"
+												rel="noreferrer"
+												className="mono"
+											>
+												arxiv:{p.arxiv_id} ↗
+											</a>
+										) : null}
+										{p.doi ? (
+											<a
+												href={`https://doi.org/${p.doi}`}
+												target="_blank"
+												rel="noreferrer"
+												className="mono"
+											>
+												doi:{p.doi} ↗
+											</a>
+										) : null}
+										{!p.arxiv_id && !p.doi ? "—" : null}
+									</td>
+									<td className="passport-papers__num mono">
+										{p.citation_count != null ? p.citation_count : "—"}
+									</td>
+									<td>{contribution || "—"}</td>
+								</tr>
+							);
+						})}
+					</tbody>
+				</table>
+			</div>
+
+			{blanks.length > 0 && (
+				<p className="caption passport-papers__note">
+					Blank cells are unrecorded, not zero — {joinWords(blanks.map((k) => COLUMN_LABELS[k]))}{" "}
+					{blanks.length === 1 ? "is" : "are"} not stored for these references yet.
+				</p>
+			)}
+
+			{methodologyHash && (
+				<div className="caption mono text-[var(--text-4)] passport-papers__hash">
+					hash: {methodologyHash.slice(0, 24)}…
+				</div>
+			)}
+		</div>
+	);
+}
+
+// ── Generated DSL (#1646) ──────────────────────────────────────────────────
+//
+// The executable spec was invisible on this page: the API stripped it before
+// the boundary, so the only thing a reader could inspect was prose. Rendering
+// it is the difference between "trust the writeup" and "read the rules".
+//
+// `strategy_spec` is null for three different reasons and the caption below
+// says so instead of leaving a reader to guess: the row genuinely has no spec
+// (curated strategies bind a code path instead; rows generated before the
+// column existed have nothing), or the server redacted it because the spec is
+// REASONING and the reader is not the owner.
+function StrategySpecPanel({ spec }) {
+	const formatted = formatStrategySpec(spec);
+
+	return (
+		<div className="card passport-panel passport-dsl">
+			<div className="passport-dsl__head">
+				<div className="label">Generated DSL</div>
+				<p className="caption text-[var(--text-3)]">
+					The machine-readable spec the backtest and the live evaluator both
+					interpret — not a restatement of the methodology above.
+				</p>
+			</div>
+			{formatted ? (
+				<>
+					<pre className="passport-dsl__code" tabIndex={0}>
+						<code>
+							{tokenizeJson(formatted.text).map((tok, i) => (
+								<span key={i} className={`passport-dsl__t-${tok.kind}`}>
+									{tok.text}
+								</span>
+							))}
+						</code>
+					</pre>
+					{formatted.truncated && (
+						<p className="caption passport-dsl__note">
+							Showing the first {formatted.text.length.toLocaleString()} of{" "}
+							{formatted.totalChars.toLocaleString()} characters.
+						</p>
+					)}
+				</>
+			) : (
+				<p className="caption passport-dsl__note">
+					No spec to show. Either this strategy carries none — curated
+					strategies bind a code path instead, and rows generated before the
+					DSL landed have nothing stored — or it is withheld because the
+					executable spec is visible only to the strategy&rsquo;s owner.
+				</p>
+			)}
+		</div>
+	);
+}
 
 function statusTag(status, passesRigor) {
 	// A "live" admin status combined with a failed rigor verdict shouldn't
@@ -214,6 +454,9 @@ export default function StrategyPassport({
 	}
 
 	const s = strategy;
+	// Normalized once here, not per-render-branch: the papers table and the
+	// empty state must agree on what "has papers" means (#1646).
+	const papers = paperRows(s);
 	const passingRigor = s.passes_rigor_gate === true;
 	// #1358: rigor_gate_status carries the honest four-state badge
 	// ("pass"|"fail"|"pending"|"degenerate") the API has served since #1184 —
@@ -468,7 +711,12 @@ export default function StrategyPassport({
 
 				<div className="passport-evidence">
 					{/* Methodology + source paper(s) */}
-					<div className="passport-sources fade-up fade-up-3">
+					{/* `passport-dense` (#1646) is the viewport-fit scope: it tightens
+					    padding and type on THIS page's panels without touching the
+					    shared `.passport-panel` rule other pages inherit. Every rule it
+					    carries lives in the appended #1646 block at the end of
+					    App.css. */}
+					<div className="passport-sources passport-dense fade-up fade-up-3">
 						{/* The user's own free-text ask (v8 Lane 3.3) — distinct from
 						    Methodology below, which is the DERIVED writeup. Only the
 						    single-strategy detail fetch populates this field, only for
@@ -537,101 +785,29 @@ export default function StrategyPassport({
 							</div>
 						</div>
 
-						{/* Multi-paper (fusion/debate) vs. single-paper (curated) layout */}
-						{(s.papers || []).length > 1 ? (
-							<div className="card passport-panel">
-								<div className="label mb-1">
-									Fused from {s.papers.length} papers
-								</div>
-								<p className="caption mb-3 text-[var(--text-3)]">
-									This strategy synthesizes ideas from multiple research papers
-									into a single investment methodology.
-								</p>
-								<div className="flex flex-col gap-3">
-									{s.papers.map((p, idx) => (
-										<div
-											key={p.arxiv_id || idx}
-											className="pb-3"
-											style={
-												idx < s.papers.length - 1
-													? { borderBottom: "1px solid var(--glass-border)" }
-													: undefined
-											}
-										>
-											<p
-												className="body leading-snug"
-												style={{ fontStyle: "italic", fontWeight: 600 }}
-											>
-												"{p.title || p.arxiv_id || "—"}"
-											</p>
-											{p.arxiv_id && (
-												<a
-													href={`https://arxiv.org/abs/${p.arxiv_id}`}
-													target="_blank"
-													rel="noreferrer"
-													className="tag tag-muted"
-													style={{
-														fontFamily: "var(--mono, monospace)",
-														fontSize: "0.72rem",
-														marginTop: 4,
-														display: "inline-block",
-													}}
-												>
-													arxiv:{p.arxiv_id} ↗
-												</a>
-											)}
-											{p.contribution && (
-												<p
-													className="caption mt-1 leading-relaxed"
-													style={{
-														fontStyle: "italic",
-														color: "var(--text-3)",
-													}}
-												>
-													{p.contribution}
-												</p>
-											)}
-										</div>
-									))}
-								</div>
-								{s.methodology_hash && (
-									<div className="caption mt-3 mono text-[var(--text-4)]">
-										hash: {s.methodology_hash.slice(0, 24)}…
-									</div>
-								)}
-							</div>
+						{/* ONE table for every paper count — the two divergent card
+						    layouts (multi-paper stack / single-paper scalar card) are
+						    gone. `paperRows` folds the legacy `paper_*` scalars in as a
+						    fallback row, so a payload that predates `papers[]` still
+						    renders, and a strategy with no recorded papers says so
+						    instead of printing an empty pair of quotation marks. */}
+						{papers.length > 0 ? (
+							<PapersTable papers={papers} methodologyHash={s.methodology_hash} />
 						) : (
-							<div className="card passport-panel">
-								<div className="label mb-3">Source paper</div>
-								<p
-									className="body leading-snug"
-									style={{ fontStyle: "italic" }}
-								>
-									"{s.paper_title}"
+							<div className="card passport-panel passport-papers">
+								<div className="label mb-2">Source papers</div>
+								<p className="caption">
+									No source papers are recorded for this strategy.
 								</p>
-								<p className="caption mt-2 leading-relaxed">
-									{s.paper_authors?.slice(0, 4).join(", ")}
-									{s.paper_authors?.length > 4 ? " et al." : ""}
-									{s.paper_year ? ` (${s.paper_year})` : ""}
-									{s.paper_venue && <> · {s.paper_venue}</>}
-								</p>
-								{s.paper_doi && (
-									<div className="caption mt-2">
-										DOI: <span className="mono">{s.paper_doi}</span>
-									</div>
-								)}
-								{s.paper_citation_count != null && (
-									<div className="caption">
-										Cited by {s.paper_citation_count} other works
-									</div>
-								)}
 								{s.methodology_hash && (
-									<div className="caption mt-3 mono text-[var(--text-4)]">
+									<div className="caption mono text-[var(--text-4)] passport-papers__hash">
 										hash: {s.methodology_hash.slice(0, 24)}…
 									</div>
 								)}
 							</div>
 						)}
+
+						<StrategySpecPanel spec={s.strategy_spec} />
 					</div>
 
 					{/* Backtest metrics */}

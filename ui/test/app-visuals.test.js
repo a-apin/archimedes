@@ -171,6 +171,14 @@ test("Strategy Passport separates evidence from user authority", () => {
 	);
 	assert.match(css, /\.passport-authority\s*\{[^}]*position:\s*sticky;/s);
 	assert.match(css, /\.passport-rigor\s*\{[^}]*--text-4:\s*#566a61;/s);
+	// #1646 rehomed the evidence column's source-paper cards onto one table
+	// and added the DSL panel, so the class pins above no longer describe the
+	// whole evidence column. The pins for the new markup live in
+	// passport-dsl.test.js beside the behaviour tests for the code block —
+	// this case keeps owning the page's SKELETON (workspace / authority /
+	// evidence split), which is unchanged.
+	assert.match(passport, /className="passport-sources passport-dense fade-up/);
+	assert.match(css, /\.passport-dense \.passport-panel\s*\{[^}]*padding:\s*16px 18px;/s);
 });
 
 test("Portfolio uses ledger metrics and split audit workspace", () => {
