@@ -567,15 +567,29 @@ resource "aws_ecs_task_definition" "backend" {
         # the task dies rather than logging. First tick lands at
         # PAPER_ADVANCE_STARTUP_DELAY_S (240s) after boot, so every replacement
         # task dies ~4 minutes in — a cold-fleet spiral, which is why this is
-        # set from the deploy path and not left to a code default.
+        # set from the deploy path and not left to a code default. Proven on
+        # task-def :211 (#1725 image, fc884113): deploy.yml cloned last-good,
+        # PAPER_ADVANCE_ENABLED was absent, the old code default ON started
+        # the tick, /health 502'd at 240s. The code default is now also
+        # false; this pin and the CI rewrite remain so a future default-flip
+        # cannot tick through a cloned task-def.
+        #
+        # THIS FILE IS NOT THE PATH THAT SHIPS. deploy.yml clones the
+        # currently registered task definition and retags images; it does
+        # not apply terraform. The load-bearing pin is
+        # .github/scripts/ecs_rewrite_task_def.py, invoked from deploy.yml.
+        # Keep this line false as well so a future terraform apply cannot
+        # undo the CI pin. terraform apply is still required for other
+        # ecs.tf drift; this flag must not depend on it.
         #
         # The cost of this line, stated plainly: paper ledgers DO NOT ADVANCE
         # while it is "false". Track records freeze. That is a real product
         # claim suspended to keep the API up, not a free win.
         #
-        # Flip back to "true" (this file, terraform apply) when #1632 has a
-        # proven cause and a fix. Reader: advance_enabled() in
-        # services/paper_trading.py; row in
+        # Flip back to "true" is this file AND the deploy.yml rewrite pin,
+        # after #1632 has a proven cause and a fix. Removing only this line
+        # is overwritten by the next GitHub deploy. Reader: advance_enabled()
+        # in services/paper_trading.py; row in
         # docs/operations/feature-flag-fliplist.md.
         # ------------------------------------------------------------------
         { name = "PAPER_ADVANCE_ENABLED", value = "false" },

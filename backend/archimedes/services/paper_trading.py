@@ -47,6 +47,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -65,7 +67,7 @@ _FALSY = {"0", "false", "no", "off"}
 
 
 def advance_enabled() -> bool:
-    """Is the paper-advance loop armed? Default ON — unset changes nothing.
+    """Is the paper-advance loop armed? Default OFF — unset must not tick.
 
     The operator kill switch for the daily advance tick, added for #1632. It
     exists because the advance tick is the one scheduled job that can take the
@@ -75,10 +77,17 @@ def advance_enabled() -> bool:
     ``try/except`` cannot catch that, so fail-soft does not help here — the
     only lever that works is not running the tick.
 
+    Default was ON in #1725 so shipping the flag would not change behaviour
+    where it was unset. That is exactly how task-def :211 died: ``deploy.yml``
+    cloned last-good, ``PAPER_ADVANCE_ENABLED`` was absent, the code default
+    started the tick, ``/health`` 502'd at ``PAPER_ADVANCE_STARTUP_DELAY_S``.
+    Unset is now OFF. Flip-back is an explicit ``"true"`` plus removing the
+    CI rewrite pin, after #1632 has a proven cause — do not re-enable here.
+
     Read once per tick rather than once at boot, so the value that decides is
     the one in force when the work would actually run.
     """
-    return os.getenv("PAPER_ADVANCE_ENABLED", "true").strip().lower() not in _FALSY
+    return os.getenv("PAPER_ADVANCE_ENABLED", "false").strip().lower() not in _FALSY
 
 
 #: How a disagreement between a fresh replay and an already-written ledger row
@@ -1072,6 +1081,12 @@ async def paper_advance_loop() -> None:
     Same fail-soft contract as backtest_refresh_loop: a bad cycle logs and
     retries next tick; it must never take the app down. Interval defaults to
     daily — the ledger law makes extra runs harmless (idempotent appends).
+
+    Run this only in a dedicated interpreter (``python -m
+    archimedes.services.paper_trading``). The web process must not schedule
+    it as an in-process asyncio task: a C abort in psycopg2/web3 on the
+    OHLCV cache write (#1632) kills the interpreter, and ``/health`` lives
+    in that same interpreter. See :func:`arm_paper_advance_for_web_tier`.
     """
     import asyncio
 
@@ -1108,3 +1123,91 @@ async def paper_advance_loop() -> None:
         except Exception as exc:
             logger.warning("paper advance: cycle failed (%s: %s) — will retry next tick", type(exc).__name__, exc)
         await asyncio.sleep(interval_s)
+
+
+def spawn_paper_advance_child(
+    *,
+    argv: list[str] | None = None,
+    popen=subprocess.Popen,
+) -> subprocess.Popen:
+    """Start ``paper_advance_loop`` in a child interpreter.
+
+    Default argv is ``python -m archimedes.services.paper_trading``. Tests
+    pass a short-lived argv so a C-level death can be shown not to take
+    the parent with it. stdout/stderr inherit so CloudWatch still gets
+    the child's lines; stdin is closed so a parent's stdin cannot stall it.
+    """
+    cmd = argv if argv is not None else [sys.executable, "-m", "archimedes.services.paper_trading"]
+    return popen(cmd, stdin=subprocess.DEVNULL)
+
+
+async def paper_advance_supervisor(*, argv: list[str] | None = None, popen=subprocess.Popen) -> int:
+    """Wait on the isolated child. Never run the loop in this process.
+
+    A C abort (psycopg2 ``do_executemany``, web3 session teardown, SIGSEGV)
+    kills the child, not ``/health``. The child is not restarted: a crash
+    loop would still burn the one-vCPU web task, and the kill switch is
+    supposed to stay off until #1632 is actually fixed. Returns the child's
+    exit status so a test can see SIGSEGV (``-11`` / 139) without dying.
+    """
+    import asyncio
+
+    proc = spawn_paper_advance_child(argv=argv, popen=popen)
+    try:
+        returncode = await asyncio.to_thread(proc.wait)
+        logger.error(
+            "paper advance child exited with %s — not restarting in the web process "
+            "(C-abort isolation for #1632; /health stays in this process)",
+            returncode,
+        )
+        return int(returncode if returncode is not None else -1)
+    except asyncio.CancelledError:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                await asyncio.to_thread(proc.wait, 5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                await asyncio.to_thread(proc.wait)
+        raise
+
+
+async def arm_paper_advance_for_web_tier(*, argv: list[str] | None = None, popen=subprocess.Popen) -> int | None:
+    """Web-tier entry. Refuses to run ``paper_advance_loop`` in this process.
+
+    Even when ``PAPER_ADVANCE_ENABLED`` is true, the work happens only in a
+    child interpreter — that is the property that lets ``/health`` survive
+    the paper-advance window. When the flag is false we do not spawn a
+    child either: the tick is off, and a second Python on the 1-vCPU web
+    task is not free. The flag stays the operator lever; isolation is the
+    blast-radius cap if someone turns it back on before #1632 is fixed.
+    """
+    if not advance_enabled():
+        logger.warning(
+            "paper advance: not armed in the web process — PAPER_ADVANCE_ENABLED is off "
+            "(temporary #1632 mitigation; ledgers do not advance until it is flipped back). "
+            "The in-process loop is refused regardless: a C abort must not take /health."
+        )
+        return None
+    logger.warning(
+        "paper advance: PAPER_ADVANCE_ENABLED is on — spawning an isolated child; "
+        "a C abort in the child must not take this process's /health. "
+        "The tick is still the unfixed #1632 path; do not treat isolation as a fix."
+    )
+    return await paper_advance_supervisor(argv=argv, popen=popen)
+
+
+def _module_main() -> None:
+    """Child-process entry: run the advance loop in THIS interpreter.
+
+    Invoked as ``python -m archimedes.services.paper_trading``. Must not
+    call :func:`arm_paper_advance_for_web_tier` — that would spawn another
+    child and recurse.
+    """
+    import asyncio
+
+    asyncio.run(paper_advance_loop())
+
+
+if __name__ == "__main__":
+    _module_main()
