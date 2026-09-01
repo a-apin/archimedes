@@ -704,9 +704,12 @@ jobs:
           # image deployed, the clone had no PAPER_ADVANCE_ENABLED, the old
           # code default ON started the tick, /health 502'd at 240s. The
           # code default is now also false; this pin remains so a future
-          # default-flip cannot tick through a cloned task-def. terraform
-          # apply is still required for other ecs.tf drift; this flag must
-          # not depend on it.
+          # default-flip cannot tick through a cloned task-def. The same
+          # rewrite pins backend healthCheck.startPeriod=90 so a clone of
+          # the live 30s startPeriod cannot leave the #1713 60s warmup
+          # budget outside ECS's ignored-failure window. terraform apply
+          # is still required for other ecs.tf drift; these pins must not
+          # depend on it. Do not re-enable PAPER_ADVANCE here.
           aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" \
             --query 'taskDefinition' > current-task-def.json
 
