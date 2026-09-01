@@ -1258,8 +1258,12 @@ class StrategyFusion:
                 validated_spec = None
 
         # (#1739) Paper→mechanism map, spec_elements half. ``indicators`` on the
-        # validated spec is exactly the alias set ``strategy_dsl`` checks
-        # ``parameter_variants`` keys against (strategy_dsl.py:269-274): an
+        # VALIDATED spec is exactly the alias set ``strategy_dsl`` checks
+        # ``parameter_variants`` keys against (strategy_dsl.py:269-274) — it is
+        # rebuilt from the entry/exit conditions (``sorted(all_indicators)``),
+        # so it is what the spec TRADES, not the ``indicators`` list the model
+        # declared alongside it. Checking the declared list would validate one
+        # self-report against another, which is the bug this issue is about: an
         # alias that entry/exit never uses is not part of what this spec
         # trades, so a paper "attributed" to it is not attributed at all. The
         # entry is KEPT with its claim and its id — only the unsupported

@@ -43,6 +43,7 @@ from archimedes.agents.strategy_fusion import CorpusPaper, FusionBrief, Strategy
 from archimedes.api.generate_schemas import GenerateBrief
 from archimedes.api.strategies_routes import _resolve_source_papers
 from archimedes.models.debate_transcript import DebateTranscriptRecord
+from archimedes.models.strategy_passport_record import StrategyPassportRecord
 
 # ── Fixture corpus: five real-shaped papers, distinct mechanisms ─────────────
 
@@ -94,6 +95,14 @@ _ALL_IDS = [p.arxiv_id for p in _PAPERS]
 # The adversarial spec from #1739: ONE mechanism (sma_200) in entry AND exit.
 # Anything a paper_mechanisms entry names other than "sma_200" is not part of
 # what this strategy trades.
+#
+# ``indicators`` carries a DECOY. ``validate_strategy_spec`` ignores the key the
+# model emits and rebuilds the list from the entry/exit conditions
+# (``indicators=sorted(all_indicators)``), so a spec can DECLARE an alias it
+# never trades — which is the same self-report problem, one field over. The
+# decoy is what makes the spec_elements check falsifiable: validating against
+# the model's declared list instead of the derived one would let
+# ``bollinger_20`` through, and the test below would still be green without it.
 _SINGLE_MECHANISM_SPEC = {
     "name": "Single-mechanism crossover",
     "asset_universe": ["SPY"],
@@ -102,7 +111,7 @@ _SINGLE_MECHANISM_SPEC = {
     "exit": {"lt": ["close", "sma_200"]},
     "position_sizing": {"type": "full_invested_when_in_market"},
     "source_arxiv_ids": list(_ALL_IDS),
-    "indicators": ["sma_200"],
+    "indicators": ["sma_200", "bollinger_20"],
 }
 
 
@@ -209,6 +218,11 @@ def test_spec_element_outside_the_spec_is_dropped(monkeypatch):
     must reference an indicator alias the conditions actually use — same
     ``all_indicators`` set, different key. Without it, ``spec_elements`` is
     free text and the mapping proves nothing.
+
+    The alias set has to be the DERIVED one (``StrategySpec.indicators``, built
+    from entry/exit) and not the ``indicators`` list the model wrote: the
+    fixture declares ``bollinger_20`` there and trades it nowhere, so checking
+    the declared list would validate one self-report against another.
     """
     mechanisms = [
         {"arxiv_id": "2401.00001", "mechanism": "trend filter", "spec_elements": ["sma_200"]},
@@ -361,6 +375,24 @@ async def test_persisted_source_papers_carry_title_and_mechanism(_use_tmp_db):
     assert all(p["resolved_title"] for p in resolved)
     assert resolved[0]["spec_elements"] == ["sma_200"]
 
+    # …and the PASSPORT, which is what GET /strategies/{id} actually serves —
+    # `strategy_passports.paper_refs`, not `StrategyRecord.source_papers`. The
+    # debate panel that carries the attribution summary is owner-only, so this
+    # is the only path on which a public reader sees the link at all.
+    # `contribution` is the column StrategyPassport.jsx renders; it had no
+    # writer before this, so every generated row showed an em-dash.
+    with db.get_session() as session:
+        passport = session.get(StrategyPassportRecord, strategy_id)
+        refs = {r.arxiv_id: r for r in passport.paper_refs}
+
+    assert refs["2401.00001"].title == "Cross-Sectional Equity Momentum with Regime Conditioning"
+    assert refs["2401.00001"].contribution == "200-day trend filter"
+    # The unattributed citation keeps its row and its title, and its
+    # contribution stays NULL — the em-dash IS the honest record. Writing the
+    # unvalidated mechanism prose there would launder it one column over.
+    assert refs["2402.00002"].title == "Treasury Yield Curve Carry and Macro Regimes"
+    assert refs["2402.00002"].contribution is None
+
 
 async def test_debate_paper_verdicts_are_durable(_use_tmp_db):
     """The per-paper tally outlives the request.
@@ -441,3 +473,82 @@ async def test_debate_paper_verdicts_are_durable(_use_tmp_db):
     assert by_id["2402.00002"]["discard_reasons"] == ["no distinct mechanism"]
     assert [v["arxiv_id"] for v in persisted if v["verdict"] == "unused"] == _ALL_IDS[2:]
     assert attribution[0]["fusion_reasoning"], "the per-paper prose is durable too"
+
+
+async def test_persisted_paper_verdicts_do_not_leak_internal_jargon(_use_tmp_db):
+    """Making the tally durable must not walk model prose past the sanitizer.
+
+    ``debate_transcript``'s contract is that sanitization happens at WRITE
+    time, so "a raw read of ``transcript_json`` is already safe". The tally's
+    ``discard_reasons`` are copied by ``_aggregate_paper_verdicts`` out of the
+    RAW ``_debate_round`` turns — the same sentences that reach this table as
+    ``discard[].reason``, which ``_sanitize_claim`` scrubs. Persisting the
+    tally under a key the sanitizer did not know about would re-open that leak
+    by a shape change: precisely the regression ``_sanitize_claim`` was written
+    for after claims went from strings to dicts.
+
+    Titles are the deliberate exception and are asserted here too: they are
+    corpus metadata, not model text, and blanket-scrubbing them would mangle a
+    real paper ("Phase-Locked …" → "[redacted] …"), which is the same reason
+    validated arXiv ids are left alone.
+    """
+    leak = "rejected: blocked on the T3.5 cutover until Phase-4 lands"
+    candidate = _CandidateResult(
+        candidate_id="cand_1",
+        strategy_name="Single-mechanism crossover",
+        thesis="thesis",
+        asset_universe=["SPY"],
+        source_papers=[],
+        weights={},
+        reasoning="r",
+        rigor_verdict={"passing": True},
+        passes_rigor=True,
+        generation_method="debate",
+        source_arxiv_ids=["2401.00001"],
+        distinct_mechanism_papers=1,
+        papers_offered=5,
+        fusion_reasoning="Paper A gives the trend filter; the carry leg is deferred to the T3.5 cutover.",
+        # The identical sentence on BOTH paths: the turn's discard reason (long
+        # sanitized) and the tally row's discard_reasons (the new key).
+        debate_transcript=[
+            {
+                "role": "bear",
+                "round": 1,
+                "verdict": "hold",
+                "claims": [],
+                "discard": [{"arxiv_id": "2402.00002", "reason": leak}],
+            }
+        ],
+        debate_paper_verdicts=[
+            {
+                "arxiv_id": "2402.00002",
+                "title": "Phase-Locked Cycles in Commodity Futures",
+                "cited_by": [],
+                "citations": 0,
+                "discarded_by": ["bear"],
+                "discard_reasons": [leak],
+                "verdict": "discarded",
+            }
+        ],
+    )
+
+    await _persist_debate_transcripts(job_id="job-1", candidates=[candidate], strategy_ids={"cand_1": "strat-abc"})
+
+    with db.get_session() as session:
+        row = session.query(DebateTranscriptRecord).filter_by(generation_id="job-1").one()
+        raw = row.transcript_json
+
+    assert "T3.5" not in raw, "a raw read of transcript_json must already be safe (module docstring)"
+    assert "cutover" not in raw.lower()
+    assert "Phase-4" not in raw
+
+    stored = json.loads(raw)
+    attribution = next(t for t in stored if t.get("paper_verdicts") is not None)
+    tally = attribution["paper_verdicts"][0]
+    # Scrubbed, not dropped — the discard is still on the record, and so is the
+    # id that carries its provenance.
+    assert tally["discard_reasons"] == ["rejected: blocked on the [redacted] [redacted] until [redacted] lands"]
+    assert tally["arxiv_id"] == "2402.00002"
+    assert tally["verdict"] == "discarded"
+    # The corpus title is untouched: scrubbing it would redact a real paper.
+    assert tally["title"] == "Phase-Locked Cycles in Commodity Futures"

@@ -1022,6 +1022,40 @@ async def _persist_generation_cost(
         logger.warning("cost record: durable persist failed for job %s (non-blocking)", job_id, exc_info=True)
 
 
+def _passport_paper_refs(c: _CandidateResult) -> list[Any]:
+    """The passport's paper rows, with the attributed mechanism in ``contribution`` (#1739).
+
+    ``_persist_candidate`` and its two sibling passport rebuilds all built
+    ``PaperRef(arxiv_id=…, title=…)`` and nothing else, so ``contribution`` —
+    the column ``StrategyPassport.jsx`` renders as "per-paper contribution" —
+    had no writer at all and every generated row showed an em-dash. The
+    passport is what ``GET /strategies/{id}`` serves (``paper_refs``, not
+    ``StrategyRecord.source_papers``), and unlike the owner-only debate panel it
+    is public, so this is the only path on which the paper→mechanism link
+    reaches a reader of a published strategy.
+
+    ``contribution`` stays **None** for a cited paper whose ``spec_elements``
+    did not survive validation. The em-dash IS the unattributed record: writing
+    the model's unverified mechanism prose there would reinstate exactly the
+    laundering this issue removes, one column to the right.
+    """
+    from archimedes.models.paper_ref import PaperRef
+
+    refs: list[Any] = []
+    for p in c.source_papers or []:
+        if not isinstance(p, dict):
+            continue
+        mechanism = str(p.get("mechanism", "") or "").strip()
+        refs.append(
+            PaperRef(
+                arxiv_id=p.get("arxiv_id"),
+                title=p.get("title", ""),
+                contribution=mechanism if (mechanism and p.get("spec_elements")) else None,
+            )
+        )
+    return refs
+
+
 def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     """The candidate's transcript plus one trailing paper-attribution entry (#1739).
 
@@ -1037,12 +1071,15 @@ def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     turns sees an honest summary line rather than a blank card, and carries the
     machine-readable tally alongside it.
 
-    The prose is scrubbed here because ``sanitize_transcript`` only knows the
-    turn keys it was written for — writing unsanitized model text into this
-    table would re-open the leak its write-time sanitizer exists to close.
+    Both new keys carry MODEL prose — ``fusion_reasoning`` directly, and each
+    ``paper_verdicts`` row's ``discard_reasons``, which
+    ``_aggregate_paper_verdicts`` copies out of the raw debate turns. They are
+    scrubbed by ``sanitize_transcript``, which ``record_debate_transcript``
+    applies to everything written to this table; teaching the sanitizer the new
+    shape (rather than scrubbing at this one call site) is what keeps the
+    table's stated contract true — a raw read of ``transcript_json`` is already
+    safe, whoever wrote the row.
     """
-    from archimedes.models.debate_transcript import sanitize_debate_text
-
     transcript = list(c.debate_transcript or [])
     verdicts = c.debate_paper_verdicts or []
     reasoning = (c.fusion_reasoning or "").strip()
@@ -1061,7 +1098,7 @@ def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
             "round": None,
             "verdict": summary,
             "paper_verdicts": verdicts,
-            "fusion_reasoning": sanitize_debate_text(reasoning),
+            "fusion_reasoning": reasoning,
         },
     ]
 
@@ -1795,13 +1832,10 @@ async def _persist_candidate(
 
             # Also write to the unified strategy_passports table (Issue #160)
             try:
-                from archimedes.models.paper_ref import PaperRef
                 from archimedes.models.strategy import StrategyPassport, StrategyStatus
                 from archimedes.services.passport_loader import ingest_passport
 
-                papers = [
-                    PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title", "")) for p in (c.source_papers or [])
-                ]
+                papers = _passport_paper_refs(c)
                 # Map candidate regime to passport regime_tag
                 _regime_tag_map = {"bull": "bull", "bear": "bear"}
                 _regime_tag = _regime_tag_map.get(c.regime, "regime_neutral")
@@ -1915,14 +1949,13 @@ def _refresh_passport_real_metrics(
     """
     from datetime import date as _date
 
-    from archimedes.models.paper_ref import PaperRef
     from archimedes.models.strategy import StrategyPassport, StrategyStatus
     from archimedes.models.strategy_store import StrategyRecord
     from archimedes.services.passport_loader import ingest_passport
 
     record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
     status_val = StrategyStatus(record.status) if record and record.status else StrategyStatus.CANDIDATE
-    papers = [PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title", "")) for p in (c.source_papers or [])]
+    papers = _passport_paper_refs(c)
     regime_tag = {"bull": "bull", "bear": "bear"}.get(c.regime, "regime_neutral")
     passport = StrategyPassport(
         id=strategy_id,
@@ -2180,7 +2213,6 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         from datetime import date as _date
 
         from archimedes.db import get_session
-        from archimedes.models.paper_ref import PaperRef
         from archimedes.models.strategy import StrategyPassport, StrategyStatus
         from archimedes.models.strategy_store import StrategyRecord
         from archimedes.services.backtest_mapper import canonical_artifact_hash
@@ -2266,7 +2298,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
             #    in-place update.
             record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
             status_val = StrategyStatus(record.status) if record and record.status else StrategyStatus.CANDIDATE
-            papers = [PaperRef(arxiv_id=p.get("arxiv_id"), title=p.get("title", "")) for p in (c.source_papers or [])]
+            papers = _passport_paper_refs(c)
             _regime_tag_map = {"bull": "bull", "bear": "bear"}
             _regime_tag = _regime_tag_map.get(c.regime, "regime_neutral")
             passport = StrategyPassport(
