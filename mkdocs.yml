@@ -80,6 +80,7 @@ nav:
       - reference/file-tree.md
       - database-architecture.md
       - deployment.md
+      - local-vs-prod.md
       - architectural-principles.md
       - anti-features.md
 

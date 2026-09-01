@@ -28,10 +28,14 @@ advertises no payment scheme).
 
 The ``erc8004`` block (#1527) is the on-chain identity leg and is deliberately the
 weakest claim in this document: the spec-typed registration file is published, and
-that is ALL it says. ``agentId``/``tokenURI`` are null and ``status`` is
+that is ALL it says today. ``agentId``/``tokenURI`` are null and ``status`` is
 ``registration_pending`` until an owner-signed ``register()`` lands on Arc — an agent
 reading this must not treat Archimedes as an ERC-8004-registered, reputed, or
-validated counterparty.
+validated counterparty. That status is not a constant in this file: it is re-derived
+per request from a live ``ownerOf()`` read against the registry
+(``chain/erc8004_identity.py``), and the sibling ``erc8004_verification`` block names
+the reading it came from — including when the registry gave no ownership answer, which
+keeps the claim at pending rather than letting an RPC outage read as a settled state.
 
 ``auth_required`` is a per-GROUP flag, so a route belongs to the group whose gating it
 actually shares — the three ``/api/wallets/*`` routes all sit behind
@@ -72,56 +76,67 @@ _CHAIN_ID = int(os.getenv("ARC_CHAIN_ID", "5042002"))
 # that EXISTS today — the spec-typed registration file and the registry we would
 # register against — and asserts nothing beyond it.
 #
-# Registration is an owner-signed on-chain transaction (``register(string agentURI)``,
-# planned by ``scripts/register_erc8004_identity.py``). Until the owner sends it there
-# is no agentId and no tokenURI, so both are ``None`` here rather than guessed,
-# defaulted to 0, or read from an env var a deploy could set with no receipt behind
-# it. ``status`` is derived from ``_ERC8004_AGENT_ID`` rather than written separately,
-# so "registered" cannot be claimed while the id is absent.
-_ERC8004_IDENTITY_REGISTRY = os.getenv("ERC8004_IDENTITY_REGISTRY", "0x8004A818BFB912233c491871b3d84c89A494BD9e")
+# HOW "registered" GETS SAID. #1552 shipped this block driven by a module constant
+# (``_ERC8004_AGENT_ID = None``), which was the honest value and the wrong mechanism:
+# editing that constant to a number would have made every surface claim a registration
+# with nothing behind it but a diff. The constants are gone. ``status``, ``agentId`` and
+# ``tokenURI`` now come from ``chain.erc8004_identity.verify_identity()``, which returns
+# "registered" only after a live ``ownerOf(agentId)`` on the Arc IdentityRegistry returns
+# the configured platform wallet. ``ERC8004_AGENT_ID`` is a POINTER at the token to check,
+# never the claim itself — set it to the wrong id and the read simply keeps saying pending.
+#
+# Cost when nothing is configured (the state on main today): zero RPC calls. The verifier
+# short-circuits to "unconfigured" before touching the network.
 
 # The URL an ``agentURI`` would point at — the ERC-8004 registration file served from
 # ui/public/.well-known/. It is NOT a tokenURI: nothing on-chain references it yet.
 _ERC8004_REGISTRATION_URI = "https://archimedes-arc.com/.well-known/agent-registration.json"
 
-# Both stay None until a real ``Registered(agentId, agentURI, owner)`` event exists.
-# Filling them is a reviewed code change carrying the transaction hash, never a
-# config flip — see test_erc8004_identity.py, which fails if either is set without
-# the registration file's ``registrations`` list agreeing.
-_ERC8004_AGENT_ID: int | None = None
-_ERC8004_TOKEN_URI: str | None = None
-
 _ERC8004_PENDING_NOTE = (
-    "Not registered on-chain: no register() transaction has been sent, so agentId and "
-    "tokenURI are null and NO ERC-8004 identity, reputation, or validation claim is made. "
-    "Publishing a spec-typed registration file at registrationUri is not the same as "
-    "being registered. Plan the call with scripts/register_erc8004_identity.py --plan."
+    "Not registered on-chain: no register() transaction has been confirmed for this "
+    "deployment's wallet, so agentId and tokenURI are null and NO ERC-8004 identity, "
+    "reputation, or validation claim is made. Publishing a spec-typed registration file at "
+    "registrationUri is not the same as being registered. This status is re-derived from a "
+    "live registry read on every request; the sibling erc8004_verification block says which "
+    "reading produced it. Plan the call with scripts/register_erc8004_identity.py --plan."
 )
 
 
-def erc8004_identity() -> dict:
-    """The ERC-8004 identity block, shared by every discovery surface.
+async def erc8004_identity() -> tuple[dict, dict]:
+    """The ERC-8004 identity block plus the verification record behind it.
 
-    One builder so the served manifest, the static agent card, and the two
-    registration files cannot disagree about whether we are registered — the
-    exact failure mode #1448 caught between the first two surfaces.
+    Returns ``(block, verification)``:
+
+    - ``block`` is the seven-key document every discovery surface publishes — the served
+      manifest, ``ui/public/.well-known/agent.json``, and the two registration files. One
+      builder so they cannot disagree about whether we are registered, which is the exact
+      failure mode #1448 caught between the first two surfaces.
+    - ``verification`` is manifest-only, because it is inherently a *reading* and a
+      committed JSON file cannot hold one. It records how the claim above was established
+      (``onchain`` / ``unconfigured`` / ``unavailable``) so a consumer — or an operator —
+      can tell "the chain says no identity" apart from "the RPC was dark", which are the
+      same claim and very different facts.
     """
-    registered = _ERC8004_AGENT_ID is not None
-    return {
+    from archimedes.chain.erc8004_identity import registry_address, verify_identity
+
+    registry = registry_address()
+    result = await verify_identity()
+    block = {
         "chain": f"eip155:{_CHAIN_ID}",
-        "identityRegistry": _ERC8004_IDENTITY_REGISTRY,
-        "agentId": _ERC8004_AGENT_ID,
-        "tokenURI": _ERC8004_TOKEN_URI,
-        "status": "registered" if registered else "registration_pending",
+        "identityRegistry": registry,
+        "agentId": result.agent_id,
+        "tokenURI": result.token_uri,
+        "status": result.status,
         "registrationUri": _ERC8004_REGISTRATION_URI,
         "note": (
-            f"Registered as agent {_ERC8004_AGENT_ID} on {_ERC8004_IDENTITY_REGISTRY}. "
-            "Registration is an identity record only — it asserts nothing about reputation "
-            "or validation, neither of which this agent claims."
-            if registered
+            f"Registered as agent {result.agent_id} on {registry}, confirmed by a live "
+            "ownerOf() read at request time. Registration is an identity record only — it "
+            "asserts nothing about reputation or validation, neither of which this agent claims."
+            if result.registered
             else _ERC8004_PENDING_NOTE
         ),
     }
+    return block, result.as_dict()
 
 
 @agent_manifest_router.get("/manifest")
@@ -131,6 +146,7 @@ async def get_agent_manifest():
     Unauthenticated, rate-limited like sibling public GETs (no decorator -> the
     limiter's default_limits apply, matching e.g. /api/config/contracts).
     """
+    erc8004_block, erc8004_verification = await erc8004_identity()
     return {
         "name": "Archimedes",
         "blurb": (
@@ -146,7 +162,12 @@ async def get_agent_manifest():
             "agent_card": "/.well-known/agent.json",
         },
         # On-chain identity leg — pending, and says so. See erc8004_identity().
-        "erc8004": erc8004_identity(),
+        "erc8004": erc8004_block,
+        # HOW the block above was established. Manifest-only: a live reading has no
+        # business being frozen into a committed .well-known file. `source: "unavailable"`
+        # means the registry produced no ownership answer — the pending status beside it is
+        # then a refusal to claim, NOT a finding that we are unregistered.
+        "erc8004_verification": erc8004_verification,
         "auth": {
             "scheme": "Better Auth session",
             "methods": ["emailPassword", "google", "github"],
