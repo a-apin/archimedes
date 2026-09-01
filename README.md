@@ -40,9 +40,10 @@ not. The locked spine is [`docs/user-stories.md`](docs/user-stories.md).
   settlement is stubbed behind `PAYMENTS_DRY_RUN` pending mainnet. Single-user MVP —
   multi-user library and social features are roadmap.
 - **Arc testnet only** (chain `5042002`). Faucet USDC comes from
-  <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas). **No real money is at
-  risk, by design.** Arc has no mainnet yet; mainnet launch, real-funds custody, and the
-  regulatory architecture are roadmap.
+  <https://faucet.circle.com/> (20 USDC / 2h — on Arc, USDC *is* gas). Generation
+  charges $2 faucet USDC per run. There is no mainnet and no user vault. Arc has no
+  mainnet yet; mainnet launch, real-funds custody, and the regulatory architecture
+  are roadmap.
 
 ## The rigor gate
 
