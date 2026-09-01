@@ -186,10 +186,21 @@ class _Store:
     async def get(self, key: str):
         return self.records.get(key)
 
-    async def list(self, vault_address=None, decision_type=None, limit=20, offset=0):
+    async def list(self, vault_address=None, decision_type=None, strategy_id=None, limit=20, offset=0):
+        # `strategy_id` mirrors the parameter #1569 added to the real
+        # AgentStateStore.list_traces. The route's call sits inside an
+        # `except Exception` that reads a TypeError as "Redis unavailable"
+        # and silently serves the empty on-chain fallback — a fake whose
+        # signature drifts makes every test downstream assert on a page the
+        # gate never produced (the union failure mode from #1573/#1569).
+        # Delegates the provenance rule rather than re-implementing it.
+        from archimedes.services.redis_state import trace_references_strategy
+
         rows = list({id(v): v for v in self.records.values()}.values())
         if decision_type:
             rows = [t for t in rows if t.get("decision_type") == decision_type]
+        if strategy_id:
+            rows = [t for t in rows if trace_references_strategy(t, strategy_id)]
         return rows[offset : offset + limit], len(rows)
 
 
@@ -447,15 +458,20 @@ async def test_the_zero_address_sentinel_would_leak_the_same_body():
     """G3's adversarial control — the reason ``vault_address=""`` is not
     cosmetic.
 
-    The design's finding: reusing ``construction_trace.UNBOUND_VAULT`` for
-    "no vault" makes an UNSTAMPED paper trace world-readable, because
+    The design's finding: reusing the zero-address sentinel for "no vault"
+    makes an UNSTAMPED paper trace world-readable, because
     ``is_public_trace_vault`` returns True for any non-blank address while
     ``PUBLIC_TRACE_VAULTS`` is unarmed (it is set nowhere in this tree). Here
     the identical record is rewritten onto the sentinel with the stamp
     removed, and it IS readable anonymously — which is what makes the test
     above a demonstration rather than a tautology.
+
+    The sentinel was imported as ``construction_trace.UNBOUND_VAULT`` until
+    that zero-caller module was deleted; the literal is inlined here. The
+    control is unchanged — any non-blank vault address leaks, and the zero
+    address is the one a future author is most likely to reach for.
     """
-    from archimedes.services.construction_trace import UNBOUND_VAULT
+    UNBOUND_VAULT = "0x0000000000000000000000000000000000000000"
 
     dep_id = _seed()
     with _store(_Store()) as store:

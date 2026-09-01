@@ -431,6 +431,15 @@ class _CandidateResult:
     # is no debate on those paths, so there is nothing to attach. Read by
     # ``_persist_debate_transcripts`` below; never touches ``_HASH_FIELDS``.
     debate_transcript: list[dict[str, Any]] | None = None
+    # (#1636) The deterministic per-paper tally derived from that transcript —
+    # ``[{arxiv_id, title, cited_by, citations, discarded_by, discard_reasons,
+    # verdict}]`` over every paper that entered a proposer prompt. Computed by
+    # ``debate_engine._aggregate_paper_verdicts`` (0 tokens) and stamped onto
+    # every entry, same as the transcript. ``None`` on every non-debate path.
+    # NOT persisted: the transcript table's column holds the turn list and this
+    # issue explicitly carries no migration, so today this is an in-process +
+    # SSE-visible record only. Durable storage is follow-up work.
+    debate_paper_verdicts: list[dict[str, Any]] | None = None
 
 
 def _is_deployable(c: _CandidateResult) -> bool:
@@ -656,11 +665,12 @@ def _patch_dsr_with_pool_correlation(candidates: list[_CandidateResult]) -> None
     mutually independent trials. They're generated from the same user brief over
     overlapping universes, so they're typically strongly correlated (ρ̄ ≈ 0.5–0.9),
     and feeding ρ̄=0 over-deflates ``E[max_N]``, over-stating the gate's strictness.
-    Under equicorrelation the effective trial count is
-    ``N_eff = N / (1 + (N-1)·ρ̄)`` (Cheverud 2001; Nyholt 2004) — this patch estimates
-    the real ρ̄ across the pool's return series (``compute_average_pairwise_correlation``)
-    and recomputes DSR at the SAME ``dsr_num_trials`` each candidate was already
-    deflated at, so only the correlation term changes.
+    Under equicorrelation the expected best-of-N null Sharpe is the
+    independent-trial ``E[max]`` scaled by ``√(1 − ρ̄)`` (#1559) — this patch
+    estimates the real ρ̄ across the pool's return series
+    (``compute_average_pairwise_correlation``) and recomputes DSR at the SAME
+    ``dsr_num_trials`` each candidate was already deflated at, so only the
+    correlation term changes.
 
     Runs AFTER ``_patch_pbo`` and mirrors its shape and scope: fusion/debate
     candidates (``has_real_rigor=True``) carry a real DSR from their own CSCV
@@ -670,8 +680,8 @@ def _patch_dsr_with_pool_correlation(candidates: list[_CandidateResult]) -> None
     is left untouched — approach A (ρ̄=0) is the fallback, per the issue.
 
     A correlated pool can only RELAX the deflation relative to ρ̄=0 (never tighten
-    beyond it — ``N_eff <= N`` always), so ``dsr_p_value`` only ever moves up or
-    stays the same here, never down. ``passing`` is re-derived from the full set
+    beyond it — ``√(1 − ρ̄) <= 1`` for every ρ̄ ∈ [0, 1]), so ``dsr_p_value`` only
+    ever moves up or stays the same here, never down. ``passing`` is re-derived from the full set
     of admission legs (DSR, OOS/cliff, look-ahead) rather than AND-ed in, since a
     higher DSR p-value can flip a candidate from failing to passing, not just the
     reverse (unlike the PBO patch above, which can only tighten).
@@ -727,6 +737,38 @@ class _Emitter:
         ts = datetime.now(UTC).isoformat()
         body = {"event": event, "data": {"ts": ts, "job_id": self.job_id, **payload}}
         return await self.store.push_event(self.job_id, body)
+
+
+async def _abort_if_cancel_requested(store: JobStore, job_id: str, stage: str) -> None:
+    """Stage-boundary poll of the shared cancellation flag (#1667).
+
+    The Cancel button writes a Redis flag (``JobStore.request_cancel``) rather
+    than reaching for an in-process task handle, because the task serving the
+    POST is usually NOT the task running this pipeline. This is the other half
+    of that contract: between stages — i.e. before each block of real LLM /
+    backtest spend — the runner asks the shared store whether the user has
+    cancelled, and raises ``CancelledError`` if so. ``run_generation``'s
+    existing ``except asyncio.CancelledError`` branch then emits the terminal
+    event and records the status, exactly as for a locally-cancelled task.
+
+    Fail-soft on a read error: an unreachable Redis must not crash the run into
+    PIPELINE_CRASH, and the flag is durable, so the next stage boundary retries.
+    A store that predates this surface (a test double) is skipped the same way.
+    """
+    checker = getattr(store, "is_cancel_requested", None)
+    if checker is None:
+        logger.debug("cancel-poll skipped at %s — store exposes no cancel surface", stage)
+        return
+    try:
+        requested = await checker(job_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("cancel-poll failed at stage boundary %s for job %s — retrying next boundary", stage, job_id)
+        return
+    if requested:
+        logger.info("job %s: cancel flag observed at stage boundary %s — stopping the pipeline", job_id, stage)
+        raise asyncio.CancelledError(f"cancelled by user before stage {stage}")
 
 
 # ── Fixture path (deterministic; used in tests + when LLM unavailable) ────
@@ -1078,10 +1120,17 @@ async def run_generation(
     # cancelled paths too — every path where a strategy row already exists.
     strategy_ids: dict[str, str] = {}  # candidate_id → strategy_id
 
-    await store.update_status(job_id, "running")
-    await emit.emit("job_queued", brief=brief.model_dump())
-
     try:
+        # Stage boundary 0 (#1667): a job cancelled while it waited behind the
+        # admission gate must not be promoted back to `running` and start
+        # spending. The flag landed before this task ever woke up, so this is
+        # the boundary that catches it — inside the try, so the CancelledError
+        # branch below records the terminal state and the meter unbinds.
+        await _abort_if_cancel_requested(store, job_id, "start")
+
+        await store.update_status(job_id, "running")
+        await emit.emit("job_queued", brief=brief.model_dump())
+
         # Real LLM validation step (live path only). The fixture path skips
         # the validator so tests stay hermetic.
         with meter.stage("brief_validation"):
@@ -1166,6 +1215,7 @@ async def run_generation(
         fixture_mode = os.getenv("GENERATION_PIPELINE_FIXTURE", "").lower() in ("1", "true") or (
             not use_live and os.getenv("TESTING")
         )
+        await _abort_if_cancel_requested(store, job_id, "pipeline_select")
         with meter.stage("pipeline_select"):
             debate_can_run = use_live and await asyncio.to_thread(_debate_can_run, brief)
         if debate_can_run:
@@ -1239,6 +1289,10 @@ async def run_generation(
         candidates: list[_CandidateResult] = []
         for i, regime in enumerate(regimes):
             candidate_id = f"cand_{regime}" if dual_regime else f"cand_{i + 1}"
+            # The token-burn boundary: each pass through this loop is a full
+            # debate (sequential adversarial LLM turns + per-proposal
+            # backtests). Never start another one after a cancel.
+            await _abort_if_cancel_requested(store, job_id, f"candidate_generation:{candidate_id}")
             try:
                 # The society's own sub-phases (corpus load, proposal fan-out,
                 # adversarial transcript, per-proposal backtests) are timed
@@ -1319,6 +1373,8 @@ async def run_generation(
             meter.set_meta("outcome", "no_candidates")
             await store.update_status(job_id, "error", error="no candidates generated")
             return
+
+        await _abort_if_cancel_requested(store, job_id, "rigor_gate")
 
         # Patch PBO across the candidate set (library-level metric — Bailey
         # et al. CSCV needs N≥2 to be meaningful; the helper handles N<2
@@ -1430,6 +1486,7 @@ async def run_generation(
         # emit a DSL spec (weights={}) scored by evaluate_fusion_spec, or are a
         # populated ABSTAIN — so they skip the static backtester too (T1.1).
         _static_skip = ("fusion", "debate", "debate_abstain")
+        await _abort_if_cancel_requested(store, job_id, "backtest_persist")
         with meter.stage("backtest_persist"):
             await asyncio.gather(
                 *[
@@ -1732,23 +1789,32 @@ def _look_ahead_audit_source(rigor_verdict: dict) -> str:
     ``BacktestResult.look_ahead_audit_source`` exists precisely so a reader can
     tell a genuine audit pass from a constant. This path used to hardcode
     ``"self_attested"`` — correct at the time, because the boolean really was the
-    LLM's own ``look_ahead_safe`` declaration. It is now derived from the
-    three-state ``look_ahead_audit`` verdict that ``dsl_lookahead_audit`` computes:
+    LLM's own ``look_ahead_safe`` declaration. That field no longer exists, so
+    the label is derived from the four-state ``look_ahead_status`` verdict that
+    ``dsl_lookahead_audit`` computes, on the axis a provenance column is actually
+    about — did an audit reach a verdict, or not:
 
-      * ``"dsl_structural_audit"`` — the spec was proven to sit inside a DSL
-        surface whose interpreter provably reads only bar ``t`` and earlier, and
-        the broker cheat-on-close/open check passed.
-      * ``"self_attested"``        — anything less. The verdict blob is missing
-        the field (a row written before this landed), the structural audit could
-        not be completed, or it FAILED. In every one of those cases the boolean
-        beside this label is False, so a reader is never shown a self-attested
-        True again.
+      * ``"dsl_structural_audit"`` — the audit CONCLUDED (``pass`` or ``fail``):
+        the spec was checked against a DSL surface whose interpreter provably
+        reads only bar ``t`` and earlier, and the broker cheat-on-close/open
+        check ran. Note this is written for a ``fail`` too: the audit is still
+        the provenance of that ``False``.
+      * ``"dsl_audit_not_run"``    — the audit reached NO verdict (``pending`` /
+        ``degenerate``), or the blob predates this field entirely. The boolean
+        beside this label is False because nothing was proven, not because a
+        leak was found.
+
+    ``"self_attested"`` is never written again by any path.
     """
-    from archimedes.services.dsl_lookahead_audit import PASSED_STRUCTURAL
+    from archimedes.services.dsl_lookahead_audit import (
+        CONCLUSIVE_STATUSES,
+        SOURCE_DSL_AUDIT,
+        SOURCE_DSL_AUDIT_NOT_RUN,
+    )
 
-    if rigor_verdict.get("look_ahead_audit") == PASSED_STRUCTURAL:
-        return "dsl_structural_audit"
-    return "self_attested"
+    if rigor_verdict.get("look_ahead_status") in CONCLUSIVE_STATUSES:
+        return SOURCE_DSL_AUDIT
+    return SOURCE_DSL_AUDIT_NOT_RUN
 
 
 def _portfolio_daily_returns(artifact: dict) -> list[float]:
@@ -1910,17 +1976,16 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             backtest_engine=(rv.get("backtest_engine") or ENGINE_SINGLE_FEED),
             # Fixed cost basis every fusion/DSL backtest is charged — tx_cost_bps
             # and slippage_bps are never overridden by a caller on this path today
-            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). (#1242 review:
-            # cost_model_id used to stop at the artifact dict on this path and
-            # never reach the persisted row.)
+            # (see fusion_evaluator.DEFAULT_COST_MODEL_ID). This is the
+            # closed-DSL path, with no inspectable source for an AST audit
+            # (#1242 review: cost_model_id used to stop at the artifact dict on
+            # this path and never reach the persisted row).
             cost_model_id=DEFAULT_COST_MODEL_ID,
             # Provenance of look_ahead_audit_passed above, derived from the
-            # three-state audit rather than hardcoded. This used to be a flat
+            # four-state audit rather than hardcoded. It used to be a flat
             # "self_attested" because the boolean genuinely WAS the LLM's own
-            # look_ahead_safe flag. It no longer is: a DSL spec proven to sit
-            # inside the verified interpreter surface earns
-            # "dsl_structural_audit"; anything short of that keeps the honest
-            # "self_attested" label AND (unlike before) a False boolean.
+            # look_ahead_safe flag; that field no longer exists, so nothing is
+            # attested and that value is never written again.
             look_ahead_audit_source=_look_ahead_audit_source(rv),
         )
         artifact = {
@@ -1934,23 +1999,32 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
         # persisted passes_rigor_gate matches what verdicts_for_strategies computes.
         # look_ahead_audit_passed threads the REAL structural audit computed above
         # (result.look_ahead_audit_passed, from rv["lookahead_audit_passed"], which
-        # dsl_lookahead_audit derives — NOT the LLM's look_ahead_safe boolean)
-        # through to the gate. Without this, strategy_code=None (this path has no
-        # inspectable source for the AST audit) left the gate's look_ahead_passed
-        # unconditionally False — an always-on floor failure that blocked deploy at
-        # EVERY strictness level regardless of DSR/PBO/OOS, no matter how strong the
-        # strategy. A spec that cannot clear the structural audit now arrives here
-        # as False and correctly fails that floor.
+        # dsl_lookahead_audit derives — there IS no LLM look_ahead_safe boolean
+        # any more) through to the gate. Without this, strategy_code=None (this
+        # path has no inspectable source for the AST audit) left the gate's
+        # look_ahead_passed unconditionally False — an always-on floor failure
+        # that blocked deploy at EVERY strictness level regardless of DSR/PBO/OOS,
+        # no matter how strong the strategy. A spec that cannot clear the
+        # structural audit now arrives here as False and correctly fails that
+        # floor.
+        #
+        # This boolean is the SAME term fusion_evaluator.apply_rigor_gate folded
+        # into `passing` (both are `DslLookAheadAudit.passed`), which is what keeps
+        # the two gates from disagreeing about one strategy — the badge gate here
+        # and the fusion verdict cannot land on opposite sides of the look-ahead
+        # leg. Pinned by test_dsl_lookahead_audit.TestTheTwoGatesAgree.
+        #
         # Fail-closed on admission, honest on the surface: when the boolean above
-        # is False because the structural audit never COMPLETED (rather than
-        # because it caught a leak), say so. The gate outcome is identical either
-        # way — the always-on floor still blocks — but the user is not told their
-        # strategy failed an audit that never ran.
+        # is False because the audit reached NO verdict (rather than because it
+        # caught a leak), the status and reason say so. The gate outcome is
+        # identical either way — the always-on floor still blocks — but the user
+        # is not told their strategy failed an audit that never ran.
         live = verdict_from_returns(
             strategy_id,
             returns,
             num_trials=int(num_trials),
             look_ahead_audit_passed=result.look_ahead_audit_passed,
+            look_ahead_status=rv.get("look_ahead_status"),
             look_ahead_not_run_reason=not_run_reason_from_verdict(rv),
         )
 

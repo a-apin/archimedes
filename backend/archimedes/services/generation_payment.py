@@ -1,7 +1,27 @@
 """x402 paywall for strategy generation (Dan's directive, 2026-08-19).
 
-Generation REQUIRES wallet connection + payment — for humans and agents alike,
-no free path — while paper trading stays free. The 402 response *is* the
+**Policy correction, 2026-08-31 (#1643).** This docstring used to state that
+generation required a wallet connection and a payment for humans and agents
+alike, with no free allowance whatsoever. That is no longer what the code
+does, so the claim is deleted rather than softened — a docstring that
+contradicts shipped behaviour is the "claims must be true" defect, not a
+stylistic one. The owner's product review kept the *account*
+requirement absolute (``require_current_user`` gates every generation, and
+there is no wallet-only-without-account path) but made the *wallet* optional
+for a small lifetime allowance: the first ``FREE_GENERATIONS_PER_ACCOUNT``
+(default 3) generations on an account need neither a linked wallet nor a
+payment. **Amended the same day (owner decision D1, recorded on #1653): that
+allowance unlocks on a VERIFIED email, not on account creation alone** — an
+unverified account has the wallet + payment path below and nothing else, which
+is precisely the pre-#1643 behaviour. Nothing in THIS module implements that —
+the allowance is claimed in
+``api/generate_routes.start_generation`` from
+``services/free_generations.py``, ahead of the wallet check and this paywall —
+and nothing in this module changed: from generation #4 onward every rule below
+applies exactly as written.
+
+Generation past the free allowance requires wallet connection + payment — for
+humans and agents alike — while paper trading stays free. The 402 response *is* the
 quote-approval flow: it carries the full payment requirements in the
 ``PAYMENT-REQUIRED`` header (and a human-readable quote in the JSON body), the
 client signs and retries with a ``Payment-Signature`` header, and the server

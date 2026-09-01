@@ -11,7 +11,15 @@ import {
 	filterInsightsNavItem,
 	isInsightsPageBlocked,
 	resolveInsightsAdminState,
+	resolveInsightsView,
 } from "../src/insightsGate.js";
+import {
+	_resetInsightsAdminMemo,
+	adminIdentityKey,
+	normalizeWalletAddress,
+	readInsightsAdmin,
+	rememberInsightsAdmin,
+} from "../src/insightsAdminMemo.js";
 import { NAV } from "../src/navConfig.js";
 
 // ── getCachedAdminProbe: shared TTL cache backing fetchAdminProbe()
@@ -227,7 +235,8 @@ test("App.jsx: the insights page gate calls the shared fetchAdminProbe(), routin
 	assert.match(app, /from ["']\.\/insightsGate\.js["']/);
 	assert.match(
 		app,
-		/fetchAdminProbe\(\)\.then\(\(result\) => \{\n\s+if \(!cancelled\) setInsightsAdmin\(resolveInsightsAdminState\(result\)\)/,
+		/fetchAdminProbe\(\)\.then\(\(result\) => \{\n\s+if \(cancelled\) return;\n\s+const admin = resolveInsightsAdminState\(result\);\n\s+rememberInsightsAdmin\(identity, admin\);\n\s+setInsightsAdmin\(admin\);/,
+		"the probe result must still be routed through resolveInsightsAdminState() — and the value written to the #1648 memo must be that SAME resolved boolean, not the raw probe body",
 	);
 	assert.doesNotMatch(
 		app,
@@ -289,8 +298,23 @@ test("App.jsx: the insights admin probe re-runs on a wallet swap, not just on na
 	);
 	assert.match(
 		app,
-		/\}, \[route\.page, walletChangeSeq\]\)/,
+		/\}, \[route\.page, walletAddr, userId\]\)/,
 		"the insights-probe effect must depend on the wallet-change signal, not just route.page",
+	);
+	// #1648 / I-8 B2: the signal must be the address VALUE, not a counter.
+	// A counter changes on EVERY wallet-changed event — including the
+	// `accountsChanged` an injected provider re-fires with the same account on
+	// tab focus — which is what made the page blank under an admin who was
+	// already using it. A value lets React bail out on a no-op announcement.
+	assert.doesNotMatch(
+		app,
+		/walletChangeSeq/,
+		"the probe must not re-run on a monotonic counter bumped by every wallet-changed event (#1648)",
+	);
+	assert.match(
+		app,
+		/setWalletAddr\(normalizeWalletAddress\(event\?\.detail\?\.address\)\)/,
+		"the wallet-changed handler must store the normalized address value",
 	);
 });
 
@@ -336,4 +360,205 @@ test("Insights.jsx does not label the token tile as an all-time/total figure, an
 	assert.doesNotMatch(insights, /Total LLM tokens/);
 	assert.match(insights, /LLM tokens \(measured jobs\)/);
 	assert.match(insights, /engagement\.generation_costs\?\.note/);
+});
+
+// ── #1648 / I-8 B2: the NotFound flash ──────────────────────────────────────
+//
+// The gate's security posture was right and its rendering was wrong. App.jsx
+// reset `insightsAdmin` to `null` unconditionally on every entry to
+// /app/insights and on every `wallet-changed` event, and `null` rendered the
+// not-found treatment — so an admin watched the page they are allowed to use
+// flip NotFound → dashboard on every navigation, and blank again whenever an
+// injected provider re-announced the same account on tab focus.
+//
+// The fix must not become an optimistic admin assumption. What follows pins
+// both halves: an unknown state renders a holding state rather than a
+// decision, and the only thing that can render the dashboard early is an
+// answer the server actually gave, for this exact identity, this session.
+
+test("resolveInsightsView: an UNRESOLVED probe inside a session renders the holding state — never the not-found treatment (#1648)", () => {
+	assert.equal(resolveInsightsView("insights", null, true), "resolving");
+	// Adversarial companion — revert resolveInsightsView to the old
+	// `insightsAdmin !== true` collapse and this pair is what fails: the
+	// unresolved case would return "not-found" here, which is the flash.
+	assert.notEqual(resolveInsightsView("insights", null, true), "not-found");
+});
+
+test("resolveInsightsView: an AUTHORITATIVE denial still renders not-found, holding state or not (#1648 must not open the page)", () => {
+	assert.equal(resolveInsightsView("insights", false, true), "not-found");
+	assert.equal(resolveInsightsView("insights", false, false), "not-found");
+	// The only input that renders the page is a literal true.
+	assert.equal(resolveInsightsView("insights", true, true), "allow");
+	for (const bogus of [undefined, 0, 1, "true", "admin", {}, []]) {
+		assert.equal(
+			resolveInsightsView("insights", bogus, true),
+			"not-found",
+			`a non-boolean gate state (${JSON.stringify(bogus)}) must never render the page`,
+		);
+	}
+});
+
+test("resolveInsightsView: an ANONYMOUS caller keeps the round-3 behaviour exactly — unresolved is indistinguishable from unknown-route (#1648 anti-goal)", () => {
+	// The disclosure argument round 3 made is about someone OUTSIDE the
+	// session boundary: a genuinely unknown route never shows a loading state,
+	// so a loader here would mark the path as special. With no session in
+	// play, unresolved must still render not-found on first paint.
+	assert.equal(resolveInsightsView("insights", null, false), "not-found");
+	assert.equal(resolveInsightsView("insights", null, undefined), "not-found");
+});
+
+test("resolveInsightsView: never blocks or stalls a route other than insights", () => {
+	for (const state of [null, true, false]) {
+		assert.equal(resolveInsightsView("library", state, true), "allow");
+		assert.equal(resolveInsightsView(null, state, false), "allow");
+	}
+});
+
+test("App.jsx: the insights branch dispatches on resolveInsightsView, and its holding arm renders neither NotFound nor the dashboard", () => {
+	assert.match(app, /from ["']\.\/insightsAdminMemo\.js["']/);
+	assert.match(
+		app,
+		/const view = resolveInsightsView\(\s*\n?\s*route\.page,\s*\n?\s*insightsAdmin,\s*\n?\s*authLoading \|\| Boolean\(user\),?\s*\n?\s*\);/,
+		"the session input must be 'auth is still loading OR a user is present' — treating the pre-resolution instant as anonymous reintroduces the flash on a hard load",
+	);
+	assert.match(app, /if \(view === "not-found"\) return <NotFound user=\{user\} \/>;/);
+	assert.match(app, /if \(view === "resolving"\) \{/);
+	// The holding arm must not name the page it is holding for.
+	assert.doesNotMatch(app, /Loading Insights/i);
+	// Still exactly two NotFound call sites: the true 404 and the denial.
+	// A third would mean the denial treatment had been forked again.
+	const notFoundCalls = app.match(/return <NotFound user=\{user\} \/>/g) || [];
+	assert.equal(notFoundCalls.length, 2);
+});
+
+test("App.jsx: the tab title still treats an unresolved probe as not-found (only the RENDER branch changed)", () => {
+	// I-8 anti-goal: isInsightsPageBlocked's contract is unchanged, and the
+	// title effect still uses it — so even during the holding state the tab
+	// never reads "Insights · Archimedes" to a visitor the server has not
+	// cleared.
+	assert.match(app, /isInsightsPageBlocked\(route\.page, insightsAdmin\)/);
+	assert.equal(isInsightsPageBlocked("insights", null), true);
+	assert.equal(isInsightsPageBlocked("insights", false), true);
+	assert.equal(isInsightsPageBlocked("insights", true), false);
+});
+
+// ── insightsAdminMemo: the last SERVER ANSWER, keyed on the identity it was
+// given for. This is what makes the second and later visits flash-free, and
+// what keeps that from being a guess. ───────────────────────────────────────
+
+test("insightsAdminMemo: a remembered grant is readable only under the identity it was recorded for", () => {
+	_resetInsightsAdminMemo();
+	const walletA = adminIdentityKey("user-1", "0xAAA");
+	rememberInsightsAdmin(walletA, true);
+	assert.equal(readInsightsAdmin(walletA), true);
+	// Same account, DIFFERENT wallet — require_platform_admin can answer
+	// differently per wallet, so this must be a miss, not a stale true.
+	assert.equal(readInsightsAdmin(adminIdentityKey("user-1", "0xBBB")), null);
+	// Different account entirely — a miss.
+	assert.equal(readInsightsAdmin(adminIdentityKey("user-2", "0xAAA")), null);
+	// Anonymous — a miss, and cannot inherit the signed-in determination.
+	assert.equal(readInsightsAdmin(adminIdentityKey(null, "0xAAA")), null);
+});
+
+test("insightsAdminMemo: an anonymous answer is never recorded — and cannot evict a signed-in one", () => {
+	_resetInsightsAdminMemo();
+	rememberInsightsAdmin(adminIdentityKey(null, "0xAAA"), true);
+	assert.equal(readInsightsAdmin(adminIdentityKey(null, "0xAAA")), null);
+	assert.equal(readInsightsAdmin(adminIdentityKey("user-1", "0xAAA")), null);
+	// Dropping the anonymous write is what keeps it from CLOBBERING a real
+	// one: without the guard, `memoKey` would be overwritten with null and the
+	// grant below would be evicted — which is how a "flash-free" page starts
+	// flashing again the moment a probe runs before auth resolves.
+	const signedIn = adminIdentityKey("user-1", "0xAAA");
+	rememberInsightsAdmin(signedIn, true);
+	rememberInsightsAdmin(adminIdentityKey(null, "0xAAA"), false);
+	assert.equal(readInsightsAdmin(signedIn), true);
+});
+
+test("insightsAdminMemo: only a literal true is remembered as a grant — a truthy non-boolean is recorded as a denial", () => {
+	_resetInsightsAdminMemo();
+	const id = adminIdentityKey("user-1", "0xAAA");
+	rememberInsightsAdmin(id, "yes");
+	assert.equal(readInsightsAdmin(id), false);
+});
+
+test("insightsAdminMemo: a DENIAL is memoized too — a non-admin's later visits render not-found with no holding state at all", () => {
+	_resetInsightsAdminMemo();
+	const id = adminIdentityKey("user-9", "0xNOTADMIN");
+	rememberInsightsAdmin(id, false);
+	assert.equal(readInsightsAdmin(id), false);
+	assert.equal(
+		resolveInsightsView("insights", readInsightsAdmin(id), true),
+		"not-found",
+		"a remembered denial must render the not-found treatment immediately, exactly like an unknown route",
+	);
+});
+
+test("insightsAdminMemo: _resetInsightsAdminMemo forgets the grant (sign-out path)", () => {
+	_resetInsightsAdminMemo();
+	const id = adminIdentityKey("user-1", "0xAAA");
+	rememberInsightsAdmin(id, true);
+	_resetInsightsAdminMemo();
+	assert.equal(readInsightsAdmin(id), null);
+});
+
+test("AuthContext clears the insights-admin memo on sign-out, alongside the probe cache", () => {
+	const authContext = readFileSync(
+		new URL("../src/AuthContext.jsx", import.meta.url),
+		"utf8",
+	);
+	assert.match(authContext, /_resetInsightsAdminMemo\(\)/);
+});
+
+// ── The tab-focus case, end to end over the real modules ────────────────────
+
+test("normalizeWalletAddress: a checksummed and a lowercase announcement of the SAME account are the same value (so React bails out and the probe does not re-run)", () => {
+	const checksummed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+	assert.equal(
+		normalizeWalletAddress(checksummed),
+		normalizeWalletAddress(checksummed.toLowerCase()),
+	);
+	assert.equal(normalizeWalletAddress(null), null);
+	assert.equal(normalizeWalletAddress(undefined), null);
+	assert.equal(normalizeWalletAddress(""), null);
+	// A genuinely different account is a genuinely different value — the
+	// bail-out must not swallow a real swap.
+	assert.notEqual(
+		normalizeWalletAddress(checksummed),
+		normalizeWalletAddress("0x1111111111111111111111111111111111111111"),
+	);
+});
+
+test("#1648 end to end: a tab-focus accountsChanged carrying the same account cannot blank a page the admin is already on", () => {
+	_resetInsightsAdminMemo();
+	const userId = "user-admin";
+	const announced = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+
+	// First visit: the server answers admin.
+	const firstIdentity = adminIdentityKey(
+		userId,
+		normalizeWalletAddress(announced),
+	);
+	rememberInsightsAdmin(firstIdentity, resolveInsightsAdminState({ admin: true }));
+	assert.equal(resolveInsightsView("insights", true, true), "allow");
+
+	// Tab focus: the injected provider re-announces the SAME account, this
+	// time lowercased. Even if the effect were to re-run, the seed is the
+	// memoized answer — not null — so the page never renders NotFound.
+	const refocusIdentity = adminIdentityKey(
+		userId,
+		normalizeWalletAddress(announced.toLowerCase()),
+	);
+	assert.equal(refocusIdentity, firstIdentity);
+	const seed = readInsightsAdmin(refocusIdentity);
+	assert.equal(seed, true);
+	assert.equal(resolveInsightsView("insights", seed, true), "allow");
+
+	// A REAL swap to an unseen wallet is a memo miss — it must resolve from
+	// the server (holding state), never carry the previous wallet's grant.
+	const swapped = adminIdentityKey(userId, normalizeWalletAddress("0xBEEF"));
+	const swappedSeed = readInsightsAdmin(swapped);
+	assert.equal(swappedSeed, null);
+	assert.equal(resolveInsightsView("insights", swappedSeed, true), "resolving");
+	assert.notEqual(resolveInsightsView("insights", swappedSeed, true), "allow");
 });

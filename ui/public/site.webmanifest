@@ -1,7 +1,7 @@
 {
   "name": "Archimedes",
   "short_name": "Archimedes",
-  "description": "Agentic trading, grounded in research.",
+  "description": "Research-grounded strategy generation with a visible rigor gate.",
   "icons": [
     {
       "src": "/icon-192.png",

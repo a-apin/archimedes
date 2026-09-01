@@ -37,6 +37,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 # Imported at module top: generation_pipeline does NOT import this module at top
@@ -48,6 +50,7 @@ from archimedes.agents.generation_pipeline import (
 )
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
+from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from archimedes.agents.generation_pipeline import _Emitter
@@ -74,14 +77,72 @@ _MECHANISM_AXIS: tuple[str, ...] = (
 # Cartesian product (regime × mechanism) = 18 distinct steers; `_pool_max()` caps the fan-out.
 _STEERS: tuple[tuple[str | None, str], ...] = tuple((r, m) for r in _REGIME_AXIS for m in _MECHANISM_AXIS)
 
-# Indicator stems interpret_spec actually supports. ``realized_vol_N`` *validates*
-# via validate_strategy_spec but raises DSLError("unsupported indicator") inside
-# interpret_spec — which would throw in C-rigor. The conformance guard (fix A5)
-# drops such specs from the pool BEFORE they reach evaluate_fusion_spec.
-_CONFORMANT_INDICATORS = {"sma", "ema", "rsi", "momentum"}
+# Indicator stems interpret_spec actually supports — IMPORTED, not re-typed.
+# The A5 guard drops specs the interpreter cannot build BEFORE they reach
+# evaluate_fusion_spec, where a DSLError would take down the whole leaderboard
+# build. It used to be a hand-maintained literal that excluded ``realized_vol``
+# because interpret_spec raised on it; now that the interpreter implements the
+# indicator, a hand-maintained copy would silently drop backtestable specs
+# instead. Binding to the interpreter's own set means the guard tracks what the
+# interpreter can actually do, in both directions.
+_CONFORMANT_INDICATORS = set(SUPPORTED_INDICATORS)
 
 # DSL price operands (not indicator aliases) — excluded from the conformance scan.
 _PRICE_OPERANDS = {"close", "open", "high", "low", "volume"}
+
+# ── Backtest fan-out pool (bounded, dedicated) ────────────────────────────────
+#
+# C-rigor backtests EVERY pooled survivor, so the fan-out is up to `_pool_max()`
+# (default 10) concurrent `cerebro.run()` calls. backtrader is pure Python and
+# therefore GIL-bound: those are not "waiting on IO" threads, they are N runnable
+# CPU threads contending with the uvicorn event loop's own thread on a task that
+# has 1-2 vCPU. Ten of them do not make the cohort ~10x faster; they make every
+# concurrently-served request wait behind GIL handoffs.
+#
+# They also used to run on the *default* executor (`asyncio.to_thread`), which is
+# the same pool `asset_market_service`, `traces_routes`, `chat_routes`,
+# `portfolio_routes` and `strategies_routes` block on. A pool whose CPython
+# default width is `min(32, os.cpu_count() + 4)` — 5 or 6 on the prod task — was
+# fully occupied by one generation's backtests, so unrelated routes queued behind
+# them. `GENERATION_MAX_CONCURRENT` (generate_routes.py) caps *pipelines*, not
+# *threads*, so it never bounded this.
+#
+# A dedicated, named, small pool fixes both halves: the CPU-bound work is capped
+# independently of how wide the pool is, and it can no longer starve the default
+# pool that serving depends on. Same motivation as the `torch.set_num_threads(1)`
+# guardrail in services/paper_rag.py (2026-07-04 reranker-starvation incident).
+_BACKTEST_POOL_HARD_MAX = 2
+_backtest_executor_lock = threading.Lock()
+_backtest_executor_instance: ThreadPoolExecutor | None = None
+
+
+def _backtest_max_workers() -> int:
+    """``DEBATE_BACKTEST_WORKERS`` clamped to ``[1, 2]`` (default 2).
+
+    The clamp is the point: the knob can make the pool narrower, never wider.
+    Widening it is what the GIL contention above forbids, so an operator typo
+    (or a well-meant "just bump it") cannot reintroduce the fan-out.
+    """
+    try:
+        requested = int(os.getenv("DEBATE_BACKTEST_WORKERS", str(_BACKTEST_POOL_HARD_MAX)))
+    except ValueError:
+        requested = _BACKTEST_POOL_HARD_MAX
+    return max(1, min(_BACKTEST_POOL_HARD_MAX, requested))
+
+
+def _backtest_executor() -> ThreadPoolExecutor:
+    """The process-wide, lazily-built backtest pool (never the default executor)."""
+    global _backtest_executor_instance
+    with _backtest_executor_lock:
+        if _backtest_executor_instance is None:
+            width = _backtest_max_workers()
+            _backtest_executor_instance = ThreadPoolExecutor(
+                max_workers=width,
+                thread_name_prefix="debate-backtest",
+            )
+            logger.info("debate C-rigor: backtest pool created (max_workers=%d, GIL-bound work)", width)
+        return _backtest_executor_instance
+
 
 # C-null passive-null bar (V_check min_cost_benefit_bps = 5 bps): a survivor must
 # beat buy-and-hold net of cost by at least this. Phase-1 proxy uses the
@@ -152,10 +213,11 @@ def _indicator_alias_stems(spec: dict[str, Any]) -> set[str]:
 def _dsl_conformance_ok(spec: dict[str, Any] | None) -> bool:
     """True iff ``spec`` is backtestable by ``interpret_spec`` (fix A5).
 
-    Rejects specs whose indicator aliases fall outside ``{sma, ema, rsi,
-    momentum}`` — those validate but raise ``DSLError`` at interpret time, which
-    would otherwise throw inside C-rigor and take down the whole leaderboard
-    build. A spec must also carry both an ``entry`` and an ``exit`` tree.
+    Rejects specs whose indicator aliases fall outside
+    ``dsl_to_backtrader.SUPPORTED_INDICATORS`` — anything else validates but
+    raises ``DSLError`` at interpret time, which would otherwise throw inside
+    C-rigor and take down the whole leaderboard build. A spec must also carry
+    both an ``entry`` and an ``exit`` tree.
     """
     if not isinstance(spec, dict):
         return False
@@ -232,12 +294,23 @@ def _debate_can_run(brief: GenerateBrief) -> bool:
 # ── Step 1 — proposer pool ────────────────────────────────────────────────────
 
 
-async def _propose_pool(brief: GenerateBrief, model: str | None, corpus: list[Any]) -> list[Any]:
+async def _propose_pool(
+    brief: GenerateBrief, model: str | None, corpus: list[Any]
+) -> tuple[list[Any], dict[str, dict[str, str]]]:
     """Fan ``StrategyFusion(model=...).propose`` across regime-steered evidence.
 
-    Returns the POOL: proposals that are both *actionable*
-    (``FusionProposal.is_actionable``) AND *conformant* (``_dsl_conformance_ok``).
-    ``pool_size = len(returned list)`` is the DSR multiple-testing selection set.
+    Returns ``(pool, evidence_by_id)``:
+
+    * **pool** — proposals that are both *actionable*
+      (``FusionProposal.is_actionable``) AND *conformant* (``_dsl_conformance_ok``).
+      ``pool_size = len(pool)`` is the DSR multiple-testing selection set.
+    * **evidence_by_id** — ``{arxiv_id: {"title", "published"}}`` over every paper
+      that entered ANY proposer prompt on this run (#1636). This is the debate's
+      attribution whitelist: the bull/bear turns may cite an id only if it is in
+      here, and an id outside it is a hallucination that gets stripped rather
+      than recorded. It is deliberately the union over *attempted* proposals,
+      not just pooled ones — a paper the model actually read is real evidence
+      even when the spec built on it was later dropped for DSL non-conformance.
     """
     from archimedes.agents.strategy_fusion import (
         MIN_PAPERS,
@@ -248,7 +321,7 @@ async def _propose_pool(brief: GenerateBrief, model: str | None, corpus: list[An
 
     steers = list(_STEERS)[: _pool_max()]
 
-    def _propose_one(steer: tuple[str | None, str]) -> Any:
+    def _propose_one(steer: tuple[str | None, str]) -> tuple[Any, list[Any]] | None:
         regime_bias, mechanism = steer
         # Thread BOTH axes: regime_bias steers select_candidates' evidence ranking,
         # and the mechanism hint (appended to strategic_direction) steers the proposer
@@ -265,19 +338,33 @@ async def _propose_pool(brief: GenerateBrief, model: str | None, corpus: list[An
         evidence = select_candidates(fb, corpus, regime_bias=regime_bias)
         if len(evidence) < MIN_PAPERS:
             return None
-        return StrategyFusion(model=model, corpus=evidence).propose(fb)
+        # `candidates=` (not just `corpus=`) so propose() uses THIS set verbatim.
+        # Passing it as the corpus made propose() re-run select_candidates over
+        # it WITHOUT regime_bias — a second rerank that threw away the ordering
+        # this steer just paid a rerank for (#1636).
+        proposal = StrategyFusion(model=model, corpus=evidence, candidates=evidence).propose(fb)
+        return proposal, evidence
 
-    proposals = await asyncio.gather(
+    results = await asyncio.gather(
         *(asyncio.to_thread(_propose_one, s) for s in steers),
         return_exceptions=True,
     )
 
     pool: list[Any] = []
+    evidence_by_id: dict[str, dict[str, str]] = {}
     seen_hashes: set[str] = set()
     dropped = 0
-    for p in proposals:
-        if isinstance(p, BaseException) or p is None:
+    for r in results:
+        if isinstance(r, BaseException) or r is None:
             continue
+        p, evidence = r
+        for paper in evidence:
+            arxiv_id = str(getattr(paper, "arxiv_id", "") or "")
+            if arxiv_id and arxiv_id not in evidence_by_id:
+                evidence_by_id[arxiv_id] = {
+                    "title": str(getattr(paper, "title", "") or ""),
+                    "published": str(getattr(paper, "published", "") or ""),
+                }
         if not (p.is_actionable and _dsl_conformance_ok(p.strategy_spec)):
             continue
         spec_hash = _canonical_spec_hash(p.strategy_spec)
@@ -289,15 +376,20 @@ async def _propose_pool(brief: GenerateBrief, model: str | None, corpus: list[An
 
     if dropped:
         logger.info("debate proposer pool_deduped: kept=%d dropped=%d", len(pool), dropped)
-    return pool
+    return pool, evidence_by_id
 
 
 # ── Step 2 — best-effort adversarial round (transcript only, never gates) ─────
 
 _DEBATE_SYSTEM = (
     "You are the {role} researcher in a quant strategy debate, round {rnd}. {stance}. "
-    "Cite ONLY the listed candidate strategies. {rebuttal}"
-    'Reply with ONE JSON object: {{"verdict": "act"|"decline", "confidence": <0..1>, "key_claims": [<str>...]}}.'
+    "Cite ONLY the listed candidate strategies, and ONLY the arXiv ids printed on their cards. "
+    "Every key_claim must name at least one arxiv_id from the cards; a claim you cannot ground "
+    "in a listed paper must carry an EMPTY arxiv_ids list — never an invented id. "
+    "Use `discard` to name papers you read and rejected, with the reason. {rebuttal}"
+    'Reply with ONE JSON object: {{"verdict": "act"|"decline", "confidence": <0..1>, '
+    '"key_claims": [{{"claim": <str>, "candidate_id": "<C1|C2|…>", "arxiv_ids": ["<arxiv id>"]}}], '
+    '"discard": [{{"arxiv_id": "<arxiv id>", "reason": <str>}}]}}.'
 )
 
 _DEBATE_STANCES = {
@@ -305,8 +397,198 @@ _DEBATE_STANCES = {
     "bear": "Argue for ABSTENTION — the null is buy-and-hold; attack overfit/cost",
 }
 
+# How many pooled candidates get a card in the debate prompt. Unchanged from
+# the pre-#1636 `pool[:5]` slice — what changed is that the pool is SORTED
+# first, so the five are a stable, explainable set rather than whichever five
+# steers happened to finish in that order.
+_DEBATE_CARD_MAX = 5
 
-async def _debate_round(pool: list[Any], model: str | None, emit: _Emitter, candidate_id: str) -> list[dict[str, Any]]:
+
+def _debate_pool_order(pool: list[Any]) -> list[Any]:
+    """Deterministic debate ordering: most-evidenced candidate first.
+
+    ``_debate_round`` shows only the first ``_DEBATE_CARD_MAX`` candidates. It
+    used to take them straight off ``pool``, whose order is the order the
+    regime×mechanism steers happened to be enumerated in — so which candidates
+    got debated was an artifact of the steer grid, not a property of the
+    candidates. This key is ``(-cited_paper_count, strategy_name, spec_hash)``:
+
+    * cited-paper count first — the debate is about evidence, so the candidates
+      standing on the most papers are the ones worth the tokens;
+    * name then spec-hash as pure tiebreaks, so the order is total and stable
+      across runs (R3 determinism) with no randomness and no LLM call.
+
+    It is explicitly NOT a quality ranking — at debate time nothing has been
+    backtested yet. C-rigor / C-null still do all the culling.
+    """
+    return sorted(
+        pool,
+        key=lambda p: (
+            -len(getattr(p, "source_arxiv_ids", None) or []),
+            str(getattr(p, "strategy_name", "") or ""),
+            _canonical_spec_hash(getattr(p, "strategy_spec", None) or {}),
+        ),
+    )
+
+
+def _candidate_cards(pool: list[Any], evidence_by_id: dict[str, dict[str, str]]) -> str:
+    """Per-candidate evidence cards — the debate's whole user message (#1636).
+
+    Was a ``"; "``-joined list of strategy NAMES: four paid LLM turns argued
+    about strings like "Momentum/vol fusion" with no paper anywhere in the
+    prompt, while the product claim is a multi-agent debate over the corpus.
+    Each line is now ``[C1] Name — cites arXiv:xxxx "Title"``, which is both
+    what the researchers argue over and the id vocabulary the anti-hallucination
+    guard in ``_turn`` checks their claims against. ~200 chars → ~2 KB.
+    """
+    lines: list[str] = []
+    for i, p in enumerate(_debate_pool_order(pool)[:_DEBATE_CARD_MAX], start=1):
+        name = str(getattr(p, "strategy_name", "") or "").strip() or f"Candidate {i}"
+        cites: list[str] = []
+        for arxiv_id in getattr(p, "source_arxiv_ids", None) or []:
+            title = (evidence_by_id.get(str(arxiv_id)) or {}).get("title", "").strip()
+            cites.append(f'arXiv:{arxiv_id} "{title}"' if title else f"arXiv:{arxiv_id}")
+        suffix = f" — cites {'; '.join(cites)}" if cites else " — cites no listed paper"
+        lines.append(f"[C{i}] {name}{suffix}")
+    return "\n".join(lines)
+
+
+def _claim_text(claim: Any) -> str:
+    """The prose of one claim, for either shape.
+
+    Turns produced after #1636 carry ``{"claim", "candidate_id", "arxiv_ids"}``;
+    rows persisted before it are bare strings. Both must read back.
+    """
+    if isinstance(claim, dict):
+        return str(claim.get("claim", "") or "")
+    return str(claim or "")
+
+
+def _normalize_claim(raw: Any, known_ids: set[str]) -> dict[str, Any] | None:
+    """One claim, id-checked against the evidence actually shown (#1636).
+
+    Mirrors ``strategy_fusion.propose``'s ``valid_ids`` filter: an arxiv_id the
+    proposers never put in front of anyone is dropped. What it does NOT do is
+    drop the claim — a claim whose every id was invented is kept with
+    ``arxiv_ids: []`` so it is **recorded as unattributed**. Deleting it would
+    quietly shrink the transcript; keeping it with its fake citation would
+    launder a hallucination into the provenance record. Neither is honest.
+
+    Returns None only for a claim with no prose at all (nothing to record).
+    """
+    if isinstance(raw, str):
+        text = raw.strip()
+        return {"claim": text, "candidate_id": None, "arxiv_ids": []} if text else None
+    if not isinstance(raw, dict):
+        return None
+    text = str(raw.get("claim") or raw.get("text") or "").strip()
+    if not text:
+        return None
+    requested = [str(a).strip() for a in (raw.get("arxiv_ids") or []) if isinstance(a, str) and str(a).strip()]
+    deduped = list(dict.fromkeys(requested))
+    kept = [a for a in deduped if a in known_ids]
+    if len(kept) != len(deduped):
+        logger.info(
+            "debate: dropped %d unknown arxiv id(s) from a %s claim — recorded as unattributed",
+            len(deduped) - len(kept),
+            "partially attributed" if kept else "fully unattributed",
+        )
+    candidate_id = raw.get("candidate_id")
+    return {
+        "claim": text,
+        "candidate_id": str(candidate_id).strip() if isinstance(candidate_id, str) and candidate_id.strip() else None,
+        "arxiv_ids": kept,
+    }
+
+
+def _normalize_discards(raw: Any, known_ids: set[str]) -> list[dict[str, str]]:
+    """``[{arxiv_id, reason}]``, restricted to papers actually shown (#1636).
+
+    A discard naming an id nobody was shown is the same hallucination the claim
+    guard catches, and unlike a claim it carries no prose worth keeping on its
+    own — so it is dropped outright.
+    """
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        arxiv_id = str(entry.get("arxiv_id", "") or "").strip()
+        if arxiv_id not in known_ids or arxiv_id in seen:
+            continue
+        seen.add(arxiv_id)
+        out.append({"arxiv_id": arxiv_id, "reason": str(entry.get("reason", "") or "").strip()})
+    return out
+
+
+def _aggregate_paper_verdicts(
+    transcript: list[dict[str, Any]],
+    evidence_by_id: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Per-paper tally over a finished transcript — deterministic, 0 tokens.
+
+    This is what turns "the papers were debated" from a claim into something a
+    reader can check: for every paper that entered a proposer prompt, which
+    side cited it, how often, and who threw it out for what reason. Papers
+    nobody touched are listed with ``verdict="unused"`` rather than omitted —
+    the absence is the interesting part when 30 papers were retrieved and 3
+    were argued over.
+
+    Sorted by arxiv_id so two runs over the same transcript are byte-identical.
+    """
+    tallies: dict[str, dict[str, Any]] = {
+        arxiv_id: {
+            "arxiv_id": arxiv_id,
+            "title": meta.get("title", ""),
+            "cited_by": [],
+            "citations": 0,
+            "discarded_by": [],
+            "discard_reasons": [],
+        }
+        for arxiv_id, meta in evidence_by_id.items()
+    }
+    for turn in transcript:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role", "") or "")
+        for claim in turn.get("claims") or []:
+            if not isinstance(claim, dict):
+                continue  # a pre-#1636 string claim carries no attribution
+            for arxiv_id in claim.get("arxiv_ids") or []:
+                row = tallies.get(str(arxiv_id))
+                if row is None:
+                    continue
+                row["citations"] += 1
+                if role and role not in row["cited_by"]:
+                    row["cited_by"].append(role)
+        for discard in turn.get("discard") or []:
+            row = tallies.get(str((discard or {}).get("arxiv_id", "")))
+            if row is None:
+                continue
+            if role and role not in row["discarded_by"]:
+                row["discarded_by"].append(role)
+            reason = str(discard.get("reason", "") or "").strip()
+            if reason and reason not in row["discard_reasons"]:
+                row["discard_reasons"].append(reason)
+
+    out: list[dict[str, Any]] = []
+    for arxiv_id in sorted(tallies):
+        row = tallies[arxiv_id]
+        cited, discarded = bool(row["cited_by"]), bool(row["discarded_by"])
+        row["verdict"] = (
+            "contested" if cited and discarded else "cited" if cited else "discarded" if discarded else "unused"
+        )
+        out.append(row)
+    return out
+
+
+async def _debate_round(
+    pool: list[Any],
+    model: str | None,
+    emit: _Emitter,
+    candidate_id: str,
+    evidence_by_id: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     """Best-effort bull/bear research debate with ONE visible rebuttal round.
 
     Round 1: bull + bear state initial positions. Round 2: each REBUTS the other's
@@ -315,11 +597,18 @@ async def _debate_round(pool: list[Any], model: str | None, emit: _Emitter, cand
     Built in fixed ``[bull-r1, bear-r1, bull-r2, bear-r2]`` order for R3 determinism
     (sort-before-hash). Any failure (no backend, unparseable output) degrades to a
     neutral entry; the whole round is skipped if no backend is available.
+
+    ``evidence_by_id`` (from ``_propose_pool``) is what makes the round about
+    PAPERS: it supplies the titles printed on the candidate cards and the id
+    vocabulary every claim is checked against. Omitted/empty ⇒ no id can be
+    validated, so every claim is recorded as unattributed — degraded, but never
+    silently attributed to a paper nobody read.
     """
     from archimedes.agents.generation_json import extract_json
     from archimedes.services.llm_backend import make_llm_backend
 
-    names = "; ".join(p.strategy_name for p in pool[:5] if p.strategy_name)
+    known_ids = set(evidence_by_id or {})
+    cards = _candidate_cards(pool, evidence_by_id or {})
     transcript: list[dict[str, Any]] = []
     try:
         backend = make_llm_backend(model=model)
@@ -329,32 +618,34 @@ async def _debate_round(pool: list[Any], model: str | None, emit: _Emitter, cand
     if not getattr(backend, "available", False):
         return transcript
 
-    def _turn(role: str, rnd: int, opponent_claims: list[str]) -> dict[str, Any]:
+    def _turn(role: str, rnd: int, opponent_claims: list[Any]) -> dict[str, Any]:
         rebuttal = ""
         if opponent_claims:
-            rebuttal = (
-                f"The opposing researcher argued: {'; '.join(str(c) for c in opponent_claims[:3])}. "
-                "Directly rebut their strongest point. "
-            )
+            texts = [t for t in (_claim_text(c) for c in opponent_claims[:3]) if t]
+            if texts:
+                rebuttal = f"The opposing researcher argued: {'; '.join(texts)}. Directly rebut their strongest point. "
         try:
             raw = backend.complete(
                 _DEBATE_SYSTEM.format(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
-                names,
+                cards,
             )
             parsed = extract_json(raw)
+            raw_claims = parsed.get("key_claims") or parsed.get("fatal_flaws") or []
+            claims = [c for c in (_normalize_claim(rc, known_ids) for rc in raw_claims) if c is not None]
             return {
                 "role": role,
                 "round": rnd,
                 "verdict": str(parsed.get("verdict", "n/a")),
-                "claims": list(parsed.get("key_claims") or parsed.get("fatal_flaws") or []),
+                "claims": claims,
+                "discard": _normalize_discards(parsed.get("discard"), known_ids),
             }
         except Exception:
-            return {"role": role, "round": rnd, "verdict": "n/a", "claims": []}
+            return {"role": role, "round": rnd, "verdict": "n/a", "claims": [], "discard": []}
 
     # Round 1 — initial positions (fixed bull→bear order).
     for role in ("bull", "bear"):
         await emit.emit(
-            "tool_called", candidate_id=candidate_id, tool_name=f"debate_{role}_r1", args_summary=names[:120]
+            "tool_called", candidate_id=candidate_id, tool_name=f"debate_{role}_r1", args_summary=cards[:120]
         )
         transcript.append(await asyncio.to_thread(_turn, role, 1, []))
 
@@ -395,7 +686,11 @@ async def _critic_rigor(pool: list[Any], num_trials: int) -> list[tuple[Any, Any
             logger.info("debate C-rigor: dropped a candidate on backtest error: %s", exc)
             return None
 
-    results = await asyncio.gather(*(asyncio.to_thread(_backtest, p) for p in pool))
+    # Bounded + dedicated, NOT `asyncio.to_thread` (which is the default pool).
+    # See the `_backtest_executor` block above for why the fan-out is capped at 2.
+    loop = asyncio.get_running_loop()
+    executor = _backtest_executor()
+    results = await asyncio.gather(*(loop.run_in_executor(executor, _backtest, p) for p in pool))
     out: list[tuple[Any, Any]] = []
     for proposal, ev in zip(pool, results, strict=True):
         if ev is not None and ev.success and ev.rigor is not None:
@@ -470,20 +765,17 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
         "pbo": r.pbo_score,
         "oos_sharpe": r.oos_sharpe,
         "in_sample_sharpe": r.in_sample_sharpe,
-        # DERIVED from the structural audit below, not the LLM's declaration.
+        # DERIVED by the structural audit (services/dsl_lookahead_audit.py),
+        # never declared by the generating model — the DSL has no field in which
+        # it could declare it. True only on a computed "pass"; this bool renders
+        # "pending" (nothing audited) identically to a real failure, so any
+        # surface making a look-ahead claim must key off look_ahead_status.
         "lookahead_audit_passed": bool(r.look_ahead_clean),
-        # The honest surfaced field: "passed_structural" | "passed_declared_only"
-        # | "failed". `passed_declared_only` is NOT a pass — see
-        # services/dsl_lookahead_audit.py.
-        "look_ahead_audit": r.look_ahead_audit,
-        # SEPARATE axis from the gate: "passed" | "not_checked" | "failed".
-        # `passed_declared_only` blocks deploy but renders "not_checked".
-        "look_ahead_render_state": r.look_ahead_render_state,
-        # What the generator CLAIMED (spec.look_ahead_safe), kept as a record
-        # with no vote in the gate.
-        "look_ahead_declared": r.look_ahead_declared,
-        "look_ahead_reasons": list(r.look_ahead_reasons),
+        # The honest surfaced field, four-state: "pass" | "fail" | "pending" |
+        # "degenerate". The last two are NOT passes and are NOT failures.
+        "look_ahead_status": r.look_ahead_status,
         "look_ahead_label": r.look_ahead_label,
+        "look_ahead_reason": r.look_ahead_reason,
         "num_trials": int(r.num_trials),  # own pool_size, decouple #2
         "passing": bool(r.passing),
         "data_source": r.data_source,
@@ -722,7 +1014,7 @@ async def _run_debate_leaderboard(
     with cost_meter.stage("corpus_load"):
         corpus = await asyncio.to_thread(load_corpus)
     with cost_meter.stage("debate_propose"):
-        pool = await _propose_pool(brief, model, corpus)
+        pool, evidence_by_id = await _propose_pool(brief, model, corpus)
     pool_size = len(pool)
     if pool_size == 0:
         raise DebateUnavailable("debate produced no actionable, DSL-conformant candidate (empty pool)")
@@ -741,7 +1033,25 @@ async def _run_debate_leaderboard(
     # #<transcript-capture>). It never gates: build_leaderboard is called
     # below whether this list is empty or not.
     with cost_meter.stage("debate_transcript"):
-        transcript = await _debate_round(pool, model, emit, candidate_id)
+        transcript = await _debate_round(pool, model, emit, candidate_id, evidence_by_id)
+
+    # Deterministic per-paper tally over the transcript we just paid for — 0
+    # extra tokens, no extra call. This is the readable answer to "which of the
+    # retrieved papers did the debate actually engage with", and it is stamped
+    # onto every leaderboard entry below alongside the transcript itself.
+    # Gated on `transcript`, not on the evidence map: with no backend the
+    # debate never ran, and a table of all-"unused" rows would read as "the
+    # researchers looked at 30 papers and engaged with none" rather than as
+    # the honest absence it is.
+    paper_verdicts = _aggregate_paper_verdicts(transcript, evidence_by_id) if transcript else []
+    if paper_verdicts:
+        engaged = sum(1 for v in paper_verdicts if v["verdict"] != "unused")
+        await emit.emit(
+            "tool_result",
+            candidate_id=candidate_id,
+            tool_name="debate_paper_verdicts",
+            result_summary=f"{engaged} of {len(paper_verdicts)} retrieved paper(s) cited or discarded by name",
+        )
 
     # Step 3a — C-prov (non-votable, Xia 1/2/4): cull candidates citing outside the
     # embargo+decay surface. Does NOT change pool_size (the DSR denominator counts
@@ -801,6 +1111,9 @@ async def _run_debate_leaderboard(
     if transcript:
         for entry in leaderboard:
             entry.debate_transcript = transcript
+    if paper_verdicts:
+        for entry in leaderboard:
+            entry.debate_paper_verdicts = paper_verdicts
     leader = leaderboard[0]
     await emit.emit(
         "tool_result",

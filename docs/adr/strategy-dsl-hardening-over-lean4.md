@@ -268,21 +268,34 @@ interpreter evaluating those operands never reads forward:
    cheat-on-close / cheat-on-open must be off, read on both sides of
    `cerebro.run()` because a strategy can set it mid-run.
 
-The verdict is three-state: `passed_structural` / `passed_declared_only` /
-`failed`, and **only `passed_structural` clears the gate's LEAK criterion**.
-`look_ahead_safe` is demoted to `look_ahead_declared` — recorded, never gated on
-— which is the "input the emitter asserts becomes an output the validator
-computes" the item asked for, with the emitter's assertion kept only as
-provenance. `look_ahead_audit_source` is derived (`dsl_structural_audit`), no
-longer the hardcoded `self_attested` the diagnosis above cites.
+The verdict is four-state — `pass` / `fail` / `pending` / `degenerate`, the same
+words the rest of the rigor stack uses for a verdict that may not exist — and
+**only `pass` clears the gate's LEAK criterion**. `pending` means nothing was
+audited (no validated spec, or no broker execution-timing check for the run);
+`degenerate` means the audit ran and its own instrument gave no reading (the
+interpreter source was unreadable, or the AST pass matched zero read sites, which
+proves nothing rather than proving cleanliness).
+
+`look_ahead_safe` is **removed from the DSL entirely** — from `REQUIRED_FIELDS`,
+from `StrategySpec`, from `to_dict`, and from the generation prompt. It is not
+demoted to a recorded field: an emitter's assertion about its own output is not
+provenance worth carrying, and keeping it invited exactly the "read it back as if
+it were a check" mistake the diagnosis describes. Since the attribute does not
+exist, consulting a declaration is an `AttributeError`, not a silent false claim.
+That is the "input the emitter asserts becomes an output the validator computes"
+the item asked for, with the input deleted rather than demoted.
+`look_ahead_audit_source` is derived — `dsl_structural_audit` when the audit
+concluded either way, `dsl_audit_not_run` when it did not — and the hardcoded
+`self_attested` the diagnosis cites is retired: never written again, and no
+longer honoured on read (a stored `True` beside it is a claim, not a
+measurement, so `verdict_from_persisted_row` reads such a row as `pending`).
 
 Two properties are separate on purpose and must stay that way: **deployability is
-fail-closed** (`passed_declared_only` blocks exactly as hard as `failed` — an
-unfinished audit is not evidence), while **rendering is honest**
-(`passed_declared_only` shows as "not audited", never as a failure, because
-nothing found a leak; nothing finished looking). The verdict carries
-`look_ahead_render_state` as an axis distinct from the gating boolean so a
-surface cannot collapse the two.
+fail-closed** (`pending` and `degenerate` block exactly as hard as `fail` — an
+audit that reached no verdict is not evidence), while **rendering is honest**
+(neither is ever shown as a failure, because nothing found a leak). There is one
+vocabulary for both surfaces and the gate: the four-state `look_ahead_status`,
+plus `blocks_deploy` for the axis a status word cannot carry.
 
 **Not proven, stated rather than hidden.** backtrader's own `SimpleMovingAverage`
 / `ExponentialMovingAverage` / `RSI` are library code: the audit proves the

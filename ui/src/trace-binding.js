@@ -57,3 +57,117 @@ export function verificationTone(mode) {
   if (mode === 'anchored_only') return 'anchored'
   return 'failed'
 }
+
+// ── Per-row anchoring state ──────────────────────────────────────────────
+//
+// Every surface that lists traces — Reasoning, the Portfolio activity feed,
+// the strategy passport's Trading-decisions panel — has to answer "is this
+// decision anchored?" for each row, and each one used to answer it with its
+// own inline ternary on `is_verified`. Three copies of a claim is three
+// chances for one of them to be wrong, and two of them already were:
+//
+//   * Both fell through to "anchor pending — registry write didn't complete
+//     yet (usually transient)" for SKIP traces. A skip anchors nothing BY
+//     DESIGN (#714): with no trade there is no tradeId for commit() to bind,
+//     so the agent never attempts a registry write. "Pending" promises a
+//     write that is never coming; the honest state is a permanent, explained
+//     absence.
+//   * Neither handled `verification_mode === "anchored_only"`, the projection
+//     the API returns when an anchor exists but no off-chain body was there
+//     to compare against (#1407). Both rendered it via `is_verified` — which
+//     that path deliberately leaves true — as a plain green check, i.e. as a
+//     hash match that never happened.
+//
+// Order is load-bearing. `anchored_only` is checked FIRST because that path
+// sets `is_verified: true` on purpose (the anchor genuinely is confirmed; it
+// is the *comparison* that didn't happen), so an `is_verified` check placed
+// first would swallow it. The skip check comes after the anchored checks
+// because a legacy publishTrace-fallback skip can carry a real `arc_tx_hash`
+// — "no trade to bind" describes why an anchor is absent, and must not
+// override one that is present.
+//
+// None of these labels claims a hash was compared. That claim belongs only to
+// `GET /api/traces/{id}/verify` (see `verificationTone` above) and is only
+// ever earned by clicking Verify.
+export const ANCHOR_STATES = {
+  anchored: {
+    state: 'anchored',
+    label: 'anchored on Arc',
+    icon: 'i-lucide-check-circle',
+    tone: 'verified',
+    title:
+      'The trace hash is anchored on Arc. That confirms the anchor exists, not that the stored body still hashes to it — use Verify to re-fetch the receipt and compare.',
+  },
+  anchored_unverified: {
+    state: 'anchored_unverified',
+    label: 'anchored — not re-hashed',
+    icon: 'i-lucide-anchor',
+    tone: 'anchored',
+    title:
+      'An anchor exists in the on-chain registry, but no off-chain trace body was stored to compare against it. Zero hashes were compared — this is not a verification.',
+  },
+  not_anchored_no_trade: {
+    state: 'not_anchored_no_trade',
+    label: 'not anchored (no trade to bind)',
+    icon: 'i-lucide-skip-forward',
+    tone: 'absent',
+    title:
+      'No trade was made, so there is nothing for an on-chain commitment to bind. The trace is hashed and persisted off-chain; no anchor is attempted or pending.',
+  },
+  anchor_pending: {
+    state: 'anchor_pending',
+    label: 'anchor pending',
+    icon: 'i-lucide-clock',
+    tone: 'pending',
+    title:
+      "Trace hashed + persisted off-chain; on-chain anchor pending (registry write didn't complete yet — usually transient).",
+  },
+}
+
+export function anchorState(trace) {
+  const t = trace || {}
+  if (t.verification_mode === 'anchored_only') return ANCHOR_STATES.anchored_unverified
+  if (t.arc_tx_hash || t.is_verified) return ANCHOR_STATES.anchored
+  if (t.decision_type === 'skip') return ANCHOR_STATES.not_anchored_no_trade
+  return ANCHOR_STATES.anchor_pending
+}
+
+// ── Which traces actually name a strategy ────────────────────────────────
+//
+// `strategies_referenced` is named for strategy ids and does not uniformly
+// hold them. The agent runner writes real strategy ids on its decision traces;
+// the two CONSTRUCTION writers in api/strategies_routes.py write arXiv ids and
+// paper-anchor strings into the same field. So "the first entry of
+// strategies_referenced is a strategy id" is true for decision traces and
+// false for construction ones, and a follow-back button that ignores the
+// difference deep-links a reader to a passport for an arXiv id — a 404 dressed
+// up as provenance.
+//
+// This mirrors `STRATEGY_REFERENCE_DECISION_TYPES` /
+// `trace_references_strategy` in backend/archimedes/services/redis_state.py,
+// which is what `GET /api/traces/?strategy_id=` filters on. The two must agree:
+// a row that offers a follow-back here is exactly a row the scoped listing on
+// that strategy's passport would return. Change one, change the other.
+export const STRATEGY_REFERENCE_DECISION_TYPES = new Set([
+  'rebalance',
+  'rotation',
+  'regime_change',
+  'skip',
+])
+
+/**
+ * The strategy id this trace consulted, or null when it names none.
+ *
+ * Null — not a guess — for construction/generation traces, for an unknown
+ * shape, and for an empty list. The caller renders no follow-back rather than
+ * one that leads nowhere.
+ */
+export function referencedStrategyId(trace) {
+  const t = trace || {}
+  if (!STRATEGY_REFERENCE_DECISION_TYPES.has(t.decision_type)) return null
+  const refs = t.strategies_referenced
+  if (typeof refs === 'string') return refs || null
+  if (!Array.isArray(refs)) return null
+  const first = refs.find((r) => typeof r === 'string' && r)
+  return first || null
+}

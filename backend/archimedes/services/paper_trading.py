@@ -19,16 +19,36 @@ construction" coupling cuts both ways: this module has NO independent
 opinion on cost model, commission, or slippage — a real historical
 restatement (yfinance revising a bar) and a change to the GRADED path's own
 cost model between two replays (e.g. wiring a previously-inert slippage
-parameter, #1242/#1379) produce the identical drift signature. Don't assume
-the cause is upstream data — see ``advance_deployment``'s log message, which
-names both candidates rather than asserting the one that happens to be more
-common.
+parameter, #1242/#1379) produce the identical drift signature.
+
+THE ENGINE-VERSION POLICY (#1449). Those two causes used to be genuinely
+indistinguishable, so every ledger row now carries the grading engine's own
+version (``fusion_evaluator.GRADING_ENGINE_VERSION``) at append time and a
+disagreement is classified against it:
+
+  - the row was graded by THIS engine version → the engine did not move, so
+    the data did. Loud: ``drift_detected_at``, a WARNING, the leaderboard's
+    drift flag.
+  - the row was graded by a DIFFERENT version → we re-graded it. Expected and
+    disclosed: ``engine_regrade_at``, annotated on the deployment payload, and
+    explicitly NOT a claim that the user's track record restated itself.
+  - the row carries NO version (written before this column existed) → we
+    cannot attribute it. Also ``engine_regrade_at``, because asserting a data
+    restatement here would be asserting something we cannot show. What is
+    withheld is the ATTRIBUTION, never the fact: the count is on the payload
+    and the log says exactly why it is unattributable.
+
+The ledger is still never rewritten, and nothing is suppressed — this only
+decides which of two true sentences a disagreement gets reported as.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -39,6 +59,108 @@ logger = logging.getLogger(__name__)
 
 # |replayed - ledgered| beyond this is a restatement, not float noise.
 _DRIFT_EPS = 1e-9
+
+#: Values that read as "off" for :func:`advance_enabled`. Same spelling as
+#: ``backtest_scheduler.refresh_enabled``'s, so an operator who has learned one
+#: of this family's kill switches has learned both.
+_FALSY = {"0", "false", "no", "off"}
+
+
+def advance_enabled() -> bool:
+    """Is the paper-advance loop armed? Default OFF — unset must not tick.
+
+    The operator kill switch for the daily advance tick, added for #1632. It
+    exists because the advance tick is the one scheduled job that can take the
+    whole web tier down rather than just failing: the replay reaches
+    ``market_data_provider``'s OHLCV cache write, and in production that write
+    is aborting the interpreter at the C level, killing the container. A
+    ``try/except`` cannot catch that, so fail-soft does not help here — the
+    only lever that works is not running the tick.
+
+    Default was ON in #1725 so shipping the flag would not change behaviour
+    where it was unset. That is exactly how task-def :211 died: ``deploy.yml``
+    cloned last-good, ``PAPER_ADVANCE_ENABLED`` was absent, the code default
+    started the tick, ``/health`` 502'd at ``PAPER_ADVANCE_STARTUP_DELAY_S``.
+    Unset is now OFF. Flip-back is an explicit ``"true"`` plus removing the
+    CI rewrite pin, after #1632 has a proven cause — do not re-enable here.
+
+    Read once per tick rather than once at boot, so the value that decides is
+    the one in force when the work would actually run.
+    """
+    return os.getenv("PAPER_ADVANCE_ENABLED", "false").strip().lower() not in _FALSY
+
+
+#: How a disagreement between a fresh replay and an already-written ledger row
+#: was attributed (#1449). Exactly one applies to each disagreeing row, and all
+#: three are reported — they differ in what they let us CLAIM, not in whether
+#: the disagreement is surfaced.
+#:
+#: ``DRIFT_DATA``       the row was graded by the engine version running now,
+#:                      so the engine did not move and the data did. Loud.
+#: ``DRIFT_ENGINE``     the row was graded by a different engine version. Our
+#:                      change, not the user's history. Annotated.
+#: ``DRIFT_UNVERSIONED`` the row predates ``engine_version``. Unattributable;
+#:                      annotated, and named as unattributable in the log.
+DRIFT_DATA = "data"
+DRIFT_ENGINE = "engine"
+DRIFT_UNVERSIONED = "unversioned"
+
+
+def grading_engine_version() -> str:
+    """The GRADED path's version string, read from the engine that grades.
+
+    Read rather than re-declared here for the same reason
+    ``_sleeve_initial_cash`` reads ``_DEFAULT_CASH``: a second copy of the
+    number would let the stamp and the behavior it claims to describe drift
+    apart, and a stamp that lies about which engine produced a row is worse
+    than no stamp at all.
+
+    Imported lazily (``fusion_evaluator`` pulls backtrader) and resolved as a
+    MODULE ATTRIBUTE by its callers, so a test can substitute a version without
+    reaching into the engine — the same call-time-resolution seam ``replay``
+    uses, and for the same reason.
+    """
+    from archimedes.services.fusion_evaluator import GRADING_ENGINE_VERSION
+
+    return GRADING_ENGINE_VERSION
+
+
+def classify_drift(row_version: str | None, current_version: str | None) -> str:
+    """Attribute one disagreeing ledger row to the data, to us, or to neither.
+
+    The guard that matters is the ``current`` check. Every quiet answer below
+    is reached by finding a DIFFERENCE between two version strings, so a blank,
+    missing, or whitespace ``current_version`` would make every row look
+    re-graded and silence the loud path globally — a config-shaped way to turn
+    off the one alarm this ledger owes its users. A version we cannot read is
+    therefore not a licence to absolve anything: it FAILS CLOSED to
+    ``DRIFT_DATA``, the loudest answer, which over-reports at worst.
+
+    (The mirror-image guard on ``row_version`` is deliberately NOT fail-closed:
+    an unstamped row is a real, expected population — every row written before
+    the column existed — and calling those a data restatement is precisely the
+    false claim #1449 was filed about. They get their own bucket instead.)
+
+    KNOWN LIMIT, stated because this function's whole job is honest attribution:
+    ``DRIFT_ENGINE`` MASKS a co-occurring data restatement. Once the engine has
+    moved, a row graded by the old version disagrees for two reasons at once —
+    our cost model changed AND upstream may also have revised that bar — and
+    this returns the engine answer for both. Separating them would require
+    re-running the RETIRED engine version against today's data, which is not
+    possible: the old code is gone, only its version string survives. So the
+    engine bucket means "at least a re-grade", not "only a re-grade". The
+    alternative — reporting these as data drift — would assert an upstream
+    restatement we equally cannot show, and would re-create exactly the false
+    claim this policy exists to prevent. Over-attributing to OURSELVES is the
+    honest direction to fail: it blames us, not the user's track record.
+    """
+    current = (current_version or "").strip()
+    if not current:
+        return DRIFT_DATA
+    stamped = (row_version or "").strip()
+    if not stamped:
+        return DRIFT_UNVERSIONED
+    return DRIFT_DATA if stamped == current else DRIFT_ENGINE
 
 
 class PaperReplayError(RuntimeError):
@@ -197,6 +319,13 @@ def _sleeve_dated_returns(
         # fact this module knows rather than one it guesses when it has to
         # value a sleeve that never traded.
         initial_cash=_sleeve_initial_cash() if initial_cash is None else initial_cash,
+        # universe_slots=1: this is ONE sleeve of the universe, capitalized in
+        # full, exactly like the graded path's run_dsl_backtest_portfolio.
+        # Letting the strategy default to len(asset_universe) here would size
+        # equal_weight / inverse_vol sleeves at 1/N of what the graded run
+        # used and manufacture a replay drift that has nothing to do with the
+        # data.
+        universe_slots=1,
     )
     curve = list(metrics.equity_curve or [])
     if len(curve) < 2:
@@ -660,43 +789,72 @@ def advance_deployment(session, dep: PaperDeployment, *, replay=None, decision_r
         replayed = (replay or replay_spec)(spec_dict, dep.deployed_at)
         decisions = (decision_replay or (lambda *_: {}))(spec_dict, dep.deployed_at)
 
+    # The ROWS, not just their values: the drift classification needs each row's
+    # engine_version, and re-querying per disagreement would be a query per date.
     existing = {
-        row.date: row.daily_return
-        for row in session.query(PaperDailyReturn).filter(PaperDailyReturn.deployment_id == dep.id)
+        row.date: row for row in session.query(PaperDailyReturn).filter(PaperDailyReturn.deployment_id == dep.id)
     }
 
     # Reasoning first, ledger second (§3): the return a trace explains must not
     # become part of the user's track record before the reasoning is recorded.
     trace_result = _publish_decision_traces(session, dep, spec_dict, decisions, set(existing))
 
-    drift = 0
+    version = grading_engine_version()
+    drift = dict.fromkeys((DRIFT_DATA, DRIFT_ENGINE, DRIFT_UNVERSIONED), 0)
     appended = 0
     for d, r in sorted(replayed.items()):
-        if d in existing:
-            if abs(existing[d] - r) > _DRIFT_EPS:
-                drift += 1
+        row = existing.get(d)
+        if row is not None:
+            if abs(row.daily_return - r) > _DRIFT_EPS:
+                drift[classify_drift(row.engine_version, version)] += 1
         else:
-            session.add(PaperDailyReturn(deployment_id=dep.id, date=d, daily_return=r))
+            session.add(PaperDailyReturn(deployment_id=dep.id, date=d, daily_return=r, engine_version=version))
             appended += 1
 
-    if drift:
-        dep.drift_detected_at = datetime.now(UTC)
+    now = datetime.now(UTC)
+    if drift[DRIFT_DATA]:
+        dep.drift_detected_at = now
         logger.warning(
-            "paper: deployment %s — fresh replay disagrees with %d already-written ledger row(s). "
-            "Two known causes produce this identical signature: (1) upstream data restatement "
-            "(yfinance revised a historical bar) or (2) a change to the GRADED path's own replay "
-            "behavior between runs (cost model, commission, slippage, or interpreter semantics) — "
-            "replay_spec calls the same run_dsl_backtest the grader uses, by design, so a grading-side "
-            "change moves every open deployment's history along with it. This log cannot distinguish "
-            "the two; do not assume upstream data without checking whether the graded path changed. "
+            "paper: deployment %s — fresh replay disagrees with %d already-written ledger row(s) that "
+            "were graded by THIS engine version (%s). The engine did not move between the two runs, so "
+            "the remaining cause is upstream: a historical bar was restated (yfinance revised it). "
             "The ledger is append-only and was NOT rewritten; the deployment is stamped "
             "drift_detected_at so the discrepancy is surfaced, not hidden.",
             dep.id,
-            drift,
+            drift[DRIFT_DATA],
+            version,
+        )
+    regraded = drift[DRIFT_ENGINE] + drift[DRIFT_UNVERSIONED]
+    if regraded:
+        dep.engine_regrade_at = now
+        logger.warning(
+            "paper: deployment %s — fresh replay disagrees with %d already-written ledger row(s) whose "
+            "grading provenance is NOT this engine version (%s): %d were graded by a different version, "
+            "%d carry no version at all (written before engine_version existed, so the cause cannot be "
+            "attributed either way). This is a RE-GRADE, not a restatement of the user's track record — "
+            "replay_spec calls the same run_dsl_backtest the grader uses by design, so a grading-side "
+            "change (cost model, commission, slippage, interpreter semantics) moves every open "
+            "deployment's history at once. The ledger is append-only and was NOT rewritten; the "
+            "deployment is stamped engine_regrade_at, NOT drift_detected_at.",
+            dep.id,
+            regraded,
+            version,
+            drift[DRIFT_ENGINE],
+            drift[DRIFT_UNVERSIONED],
         )
     session.flush()
     _refresh_position_cache(session, dep, getattr(replayed, "positions", None))
-    return {"appended": appended, "drift": drift, **trace_result}
+    return {
+        "appended": appended,
+        # Narrowed by #1449: `drift` counts only disagreements attributable to
+        # the DATA. The other two classes are reported alongside rather than
+        # folded in — a caller that summed them would be back to the conflation
+        # the issue was filed about.
+        "drift": drift[DRIFT_DATA],
+        "drift_engine": drift[DRIFT_ENGINE],
+        "drift_unversioned": drift[DRIFT_UNVERSIONED],
+        **trace_result,
+    }
 
 
 def _refresh_position_cache(session, dep: PaperDeployment, positions: PositionSet | None) -> None:
@@ -736,12 +894,21 @@ def advance_all(session) -> dict:
     deps = session.query(PaperDeployment).filter(PaperDeployment.status == STATUS_ACTIVE).all()
     ok = failed = appended = coverage_broken = 0
     traces = dict.fromkeys(("decisions", "published", "failed", "unowned", "disabled"), 0)
+    # Reported per CYCLE because a grading-side change is a FLEET event, not a
+    # per-deployment one: it re-grades every open deployment on the same pass
+    # (#1449). One cycle line showing `drift_engine` across the fleet is how an
+    # operator recognises "we changed the engine" instead of reading N
+    # per-deployment warnings as N independent data problems.
+    drift = dict.fromkeys((DRIFT_DATA, DRIFT_ENGINE, DRIFT_UNVERSIONED), 0)
     for dep in deps:
         try:
             result = advance_deployment(session, dep)
             appended += result["appended"]
             for key in traces:
                 traces[key] += result.get(key, 0)
+            drift[DRIFT_DATA] += result.get("drift", 0)
+            drift[DRIFT_ENGINE] += result.get("drift_engine", 0)
+            drift[DRIFT_UNVERSIONED] += result.get("drift_unversioned", 0)
             ok += 1
         except (PaperReplayError, DSLError) as exc:
             failed += 1
@@ -767,6 +934,11 @@ def advance_all(session) -> dict:
         "ok": ok,
         "failed": failed,
         "appended": appended,
+        # Kept as three keys, never one total: "the data restated" and "we
+        # re-graded" are different incidents with different owners.
+        "drift": drift[DRIFT_DATA],
+        "drift_engine": drift[DRIFT_ENGINE],
+        "drift_unversioned": drift[DRIFT_UNVERSIONED],
         "decisions": traces["decisions"],
         "traces_published": traces["published"],
         # Named separately from the deployment-level "failed" above, which
@@ -850,9 +1022,19 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
     )
     equity = 1.0
     series = []
+    # What the ledger's own rows say they were graded by (#1449). Collected here
+    # rather than inferred by the UI: "this history spans a cost-model change"
+    # is a fact the rows carry, and a client that guessed it from a timestamp
+    # would be re-deriving provenance it was already handed.
+    versions: set[str] = set()
+    unversioned = 0
     for row in rows:
         equity *= 1.0 + row.daily_return
         series.append({"date": row.date.isoformat(), "daily_return": row.daily_return, "equity_index": equity})
+        if row.engine_version:
+            versions.add(row.engine_version)
+        else:
+            unversioned += 1
     # The latest intraday mark rides along so the ledger card can render a
     # live value without a second round trip per deployment. It is ALWAYS a
     # separate key from `total_return`, never folded into it: `total_return`
@@ -871,6 +1053,18 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
         "days": len(rows),
         "total_return": equity - 1.0,
         "drift_detected_at": dep.drift_detected_at.isoformat() if dep.drift_detected_at else None,
+        # The engine-version half of the drift story (#1449). Separate keys from
+        # `drift_detected_at` on purpose: a client must be able to render "we
+        # changed how this is graded" WITHOUT it looking like "your track record
+        # restated itself", which is the conflation the issue was filed about.
+        "engine_regrade_at": dep.engine_regrade_at.isoformat() if dep.engine_regrade_at else None,
+        "grading_engine_version": grading_engine_version(),
+        "ledger_engine_versions": sorted(versions),
+        # Rows written before engine_version existed. Never backfilled, so this
+        # only ever shrinks by the ledger growing past it — it is the size of
+        # the population whose drift cannot be attributed, stated rather than
+        # implied.
+        "unversioned_rows": unversioned,
         # The provenance claim, reported alongside the numbers it explains
         # (#1575 §7). A gap here is the honest degraded state; a page that
         # rendered performance without it would be asserting coverage it does
@@ -887,9 +1081,14 @@ async def paper_advance_loop() -> None:
     Same fail-soft contract as backtest_refresh_loop: a bad cycle logs and
     retries next tick; it must never take the app down. Interval defaults to
     daily — the ledger law makes extra runs harmless (idempotent appends).
+
+    Run this only in a dedicated interpreter (``python -m
+    archimedes.services.paper_trading``). The web process must not schedule
+    it as an in-process asyncio task: a C abort in psycopg2/web3 on the
+    OHLCV cache write (#1632) kills the interpreter, and ``/health`` lives
+    in that same interpreter. See :func:`arm_paper_advance_for_web_tier`.
     """
     import asyncio
-    import os
 
     from archimedes.db import get_session, init_db
 
@@ -898,16 +1097,117 @@ async def paper_advance_loop() -> None:
     await asyncio.sleep(delay)
     while True:
         try:
-            init_db()
+            if not advance_enabled():
+                # Named, and a WARNING rather than an INFO, because the state
+                # this line describes is a product claim being suspended: no
+                # ledger advances while it prints. It also has to be greppable
+                # against the failure it mitigates — an operator reading these
+                # logs must be able to tell "the tick was switched off" from
+                # "the tick killed the container", which is exactly the
+                # ambiguity #1632's cold-fleet spiral created.
+                logger.warning(
+                    "paper advance: tick SKIPPED — PAPER_ADVANCE_ENABLED is off "
+                    "(temporary #1632 mitigation; ledgers do not advance until it is flipped back)"
+                )
+            else:
+                init_db()
 
-            def _run() -> dict:
-                with get_session() as session:
-                    summary = advance_all(session)
-                    session.commit()
-                    return summary
+                def _run() -> dict:
+                    with get_session() as session:
+                        summary = advance_all(session)
+                        session.commit()
+                        return summary
 
-            summary = await asyncio.to_thread(_run)
-            logger.info("paper advance: %s", summary)
+                summary = await asyncio.to_thread(_run)
+                logger.info("paper advance: %s", summary)
         except Exception as exc:
             logger.warning("paper advance: cycle failed (%s: %s) — will retry next tick", type(exc).__name__, exc)
         await asyncio.sleep(interval_s)
+
+
+def spawn_paper_advance_child(
+    *,
+    argv: list[str] | None = None,
+    popen=subprocess.Popen,
+) -> subprocess.Popen:
+    """Start ``paper_advance_loop`` in a child interpreter.
+
+    Default argv is ``python -m archimedes.services.paper_trading``. Tests
+    pass a short-lived argv so a C-level death can be shown not to take
+    the parent with it. stdout/stderr inherit so CloudWatch still gets
+    the child's lines; stdin is closed so a parent's stdin cannot stall it.
+    """
+    cmd = argv if argv is not None else [sys.executable, "-m", "archimedes.services.paper_trading"]
+    return popen(cmd, stdin=subprocess.DEVNULL)
+
+
+async def paper_advance_supervisor(*, argv: list[str] | None = None, popen=subprocess.Popen) -> int:
+    """Wait on the isolated child. Never run the loop in this process.
+
+    A C abort (psycopg2 ``do_executemany``, web3 session teardown, SIGSEGV)
+    kills the child, not ``/health``. The child is not restarted: a crash
+    loop would still burn the one-vCPU web task, and the kill switch is
+    supposed to stay off until #1632 is actually fixed. Returns the child's
+    exit status so a test can see SIGSEGV (``-11`` / 139) without dying.
+    """
+    import asyncio
+
+    proc = spawn_paper_advance_child(argv=argv, popen=popen)
+    try:
+        returncode = await asyncio.to_thread(proc.wait)
+        logger.error(
+            "paper advance child exited with %s — not restarting in the web process "
+            "(C-abort isolation for #1632; /health stays in this process)",
+            returncode,
+        )
+        return int(returncode if returncode is not None else -1)
+    except asyncio.CancelledError:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                await asyncio.to_thread(proc.wait, 5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                await asyncio.to_thread(proc.wait)
+        raise
+
+
+async def arm_paper_advance_for_web_tier(*, argv: list[str] | None = None, popen=subprocess.Popen) -> int | None:
+    """Web-tier entry. Refuses to run ``paper_advance_loop`` in this process.
+
+    Even when ``PAPER_ADVANCE_ENABLED`` is true, the work happens only in a
+    child interpreter — that is the property that lets ``/health`` survive
+    the paper-advance window. When the flag is false we do not spawn a
+    child either: the tick is off, and a second Python on the 1-vCPU web
+    task is not free. The flag stays the operator lever; isolation is the
+    blast-radius cap if someone turns it back on before #1632 is fixed.
+    """
+    if not advance_enabled():
+        logger.warning(
+            "paper advance: not armed in the web process — PAPER_ADVANCE_ENABLED is off "
+            "(temporary #1632 mitigation; ledgers do not advance until it is flipped back). "
+            "The in-process loop is refused regardless: a C abort must not take /health."
+        )
+        return None
+    logger.warning(
+        "paper advance: PAPER_ADVANCE_ENABLED is on — spawning an isolated child; "
+        "a C abort in the child must not take this process's /health. "
+        "The tick is still the unfixed #1632 path; do not treat isolation as a fix."
+    )
+    return await paper_advance_supervisor(argv=argv, popen=popen)
+
+
+def _module_main() -> None:
+    """Child-process entry: run the advance loop in THIS interpreter.
+
+    Invoked as ``python -m archimedes.services.paper_trading``. Must not
+    call :func:`arm_paper_advance_for_web_tier` — that would spawn another
+    child and recurse.
+    """
+    import asyncio
+
+    asyncio.run(paper_advance_loop())
+
+
+if __name__ == "__main__":
+    _module_main()

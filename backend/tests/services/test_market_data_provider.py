@@ -708,3 +708,246 @@ class TestIntradayDelayedDeclaration:
 
         monkeypatch.setattr(mdp, "provider_name", lambda: "some-unlisted-vendor")
         assert mdp.intraday_is_delayed() is True
+
+
+# ─── #1632: the OHLCV cache-write mitigation ───────────────────────────
+
+
+class TestOhlcvWriteChunking:
+    """The OHLCV cache write must not hand psycopg2 one unbounded batch.
+
+    What is PROVEN: the faulthandler traceback on #1632 shows a container
+    dying with ``Fatal Python error: Aborted`` inside psycopg2's
+    ``do_executemany``, on this exact commit, reached from the paper replay.
+    What is NOT proven is the mechanism — see ``_OHLCV_CACHE_WRITE_LOCK``'s
+    comment. These tests pin the mitigation's OBSERVABLE properties (batch
+    size is bounded, the transaction is still all-or-nothing, failures fall
+    through unchanged), which are true regardless of which hypothesis holds.
+    """
+
+    def test_writes_are_flushed_in_bounded_batches(self, session_factory, monkeypatch):
+        """With the bound set to 10 and 25 rows to write, the writer must
+        flush twice mid-loop (at 10 and 20) and leave the final partial batch
+        of 5 to the caller's commit.
+
+        MUTATION CHECK: with the chunking removed, ``flush`` is called zero
+        times mid-loop and this fails on ``len(batch_sizes) == 2``.
+        """
+        from archimedes.services import market_data_provider as mdp
+
+        monkeypatch.setattr(mdp, "_OHLCV_WRITE_CHUNK_ROWS", 10)
+
+        frame = _ohlcv_frame(25)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+
+        batch_sizes: list[int] = []
+
+        def spying_factory():
+            session = session_factory()
+            real_flush = session.flush
+
+            def flush_with_spy(*args, **kwargs):
+                # Size of the batch about to become one executemany. SQLAlchemy
+                # also autoflushes on every query (including the writer's own
+                # `existing` lookup), and those carry no pending work — count
+                # only flushes that actually have rows to send.
+                size = len(session.new) + len(session.dirty)
+                if size:
+                    batch_sizes.append(size)
+                return real_flush(*args, **kwargs)
+
+            session.flush = flush_with_spy
+            return session
+
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=spying_factory)
+        start = frame.index[0].date().isoformat()
+        end = frame.index[-1].date().isoformat()
+
+        result = provider.get_daily_ohlcv("SPY", start, end)
+
+        # Two mid-loop chunks of 10, then commit flushes the remaining 5.
+        assert batch_sizes == [10, 10, 5], f"expected batches of 10/10/5 at a bound of 10, saw {batch_sizes}"
+        # THE load-bearing assertion, and the mutation-sensitive one: no single
+        # batch may exceed the bound. Remove the chunking and this reads [25].
+        assert all(size <= 10 for size in batch_sizes), f"a batch exceeded the bound: {batch_sizes}"
+        # The data still lands in full — chunking changes batch size, not content.
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+
+        session = session_factory()
+        try:
+            assert session.query(AssetDailyBar).filter(AssetDailyBar.symbol == "SPY").count() == 25
+        finally:
+            session.close()
+        # Anti-goal: the returned frame is still the vendor's, untouched.
+        pd.testing.assert_frame_equal(result, frame)
+
+    def test_a_frame_under_the_bound_needs_no_mid_loop_flush(self, session_factory, monkeypatch):
+        """No behaviour change for the common case — the overwhelming majority
+        of frames are one batch, exactly as before."""
+        from archimedes.services import market_data_provider as mdp
+
+        monkeypatch.setattr(mdp, "_OHLCV_WRITE_CHUNK_ROWS", 500)
+
+        frame = _ohlcv_frame(30)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        flushes: list[int] = []
+
+        def spying_factory():
+            session = session_factory()
+            real_flush = session.flush
+
+            def flush_with_spy(*args, **kwargs):
+                # Same autoflush filter as the test above.
+                size = len(session.new) + len(session.dirty)
+                if size:
+                    flushes.append(size)
+                return real_flush(*args, **kwargs)
+
+            session.flush = flush_with_spy
+            return session
+
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=spying_factory)
+        provider.get_daily_ohlcv("SPY", frame.index[0].date().isoformat(), frame.index[-1].date().isoformat())
+
+        # Exactly one batch, carrying every row — i.e. commit's own flush and
+        # nothing else. Byte-for-byte the pre-#1632 write shape.
+        assert flushes == [30], f"a 30-row frame under a 500-row bound must be one batch, saw {flushes}"
+
+
+class TestOhlcvWriteSerializationGuard:
+    """The module-level lock around write+commit (#1632 mitigation).
+
+    Honest framing, repeated here because a test name can be read as a claim:
+    this lock is NOT known to fix the abort. It removes in-process write
+    concurrency as a variable. These tests assert only that it is actually
+    held over the write path and — the part that matters more — that it can
+    never be left held.
+    """
+
+    def test_the_lock_is_held_across_the_write_and_commit(self, session_factory):
+        """MUTATION CHECK: delete the ``with`` statement and ``locked()`` reads
+        False here."""
+        from archimedes.services import market_data_provider as mdp
+
+        frame = _ohlcv_frame(5)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        observed: list[bool] = []
+
+        real_write = mdp._write_cached_ohlcv
+
+        def write_observing_lock(session, ticker, df, source):
+            observed.append(mdp._OHLCV_CACHE_WRITE_LOCK.locked())
+            return real_write(session, ticker, df, source)
+
+        with patch.object(mdp, "_write_cached_ohlcv", write_observing_lock):
+            provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+            provider.get_daily_ohlcv("SPY", frame.index[0].date().isoformat(), frame.index[-1].date().isoformat())
+
+        assert observed == [True], "the cache write did not run under the serialization lock"
+
+    def test_the_lock_is_released_after_a_failed_write(self, session_factory):
+        """The one way this mitigation could be WORSE than the bug.
+
+        A lock left held by an error path would wedge every subsequent OHLCV
+        fetch in the process — a deadlocked fleet instead of a cycling one. So:
+        force the write to fail, then prove the lock is free and the next call
+        still works.
+        """
+        from archimedes.services import market_data_provider as mdp
+        from sqlalchemy.exc import SQLAlchemyError
+
+        frame = _ohlcv_frame(5)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+        start = frame.index[0].date().isoformat()
+        end = frame.index[-1].date().isoformat()
+
+        def boom(session, ticker, df, source):
+            raise SQLAlchemyError("simulated cache-write failure")
+
+        with patch.object(mdp, "_write_cached_ohlcv", boom):
+            result = provider.get_daily_ohlcv("SPY", start, end)
+
+        assert not mdp._OHLCV_CACHE_WRITE_LOCK.locked(), "the lock was left held after a failed write"
+        # The fetch still succeeded and was served — unchanged fail-soft contract.
+        pd.testing.assert_frame_equal(result, frame)
+        # And the path is not wedged: a second call goes straight through.
+        vendor.ohlcv_calls.clear()
+        again = provider.get_daily_ohlcv("SPY", start, end)
+        pd.testing.assert_frame_equal(again, frame)
+
+
+class TestOhlcvWriteFailureFallthroughUnchanged:
+    """Anti-goal enforcement: the mitigation must not change which exceptions
+    are caught, nor which are allowed to propagate."""
+
+    def test_an_integrity_error_mid_chunk_still_serves_the_fetch(self, session_factory, monkeypatch):
+        """A chunked flush can now raise where only ``commit`` used to. It must
+        land in the SAME ``except IntegrityError`` arm, roll back, and serve
+        the fetched frame."""
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+        from archimedes.services import market_data_provider as mdp
+        from sqlalchemy.exc import IntegrityError
+
+        monkeypatch.setattr(mdp, "_OHLCV_WRITE_CHUNK_ROWS", 10)
+
+        frame = _ohlcv_frame(25)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        rolled_back: list[int] = []
+
+        def failing_factory():
+            session = session_factory()
+            real_flush = session.flush
+            real_rollback = session.rollback
+
+            def flush_that_fails(*args, **kwargs):
+                # Fail only on a REAL chunk flush — one carrying pending rows.
+                # SQLAlchemy autoflushes on every query, including the cache
+                # READ that happens before (and outside) the guarded write; a
+                # stub that failed there would be testing the wrong seam.
+                if len(session.new) + len(session.dirty):
+                    raise IntegrityError("INSERT ...", {}, Exception("uq_asset_daily_bars_symbol_trade_date"))
+                return real_flush(*args, **kwargs)
+
+            def rollback_spy(*args, **kwargs):
+                rolled_back.append(1)
+                return real_rollback(*args, **kwargs)
+
+            session.flush = flush_that_fails
+            session.rollback = rollback_spy
+            return session
+
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=failing_factory)
+        result = provider.get_daily_ohlcv("SPY", frame.index[0].date().isoformat(), frame.index[-1].date().isoformat())
+
+        pd.testing.assert_frame_equal(result, frame)  # fetch still served
+        assert rolled_back, "the mid-chunk IntegrityError did not reach the rollback arm"
+        # All-or-nothing preserved: no partially-cached window was committed.
+        session = session_factory()
+        try:
+            assert session.query(AssetDailyBar).filter(AssetDailyBar.symbol == "SPY").count() == 0
+        finally:
+            session.close()
+
+    def test_a_non_sqlalchemy_error_still_propagates(self, session_factory):
+        """ANTI-GOAL: 'do not swallow new exception classes silently.'
+
+        The lock is a ``with``, not an ``except``. A ``RuntimeError`` from the
+        write path escaped before this change and must still escape — if the
+        mitigation had widened the arms to ``except Exception``, this test is
+        what catches it.
+        """
+        from archimedes.services import market_data_provider as mdp
+
+        frame = _ohlcv_frame(5)
+        vendor = _FakeOhlcvVendor({"SPY": frame})
+        provider = CachingMarketDataProvider(vendor, source_name="yfinance", session_factory=session_factory)
+
+        def boom(session, ticker, df, source):
+            raise RuntimeError("not a DB error — must not be caught here")
+
+        with patch.object(mdp, "_write_cached_ohlcv", boom), pytest.raises(RuntimeError):
+            provider.get_daily_ohlcv("SPY", frame.index[0].date().isoformat(), frame.index[-1].date().isoformat())
+
+        # ...and even on the propagating path the lock is not left held.
+        assert not mdp._OHLCV_CACHE_WRITE_LOCK.locked()

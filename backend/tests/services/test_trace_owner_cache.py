@@ -147,16 +147,54 @@ def _fifty_rows(*, stamped: bool = False) -> list[dict]:
     return [_trace(USER_VAULTS[i % len(USER_VAULTS)], i, stamped=stamped) for i in range(50)]
 
 
+def _assert_mirrors(fake, real) -> None:
+    """The fake store must accept EXACTLY what the route passes the real one.
+
+    ``list_traces``'s call to ``state.list_traces(...)`` sits inside an
+    ``except Exception:`` that logs "Redis unavailable" and falls back to the
+    on-chain-only listing. So a fake whose signature has drifted does **not**
+    raise out of a test here — the ``TypeError`` is swallowed as an outage and
+    every listing below is quietly re-routed onto the fallback path, where
+    there are no off-chain rows, the ownership resolver is never consulted, and
+    the page comes back empty.
+
+    That failure mode is silent in the direction that matters least and loud in
+    the direction that matters most: the round-trip test reports ``0`` lookups
+    (looking like a cache that got *better*) while the privacy test reports an
+    empty page (looking like a gate that got *stricter*). Both are lies about
+    code that never ran. It is exactly how #1573 (this file) and #1569 (which
+    inserted ``strategy_id`` into that signature) each stayed green alone and
+    broke on union.
+
+    Names AND order, because the route is free to call positionally.
+    """
+    import inspect
+
+    want = [p for p in inspect.signature(real).parameters if p != "self"]
+    got = list(inspect.signature(fake).parameters)
+    assert got == want, f"the fake store has drifted from AgentStateStore.list_traces: {got} != {want}"
+
+
 @contextmanager
 def _store(traces: list[dict]):
-    from archimedes.services.redis_state import AgentStateStore
+    from archimedes.services.redis_state import AgentStateStore, trace_references_strategy
 
     by_id = {t["id"]: t for t in traces}
     by_id.update({t["trace_hash"]: t for t in traces})
 
-    async def _list(vault_address=None, decision_type=None, limit=20, offset=0):
-        rows = [t for t in traces if not vault_address or t["vault_address"].lower() == vault_address.lower()]
+    async def _list(vault_address=None, decision_type=None, strategy_id=None, limit=20, offset=0):
+        rows = [
+            t
+            for t in traces
+            if (not vault_address or t["vault_address"].lower() == vault_address.lower())
+            and (not decision_type or t.get("decision_type") == decision_type)
+            # Delegates rather than re-implements: a second copy of the
+            # provenance rule in a fake is a way to prove the wrong thing.
+            and (not strategy_id or trace_references_strategy(t, strategy_id))
+        ]
         return rows[offset : offset + limit], len(rows)
+
+    _assert_mirrors(_list, AgentStateStore.list_traces)
 
     with (
         patch.object(AgentStateStore, "list_traces", AsyncMock(side_effect=_list)),
