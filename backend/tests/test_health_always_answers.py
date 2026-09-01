@@ -25,6 +25,20 @@ Two properties are under test and they are deliberately separate:
    present EXACTLY when a probe timed out, so their presence is itself the
    signal.
 
+RESIDUAL, 2026-08-31 (#1594). #1592 read correct and MEASURED WRONG: it bounded
+the two outbound probes and the handler still went to p95 17.03s / max 30s
+against an ALB check of ``timeout 10 x threshold 5``, with ``HealthyHostCount``
+averaging 1.03 over 24h and touching 0. The reason is the second half of the
+same lesson — the six LOCAL reads below the outbound block (``load_corpus``,
+``get_paper_count``, ``get_corpus_meta``, ``paper_rag_health``,
+``gmm_regime_health``, ``risk_data_health``) ran synchronously and unbounded,
+and **a budget denominated in loop time is not a budget when the loop is what
+stalled**: ``asyncio.wait_for``'s timeout is itself a loop callback, so it can
+bound an await but never a blocking call. Those six now run in worker threads,
+concurrently, under ``HealthProbeCache``. ``TestTheSixLocalReadsAreBoundedToo``
+injects a 30s stall into each in turn — the fault-injection point is the module
+boundary each read is imported from, never an internal.
+
 Hermetic: no network, no DB, no Redis, no .env. Every outbound probe is patched.
 Run: env -i HOME=$HOME PATH=$PATH PYTHONPATH=backend python -m pytest \
        backend/tests/test_health_always_answers.py -q
@@ -33,7 +47,9 @@ Run: env -i HOME=$HOME PATH=$PATH PYTHONPATH=backend python -m pytest \
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -467,3 +483,362 @@ class TestTheChainClientItselfIsBounded:
             f"is_connected() took {elapsed:.2f}s against a "
             f"{chain_client.settings.rpc_timeout_seconds}s documented total budget"
         )
+
+
+# ── #1594: the six LOCAL reads ───────────────────────────────────────────────
+
+# The stall injected into each local read. 30s is the measured `/health` max
+# from the incident, and it is deliberately far past every budget in play: the
+# ALB's 10s, the endpoint's 2s promise, the 0.8s local-probe budget. A stall
+# this size cannot be passed by accident.
+_INJECTED_STALL_SECONDS = 30.0
+
+# (fault-injection target, the payload prefix whose probe MUST report the miss).
+# Targets are the module attribute the handler imports — the boundary — so a
+# refactor that stops going through it fails these tests loudly instead of
+# silently testing nothing. Internals are never patched.
+_LOCAL_READS = [
+    ("archimedes.agents.strategy_fusion.load_corpus", "corpus"),
+    ("archimedes.services.corpus_service.get_paper_count", "corpus_db"),
+    ("archimedes.services.corpus_service.get_corpus_meta", "corpus_meta"),
+    ("archimedes.services.paper_rag.paper_rag_health", "paper_rag"),
+    ("archimedes.services.gmm_regime_detector.gmm_regime_health", "regime_detector"),
+    ("archimedes.api.risk_routes.risk_data_health", "risk_data"),
+]
+
+
+@contextmanager
+def _stalling(target: str, seconds: float = _INJECTED_STALL_SECONDS):
+    """Replace ``target`` with a read that blocks its CALLING THREAD for ``seconds``.
+
+    ``threading.Event.wait``, not ``asyncio.sleep``: the whole failure mode is a
+    read that blocks rather than awaits — an Aurora failover, a cold
+    sentence-transformer import, an S3-backed corpus file — and an awaitable
+    stand-in would leave the event loop free and prove nothing. The loop must
+    actually be at risk for the test to be a test.
+
+    The event is set on exit so the abandoned worker thread unwinds instead of
+    parking the interpreter for 30s at shutdown. It is NOT set before the
+    assertion, so the stall the handler faces is the full 30s.
+
+    Yields the list of thread names the stalled read actually ran on, so a test
+    can assert WHERE it ran and not merely that it was survived.
+    """
+    release = threading.Event()
+    ran_on: list[str] = []
+
+    def _stall(*_args, **_kwargs):
+        ran_on.append(threading.current_thread().name)
+        release.wait(seconds)
+
+    with patch(target, _stall):
+        try:
+            yield ran_on
+        finally:
+            release.set()
+
+
+@contextmanager
+def _fast_local_reads():
+    """Pin all six local reads to instant, in-range answers.
+
+    Used by the live-path tests so they assert on the probe machinery rather
+    than on how quickly this machine happens to load a corpus file.
+    """
+    from archimedes.api.risk_routes import RiskDataHealth
+    from archimedes.services.gmm_regime_detector import GmmRegimeHealth
+    from archimedes.services.paper_rag import PaperRAGHealth
+
+    with (
+        patch("archimedes.agents.strategy_fusion.load_corpus", lambda *_a, **_k: [{"id": "p1"}]),
+        patch("archimedes.services.corpus_service.get_paper_count", lambda *_a, **_k: 7),
+        patch("archimedes.services.corpus_service.get_corpus_meta", lambda *_a, **_k: {"source": "db"}),
+        patch(
+            "archimedes.services.paper_rag.paper_rag_health",
+            lambda *_a, **_k: PaperRAGHealth(status="live", reason="test"),
+        ),
+        patch(
+            "archimedes.services.gmm_regime_detector.gmm_regime_health",
+            lambda *_a, **_k: GmmRegimeHealth(status="live", reason="test"),
+        ),
+        patch(
+            "archimedes.api.risk_routes.risk_data_health",
+            lambda *_a, **_k: RiskDataHealth(status="real", reason="test"),
+        ),
+    ):
+        yield
+
+
+class TestTheSixLocalReadsAreBoundedToo:
+    """#1594: a stalled LOCAL read must not hold the endpoint either.
+
+    MUTATION for every case below: restore the plain synchronous calls
+    (``corpus = load_corpus()``, the ``try: db_count = get_paper_count()``
+    block, and the three ``*_health()`` try-blocks) under the concurrent gather.
+    Each test then blocks the event loop for the full 30s and fails on the
+    budget assertion — including the ones whose read is "just a local DB query".
+    Evidence in the PR body.
+    """
+
+    @pytest.mark.parametrize(("target", "prefix"), _LOCAL_READS, ids=[p for _, p in _LOCAL_READS])
+    async def test_a_stalled_local_read_still_answers_inside_the_budget(self, target, prefix):
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _stalling(target),
+        ):
+            body, elapsed = await _get_health()
+
+        assert elapsed < _HEALTH_BUDGET_SECONDS, (
+            f"/health took {elapsed:.2f}s with {target} stalled — the ALB kills a target after "
+            f"5 consecutive misses, which is how a good revision gets declared bad"
+        )
+        # Answering fast is half of it. The payload must say WHICH reading is
+        # missing, or a fabricated-looking default (corpus_papers: 0,
+        # regime_detector: "unknown") is indistinguishable from a real one.
+        assert body[f"{prefix}_probe_state"] == "probe_timeout"
+        assert body[f"{prefix}_probe_age_s"] is None  # nothing cached ⇒ no age to report
+        assert "probe_timeout" in body[f"{prefix}_probe_reason"]
+
+    async def test_all_six_stalling_at_once_still_answers(self):
+        """Budgets must be shared, not summed.
+
+        Six local reads at 0.8s each plus the two outbound probes would be 6.0s
+        sequentially — past the ALB's 10s only in aggregate, but well past the
+        2s this endpoint promises, and the shape that produced a 17s p95.
+        """
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _stalling(_LOCAL_READS[0][0]),
+            _stalling(_LOCAL_READS[1][0]),
+            _stalling(_LOCAL_READS[2][0]),
+            _stalling(_LOCAL_READS[3][0]),
+            _stalling(_LOCAL_READS[4][0]),
+            _stalling(_LOCAL_READS[5][0]),
+        ):
+            body, elapsed = await _get_health()
+
+        assert elapsed < _HEALTH_BUDGET_SECONDS, (
+            f"/health took {elapsed:.2f}s with all six local reads stalled — budgets are being summed"
+        )
+        for _target, prefix in _LOCAL_READS:
+            assert body[f"{prefix}_probe_state"] == "probe_timeout"
+
+    async def test_a_stalled_read_parks_a_dedicated_thread_not_the_loops_default_pool(self):
+        """MUTATION: use ``asyncio.to_thread`` instead of the dedicated executor.
+
+        ``to_thread`` runs on the loop's DEFAULT executor — which is also where
+        asyncio runs ``getaddrinfo``. Abandoned health reads accumulating there
+        would eventually make DNS for the DB, for Redis, and for the RPC queue
+        behind a stuck corpus load: a liveness probe damaging the very thing it
+        reports on. Under the mutation the thread is named ``asyncio_N`` and
+        this fails.
+        """
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _stalling(_LOCAL_READS[0][0]) as ran_on,
+        ):
+            body, elapsed = await _get_health()
+
+        assert elapsed < _HEALTH_BUDGET_SECONDS
+        assert body["corpus_probe_state"] == "probe_timeout"
+        assert ran_on, "the corpus read never ran"
+        assert all(name.startswith("health-probe") for name in ran_on), f"a health probe ran on a shared pool: {ran_on}"
+
+    async def test_the_whole_endpoint_survives_every_probe_being_dark(self):
+        """The incident's worst case: RPC throttled AND the box unresponsive."""
+        with (
+            patch.object(chain_client, "is_connected", _hangs_forever),
+            patch.object(oracle_health_mod, "oracle_health", _hangs_forever),
+            _stalling(_LOCAL_READS[0][0]),
+            _stalling(_LOCAL_READS[3][0]),
+        ):
+            body, elapsed = await _get_health()
+
+        assert elapsed < _HEALTH_BUDGET_SECONDS
+        assert body["status"] == "degraded"
+        assert body["chain_probe_state"] == "probe_timeout"
+        assert body["corpus_probe_state"] == "probe_timeout"
+        assert body["paper_rag_probe_state"] == "probe_timeout"
+
+
+class TestTheLocalProbesObeyTheSameHonestyRules:
+    """The staleness contract is identical for local reads — no second standard."""
+
+    async def test_a_live_local_read_carries_no_staleness_fields(self):
+        """MUTATION: emit the age/reason fields unconditionally.
+
+        Presence is the alarm; always-present fields train readers to skip them.
+        """
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _fast_local_reads(),
+        ):
+            body, _ = await _get_health()
+
+        for _target, prefix in _LOCAL_READS:
+            assert body[f"{prefix}_probe_state"] == "live"
+            assert f"{prefix}_probe_age_s" not in body
+            assert f"{prefix}_probe_reason" not in body
+
+    async def test_a_stalled_local_read_serves_its_last_known_value_with_the_age(self):
+        """The ALB poller gets the CACHE, not a fresh trip — labelled as cache.
+
+        This is the fix's whole point: liveness is what the poller needs, and a
+        past reading answers that question honestly as long as it says it is a
+        past reading. Serving it bare would be the plausible substitute.
+        """
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _fast_local_reads(),
+        ):
+            first, _ = await _get_health()
+        assert first["corpus_papers"] == 1
+        assert first["regime_detector"] == "live"
+
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _stalling(_LOCAL_READS[0][0]),
+            _stalling(_LOCAL_READS[4][0]),
+        ):
+            second, elapsed = await _get_health()
+
+        assert elapsed < _HEALTH_BUDGET_SECONDS
+        assert second["corpus_probe_state"] == "stale_cached"
+        assert second["corpus_papers"] == 1  # the cached reading, unaltered
+        assert second["corpus_probe_age_s"] >= 0
+        assert "probe_timeout" in second["corpus_probe_reason"]
+
+        assert second["regime_detector_probe_state"] == "stale_cached"
+        assert second["regime_detector"] == "live"
+        # The *_reason field is what an operator actually reads, so the
+        # staleness has to be visible there too, not only in the sibling field.
+        assert "probe_timeout" in second["regime_detector_reason"]
+        assert "last completed read" in second["regime_detector_reason"]
+
+    async def test_a_raising_local_read_is_an_error_not_a_timeout(self):
+        """Errors and timeouts stay different states.
+
+        Collapsing them lets a broken import hide behind "the box was busy".
+        """
+
+        def _explodes(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            patch("archimedes.services.paper_rag.paper_rag_health", _explodes),
+        ):
+            body, _ = await _get_health()
+
+        assert body["paper_rag_probe_state"] == "probe_error"
+        assert "probe_error" in body["paper_rag_probe_reason"]
+        assert body["paper_rag_reason"] == "import failed"
+
+    async def test_a_timed_out_local_read_never_reports_a_configured_state(self):
+        """ "unknown" (never read) must not collapse into "disabled" (a real setting).
+
+        `paper_rag: "disabled"` is a deliberate configuration. Reporting it for a
+        read that never completed would present an absence as a decision.
+        """
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _stalling(_LOCAL_READS[3][0]),
+        ):
+            body, _ = await _get_health()
+
+        assert body["paper_rag"] == "unknown"
+        assert body["paper_rag_probe_state"] == "probe_timeout"
+
+
+class TestNoReportedFieldWasDropped:
+    """Anti-goal guard: this change adds fields, it never removes one.
+
+    The issue's own check is `grep -c` over four field literals. That grep is a
+    PROXY for "nothing was deleted" and it moves whenever a probe *name* is
+    added, so this asserts the property directly instead: every key /health
+    published before #1594 is still published.
+    """
+
+    # Captured from origin/main's handler by AST-walking its return dict, so the
+    # list is the pre-change contract rather than someone's recollection of it.
+    _PRE_1594_KEYS = frozenset(
+        {
+            "agent_count",
+            "artifact_hash",
+            "chain_connected",
+            "corpus_artifact_present",
+            "corpus_db_count",
+            "corpus_embedded_at_rest",
+            "corpus_embedded_at_rest_reason",
+            "corpus_kg_built",
+            "corpus_kg_entities",
+            "corpus_kg_relations",
+            "corpus_last_intake",
+            "corpus_papers",
+            "corpus_source",
+            "fusion_enabled",
+            "human_count",
+            "llm_available",
+            "llm_backend",
+            "llm_has_api_key",
+            "llm_has_auth_token",
+            "llm_has_base_url",
+            "llm_model",
+            "llm_provider",
+            "oracle_fresh",
+            "oracle_oldest_age_s",
+            "oracle_probed_count",
+            "oracle_reason",
+            "oracle_universe_count",
+            "paper_rag",
+            "paper_rag_reason",
+            "paper_rerank_model_live",
+            "real_users",
+            "regime_detector",
+            "regime_detector_reason",
+            "rerank_candidate_cap",
+            "reveal_reconcile_pending",
+            "reveal_reconcile_terminal",
+            "risk_data",
+            "risk_data_reason",
+            "service",
+            "status",
+            "strategy_count",
+            "version",
+        }
+    )
+
+    async def test_every_field_published_before_1594_is_still_published(self):
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _fast_local_reads(),
+        ):
+            body, _ = await _get_health()
+
+        assert set(body) >= self._PRE_1594_KEYS, f"/health stopped reporting {sorted(self._PRE_1594_KEYS - set(body))}"
+
+    async def test_the_status_code_stays_200_while_degraded(self):
+        """Anti-goal: 200-while-degraded is deliberate.
+
+        A 503 here would let an RPC blip or a slow disk cascade the whole ECS
+        service down — the exact mechanism that took prod off the air on
+        2026-08-31. _get_health already asserts 200; this states the intent so a
+        later "make /health honest by 503ing" change trips a named test.
+        """
+        with (
+            patch.object(chain_client, "is_connected", _hangs_forever),
+            patch.object(oracle_health_mod, "oracle_health", _hangs_forever),
+            _stalling(_LOCAL_READS[0][0]),
+        ):
+            body, _ = await _get_health()  # asserts status_code == 200
+
+        assert body["status"] == "degraded"

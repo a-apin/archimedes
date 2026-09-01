@@ -20,6 +20,7 @@ faulthandler.enable()
 # Load .env into os.environ at import time for modules that use os.getenv()
 # (circle_signer, oracle_updater) — pydantic ChainSettings handles ARC_ vars itself.
 from collections.abc import AsyncGenerator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -809,6 +810,97 @@ _ORACLE_PROBE_BUDGET_SECONDS = 1.2
 # started; probes now run concurrently, so the oracle's slice is smaller and
 # has to leave the outer backstop above room to be the backstop.
 _ORACLE_INNER_BUDGET_SECONDS = 0.9
+# Budget for the six LOCAL reads (corpus file, corpus DB rows, corpus meta,
+# paper-RAG, GMM regime, risk data). Smaller than the chain/oracle budgets
+# because none of these leaves the box: the corpus load is a file read, the two
+# corpus-meta reads are single-row queries, and the three health functions are
+# in-process state checks. Measured warm they are single-digit milliseconds.
+#
+# WHY THEY NEED A BUDGET AT ALL (#1594). "Local" is not "fast" when the box is
+# the problem: an Aurora failover parks `get_paper_count`, a cold
+# sentence-transformer import parks `paper_rag_health`, an EFS/S3-backed corpus
+# file parks `load_corpus`. Measured on the live handler, /health was p50 1.19s
+# but p95 17.03s / max 30s against an ALB check of timeout 10 x threshold 5 —
+# five consecutive misses kill the task, and over 24h HealthyHostCount averaged
+# 1.03 and touched 0. #1592 bounded the two OUTBOUND probes; these six ran
+# unbounded and synchronously afterwards, which is where the p95 lived.
+#
+# They share this budget CONCURRENTLY with the two probes above, so the bounded
+# section of this handler costs max(1.2, 0.8) = 1.2s, not the sum of eight.
+_LOCAL_PROBE_BUDGET_SECONDS = 0.8
+
+# One name per local probe, defined once because it is used three ways that MUST
+# agree: the HealthProbeCache key, the `<name>_probe_*` payload prefix, and the
+# payload field the trio describes. Drift between them would publish staleness
+# fields that label a different reading than the one they sit next to.
+_CORPUS_PROBE = "corpus"
+_CORPUS_DB_PROBE = "corpus_db"
+_CORPUS_META_PROBE = "corpus_meta"
+_PAPER_RAG_PROBE = "paper_rag"
+_REGIME_PROBE = "regime_detector"
+_RISK_DATA_PROBE = "risk_data"
+
+# The health probes get their OWN thread pool, not the loop's default executor.
+# ``asyncio.to_thread`` would have been shorter and is wrong here: the default
+# executor is also where asyncio runs ``getaddrinfo``, so abandoned health reads
+# accumulating in it would eventually make DNS — for the DB, for Redis, for the
+# RPC — queue behind a stuck corpus load. A liveness probe must not be able to
+# damage the thing it reports on.
+#
+# 12 workers = two full checks' worth of the six probes. A read abandoned at its
+# budget keeps its worker until it unwinds (see archimedes/deadline.py on the
+# cost of abandonment), so the headroom is what stops ONE permanently-stuck read
+# from starving its five healthy siblings on the very next check. If the pool
+# does fill, ``run_in_executor`` queues without blocking and the queued probes
+# report ``probe_timeout`` against their last-known values — degraded and
+# labelled, never a stalled handler.
+_HEALTH_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers=12, thread_name_prefix="health-probe")
+
+
+def _bounded_local_read(fn):
+    """Adapt a BLOCKING local read into a factory ``HealthProbeCache.probe`` can bound.
+
+    A worker thread, not a bare coroutine, and that is the entire point.
+    ``asyncio.wait_for`` / ``run_with_deadline`` schedule their timeout as a
+    callback ON THE EVENT LOOP, so neither can bound work that is *itself*
+    blocking the loop — a budget denominated in loop time is not a budget when
+    the loop is what stalled. Moving the call off the loop is what makes the
+    deadline real: the loop stays free to fire the timeout and answer the ALB
+    while the stalled read is still parked.
+
+    Cost, stated plainly (mirrors archimedes/deadline.py's abandonment note): a
+    read that blows its budget is ABANDONED, and its worker thread keeps running
+    until it unwinds. That is only acceptable because every read passed here is
+    READ-ONLY. Do not route a state-changing call through this helper.
+    """
+    return lambda: asyncio.get_running_loop().run_in_executor(_HEALTH_PROBE_EXECUTOR, fn)
+
+
+def _cache_annotated(outcome, reason: str) -> str:
+    """Fold a served-from-cache label into the ``*_reason`` field operators read.
+
+    Same wording the oracle block below produces by hand: the sibling
+    ``*_probe_state`` field already says ``stale_cached``, but the human-read
+    reason string has to say it too or a past reading gets quoted as a present
+    one.
+    """
+    if outcome.state == "stale_cached":
+        return f"{outcome.reason}; last completed read {outcome.age_s}s ago: {reason}"
+    return reason
+
+
+def _probe_error_fields(prefix: str, exc: BaseException) -> dict[str, object]:
+    """Staleness trio for a probe that RAISED — an error, never a timeout.
+
+    Kept distinct from ``probe_timeout`` for the reason services/health_cache.py
+    documents: collapsing them lets a broken probe hide behind "the network was
+    slow".
+    """
+    return {
+        f"{prefix}_probe_state": "probe_error",
+        f"{prefix}_probe_age_s": None,
+        f"{prefix}_probe_reason": f"{prefix} probe_error: {exc}",
+    }
 
 
 @app.get("/health")
@@ -820,9 +912,10 @@ async def health(response: Response):
     Reports corpus state so silent degradation is visible.
 
     **This endpoint reports what we know; it does not go and find out.** Every
-    outbound probe is bounded and falls back to its last-known value, labelled
-    with age and reason (#1592). No field's MEANING changed — only how long the
-    handler is willing to wait to compute it.
+    probe is bounded and falls back to its last-known value, labelled with age
+    and reason — the two outbound ones since #1592, the six local ones since
+    #1594. No field's MEANING changed — only how long the handler is willing to
+    wait to compute it.
     """
     _no_store(response)
 
@@ -839,10 +932,45 @@ async def health(response: Response):
 
         return await _oracle_health_probe(budget_seconds=_ORACLE_INNER_BUDGET_SECONDS)
 
+    def _paper_rag_read():
+        # Imported INSIDE the worker thread, not at handler scope, so a cold
+        # sentence-transformer import is inside the budget too — the import is
+        # the slow part on a fresh task. Tests keep patching
+        # ``services.paper_rag.paper_rag_health`` exactly as they do today.
+        from archimedes.services.paper_rag import paper_rag_health as _prag_health
+
+        return _prag_health()
+
+    def _regime_read():
+        from archimedes.services.gmm_regime_detector import gmm_regime_health
+
+        return gmm_regime_health()
+
+    def _risk_data_read():
+        from archimedes.api.risk_routes import risk_data_health
+
+        return risk_data_health()
+
     # Concurrent + bounded. return_exceptions keeps one broken probe from
-    # taking the other down: a raised probe is still a health verdict, it is
+    # taking the others down: a raised probe is still a health verdict, it is
     # just a "we could not read it" one, and that is what gets reported.
-    chain_outcome, oracle_outcome = await asyncio.gather(
+    #
+    # ALL EIGHT reads live in this one gather (#1594). The six local ones used
+    # to run one after another, unbounded, below the chain/oracle block — which
+    # is why #1592 read correct and measured wrong: the outbound calls were
+    # bounded and the handler still went to 17s p95. Adding them here costs
+    # max(budget), not sum(budget), and every one of them now reports its own
+    # freshness instead of stalling the endpoint that reports everything else.
+    (
+        chain_outcome,
+        oracle_outcome,
+        corpus_outcome,
+        corpus_db_outcome,
+        corpus_meta_outcome,
+        paper_rag_outcome,
+        regime_outcome,
+        risk_data_outcome,
+    ) = await asyncio.gather(
         health_probe_cache.probe(
             "chain_connected",
             chain_client.is_connected,
@@ -853,6 +981,45 @@ async def health(response: Response):
             "oracle_health",
             _oracle_probe,
             budget_seconds=_ORACLE_PROBE_BUDGET_SECONDS,
+            absent=None,
+        ),
+        # `absent=[]` renders corpus_papers: 0 — a plausible-looking number, and
+        # the reason every one of these carries a `*_probe_state`: the state
+        # field is what separates "we read zero" from "we could not read".
+        health_probe_cache.probe(
+            _CORPUS_PROBE,
+            _bounded_local_read(load_corpus),
+            budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
+            absent=[],
+        ),
+        health_probe_cache.probe(
+            _CORPUS_DB_PROBE,
+            _bounded_local_read(get_paper_count),
+            budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
+            absent=0,
+        ),
+        health_probe_cache.probe(
+            _CORPUS_META_PROBE,
+            _bounded_local_read(get_corpus_meta),
+            budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
+            absent=None,
+        ),
+        health_probe_cache.probe(
+            _PAPER_RAG_PROBE,
+            _bounded_local_read(_paper_rag_read),
+            budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
+            absent=None,
+        ),
+        health_probe_cache.probe(
+            _REGIME_PROBE,
+            _bounded_local_read(_regime_read),
+            budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
+            absent=None,
+        ),
+        health_probe_cache.probe(
+            _RISK_DATA_PROBE,
+            _bounded_local_read(_risk_data_read),
+            budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
             absent=None,
         ),
         return_exceptions=True,
@@ -889,67 +1056,108 @@ async def health(response: Response):
         # metric filter on this exact string (infra/cloudwatch.tf) turns repeated
         # occurrences into a paging alarm without touching the response contract.
         logger.warning("HEALTH_CHAIN_DISCONNECTED: chain_connected=false (Arc RPC unreachable or timed out)")
-    corpus = load_corpus()
+
+    # ── corpus file load ─────────────────────────────────────────────────
+    # Previously a bare `corpus = load_corpus()`: an unbounded read whose only
+    # failure mode was a 500 from the endpoint that exists to report failures.
+    # Now bounded, and a raise is reported as `probe_error` rather than losing
+    # every other field on the page.
+    corpus_probe_fields: dict[str, object] = {}
+    if isinstance(corpus_outcome, BaseException):
+        logger.warning("corpus load raised %s — reporting 0 papers", type(corpus_outcome).__name__)
+        corpus: list = []
+        corpus_probe_fields = _probe_error_fields(_CORPUS_PROBE, corpus_outcome)
+    else:
+        corpus = corpus_outcome.value or []
+        corpus_probe_fields = corpus_outcome.payload_fields(_CORPUS_PROBE)
+
     _fusion_on = fusion_enabled()
     backend = make_llm_backend()
     llm_provider = os.getenv("LLM_PROVIDER", "auto")
     is_available = getattr(backend, "available", False)
     llm_backend = "live" if is_available else backend.model_id if hasattr(backend, "model_id") else "unavailable"
 
-    # DB-backed corpus diagnostics
+    # DB-backed corpus diagnostics. Two probes, not one try block: a paper-count
+    # query that answers and a corpus-meta query that stalls are two different
+    # facts, and folding them together lost the distinction.
     db_count = 0
+    corpus_db_probe_fields: dict[str, object] = {}
+    if isinstance(corpus_db_outcome, BaseException):
+        logger.debug("corpus paper-count read failed", exc_info=corpus_db_outcome)
+        corpus_db_probe_fields = _probe_error_fields(_CORPUS_DB_PROBE, corpus_db_outcome)
+    else:
+        db_count = corpus_db_outcome.value or 0
+        corpus_db_probe_fields = corpus_db_outcome.payload_fields(_CORPUS_DB_PROBE)
+
     corpus_source = "file"
     corpus_last_intake = None
     artifact_hash = None
-    try:
-        db_count = get_paper_count()
-        meta = get_corpus_meta()
+    corpus_meta_probe_fields: dict[str, object] = {}
+    if isinstance(corpus_meta_outcome, BaseException):
+        logger.debug("corpus meta read failed", exc_info=corpus_meta_outcome)
+        corpus_meta_probe_fields = _probe_error_fields(_CORPUS_META_PROBE, corpus_meta_outcome)
+    else:
+        meta = corpus_meta_outcome.value
+        corpus_meta_probe_fields = corpus_meta_outcome.payload_fields(_CORPUS_META_PROBE)
         if meta:
             corpus_source = meta.get("source", "unknown")
             corpus_last_intake = meta.get("last_intake_at")
             artifact_hash = meta.get("artifact_hash")
-    except Exception:
-        logger.debug("corpus meta read failed", exc_info=True)
 
-    # Paper RAG health (semantic retrieval)
+    # Paper RAG health (semantic retrieval). "unknown" is reserved for a probe
+    # that never completed — it must not collapse into "disabled", which is a
+    # real, deliberately-configured state.
     paper_rag_status = "disabled"
     paper_rag_reason = ""
-    try:
-        from archimedes.services.paper_rag import paper_rag_health as _prag_health
-
-        _diag = _prag_health()
-        paper_rag_status = _diag.status
-        paper_rag_reason = _diag.reason
-    except Exception:
+    paper_rag_probe_fields: dict[str, object] = {}
+    if isinstance(paper_rag_outcome, BaseException):
         paper_rag_reason = "import failed"
+        paper_rag_probe_fields = _probe_error_fields(_PAPER_RAG_PROBE, paper_rag_outcome)
+    else:
+        paper_rag_probe_fields = paper_rag_outcome.payload_fields(_PAPER_RAG_PROBE)
+        _diag = paper_rag_outcome.value
+        if _diag is None:
+            paper_rag_status = "unknown"
+            paper_rag_reason = paper_rag_outcome.reason
+        else:
+            paper_rag_status = _diag.status
+            paper_rag_reason = _cache_annotated(paper_rag_outcome, _diag.reason)
 
     # GMM regime-detector health (T0.5 — loud fallback telemetry).
     # "degraded" => no fitted artifact, rule-based VixRegimeDetector fallback
     # active. Surfaced so rule-based regime calls aren't presented as data-driven.
     regime_detector_status = "unknown"
     regime_detector_reason = ""
-    try:
-        from archimedes.services.gmm_regime_detector import gmm_regime_health
-
-        _gmm_diag = gmm_regime_health()
-        regime_detector_status = _gmm_diag.status
-        regime_detector_reason = _gmm_diag.reason
-    except Exception:
+    regime_detector_probe_fields: dict[str, object] = {}
+    if isinstance(regime_outcome, BaseException):
         regime_detector_reason = "import failed"
+        regime_detector_probe_fields = _probe_error_fields(_REGIME_PROBE, regime_outcome)
+    else:
+        regime_detector_probe_fields = regime_outcome.payload_fields(_REGIME_PROBE)
+        _gmm_diag = regime_outcome.value
+        if _gmm_diag is None:
+            regime_detector_reason = regime_outcome.reason
+        else:
+            regime_detector_status = _gmm_diag.status
+            regime_detector_reason = _cache_annotated(regime_outcome, _gmm_diag.reason)
 
     # Risk-analysis data health (T0.5 — loud fallback telemetry).
     # "mock" => no persisted backtest equity curves, so the Risk UI renders
     # placeholder mockReturns. Surfaced so mock tail-risk isn't presented as real.
     risk_data_status = "unknown"
     risk_data_reason = ""
-    try:
-        from archimedes.api.risk_routes import risk_data_health
-
-        _risk_diag = risk_data_health()
-        risk_data_status = _risk_diag.status
-        risk_data_reason = _risk_diag.reason
-    except Exception:
+    risk_data_probe_fields: dict[str, object] = {}
+    if isinstance(risk_data_outcome, BaseException):
         risk_data_reason = "import failed"
+        risk_data_probe_fields = _probe_error_fields(_RISK_DATA_PROBE, risk_data_outcome)
+    else:
+        risk_data_probe_fields = risk_data_outcome.payload_fields(_RISK_DATA_PROBE)
+        _risk_diag = risk_data_outcome.value
+        if _risk_diag is None:
+            risk_data_reason = risk_data_outcome.reason
+        else:
+            risk_data_status = _risk_diag.status
+            risk_data_reason = _cache_annotated(risk_data_outcome, _risk_diag.reason)
 
     # Oracle-freshness health (issue #1371 — isFresh()/lastUpdated() had zero
     # backend callers; every deployed PriceOracle has been stale since the
@@ -1207,6 +1415,14 @@ async def health(response: Response):
         "corpus_source": corpus_source,
         "corpus_last_intake": corpus_last_intake,
         "artifact_hash": artifact_hash,
+        # Bounded-probe provenance for the six LOCAL reads (#1594), same shape
+        # and same rules as the chain/oracle blocks: `*_probe_state` always
+        # present, `*_probe_age_s` + `*_probe_reason` present ONLY when the
+        # fresh read missed. Without these, `corpus_papers: 0` and
+        # `regime_detector: "unknown"` are indistinguishable from real readings.
+        **corpus_probe_fields,
+        **corpus_db_probe_fields,
+        **corpus_meta_probe_fields,
         # Claim-integrity honesty fields (issue #778). The counts above are
         # manifest-seeded *metadata records*; these say what has actually been
         # built on top of them. New keys only — existing keys are unchanged so
@@ -1229,10 +1445,13 @@ async def health(response: Response):
         "llm_has_base_url": bool(os.getenv("LLM_BASE_URL") or os.getenv("ANTHROPIC_BASE_URL")),
         "paper_rag": paper_rag_status,
         "paper_rag_reason": paper_rag_reason,
+        **paper_rag_probe_fields,
         "regime_detector": regime_detector_status,
         "regime_detector_reason": regime_detector_reason,
+        **regime_detector_probe_fields,
         "risk_data": risk_data_status,
         "risk_data_reason": risk_data_reason,
+        **risk_data_probe_fields,
         # Oracle-freshness health (issue #1371). oracle_fresh is true only when
         # EVERY probed oracle is fresh — oracle_probed_count/oracle_universe_count
         # are always both present so a fully-fresh push set is never read as
