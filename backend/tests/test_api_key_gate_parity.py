@@ -36,7 +36,6 @@ PAYER = "0x" + "cd" * 20
 _BODY = {"brief": {"intent": "low-vol treasury alternative", "risk_appetite": "moderate"}}
 
 
-
 @pytest.fixture(autouse=True)
 def _no_free_generations(monkeypatch):
     """Pin the free allowance to 0 so the gates these tests name stay reachable.
@@ -49,6 +48,7 @@ def _no_free_generations(monkeypatch):
     test_generate_payment_gate.py. The free path has its own file.
     """
     monkeypatch.setenv("FREE_GENERATIONS_PER_ACCOUNT", "0")
+
 
 @pytest.fixture(autouse=True)
 def _tmp_db(tmp_path):
