@@ -36,6 +36,20 @@ PAYER = "0x" + "cd" * 20
 _BODY = {"brief": {"intent": "low-vol treasury alternative", "risk_appetite": "moderate"}}
 
 
+
+@pytest.fixture(autouse=True)
+def _no_free_generations(monkeypatch):
+    """Pin the free allowance to 0 so the gates these tests name stay reachable.
+
+    #1643's free path (merged after this file was written) serves a fresh
+    account's first three generations without touching the paywall or the
+    wallet gate — a 202 from the free path is indistinguishable from a 202 a
+    payment bought, so with the default allowance these parity tests would stop
+    measuring the thing they name. Same fixture, same reason, as
+    test_generate_payment_gate.py. The free path has its own file.
+    """
+    monkeypatch.setenv("FREE_GENERATIONS_PER_ACCOUNT", "0")
+
 @pytest.fixture(autouse=True)
 def _tmp_db(tmp_path):
     yield from redirect_to_tmp_sqlite(tmp_path)
