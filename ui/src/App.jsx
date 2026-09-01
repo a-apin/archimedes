@@ -1,8 +1,19 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 import { fetchAdminProbe } from "./adminProbe.js";
-import { isInsightsPageBlocked, resolveInsightsAdminState } from "./insightsGate.js";
+import {
+	isInsightsPageBlocked,
+	resolveInsightsAdminState,
+	resolveInsightsView,
+} from "./insightsGate.js";
+import {
+	adminIdentityKey,
+	normalizeWalletAddress,
+	readInsightsAdmin,
+	rememberInsightsAdmin,
+} from "./insightsAdminMemo.js";
 import { useAuth } from "./AuthContext";
+import { getAddress } from "./config";
 import { defaultFeatures, fetchFeatures } from "./features";
 import { pageToPath, resolveRoute } from "./routes";
 import { canStore } from "./storage-consent.js";
@@ -38,23 +49,38 @@ export default function App() {
 	// has answered. Server truth only — never derived from `user`/wallet
 	// local state, which cannot know PLATFORM_ADMIN_WALLETS membership.
 	const [insightsAdmin, setInsightsAdmin] = useState(null);
-	// Bumped on every 'wallet-changed' event (config.js — fired on a raw
-	// account swap in the injected/EIP-6963 wallet, independent of sign-in
-	// state) so the insights-admin-probe effect below re-runs even while
-	// already sitting on /app/insights. A [route.page]-only dependency left
-	// a stale `insightsAdmin === true` (and the live dashboard it gates)
-	// rendering after switching from an admin-linked wallet to a
+	// The connected wallet ADDRESS (config.js's 'wallet-changed' event — fired
+	// on a raw account swap in the injected/EIP-6963 wallet, independent of
+	// sign-in state), tracked so the insights-admin-probe effect below re-runs
+	// even while already sitting on /app/insights. A [route.page]-only
+	// dependency left a stale `insightsAdmin === true` (and the live dashboard
+	// it gates) rendering after switching from an admin-linked wallet to a
 	// non-admin one on the same account, because route.page never changes on
 	// an in-place wallet swap (round-2 finding: the cache-reset in
 	// AuthenticatedApp's wallet-changed handler only helps a FUTURE probe
 	// caller — this effect is the one that has to actually become that
-	// caller). App.jsx has no other reason to track the connected wallet
-	// (that's AuthenticatedApp's walletAddr, the LINKED-and-verified
-	// subset), so a plain counter is used rather than duplicating that state.
-	const [walletChangeSeq, setWalletChangeSeq] = useState(0);
+	// caller).
+	//
+	// #1648 / I-8 B2: this used to be a plain counter bumped on EVERY
+	// wallet-changed event. That made the re-probe fire on events that carry
+	// no change at all — an injected provider re-announces `accountsChanged`
+	// with the SAME account on tab focus — and each fire blanked the page an
+	// admin was already using. Holding the address VALUE instead means React
+	// bails out of the state update when the announced account is unchanged,
+	// so a no-op announcement no longer re-runs the effect at all. Seeded from
+	// getAddress() so a wallet connected before this component mounted is part
+	// of the identity the first probe is recorded under, not a null that a
+	// later announcement would look like a swap away from. Normalized on both
+	// paths so a checksummed re-announcement of the same account is the same
+	// VALUE, and React's bail-out actually fires. (config.js is already in
+	// this chunk — api.js imports it — so this adds no bundle weight.)
+	const [walletAddr, setWalletAddr] = useState(() =>
+		normalizeWalletAddress(getAddress()),
+	);
 
 	useEffect(() => {
-		const onWalletChanged = () => setWalletChangeSeq((n) => n + 1);
+		const onWalletChanged = (event) =>
+			setWalletAddr(normalizeWalletAddress(event?.detail?.address));
 		window.addEventListener("wallet-changed", onWalletChanged);
 		return () => window.removeEventListener("wallet-changed", onWalletChanged);
 	}, []);
@@ -122,26 +148,41 @@ export default function App() {
 		window.location.replace(`/sign-in?next=${encodeURIComponent(next)}`);
 	}, [route.kind, route.anonymousOk, route.page, authLoading, user]);
 
+	const userId = user?.id ?? null;
 	useEffect(() => {
 		// Re-probe every time navigation LANDS on insights (not on every
-		// render while already there) — reset to "checking" first so a stale
-		// true/false from a previous visit this session can't flash before the
-		// fresh answer arrives. Also re-probes on a wallet swap that happens
-		// WHILE already sitting on insights (walletChangeSeq dep, see above) —
-		// route.page alone would miss that transition entirely.
+		// render while already there), and on a wallet swap that happens WHILE
+		// already sitting on insights (walletAddr dep, see above) — route.page
+		// alone would miss that transition entirely.
+		//
+		// #1648 / I-8 B2: this used to hard-reset to `null` on entry, and
+		// `null` renders the not-found treatment — so an admin saw a visible
+		// NotFound → dashboard flip on every single entry, and again on every
+		// tab-focus `accountsChanged`. The fix is NOT to assume admin while
+		// waiting (that would render the gated dashboard to whoever asks); it
+		// is to seed from the last answer THIS SERVER actually gave for THIS
+		// exact identity (account + connected wallet — see
+		// insightsAdminMemo.js for why the key has to include the wallet), and
+		// to render a quiet holding state rather than a decision when there is
+		// no such answer. A key miss still yields `null`, so a swap to an
+		// unseen wallet resolves from the server exactly as before.
 		if (route.page !== "insights") {
 			setInsightsAdmin(null);
 			return;
 		}
+		const identity = adminIdentityKey(userId, walletAddr);
 		let cancelled = false;
-		setInsightsAdmin(null);
+		setInsightsAdmin(readInsightsAdmin(identity));
 		fetchAdminProbe().then((result) => {
-			if (!cancelled) setInsightsAdmin(resolveInsightsAdminState(result));
+			if (cancelled) return;
+			const admin = resolveInsightsAdminState(result);
+			rememberInsightsAdmin(identity, admin);
+			setInsightsAdmin(admin);
 		});
 		return () => {
 			cancelled = true;
 		};
-	}, [route.page, walletChangeSeq]);
+	}, [route.page, walletAddr, userId]);
 
 	useEffect(() => {
 		const titles = {
@@ -250,17 +291,43 @@ export default function App() {
 
 	if (route.kind === "app" && route.page === "insights") {
 		// Server-truth admin gate (owner directive 2026-08-20, supersedes
-		// #1028 D8): a denied OR still-resolving probe renders EXACTLY the
-		// not-found page — same component the true 404 above uses — never a
-		// "you need admin access" message (would itself confirm the page
-		// exists) and never an intermediate "Loading…" screen either (round 3
-		// fix: a genuinely unknown route never shows a loading state on first
-		// paint, so a chrome-free loader while the probe resolves was itself a
-		// vector for telling "gated route" apart from "unknown route" — the
-		// exact thing this gate exists to prevent). isInsightsPageBlocked
-		// treats `null` (unresolved) the same as `false` (denied): both render
-		// NotFound immediately.
-		if (isInsightsPageBlocked(route.page, insightsAdmin)) return <NotFound user={user} />;
+		// #1028 D8): a DENIED probe renders EXACTLY the not-found page — the
+		// same component the true 404 above uses — never a "you need admin
+		// access" message, which would itself confirm the page exists.
+		//
+		// #1648 / I-8 B2 changes only the UNRESOLVED (`null`) branch, and only
+		// inside a session. Round 3 had collapsed unresolved into denied so
+		// that a chrome-free loader could not be used to tell "gated route"
+		// from "unknown route"; that reasoning holds for an anonymous caller
+		// and resolveInsightsView keeps it exactly (`hasSession === false` →
+		// not-found, first paint identical to an unknown route, matching what
+		// nginx's pre-auth gate already returns for both). What it cost was
+		// paid entirely by the admin: `null` on every entry meant a visible
+		// NotFound → dashboard flip on a page they are allowed to use. Inside
+		// a session, unresolved now renders a quiet neutral holding state that
+		// asserts nothing — not the dashboard (which would leak the page to
+		// whoever waited), not a denial (which is a claim the server has not
+		// made yet). See resolveInsightsView for the residual this leaves.
+		const view = resolveInsightsView(
+			route.page,
+			insightsAdmin,
+			authLoading || Boolean(user),
+		);
+		if (view === "not-found") return <NotFound user={user} />;
+		if (view === "resolving") {
+			return (
+				<main
+					className="min-h-screen grid place-items-center"
+					aria-busy="true"
+				>
+					{/* Deliberately the same neutral wording the auth-resolution
+					    loader below uses, and deliberately NOT "Loading
+					    Insights…" — the holding state must not name a page the
+					    server has not yet said this visitor may see. */}
+					Loading…
+				</main>
+			);
+		}
 		// admin === true falls through to the normal authenticated render below.
 	}
 
