@@ -10,6 +10,7 @@ import OnboardingTour, {
 	hasCompletedOnboarding,
 } from "./components/OnboardingTour";
 import WalletGate from "./components/WalletGate";
+import { canStore } from "./storage-consent.js";
 
 const AccountSettings = lazy(() => import("./components/AccountSettings"));
 const CorpusExplorer = lazy(() => import("./components/CorpusExplorer"));
@@ -324,7 +325,11 @@ export default function AuthenticatedApp({
 				onClose={() => {
 					setTourOpen(false);
 					try {
-						localStorage.setItem("archimedes.onboarding.v1", "completed");
+						// Functional category (#1647) — same key OnboardingTour's own
+						// finish() writes; both sites are gated so rejecting functional
+						// storage cannot be defeated by dismissing from this one.
+						if (canStore("archimedes.onboarding.v1"))
+							localStorage.setItem("archimedes.onboarding.v1", "completed");
 					} catch {
 						/* non-fatal */
 					}
