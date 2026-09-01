@@ -1030,9 +1030,9 @@ async def health(response: Response):
     """
     _no_store(response)
 
-    from archimedes.agents.strategy_fusion import fusion_enabled, load_corpus
+    from archimedes.agents.strategy_fusion import fusion_enabled
     from archimedes.chain.client import chain_client
-    from archimedes.services.corpus_service import get_corpus_meta, get_paper_count
+    from archimedes.services.corpus_service import count_corpus_papers, get_corpus_meta, get_paper_count
     from archimedes.services.health_cache import health_probe_cache
 
     async def _oracle_probe():
@@ -1121,11 +1121,17 @@ async def health(response: Response):
         # `absent=[]` renders corpus_papers: 0 — a plausible-looking number, and
         # the reason every one of these carries a `*_probe_state`: the state
         # field is what separates "we read zero" from "we could not read".
+        # A COUNT, never load_corpus: the full 18k-row ORM load here is what
+        # killed prod rev 214 — abandoned cold-boot probes piled concurrent
+        # loads into the executor until two raced in SQLAlchemy session
+        # teardown and aborted the interpreter (#1632). A scalar count holds
+        # no ORM state to race; load_corpus itself is additionally serialized
+        # behind _CORPUS_LOAD_LOCK for its real (generation) callers.
         health_probe_cache.probe(
             _CORPUS_PROBE,
-            _bounded_local_read(load_corpus),
+            _bounded_local_read(count_corpus_papers),
             budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
-            absent=[],
+            absent=0,
         ),
         health_probe_cache.probe(
             _CORPUS_DB_PROBE,
@@ -1208,11 +1214,11 @@ async def health(response: Response):
     # every other field on the page.
     corpus_probe_fields: dict[str, object] = {}
     if isinstance(corpus_outcome, BaseException):
-        logger.warning("corpus load raised %s — reporting 0 papers", type(corpus_outcome).__name__)
-        corpus: list = []
+        logger.warning("corpus count raised %s — reporting 0 papers", type(corpus_outcome).__name__)
+        corpus_count: int = 0
         corpus_probe_fields = _probe_error_fields(_CORPUS_PROBE, corpus_outcome)
     else:
-        corpus = corpus_outcome.value or []
+        corpus_count = int(corpus_outcome.value or 0)
         corpus_probe_fields = corpus_outcome.payload_fields(_CORPUS_PROBE)
 
     _fusion_on = fusion_enabled()
@@ -1587,7 +1593,7 @@ async def health(response: Response):
         "human_count": human_count,
         "agent_count": agent_count,
         "real_users": real_users,
-        "corpus_papers": len(corpus),
+        "corpus_papers": corpus_count,
         "corpus_db_count": db_count,
         "corpus_source": corpus_source,
         "corpus_last_intake": corpus_last_intake,

@@ -1,6 +1,6 @@
 # Docs Site — S3 + CloudFront at `docs.archimedes-arc.com`
 
-> **Status:** runbook. **Owner:** Dan Browne. **Updated:** 2026-08-31.
+> **Status:** runbook. **Owner:** Dan Browne. **Updated:** 2026-09-01.
 
 `docs/` **and the agent-generated `openwiki/` tree** are built into a static
 site by [`mkdocs.yml`](../../mkdocs.yml) (theme: mkdocs-material) and published
@@ -79,6 +79,17 @@ which now includes the docs-site statements (`s3:ListBucket` /
 ./infra/scripts/setup-github-oidc.sh            # dry run — prints what it would do
 ./infra/scripts/setup-github-oidc.sh --apply
 ```
+
+> **Also re-run it after any org/repo rename or transfer.** The same script owns
+> the role's *trust* policy, and the OIDC `sub` claim GitHub mints carries the
+> repository's current identity — in this repo's case the **id-qualified** form
+> (`repo:aprin-labs@284008417/archimedes@1236816811:ref:refs/heads/main`), not
+> the plain `repo:ORG/REPO` one. On 2026-09-01 the `a-apin` → `aprin-labs`
+> rename broke every deploy for ~3h on
+> `Not authorized to perform sts:AssumeRoleWithWebIdentity`, docs-site publish
+> included. The dry run prints the exact subjects it will trust; compare them
+> against CloudTrail (`AssumeRoleWithWebIdentity` → `userIdentity.userName` on
+> the failed event). The script's own header has the full story.
 
 Skipping this does not break the build. It does **not** silently skip either:
 once the bucket exists, a role that cannot read it gets a 403 from

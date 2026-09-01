@@ -498,7 +498,10 @@ _INJECTED_STALL_SECONDS = 30.0
 # refactor that stops going through it fails these tests loudly instead of
 # silently testing nothing. Internals are never patched.
 _LOCAL_READS = [
-    ("archimedes.agents.strategy_fusion.load_corpus", "corpus"),
+    # #1632/#1740: the corpus probe boundary moved from load_corpus (a full
+    # 18k-row ORM materialization whose abandoned-probe pileup aborted prod
+    # rev 214) to an ORM-free scalar count. Same stall semantics, safe read.
+    ("archimedes.services.corpus_service.count_corpus_papers", "corpus"),
     ("archimedes.services.corpus_service.get_paper_count", "corpus_db"),
     ("archimedes.services.corpus_service.get_corpus_meta", "corpus_meta"),
     ("archimedes.services.paper_rag.paper_rag_health", "paper_rag"),
@@ -550,7 +553,7 @@ def _fast_local_reads():
     from archimedes.services.paper_rag import PaperRAGHealth
 
     with (
-        patch("archimedes.agents.strategy_fusion.load_corpus", lambda *_a, **_k: [{"id": "p1"}]),
+        patch("archimedes.services.corpus_service.count_corpus_papers", lambda *_a, **_k: 1),
         patch("archimedes.services.corpus_service.get_paper_count", lambda *_a, **_k: 7),
         patch("archimedes.services.corpus_service.get_corpus_meta", lambda *_a, **_k: {"source": "db"}),
         patch(
@@ -573,7 +576,7 @@ class TestTheSixLocalReadsAreBoundedToo:
     """#1594: a stalled LOCAL read must not hold the endpoint either.
 
     MUTATION for every case below: restore the plain synchronous calls
-    (``corpus = load_corpus()``, the ``try: db_count = get_paper_count()``
+    (``corpus_count = count_corpus_papers()``, the ``try: db_count = get_paper_count()``
     block, and the three ``*_health()`` try-blocks) under the concurrent gather.
     Each test then blocks the event loop for the full 30s and fails on the
     budget assertion — including the ones whose read is "just a local DB query".
