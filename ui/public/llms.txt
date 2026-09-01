@@ -2,9 +2,9 @@
 
 > Agentic trading, grounded in research — settled on Arc. Archimedes turns a
 > natural-language investment intent into a research-grounded, rigor-gated portfolio
-> strategy backed by quantitative-finance literature, then paper-trades it, with the
-> reasoning trace commit-revealed on Arc testnet (chain ID 5042002) when anchoring
-> succeeds — read `arc_tx_hash` rather than assuming it did.
+> strategy backed by quantitative-finance literature. Traces are written; not every
+> trace is anchored on Arc testnet (chain ID 5042002) — read `arc_tx_hash` rather
+> than assuming it did.
 > Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped:
 > the contracts are deployed, the journey is gated off every shipped surface, and no
 > user vault has ever been created.
@@ -34,10 +34,11 @@ operations. Circle wallet passkeys control Circle wallets; they do not log in to
    `pending`, or `degenerate` (real returns exist but are a mathematically
    constant zero-variance series — broken data or a zero-trade backtest, never
    deployable); never infer admission from headline Sharpe alone.
-5. **Paper trade** — live today, simulated (no chain, no funds):
-   `POST /api/paper/deployments` with `{ "strategy_id": "..." }`, then
-   `GET /api/paper/deployments/{deployment_id}` to read performance and
-   `POST /api/paper/deployments/{deployment_id}/stop` to end it.
+5. **Paper books** — two books, neither is vault validation: the
+   executor ledger is not shipped (pending #1704), `paper_daily_returns` is
+   the graded track record the rigor gate sees, and `paper_agent_trades` is
+   the new executor ledger (signal-state index, not marked-to-market), so do
+   not round this up into paper trading validating the vault.
 6. **Wallet operations** — first link wallet using proof flow below. Publish/subscribe
    remain subject to live contract status advertised by agent manifest. Deploying into a
    vault is roadmap, not shipped: `POST /api/vaults/create` resolves and its contracts are
@@ -76,7 +77,7 @@ creates account session and never transfers wallet already linked to another use
 
 ## Funding test wallet
 
-Arc testnet uses USDC as gas. Faucet: **https://faucet.circle.com/**. No real funds.
+Arc testnet uses USDC as gas. Faucet: **https://faucet.circle.com/**. Generation charges $2 faucet USDC. No mainnet.
 
 ## Machine-readable references
 
