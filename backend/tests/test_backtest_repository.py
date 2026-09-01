@@ -617,6 +617,8 @@ def _legacy_get_all_daily_returns(session, strategy_ids: list[str]) -> dict[str,
                     if daily:
                         return daily
             except (_json.JSONDecodeError, KeyError):
+                # Malformed or shape-shifted artifact_json: fall through to the
+                # equity-curve fallback below, same as the production reader.
                 pass
         result = row.to_backtest_result()
         if result.equity_curve and len(result.equity_curve) > 1:
