@@ -242,7 +242,7 @@ jobs:
         #
         # *** ACTION REQUIRED (Dan): add the `VITE_CIRCLE_CLIENT_KEY` repo
         # secret (Settings → Secrets and variables → Actions → Secrets, repo
-        # `a-apin/archimedes`) before the first real image build after this
+        # `aprin-labs/archimedes`) before the first real image build after this
         # PR merges — until then this build-arg resolves to an empty string
         # (same as today) and the wallet UI ships broken. ***
         #
