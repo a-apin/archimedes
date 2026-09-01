@@ -347,6 +347,25 @@ jobs:
           [ "$fail" = 0 ] || exit 1
           echo "rich-health gate OK: regime=$regime strategy_count=$scount version=$version"
 
+      - name: Assert exactly one OpenSSL is mapped in the backend image (#1632)
+        # The image is the only place this can be checked honestly: the unit-test
+        # runner installs requirements-base.txt, but ONLY the built artifact has
+        # the real runtime linkage (libpq5 present, /deps laid out as it ships).
+        #
+        # Prod died ~10 min after every boot with a bare `Fatal Python error:
+        # Aborted` — a raw C abort(), no Python traceback, no glibc/terminate/SSL
+        # message — inside psycopg2 do_executemany on the OHLCV cache-write
+        # commit. psycopg2-binary vendors its own libssl/libcrypto next to the
+        # interpreter's, and two OpenSSL builds in one address space produce
+        # exactly that signature. requirements-base.txt now installs source-built
+        # psycopg2; this step imports ssl + psycopg2 + aiohttp inside the image
+        # and fails the build if /proc/self/maps names two distinct OpenSSLs.
+        #
+        # Deliberately on the RUNTIME image rather than a lockfile assertion:
+        # any future wheel from any dependency can vendor an OpenSSL without the
+        # word "psycopg2" appearing anywhere. This catches the class.
+        run: docker run --rm archimedes-backend:ci python -m archimedes.scripts.check_single_openssl
+
       - name: Validate nginx image boots + proxies (GET / and /health)
         # Runs on the same user-defined docker network as the backend
         # container above (container name `backend`, matching nginx.conf's
