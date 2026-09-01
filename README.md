@@ -1,7 +1,6 @@
 # Archimedes
 
-*The lever is academic research. The fulcrum is autonomous AI. The load is portfolio
-strategy, under scrutiny.*
+*Research. Rigor. Proof.*
 
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
 [![Settled on: Arc](https://img.shields.io/badge/settled%20on-Arc-2A4DD1.svg)](https://www.arc.network/)
