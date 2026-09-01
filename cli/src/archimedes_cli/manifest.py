@@ -21,6 +21,14 @@ EXIT_CODES = {
     "1": "GATE_FAILED — `verify` produced a verdict and it fails the gate",
     "2": "USAGE/AUTH — bad invocation, or no/expired session (run `archimedes login`)",
     "3": "NOT_IMPLEMENTED — the subcommand has no implementation in this version",
+    # 4 has existed in exits.py since #1481 but was missing from this table —
+    # an agent branching on the manifest would have read it as undefined. Fixed
+    # here rather than left inconsistent while 5-8 are added around it.
+    "4": "INCOMPLETE — `verify` got an answer but not every runnable leg could be evaluated; not a verdict",
+    "5": "PAYMENT_REQUIRED — `generate` got a 402; the x402 requirements are printed, pay in a browser and re-run",
+    "6": "ACCOUNT_ACTION_REQUIRED — `generate` got a 409; verify your email or connect a wallet, per the server's reason",
+    "7": "JOB_FAILED — the generation job reached a terminal state that is not `done`",
+    "8": "STILL_RUNNING — the CLI stopped waiting; the job is NOT cancelled and may still finish",
 }
 
 MANIFEST: dict = {
@@ -88,6 +96,50 @@ MANIFEST: dict = {
             "honesty": (
                 "checks the endpoint cannot honestly compute are reported not_evaluable "
                 "with the decisive reason — never silently passed, failed, or defaulted"
+            ),
+        },
+        "generate": {
+            "implemented": True,
+            "description": "Generate a rigor-gated strategy from a research brief and print its passport URL.",
+            "inputs": {
+                "BRIEF": {"positional": True, "format": "free text; omit it and use --brief-file instead"},
+                "--brief-file": {"format": "path, or '-' to read the brief from stdin"},
+                "--risk-appetite": {
+                    "default": "moderate",
+                    "choices": ["fixed_income", "conservative", "moderate", "aggressive", "hyper_risky"],
+                },
+                "--name": {"meaning": "optional name applied to the winning strategy only"},
+                "--n-candidates": {"default": 1, "min": 1, "meaning": "candidates the pipeline considers internally"},
+                "--model": {"meaning": "optional LLM model id; omit for the account's default free-tier model"},
+                "--no-stream": {"flag": True, "meaning": "skip SSE and poll the job endpoint instead"},
+                "--timeout": {"default": 900.0, "unit": "seconds", "meaning": "client-side wait budget, not a cancel"},
+                "--api-url": {
+                    "env": "ARCHIMEDES_API_URL",
+                    "default": "the cached session's URL, else https://archimedes-arc.com",
+                },
+                "--json": {"flag": True},
+            },
+            "output": {
+                "job_id": "str",
+                "state": "done|error|cancelled|stalled|running|queued — the server's own job state",
+                "strategy_id": "str|null — null is an honest absence, not a failure to report",
+                "passport_url": "str|null — the browser-readable strategy passport",
+                "events": "the pipeline events observed, in order, each {event, data}",
+            },
+            "auth": {
+                "session": "the cached cookie from `archimedes login`",
+                "api_key": {"env": "ARCHIMEDES_API_KEY", "sent_as": "Authorization: Bearer"},
+            },
+            "cost_class": (
+                "network: quote + start + SSE stream + job polls; requires session; "
+                "rate-limited 5/minute; MAY COST MONEY — the server's paywall decides, and a 402 "
+                "exits 5 without spending anything"
+            ),
+            "side_effects": "creates a generation job on the server; writes nothing locally",
+            "honesty": (
+                "holds no keys and signs no payment: a 402 is rendered verbatim (x402 requirements + "
+                "browser URL) and never acted on. Never claims a credit was restored unless the server "
+                "asserts it, and never reports a client-side wait timeout as a failed job (exit 8, not 7)"
             ),
         },
         "backtest": {

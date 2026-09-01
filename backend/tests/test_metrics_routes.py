@@ -437,10 +437,15 @@ async def test_get_funnel_defaults_to_visitor_source():
     assert resp.status_code == 200
     data = resp.json()
     assert data["source"] == "visitor"
+    # Stage vocabulary AND order (#1643 changed both — the free path made a
+    # visitor generate before connecting a wallet, so the old order published a
+    # step_conversion against a stage that no longer precedes its successor).
     assert [s["stage"] for s in data["stages"]] == [
         "landed",
-        "wallet_connected",
         "generation_started",
+        "free_generation_used",
+        "wallet_gate_shown",
+        "wallet_connected",
         "vault_deployed",
     ]
     # #788: the per-stage agent_type breakdown rides alongside the unchanged aggregate.

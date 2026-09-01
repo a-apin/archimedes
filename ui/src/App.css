@@ -9213,6 +9213,341 @@ body:has(.public-site) {
 	opacity: 0.75;
 }
 
+/* ============================================================
+   #1647 — Cookie / browser-storage consent (component-scoped)
+
+   Appended as one block at the very end of App.css and scoped to
+   `.consent-*` and `.storage-disclosure*` only, so it cannot
+   collide with the other UI work in flight against this file.
+   Do not interleave these rules with the blocks above.
+
+   PALETTE NOTE. `.consent-banner` mounts in main.jsx as a sibling
+   of <App/>, i.e. OUTSIDE both `.public-site` and `.app-site`, so
+   it resolves the BASE tokens (--surface-2 #16161a, --text-1
+   #fafafa, --text-2 #a1a1aa, --text-3 #8a8a93 — the last two are
+   the ≥4.5:1 pair pinned in the :root comment at the top of this
+   file). `.storage-disclosure` renders inside `.public-site` and
+   resolves that shell's palette instead. Neither uses --text-4 as
+   a text colour.
+
+   Nothing here portals to document.body, so a11y.test.js's
+   portal-region walk does not apply to this block.
+   ============================================================ */
+
+.consent-banner {
+	position: fixed;
+	z-index: 60;
+	inset: auto 0 0 0;
+	background: var(--surface-2);
+	border-top: 1px solid var(--field-border);
+	color: var(--text-1);
+	font-family: var(--sans);
+	max-height: 85vh;
+	overflow-y: auto;
+	box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.consent-banner__inner {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 1.25rem;
+	align-items: flex-start;
+	justify-content: space-between;
+	max-width: 1180px;
+	margin: 0 auto;
+	padding: 1.1rem 1.5rem;
+}
+
+.consent-banner__copy {
+	flex: 1 1 26rem;
+	min-width: 0;
+}
+
+.consent-banner__title {
+	font-size: 1rem;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+	margin-bottom: 0.35rem;
+	color: var(--text-1);
+}
+
+.consent-banner__copy p {
+	color: var(--text-2);
+	font-size: 0.875rem;
+	line-height: 1.55;
+	max-width: 62ch;
+}
+
+.consent-banner__note {
+	margin-top: 0.4rem;
+	color: var(--text-3);
+	font-size: 0.8125rem;
+}
+
+.consent-banner__note a,
+.consent-banner__copy a {
+	color: var(--accent);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+
+.consent-banner__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: center;
+}
+
+.consent-banner__panel {
+	border-top: 1px solid var(--glass-border);
+	max-width: 1180px;
+	margin: 0 auto;
+	padding: 1rem 1.5rem 1.4rem;
+}
+
+.consent-btn {
+	appearance: none;
+	cursor: pointer;
+	font-family: var(--sans);
+	font-size: 0.8125rem;
+	font-weight: 600;
+	line-height: 1;
+	padding: 0.6rem 0.95rem;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--field-border);
+	background: transparent;
+	color: var(--text-1);
+}
+
+.consent-btn:hover {
+	border-color: var(--accent);
+}
+
+.consent-btn--primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--canvas);
+}
+
+.consent-btn--primary:hover {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+}
+
+.consent-btn--quiet {
+	border-color: transparent;
+	color: var(--text-2);
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.consent-btn--quiet:hover {
+	color: var(--text-1);
+	border-color: transparent;
+}
+
+/* The banner sits outside .public-site / .app-site, so neither shell's
+   focus ring reaches it. Without this rule its controls would have no
+   visible focus indicator at all (WCAG 2.4.7). */
+.consent-banner :focus-visible {
+	outline: 3px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: var(--radius-sm);
+}
+
+.consent-choices__set {
+	border: 0;
+	display: grid;
+	gap: 1rem;
+}
+
+.consent-choices__legend {
+	font-size: 0.75rem;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--text-3);
+	padding: 0;
+	margin-bottom: 0.5rem;
+}
+
+.consent-choices__row {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 0.75rem;
+	align-items: start;
+}
+
+.consent-choices__input {
+	width: 1.05rem;
+	height: 1.05rem;
+	margin-top: 0.2rem;
+	accent-color: var(--accent);
+}
+
+.consent-choices__label {
+	display: inline-block;
+	font-size: 0.9375rem;
+	font-weight: 600;
+	color: var(--text-1);
+	cursor: pointer;
+}
+
+.consent-choices__summary {
+	color: var(--text-2);
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	margin-top: 0.15rem;
+	max-width: 70ch;
+}
+
+.consent-choices__keys {
+	list-style: none;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	margin-top: 0.5rem;
+	padding: 0;
+}
+
+.consent-choices__keys li {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 0.4rem;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-sm);
+	padding: 0.2rem 0.45rem;
+}
+
+.consent-choices__keys code {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	color: var(--text-1);
+	overflow-wrap: anywhere;
+}
+
+.consent-choices__keys span {
+	font-size: 0.6875rem;
+	color: var(--text-3);
+}
+
+.consent-choices__actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem;
+	margin-top: 1rem;
+}
+
+.consent-choices__status {
+	color: var(--text-3);
+	font-size: 0.8125rem;
+	margin: 0;
+}
+
+.storage-disclosure__group {
+	margin-top: 2rem;
+}
+
+.storage-disclosure__group-title {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.6rem;
+	font-size: 1.0625rem;
+	color: var(--text-1);
+}
+
+.storage-disclosure__group-title span {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	color: var(--text-3);
+}
+
+.storage-disclosure__group-note {
+	color: var(--text-2);
+	font-size: 0.875rem;
+	line-height: 1.55;
+	margin-top: 0.35rem;
+	max-width: 78ch;
+}
+
+/* Wide table, narrow phone: the table scrolls inside its own box so the
+   page body never scrolls sideways. */
+.storage-disclosure__scroll {
+	margin-top: 0.85rem;
+	overflow-x: auto;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-md);
+}
+
+.storage-disclosure__table {
+	border-collapse: collapse;
+	width: 100%;
+	min-width: 52rem;
+	font-size: 0.8125rem;
+	text-align: left;
+}
+
+.storage-disclosure__caption {
+	text-align: left;
+	padding: 0.6rem 0.85rem;
+	color: var(--text-3);
+	font-size: 0.75rem;
+}
+
+.storage-disclosure__table th,
+.storage-disclosure__table td {
+	border-top: 1px solid var(--glass-border);
+	padding: 0.6rem 0.85rem;
+	vertical-align: top;
+	color: var(--text-2);
+	line-height: 1.5;
+}
+
+.storage-disclosure__table thead th {
+	color: var(--text-1);
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.storage-disclosure__table tbody th {
+	color: var(--text-1);
+	font-weight: 500;
+}
+
+.storage-disclosure__table code {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	overflow-wrap: anywhere;
+}
+
+.storage-disclosure__error {
+	margin-top: 1rem;
+	padding: 0.75rem 0.9rem;
+	border: 1px solid var(--negative);
+	border-radius: var(--radius-sm);
+	color: var(--negative);
+	font-size: 0.875rem;
+}
+
+.storage-disclosure .consent-choices {
+	margin-top: 2.25rem;
+	padding-top: 1.5rem;
+	border-top: 1px solid var(--glass-border);
+}
+
+@media (max-width: 700px) {
+	.consent-banner__inner {
+		padding: 1rem;
+	}
+
+	.consent-banner__actions {
+		width: 100%;
+	}
+
+	.consent-banner__panel {
+		padding: 1rem 1rem 1.25rem;
+
    Strategy Passport redesign — issue #1646
    ═══════════════════════════════════════════════════════════════════════════
 

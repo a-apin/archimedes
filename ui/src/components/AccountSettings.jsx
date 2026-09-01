@@ -12,6 +12,7 @@ import { canUnlink, connectableProvidersIntro, connectedActionErrorState, connec
 import { linkErrorMessage } from '../auth-errors'
 import { getProviders, linkSocial, listAccounts, unlinkAccount } from '../auth-client'
 import { useAuth } from '../AuthContext'
+import { canStore } from '../storage-consent.js'
 import {
   changeEmail,
   changePassword,
@@ -255,7 +256,10 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
       // PENDING_LINK_KEY above. Both callbacks land back on THIS page — the
       // /callback/:id endpoint (library-managed CSRF state, not this code)
       // is what actually decides success/failure before either is reached.
-      sessionStorage.setItem(PENDING_LINK_KEY, provider)
+      // Strictly necessary (#1647): this is the anti-replay check on the
+      // linking flow, so canStore always allows it. Gated anyway so that no
+      // write in ui/src is ungated.
+      if (canStore(PENDING_LINK_KEY)) sessionStorage.setItem(PENDING_LINK_KEY, provider)
       await linkSocial(provider, `${origin}/app/account?linked=${provider}`, `${origin}/app/account`)
     } catch (err) {
       // The redirect never happened — clear the marker so a later, unrelated

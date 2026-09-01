@@ -32,6 +32,21 @@ RECIPIENT = "0x00000000000000000000000000000000000000a1"
 _GIBBERISH_BODY = {"brief": {"intent": "zxcvbnm qwiopasd lkjhgfdsa", "risk_appetite": "moderate"}}
 
 
+@pytest.fixture(autouse=True)
+def _paid_tier_only(monkeypatch):
+    """Switch the #1643 free allowance OFF for this whole file.
+
+    The ordering these tests pin is "cheap brief rejection runs BEFORE the
+    payment gate", and the flag-on tests below prove it by showing a valid
+    brief actually reaching the paywall. Under the default free allowance the
+    valid brief would be served free instead and that half of the ordering
+    proof would evaporate. ``FREE_GENERATIONS_PER_ACCOUNT=0`` restores the
+    pre-#1643 gate exactly; the free path is covered in
+    ``test_free_generation_gate.py``.
+    """
+    monkeypatch.setenv("FREE_GENERATIONS_PER_ACCOUNT", "0")
+
+
 def _client() -> TestClient:
     from archimedes.main import app
 

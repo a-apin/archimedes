@@ -120,7 +120,7 @@ unset, so the boundary holds under both answers.
 | "Arc has no mainnet yet; mainnet launch, real-funds custody, and the regulatory architecture are roadmap" | `TRUE` | `README.md:44`, true on 2026-08-31. **Date-gated:** #1241 records this as false from Sept 16. Re-check on that date; nothing in CI will tell you. |
 | "Payments are real (USDC on Arc); settlement is stubbed pending mainnet" | `TRUE` | Two switches, and the line is right about both. Generation settles for real where deployed (`backend/archimedes/services/generation_payment.py:56`, `:72`); marketplace settlement rides the separate `PAYMENTS_DRY_RUN`, which defaults to dry-run (`backend/archimedes/services/generation_payment.py:74`). |
 | "Not every reasoning trace is anchored on-chain ... check `arc_tx_hash` before treating a trace as anchored" | `TRUE` | `README.md:217`. This is the general form the `ui/index.html` meta tags are missing. |
-| CLI exit codes are a stable contract, published machine-readably — `0` passed, `1` gate ran and failed, `2` bad input or no session, `3` not implemented | `OVER-CLAIMED` | **The published table is missing a code the CLI actually exits with.** `cli/src/archimedes_cli/exits.py:33` defines `INCOMPLETE = 4` (added for #1481: the gate was reached but not every runnable leg could be evaluated), and `cli/src/archimedes_cli/cli.py:542` exits with it on the real `verify` path. `cli/src/archimedes_cli/manifest.py:19` publishes only `0`/`1`/`2`/`3`. So the machine-readable contract omits a value the tool emits, and `exits.py`'s own header — "someone will write `archimedes verify` into a CI job and branch on the result" — names exactly the reader this harms: an agent branching on the published table hits an undocumented `4`. The four *documented* codes are accurate, and the `AUTH`-reuses-`2` rationale is sound (`exits.py:25`); the defect is completeness, not correctness. |
+| CLI exit codes are a stable contract, published machine-readably | `CHANGED` | **Was `OVER-CLAIMED`: the published table omitted a code the CLI actually exits with.** `cli/src/archimedes_cli/exits.py:33` defines `INCOMPLETE = 4` (added for #1481) and `cli.py:587` exits with it on the real `verify` path, but `cli/src/archimedes_cli/manifest.py:19` published only `0`/`1`/`2`/`3` — so an agent branching on the machine-readable table hit an undocumented `4`. Fixed by #1705 (issue #1697), the `archimedes generate` work, which published `4` and added `5`–`8` for the new command's outcomes (`exits.py:48` `PAYMENT_REQUIRED`, `:77` `STILL_RUNNING`). The completeness defect is now guarded rather than pinned: `test_claims_ledger.TestLedgerClaimsMatchTheTree::test_the_published_exit_code_table_covers_every_code_the_cli_defines` derives the expected set from `exits.py`, so a future code added without publishing it fails. The originally-documented four were always accurate, and the `AUTH`-reuses-`2` rationale is sound (`exits.py:25`); the defect was completeness, not correctness. |
 
 ## Agent surfaces — `ui/public/llms.txt`, `ui/public/.well-known/agent.json`
 
@@ -204,15 +204,16 @@ provider, which is what the rows below say.
 ## Defects this audit found
 
 Three, all left for a separate change rather than smuggled into a docs PR. The first is the
-one worth acting on: it is a live machine-readable contract that under-publishes itself.
+one worth acting on: it was a live machine-readable contract that under-published itself.
 
-0. **`cli/src/archimedes_cli/manifest.py:19` omits exit code `4`.** `exits.py:33` defines
-   `INCOMPLETE = 4` and `cli.py:542` exits with it, but the published `EXIT_CODES` table
-   stops at `3`. The CLI's whole stated reason for pinning exit codes is that a CI job will
-   branch on them, so the one surface a script actually reads is the one that is
-   incomplete. Adding the row to `EXIT_CODES` is a two-line fix; it is a `cli/` change, not
-   a docs change, so it is not in this PR. `TestPublishedExitCodesStillOmitIncomplete`
-   fails the moment it is fixed, which forces this row to move with it.
+0. ~~**`cli/src/archimedes_cli/manifest.py:19` omits exit code `4`.**~~ **FIXED (#1705).**
+   `exits.py:33` defined `INCOMPLETE = 4` and `cli.py:587` exited with it, but the
+   published `EXIT_CODES` table stopped at `3` — the one surface a script actually reads
+   was the incomplete one, against the CLI's whole stated reason for pinning exit codes.
+   The `archimedes generate` work published `4` and added `5`–`8` alongside it. The
+   self-retiring pin that forced this row to move (`TestPublishedExitCodesStillOmitIncomplete`)
+   has been replaced by a real guard deriving the published set from `exits.py`, so the
+   next unpublished code fails CI instead of waiting for an audit to notice.
 
 1. **`ui/src/components/Landing.jsx:78`** — the comment block above `BOARD_FDR` says the
    figure is "served publicly — `GET /api/selection-bias/gate` returns `board_level_fdr`

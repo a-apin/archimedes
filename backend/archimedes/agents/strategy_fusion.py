@@ -616,9 +616,31 @@ def _manifest_path() -> Path | None:
 def load_corpus(path: Path | None = None) -> list[CorpusPaper]:
     """Load corpus papers — DB-backed, with file-based fallback.
 
-    Tries the DB first. If the papers table is empty, falls back to the
-    static manifest file (backward-compat for local dev without DB seeding).
+    Precedence:
+
+    1. **An explicit ``path`` is authoritative.** That file, and nothing else:
+       the DB is not consulted at all, and a ``path`` that does not exist yields
+       an empty corpus rather than silently substituting another source. A
+       caller who names a manifest is answering "which papers", not offering a
+       hint (issue #1640 — the argument used to be discarded whenever the
+       ``papers`` table happened to be non-empty, which made the result depend
+       on ambient database state the caller never asked about).
+    2. With no ``path``: the DB first — every production caller takes this
+       branch, and it is the source of record post-#1240 (seeded from the
+       manifest, then extended by arXiv intake, then embargo- and decay-filtered
+       by ``load_papers_from_db``).
+    3. Still no ``path`` and an empty/unavailable DB: the file fallback resolved
+       by ``_manifest_path()``, which honours ``ARCHIMEDES_CORPUS_MANIFEST``.
+       Backward-compat for local dev without DB seeding.
+
+    Note what rule 1 does *not* say: ``ARCHIMEDES_CORPUS_MANIFEST`` is not a
+    DB bypass. It names where the *file fallback* reads from — production sets
+    it (``infra/ecs.tf``, ``docker-compose.yml``) while still wanting the DB —
+    so it is consulted only once step 2 has come up empty.
     """
+    if path is not None:
+        return _load_corpus_from_file(path)
+
     # DB path first
     try:
         from archimedes.services.corpus_service import load_papers_from_db
