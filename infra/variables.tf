@@ -125,7 +125,13 @@ variable "github_oauth_enabled" {
 # ARCHIMEDES_TREASURY_WALLET default in `.env.example`.
 
 variable "platform_admin_wallets" {
-  description = "Space/comma-separated wallet addresses allowed to publish `is_example` strategies to the marketplace (backend/archimedes/models/strategy_generators.py:wallet_can_publish; issue #1037). Public addresses, not secrets."
+  description = "Space/comma-separated wallet addresses allowed to publish `is_example` strategies to the marketplace (backend/archimedes/models/strategy_generators.py:wallet_can_publish; issue #1037). Also EVIDENCE for the admin dashboard gate since #1648: an account is admin when any of its OWN linked wallets is listed. Public addresses, not secrets."
+  type        = string
+  default     = ""
+}
+
+variable "platform_admin_accounts" {
+  description = "Space/comma-separated canonical account identifiers (Better Auth `auth_users.id` values and/or emails) granted the admin cost/ops dashboard (backend/archimedes/services/platform_admin.py; issue #1648). The account-keyed allowlist: unlike `platform_admin_wallets` it survives a wallet unlink and needs no database read, so it is the break-glass during a datastore incident. Derive the value with backend/scripts/derive_platform_admin_accounts.py. Not secrets, but account-identifying — same `TF_VAR_` drift gotcha as the wallet list: re-pass it on every apply or it silently empties."
   type        = string
   default     = ""
 }

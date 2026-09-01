@@ -32,7 +32,7 @@ these five levels:
 | `anonymous` | Nothing. No cookie, no header. | N/A — never 401s on auth grounds. |
 | `account-session` | A live Better Auth session — the `better-auth.session_token` cookie, verified by FastAPI against the colocated Better Auth sidecar's `GET /api/auth/get-session` on every request. | `401` with no/expired session. |
 | `linked-wallet` | An `account-session`, **plus** a wallet verified-linked to that account (`require_linked_wallet`). | `401` with no session; `403` with a session but no linked wallet. |
-| `platform-admin` | A `linked-wallet`, **plus** that wallet listed in the `PLATFORM_ADMIN_WALLETS` env allowlist. Grants **no fund/custody/treasury authority** — it is a read gate on the internal cost/ops dashboard, nothing more. | `401` no session; `403` linked-but-non-admin wallet. |
+| `platform-admin` | A signed-in account that is a platform admin — listed in `PLATFORM_ADMIN_ACCOUNTS` (canonical `auth_users.id`/email), **or** holding a linked wallet listed in `PLATFORM_ADMIN_WALLETS`. Keyed on the account, never on the request's `X-Wallet-Address` header (#1648). Grants **no fund/custody/treasury authority** — it is a read gate on the internal cost/ops dashboard, nothing more. | `401` no session; `403` signed-in non-admin. |
 | `internal-key` | A matching `X-Internal-Agent-Key` header, compared with `hmac.compare_digest` against `INTERNAL_AGENT_API_KEY`. Fails closed (rejects everyone) if that env var is unset. Used only by internal services (the agent runner) — never reachable from the browser UI. | `403` on any missing/wrong key. |
 
 Each level nests into the one above it (`linked-wallet` implies
