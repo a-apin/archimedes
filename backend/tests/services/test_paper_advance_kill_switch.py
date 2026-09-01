@@ -11,9 +11,10 @@ backend container dying with ``Fatal Python error: Aborted`` inside psycopg2
 after boot — and its replacement dies the same way: a cold-fleet spiral.
 
 The only lever that works against an uncatchable abort is not running the code.
-That makes this switch load-bearing, and a switch that is load-bearing has to
-be shown to actually *stop* the work — not merely to exist. Every test here is
-paired with the mutation it would catch.
+That makes this switch load-bearing. #1725 defaulted it ON so unset was a
+no-op; task-def :211 proved that hole (cloned last-good, name absent, tick
+started, /health 502 at 240s). Unset is now OFF. Every test here is paired
+with the mutation it would catch.
 
 Hermetic: no DB, no network, no app import beyond the service module. The
 loop's ``asyncio.sleep`` is stubbed to break out after exactly one tick.
@@ -42,11 +43,18 @@ class _StopLoop(Exception):
 
 
 class TestAdvanceEnabledValueContract:
-    def test_unset_is_on_so_the_flag_is_a_no_op_by_default(self, monkeypatch):
-        """Shipping this flag must not change behaviour anywhere it is not
-        explicitly set. Unset means ON."""
+    def test_unset_is_off_so_a_cloned_task_def_cannot_tick(self, monkeypatch):
+        """Task-def :211 died because unset meant ON. Unset now means OFF."""
         monkeypatch.delenv("PAPER_ADVANCE_ENABLED", raising=False)
-        assert paper_trading.advance_enabled() is True
+        assert paper_trading.advance_enabled() is False
+
+    def test_the_getenv_default_literal_is_false(self):
+        """Flip-back of the default cannot be a docstring-only change."""
+        from pathlib import Path
+
+        src = Path(paper_trading.__file__).read_text(encoding="utf-8")
+        assert 'os.getenv("PAPER_ADVANCE_ENABLED", "false")' in src
+        assert 'os.getenv("PAPER_ADVANCE_ENABLED", "true")' not in src
 
     @pytest.mark.parametrize("value", ["false", "FALSE", "False", "0", "no", "off", "  off  ", "OFF"])
     def test_falsy_literals_disable_case_and_whitespace_insensitively(self, monkeypatch, value):
@@ -54,14 +62,11 @@ class TestAdvanceEnabledValueContract:
         assert paper_trading.advance_enabled() is False
 
     @pytest.mark.parametrize("value", ["true", "TRUE", "1", "yes", "on", ""])
-    def test_everything_else_stays_on(self, monkeypatch, value):
-        """Deliberately fail-SAFE in the direction of running.
+    def test_explicit_non_falsy_values_still_enable(self, monkeypatch, value):
+        """An explicit value that is not a recognised falsy literal still enables.
 
-        The dangerous mistake in this repo's history is the opposite one:
-        ``AGENT_DRY_RUN`` treated presence as truth, so ``=1`` silently meant
-        LIVE signing. Here the risk is inverted — a typo that silently froze
-        every user's track record would be a claim quietly suspended. So only
-        the recognised falsy literals disable; ``"flase"`` keeps ticking.
+        Unset is OFF (see above). A present-but-typoed value is a different
+        mistake — it is not the :211 cloned-task-def hole.
         """
         monkeypatch.setenv("PAPER_ADVANCE_ENABLED", value)
         assert paper_trading.advance_enabled() is True
@@ -170,18 +175,19 @@ class TestLoopHonoursTheSwitch:
         assert sleeps[0] == 0.0  # startup delay, as set
         assert sleeps[1] == 24 * 3600.0  # the full interval — not a hot spin
 
-    def test_on_by_default_still_runs_the_work(self, monkeypatch):
-        """MUTATION CHECK for every assertion above.
+    def test_unset_skips_the_work(self, monkeypatch):
+        """The :211 hole: cloned task-def, name absent, must not advance."""
+        advanced, _ = _drive_one_tick(monkeypatch, enabled_env=None)
+
+        assert advanced == 0, "unset PAPER_ADVANCE_ENABLED must not start the tick"
+
+    def test_explicit_true_runs_the_work(self, monkeypatch):
+        """MUTATION CHECK for every skip assertion above.
 
         Without this, a gate that disabled the tick *unconditionally* — or a
         loop body accidentally deleted — would pass the whole disabled-path
         suite. This is the test that fails if the flag stops being a flag.
         """
-        advanced, _ = _drive_one_tick(monkeypatch, enabled_env=None)
-
-        assert advanced == 1, "the default (unset) path must still advance ledgers"
-
-    def test_explicit_true_runs_the_work(self, monkeypatch):
         advanced, _ = _drive_one_tick(monkeypatch, enabled_env="true")
 
         assert advanced == 1
@@ -191,10 +197,11 @@ class TestSwitchIsPulledInTheDeployedConfig:
     """The mitigation is only real if the deploy path actually sets it.
 
     A code-level kill switch that nobody pulled is the #1632 outage still
-    running. This reads the committed task definition rather than trusting the
-    PR description — and it is deliberately written to FAIL when the flag is
-    flipped back, so the flip-back cannot happen without also deleting this
-    test and the terraform comment together.
+    running. ``infra/ecs.tf`` is the terraform pin; ``deploy.yml`` is the
+    path that actually ships (it clones the live task-def and does not
+    apply terraform). Both must stay false. These tests are written to
+    FAIL on flip-back, so the tick cannot come back without deleting the
+    tests and the comments together.
     """
 
     def test_ecs_task_definition_pins_it_false_with_the_incident_named(self):
@@ -210,3 +217,15 @@ class TestSwitchIsPulledInTheDeployedConfig:
         # temporary mitigation becomes permanent by forgetting.
         assert "#1632" in source
         assert "TEMPORARY" in source
+        assert "deploy.yml" in source, (
+            "ecs.tf no longer names deploy.yml as the path that actually ships — "
+            "a terraform-only pin is how last-good 011b6bfc kept flapping"
+        )
+
+    def test_deploy_yml_rewrite_is_the_shipping_pin(self):
+        from pathlib import Path
+
+        deploy = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "deploy.yml"
+        assert "ecs_rewrite_task_def.py" in deploy.read_text(), (
+            "deploy.yml no longer invokes the rewrite that pins PAPER_ADVANCE_ENABLED=false"
+        )
