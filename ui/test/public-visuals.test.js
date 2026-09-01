@@ -466,6 +466,11 @@ test("public announcement and landing footer do not say unqualified No real fund
 	assert.match(landing, /Generation fee is real testnet USDC/);
 });
 
+test("landing FAQ does not name the unmerged paper_agent_trades table as a visitor path", () => {
+	assert.doesNotMatch(landing, /paper_agent_trades/);
+	assert.match(landing, /paper_daily_returns is the graded track record/);
+});
+
 test("architecture page does not quote a curated pass count, including zero", () => {
 	assert.doesNotMatch(architecture, /Not one paper-derived/);
 	assert.doesNotMatch(architecture, /clears our bar/);

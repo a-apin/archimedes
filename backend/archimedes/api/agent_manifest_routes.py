@@ -152,11 +152,10 @@ async def get_agent_manifest():
         "blurb": (
             "Turns a natural-language investment intent into a research-grounded, "
             "rigor-gated portfolio strategy on Arc public testnet "
-            "(chain ID 5042002). Generation is not anchored on-chain. Paper "
-            "trading, when used, is simulated: paper_daily_returns is the "
-            "graded track record the rigor gate sees; paper_agent_trades "
-            "(PR #1704, not on main) is an executor ledger, not marked-to-market; "
-            "neither is on-chain "
+            "(chain ID 5042002). Generation is not anchored on-chain. Simulated "
+            "paper deployments are live: paper_daily_returns is the "
+            "graded track record the rigor gate sees. paper_agent_trades "
+            "(PR #1704, not on main) is not a live path. Neither is on-chain "
             "execution proof. Executing strategies in non-custodial USDC "
             "vaults on Arc is roadmap, not shipped."
         ),
@@ -273,11 +272,10 @@ async def get_agent_manifest():
                     "verify": "POST /api/rigor/verify",
                 },
             },
-            # Paper trading is simulated (no chain, no funds) and is the only
-            # shipped execution path. It is not vault proof: paper_daily_returns
-            # is the graded track record the rigor gate sees; paper_agent_trades
-            # is an executor ledger (PR #1704, not on main). `deploy` below is
-            # roadmap — no user vault has ever been created.
+            # Simulated paper deployments (POST /api/paper/deployments) are live.
+            # The graded book is paper_daily_returns. paper_agent_trades is an
+            # executor ledger from PR #1704 and is not on main — status "live"
+            # below does not advertise that table. `deploy` is roadmap.
             "paper": {
                 "status": "live",
                 "auth_required": True,

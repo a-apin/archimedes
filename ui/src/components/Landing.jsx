@@ -179,7 +179,7 @@ const FAQS = [
 	{
 		question: "Does Archimedes trade for me?",
 		answer:
-			"No. Today Archimedes generates, gates, and records strategies. Paper trading, when used, is simulated and is not on-chain execution proof: paper_daily_returns is the graded track record the rigor gate sees; paper_agent_trades is an executor ledger, not marked-to-market, and is not on this deployment. Neither is ERC-4626 proof. Do not round this up into “paper trading validates on-chain execution.” It never takes the other side of a trade.",
+			"No. Today Archimedes generates, gates, and records strategies. Paper trading, when used, is simulated: paper_daily_returns is the graded track record the rigor gate sees, not on-chain execution proof. It never takes the other side of a trade.",
 	},
 	{
 		question: "Is this running with real money?",

@@ -2,9 +2,9 @@
 
 > Turns a natural-language investment intent into a research-grounded,
 > rigor-gated portfolio strategy on Arc public testnet (chain ID 5042002).
-> Generation is not anchored on-chain. Paper trading, when used, is simulated:
-> `paper_daily_returns` is the graded track record the rigor gate sees;
-> `paper_agent_trades` is an executor ledger, not marked-to-market; neither is
+> Generation is not anchored on-chain. Simulated paper deployments are live:
+> `paper_daily_returns` is the graded track record the rigor gate sees.
+> `paper_agent_trades` (PR #1704, not on main) is not a live path. Neither is
 > on-chain execution proof. Do not round this up into paper trading validating
 > on-chain execution.
 > Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped:
@@ -36,12 +36,12 @@ operations. Circle wallet passkeys control Circle wallets; they do not log in to
    `pending`, or `degenerate` (real returns exist but are a mathematically
    constant zero-variance series — broken data or a zero-trade backtest, never
    deployable); never infer admission from headline Sharpe alone.
-5. **Paper trade** — live today, simulated (no chain, no funds). Two books,
-   neither is on-chain execution proof ([PR #1704 comment](https://github.com/a-apin/archimedes/pull/1704#issuecomment-5493036672)):
-   `paper_daily_returns` is the graded track record the rigor gate sees;
-   `paper_agent_trades` is an executor ledger / signal-state index (not on
-   main). Do not round this up into “paper trading validates the vault” —
-   vault execution is roadmap, not shipped.
+5. **Paper trade** — live today as simulated deployments
+   (`POST /api/paper/deployments`). The live graded book is `paper_daily_returns`.
+   `paper_agent_trades` is an executor ledger (PR #1704, not on main) and is
+   **not** this step. Neither is on-chain execution proof. Do not round this
+   up into “paper trading validates the vault” — vault execution is roadmap,
+   not shipped.
    `POST /api/paper/deployments` with `{ "strategy_id": "..." }`, then
    `GET /api/paper/deployments/{deployment_id}` to read performance and
    `POST /api/paper/deployments/{deployment_id}/stop` to end it.

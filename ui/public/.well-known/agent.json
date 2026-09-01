@@ -1,7 +1,7 @@
 {
   "schema": "a2a-agent-card (informal, simplified)",
   "name": "Archimedes",
-  "description": "Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy on Arc public testnet (chain ID 5042002). Generation is not anchored on-chain. Paper trading, when used, is simulated: paper_daily_returns is the graded track record the rigor gate sees; paper_agent_trades (PR #1704, not on main) is an executor ledger, not marked-to-market; neither is on-chain execution proof. Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped.",
+  "description": "Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy on Arc public testnet (chain ID 5042002). Generation is not anchored on-chain. Simulated paper deployments are live: paper_daily_returns is the graded track record the rigor gate sees. paper_agent_trades (PR #1704, not on main) is not a live path. Neither is on-chain execution proof. Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped.",
   "url": "https://archimedes-arc.com",
   "version": "0.1.0",
   "provider": {
@@ -111,7 +111,7 @@
         "read": "GET /api/paper/deployments/{deployment_id}",
         "stop": "POST /api/paper/deployments/{deployment_id}/stop"
       },
-      "note": "Simulated: no chain, no funds \u2014 and the only execution path this product has shipped. Two books, neither is on-chain execution proof (PR #1704 comment https://github.com/a-apin/archimedes/pull/1704#issuecomment-5493036672): paper_daily_returns is the graded track record the rigor gate sees; paper_agent_trades is an executor ledger / signal-state index, not marked-to-market, and that table is not on main. Do not round this up into paper trading validating a vault \u2014 vault execution is roadmap, not shipped. The deploy group's route resolves, but putting a strategy into an on-chain vault is roadmap, not shipped, and no user vault has ever been created. Arc is a testnet whose USDC comes from a faucet in any case."
+      "note": "Simulated paper deployments (POST /api/paper/deployments) are live: no chain, no funds. status live names that path. The graded book is paper_daily_returns \u2014 the track record the rigor gate sees, not on-chain execution proof. paper_agent_trades is an executor ledger / signal-state index from PR #1704 and is not on main; it is not what this group advertises. Do not round this up into paper trading validating a vault \u2014 vault execution is roadmap, not shipped. The deploy group's route resolves, but putting a strategy into an on-chain vault is roadmap, not shipped, and no user vault has ever been created. Arc is a testnet whose USDC comes from a faucet in any case."
     },
     "deploy": {
       "status": "roadmap",
@@ -149,7 +149,7 @@
     {
       "id": "paper-trade",
       "name": "Paper trade",
-      "description": "Deploy a strategy to a simulated paper portfolio and read its running performance. No chain, no funds. paper_daily_returns is the graded track record the rigor gate sees; it is not on-chain execution proof. Do not round this up into paper trading validating a vault — vault execution is roadmap, not shipped.",
+      "description": "Simulated paper deployments (POST /api/paper/deployments) are live. The graded book is paper_daily_returns; it is not on-chain execution proof. paper_agent_trades (PR #1704) is not on main and is not this skill. Vault execution is roadmap, not shipped.",
       "status": "live"
     },
     {

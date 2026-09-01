@@ -132,7 +132,7 @@ Each step, expressed as the story the user is living:
 ### ② Rigor-gate
 
 > *"I see whether the proposed strategy *survives* a battery of statistical tests
-> before I'm asked to deploy it. If it doesn't pass — the strategy is preserved in
+> before I open the passport. If it doesn't pass — the strategy is preserved in
 > a 'considered but rejected' bucket with the reasoning intact, so I can see what
 > was tried. If it passes, the verdict cards (DSR, PBO, OOS Sharpe, look-ahead
 > audit) are visible with plain-English explanations next to each."*
@@ -228,9 +228,9 @@ user moves.
 > I might trust it, before I'm asked to connect anything."*
 
 **Surfaces:** product framing (Linus-for-q-fin tagline), the 5-step spine
-visualization, the wedge (research-grounded + rigor-gated + provenance-anchored),
-the honest-framing statement (testnet posture, no-alpha-promise). Big CTA: **Generate
-a strategy** (no wallet required).
+visualization, the wedge (research-grounded + rigor-gated; generation is not
+anchored on-chain), the honest-framing statement (testnet posture, no-alpha-promise).
+Big CTA: **Generate a strategy** (no wallet required).
 
 ### `/generate` Generate (the new primary action)
 
@@ -240,14 +240,9 @@ a strategy** (no wallet required).
 
 **Surfaces:** the natural-language brief input + optional structured inputs (asset
 class, risk, horizon) + the live SSE debate stream (proposer pool → bull/bear round →
-deterministic critics → K=1 winner + considered-rejects) + the
-result card (strategy spec, citations, rigor verdict, deploy CTA) + the
-**Portfolio Advisor preview banner** (rendered after a candidate completes — shows
-Kelly + risk-parity allocation, DSR/PBO/walk-forward OOS rigor counters, six-scenario
-stress matrix, variance decomposition, correlation pairs, and the keccak reasoning-trace
-hash for the proposed portfolio — all *before* the user commits any funds). See
-Prompt 3 in ``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19) for the screen
-design.
+deterministic critics → K=1 winner + considered-rejects) + the result card
+(strategy spec, citations, rigor verdict). There is **no shipped deploy-as-vault
+CTA** on this page — vault execute is roadmap. Next shipped step is the passport.
 
 > **Corrected 2026-08-31.** This bullet used to name a "3-input fusion preview ('what
 > fusion will see')". That surface described the pre-debate routing tree and never
@@ -259,42 +254,45 @@ design.
 > (supersedes `adr/fusion-primary-generation.md`); mechanics:
 > [`specs/multi-agent-debate-spec.md`](specs/multi-agent-debate-spec.md).
 
-### `/portfolio` My Portfolio (consolidates current Trade + Vaults + personalized Risk view)
+### `/portfolio` My Portfolio (**roadmap** — not a shipped depositor surface)
 
-> *"As a depositor, I want one place to see what I own, how it's performing, and what
-> the agent has done — without bouncing between 3 tabs."*
+> *"When vault execution ships, I will want one place to see what I own, how it's
+> performing, and what the agent has done — without bouncing between 3 tabs."*
 
-**Surfaces:** total value + 24h/7d change + computed risk profile + portfolio equity
-curve vs SPY + holdings table + active-strategies cards + agent activity feed (each
-entry deep-links to its reasoning trace). Sidebar: deposit / withdraw / rebalance +
-the risk-band visualization (consolidated from the standalone Risk page).
+**Surfaces (roadmap):** holdings, performance, agent activity, deposit / withdraw /
+rebalance. The page is listed in `ROADMAP_PAGES` and is gated off the public build
+(`ROADMAP_SURFACES_ENABLED`, off by default). No user vault has been deployed, so
+there is no depositor position to show. Do not walk a reviewer here as if they have
+one.
 
 ### `/library` Library (consolidates current Marketplace + Strategies + Corpus Explorer)
 
 > *"As a curious user, I want to browse what's been generated, what's been validated,
 > and what research underlies it — in one place, with filters that make sense."*
 
-**Surfaces:** three tabs at top — All Strategies / Papers / Vault Leaderboard. Left
-filter rail (asset class, risk tier, rigor verdict, sort). Empty-state nudge back to
-Generate. Each strategy card links to its passport (see below).
+**Surfaces:** generated strategies and curated examples, plus papers. There is **no
+shipped Vault Leaderboard tab**. Left filter rail (asset class, risk tier, rigor
+verdict, sort). Empty-state nudge back to Generate. Each strategy card links to its
+passport (see below).
 
 ### `/strategy/:id` Strategy passport
 
-> *"As someone considering depositing into a strategy, I want to see the full provenance
+> *"As someone inspecting a generated strategy, I want to see the full provenance
 > — the source papers, the methodology in plain English, the backtest results vs the
-> paper's claims, the rigor verdict with each gate explained, and the on-chain
-> verification — so I can decide whether to trust this with my USDC."*
+> paper's claims, and the rigor verdict with each gate explained — so I can decide
+> whether the evidence is real."*
 
-**Surfaces:** the Day-9 passport per Prompt 4 in
-``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19) — strategy name + Tier badge,
-academic-style paper citation, real backtest numbers with paper-claim deltas, the
-4-gate rigor panel (DSR + PBO + OOS Sharpe + look-ahead) with plain-English explainers,
-equity-curve chart, on-chain trace anchor with Verify button, source-papers section.
+**Surfaces:** strategy name, citations, backtest vs paper-claim deltas, the 4-gate
+rigor panel (DSR + PBO + OOS Sharpe + look-ahead) with plain-English explainers,
+equity-curve chart, source-papers section. Simulated paper trading
+(`paper_daily_returns`) is the shipped act-on step on this page. The vault
+**Deploy as Vault** CTA is flag-gated off the public build. There is **no shipped
+on-chain Verify of a generation trace** — generation is not anchored.
 
 ### `/learnings` Learnings (NEW — strongly endorsed by user feedback)
 
-> *"As a user managing a portfolio over time, I want to see honestly which strategies
-> are working, which aren't, and **why** — with the agent's reasoning available for
+> *"As a user reviewing strategies over time, I want to see honestly which are
+> working, which aren't, and **why** — with the agent's reasoning available for
 > both winners and losers — so I can develop my own intuition rather than treat the
 > system as a black box."*
 
@@ -306,14 +304,14 @@ themselves. **This is the surface that proves we don't hide losses.**
 
 ### Reasoning trace viewer (modal, opens from anywhere)
 
-> *"When I click 'view reasoning' on any decision, I want to see what the agent saw,
-> what papers it referenced, what it decided, and how to verify the trace wasn't
-> rewritten."*
+> *"When I click 'view reasoning' on a decision, I want to see what the agent saw,
+> what papers it referenced, and what it decided. A trace that actually has an
+> `arc_tx_hash` can be checked on-chain; generation traces are not anchored today."*
 
-**Surfaces:** market context, source-signals papers, prose reasoning (with inline
-acronym definitions), action taken (before/after weights + trades + tx hashes), tool
-calls (collapsible), verification footer with hash + Verify button. See Prompt 5 in
-``claude-design-prompts.md`` (routed to the private docs repo, 2026-08-19).
+**Surfaces:** market context, source papers, prose reasoning (with inline acronym
+definitions). An on-chain Verify footer is honest only for traces that were
+actually written to `ReasoningTraceRegistry`. Do not present Verify as a
+generation-visitor path.
 
 ## The jargon problem — in-line definitions, not a glossary page
 
@@ -405,8 +403,8 @@ decisions are **not** anchored on-chain today.
 
 ## Open items to verify (🔍 — owners: Marten / Daniel R., per #39)
 
-- 🔍 Is the entire hero path (Generate → result → Library → Learnings → Vault)
-  traversable **read-only with no wallet**, gating only at Deposit?
+- 🔍 Is the shipped path (Generate → passport → Library → Explore) traversable
+  **read-only with no wallet**? Vault / Deposit is roadmap, not this walkthrough.
 - 🔍 Do refresh / browser-back / shared deep-links survive mid-journey across the
   new consolidated page tree?
 - 🔍 Does the in-line acronym tooltip convention render correctly on touch devices

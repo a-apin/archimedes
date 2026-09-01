@@ -1,7 +1,7 @@
 {
   "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   "name": "Archimedes",
-  "description": "Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy on Arc public testnet (chain ID 5042002). Generation is not anchored on-chain. Paper trading, when used, is simulated: paper_daily_returns is the graded track record the rigor gate sees; paper_agent_trades (PR #1704, not on main) is an executor ledger, not marked-to-market; neither is on-chain execution proof. Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped.",
+  "description": "Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy on Arc public testnet (chain ID 5042002). Generation is not anchored on-chain. Simulated paper deployments are live: paper_daily_returns is the graded track record the rigor gate sees. paper_agent_trades (PR #1704, not on main) is not a live path. Neither is on-chain execution proof. Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped.",
   "image": "https://archimedes-arc.com/logo.svg",
   "services": [
     {
