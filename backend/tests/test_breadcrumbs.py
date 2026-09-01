@@ -124,7 +124,9 @@ def test_crumb_map_has_no_retired_group_labels() -> None:
 
 
 def test_crumb_map_group_labels_are_current_nav() -> None:
-    allowed = {None, "Discover", "Strategy", "Position", "Market", "Ops"}
+    # "Discover" was dissolved into "Strategy" by #1641 (Explore + Corpus moved
+    # there); a crumb naming it would label a section the sidebar no longer has.
+    allowed = {None, "Strategy", "Position", "Market", "Ops"}
     groups = _extract_crumb_groups(BREADCRUMBS.read_text(encoding="utf-8"))
     bad = [g for g in groups if g not in allowed]
     assert not bad, f"CRUMB_MAP uses unknown group labels {bad} — allowed {sorted(a for a in allowed if a)} plus null"
@@ -345,11 +347,20 @@ def test_shell_nav_items_stay_inside_the_shell() -> None:
     """#1370 item 4: Layout.jsx's Architecture nav item routed to the public
     `/architecture` path (routes.js PUBLIC_PATHS, not APP_PATHS) — clicking it
     unmounted the whole authenticated shell, sidebar included, with no way
-    back to where the user was. Every non-Home NAV id must resolve inside /app.
+    back to where the user was. EVERY NAV id must resolve inside /app.
+
+    This used to carve out `landing`, the one deliberate exception: the
+    marketing-site entry was a shell nav item pointing at the public `/`.
+    #1641 removed that entry, so the carve-out went with it — leaving it in
+    place would have kept a hole open for exactly the class of defect this
+    test exists to catch (a re-added `landing`-id nav item would unmount the
+    shell the same way Architecture did, and this test would have said
+    nothing).
     """
     nav_text = NAV_CONFIG.read_text(encoding="utf-8")
     app_pages = _extract_app_paths_pages(ROUTES.read_text(encoding="utf-8"))
-    nav_ids = [i for i in _extract_layout_nav_ids(nav_text) if i != "landing"]
+    nav_ids = _extract_layout_nav_ids(nav_text)
+    assert nav_ids, "no nav ids parsed out of navConfig.js NAV — parser is out of date"
     bad = sorted(set(nav_ids) - app_pages)
     assert not bad, f"sidebar nav items that route outside /app (shell disappears): {bad}"
 
@@ -369,8 +380,10 @@ def _extract_nav_sections(nav_text: str) -> dict[str, set[str]]:
     page a sibling *within this group*" — a question a flat id list cannot
     answer. Each NAV element is `{ group: <label|null>, items: [...] }`, so
     slicing the block at every `group:` marker puts each `id:` with its own
-    section; the unlabelled marketing-site entry (`group: null`) is dropped,
-    since a null section can never be named by a crumb.
+    section. Every section carries a label since #1641 removed the unlabelled
+    marketing-site entry, but the `if label` guard stays: a null section can
+    never be named by a crumb, so it must not contribute ids to any section
+    if one is ever re-added.
     """
     m = re.search(r"const\s+NAV\s*=\s*\[(.*?)\n\];", nav_text, re.DOTALL)
     assert m, "NAV block not found in navConfig.js"

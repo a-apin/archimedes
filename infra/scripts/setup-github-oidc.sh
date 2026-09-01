@@ -10,8 +10,17 @@
 #   1. An IAM OIDC identity provider for token.actions.githubusercontent.com
 #   2. A deploy role whose trust policy ONLY accepts a-apin/archimedes on
 #      refs/heads/main (build-on-deploy), assumed via sts:AssumeRoleWithWebIdentity.
-#   3. A STARTER permissions policy (ECR push + SSM SendCommand + EC2 describe).
+#   3. A STARTER permissions policy (ECR push + SSM SendCommand + EC2 describe),
+#      plus the docs-site publish grants (#1634): sync into the
+#      docs-site/infra bucket and invalidate its CloudFront distribution.
 #      >>> Tighten the Resource ARNs once the ECR repo + instance/ECS service exist. <<<
+#
+#   NOTE: the docs-site grants must be applied (re-run this script with --apply)
+#   before .github/workflows/docs-site.yml can publish. Until then its publish
+#   steps fail on AccessDenied — the site keeps building, nothing goes live.
+#   `cloudfront:ListDistributions` cannot be resource-scoped (it is a list call,
+#   Resource "*" is the only valid form); `CreateInvalidation` is scoped to this
+#   account's distributions.
 #
 # DRY-RUN BY DEFAULT.  ./setup-github-oidc.sh   |   ./setup-github-oidc.sh --apply
 # Requires: AWS_PROFILE exported, aws CLI v2.
@@ -82,7 +91,18 @@ cat > "$TMP/perms.json" <<JSON
     {"Sid":"SsmDeploy","Effect":"Allow",
      "Action":["ssm:SendCommand","ssm:GetCommandInvocation","ssm:ListCommands","ssm:ListCommandInvocations"],
      "Resource":"*"},
-    {"Sid":"Ec2Discover","Effect":"Allow","Action":["ec2:DescribeInstances"],"Resource":"*"}
+    {"Sid":"Ec2Discover","Effect":"Allow","Action":["ec2:DescribeInstances"],"Resource":"*"},
+    {"Sid":"DocsSiteBucket","Effect":"Allow",
+     "Action":["s3:ListBucket"],
+     "Resource":"arn:aws:s3:::archimedes-docs-site-${ACCOUNT_ID}"},
+    {"Sid":"DocsSiteObjects","Effect":"Allow",
+     "Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],
+     "Resource":"arn:aws:s3:::archimedes-docs-site-${ACCOUNT_ID}/*"},
+    {"Sid":"DocsSiteInvalidate","Effect":"Allow",
+     "Action":["cloudfront:CreateInvalidation"],
+     "Resource":"arn:aws:cloudfront::${ACCOUNT_ID}:distribution/*"},
+    {"Sid":"DocsSiteFindDistribution","Effect":"Allow",
+     "Action":["cloudfront:ListDistributions"],"Resource":"*"}
   ] }
 JSON
 do_ "aws iam put-role-policy --role-name $ROLE_NAME --policy-name archimedes-deploy --policy-document file://$TMP/perms.json"

@@ -413,6 +413,7 @@ class OllamaBackend:
         self._model = model
         self._served = model
         self._base_url = os.getenv("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
+        self._unavailable_reason = ""
 
     @property
     def model_id(self) -> str:
@@ -421,6 +422,19 @@ class OllamaBackend:
     @property
     def served_model(self) -> str:
         return self._served
+
+    @property
+    def unavailable_reason(self) -> str:
+        """Why the last :attr:`available` probe said no ("" when it said yes).
+
+        ``available`` is a bool and a bool cannot be acted on: "false" reads
+        identically for "you never started ollama", "you forgot ``LLM_MODEL``",
+        and "you set a model you never pulled", and the operator has to guess
+        which. This carries the sentence that distinguishes them up to
+        ``make_llm_backend`` and out through ``/health`` as ``llm_reason``
+        (#1044). Set as a side effect of the probe; empty until it has run.
+        """
+        return self._unavailable_reason
 
     @property
     def available(self) -> bool:
@@ -434,18 +448,44 @@ class OllamaBackend:
         first real request errored (issue #1044). A real (short-timeout) probe
         against ``GET {base_url}/api/tags`` makes an unreachable server or an
         unpulled model correctly fall back to ``CannedBackend``.
+
+        **This does network I/O and blocks.** Callers on an event loop must run
+        it off-thread under a deadline — ``/health`` does (``main.py``'s
+        ``_llm_probe``); a bare ``await``-adjacent call would park the loop for
+        the full ``timeout`` below.
         """
         import httpx
+
+        # Checked BEFORE the network call, because it is the one failure the
+        # network cannot diagnose. LLM_MODEL unset means the factory handed us
+        # DEFAULT_MODEL — a cloud model id no ollama server will ever have
+        # pulled — so the tags probe would come back "model not pulled" and
+        # send the operator off to `ollama pull claude-sonnet-4-…`, which does
+        # not exist. Name the actual cause instead (#1044).
+        if self._model == DEFAULT_MODEL and not os.getenv("LLM_MODEL", "").strip():
+            self._unavailable_reason = (
+                f"LLM_MODEL is unset, so the ollama backend fell back to {DEFAULT_MODEL!r} — "
+                "a cloud model id, not an ollama one. Set LLM_MODEL (e.g. llama3.1)."
+            )
+            return False
 
         try:
             resp = httpx.get(f"{self._base_url}/api/tags", timeout=3.0)
             resp.raise_for_status()
             tags = {m.get("name", "") for m in resp.json().get("models", [])}
-        except Exception:
+        except Exception as exc:
+            self._unavailable_reason = f"ollama unreachable at {self._base_url}: {type(exc).__name__}: {exc}"
             return False
         # Ollama tags carry a ":variant" suffix (e.g. "llama3.1:latest"); match
         # the bare name too so LLM_MODEL=llama3.1 matches a pulled default tag.
-        return any(tag == self._model or tag.partition(":")[0] == self._model for tag in tags)
+        if any(tag == self._model or tag.partition(":")[0] == self._model for tag in tags):
+            self._unavailable_reason = ""
+            return True
+        self._unavailable_reason = (
+            f"ollama at {self._base_url} is up but {self._model!r} is not pulled "
+            f"(run `ollama pull {self._model}`); pulled: {sorted(t for t in tags if t) or 'nothing'}"
+        )
+        return False
 
     def complete(self, system: str, user: str) -> str:
         import httpx
@@ -479,6 +519,22 @@ class CannedBackend:
 
     model_id = "canned-fallback"
     served_model = "canned-fallback"
+
+    def __init__(self, reason: str = "") -> None:
+        """``reason`` is why the real backend was rejected, carried forward.
+
+        The factory swallows the configured backend when it is unavailable, and
+        with it the only object that knew *why*. Without this the fallback is
+        indistinguishable from "nothing was ever configured", which is the
+        single most common way a local ollama run gets misdiagnosed (#1044).
+        Defaults to "" so every existing ``CannedBackend()`` call site is
+        unchanged.
+        """
+        self._unavailable_reason = reason
+
+    @property
+    def unavailable_reason(self) -> str:
+        return self._unavailable_reason
 
     @property
     def available(self) -> bool:
@@ -552,15 +608,19 @@ def make_llm_backend(
     builder = builders.get(provider)
     if builder is None:
         logger.warning("llm: unknown provider %r; falling back to canned", provider)
-        return CannedBackend()
+        return CannedBackend(reason=f"unknown LLM_PROVIDER={provider!r}")
 
     backend = builder()
     if not backend.available:
-        logger.warning(
-            "llm: provider %s configured but credentials missing; canned fallback",
-            provider,
-        )
-        return CannedBackend()
+        # Prefer the backend's own account of the failure when it has one (the
+        # ollama path does; the credential-only backends have nothing to add
+        # beyond "no credential"). Logging the bare provider name — all this
+        # did before #1044 — is what made a local ollama misconfiguration a
+        # guessing game.
+        detail = str(getattr(backend, "unavailable_reason", "") or "").strip()
+        reason = f"provider {provider} unavailable: {detail}" if detail else f"provider {provider}: credentials missing"
+        logger.warning("llm: %s; canned fallback", reason)
+        return CannedBackend(reason=reason)
     logger.info("llm: using provider=%s model=%s", provider, getattr(backend, "model_id", resolved_model))
     return backend
 
@@ -573,7 +633,7 @@ def _legacy_backend(model: str) -> AnthropicBackend | AnthropicCompatibleBackend
     legacy_model = os.getenv("ANTHROPIC_DEFAULT_MODEL", model)
 
     if not api_key and not (auth_token and base_url):
-        return CannedBackend()
+        return CannedBackend(reason="no LLM provider configured (LLM_PROVIDER unset and no ANTHROPIC_* credentials)")
 
     logger.warning("llm: ANTHROPIC_* env vars are deprecated — migrate to LLM_PROVIDER + LLM_*")
     if api_key:

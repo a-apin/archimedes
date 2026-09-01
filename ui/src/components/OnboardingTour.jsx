@@ -4,6 +4,7 @@ import { roadmapSurfaceHidden, ROADMAP_SURFACES_ENABLED } from '../featureFlags.
 import { canNavigateTo } from '../routes.js'
 import { rectOnScreen } from '../tourGeometry.js'
 import useDialogFocus from '../hooks/useDialogFocus'
+import { canStore } from '../storage-consent.js'
 
 const STORAGE_KEY = 'archimedes.onboarding.v1'
 
@@ -298,7 +299,10 @@ export default function OnboardingTour({ open, onClose, setPage, user }) {
 
   const finish = useCallback(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, 'completed')
+      // Functional category (#1647): with functional storage rejected the
+      // dismissal is not remembered and the tour offers itself again next
+      // visit — the stated fallback in the storage disclosure.
+      if (canStore(STORAGE_KEY)) localStorage.setItem(STORAGE_KEY, 'completed')
     } catch {
       // localStorage unavailable (e.g. SSR / private mode) — non-fatal;
       // we just won't remember the dismissal next visit.

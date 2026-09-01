@@ -6,6 +6,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Query
+from sqlalchemy import func
 
 from archimedes.db import get_session
 from archimedes.services.corpus_categories import label_for as _category_label
@@ -144,8 +145,37 @@ async def list_papers(
                 predicate = predicate | PaperRecord.authors.ilike(author_pattern, escape="\\")
             query = query.filter(predicate)
 
-        total = query.count()
-        rows = query.order_by(PaperRecord.published.desc()).offset((page - 1) * page_size).limit(page_size).all()
+        # ONE pass over the predicate, not two (#1665).
+        #
+        # This used to be `total = query.count()` followed by a second,
+        # separately-planned page query over the *same* filter — so every
+        # keystroke in the catalog search box made Postgres evaluate three
+        # unanchored `ILIKE '%term%'` legs across 10 000 rows of Text abstracts
+        # twice, back to back, on the event loop. `count(*) OVER ()` is a
+        # window over the filtered result set: it carries the full match count
+        # on every returned row, so the count and the page come out of a single
+        # statement with a single scan.
+        total_column = func.count().over().label("total_matches")
+        paged = (
+            query.add_columns(total_column)
+            .order_by(PaperRecord.published.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        rows = [row[0] for row in paged]
+        total = paged[0][1] if paged else 0
+
+        # The one case the window function cannot answer: an out-of-range page.
+        # `?page=500` returns no rows, and a window over zero rows reports zero
+        # — which would render "0 papers found" for a query that really has
+        # 900 matches on page 1, i.e. the UI contradicting itself depending on
+        # where you are in the pagination. A count() is correct there and only
+        # there, so the second pass is paid on a cold path instead of on every
+        # keystroke. `page == 1` with no rows is a genuine zero and needs no
+        # rescue (the unfiltered/file fallbacks below still handle an empty DB).
+        if not paged and page > 1:
+            total = query.count()
 
         papers = [_paper_row_to_dict(r) for r in rows]
 

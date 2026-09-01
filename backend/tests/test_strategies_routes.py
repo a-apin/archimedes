@@ -73,6 +73,17 @@ def _failing_series(seed: int = 99, n: int = 500) -> list[float]:
     return np.random.default_rng(seed).normal(0.0, 0.02, n).tolist()
 
 
+def _failing_result(strategy_id: str):
+    """A REAL ``RigorGateResult`` that fails the gate.
+
+    A real result rather than a MagicMock so ``_verdict_from_result`` exercises
+    the same ``RigorGateVerdict.from_result`` reduction the production path runs
+    (``is_degenerate`` → ``passes_all`` → ladder fields), not a mock's
+    auto-attributes.
+    """
+    return run_rigor_gate(strategy_id=strategy_id, daily_returns=_failing_series(), num_trials=1)
+
+
 # ── live_rigor_gate unit tests (the single source of truth) ─────────────
 
 
@@ -191,11 +202,15 @@ class TestSingleStrategyCohortContext:
 
         captured = {}
 
+        # #1645: the delegate is now the SAME memoized batch the numeric fields
+        # read (`_live_rigor_results_for_strategies`), not a second uncached run
+        # through `verdicts_for_strategies`. The #902 invariant this test guards
+        # — the cohort is the full library — is unchanged.
         def _fake_batch(strategies):
             captured["cohort_ids"] = [s.id for s in strategies]
-            return {target.id: RigorGateVerdict.failed()}
+            return {target.id: _failing_result("s1")}
 
-        monkeypatch.setattr(strategies_routes, "verdicts_for_strategies", _fake_batch)
+        monkeypatch.setattr(strategies_routes, "_live_rigor_results_for_strategies", _fake_batch)
 
         v = strategies_routes._live_verdict_for_one(target)
         assert captured["cohort_ids"] == ["s0", "s1", "s2"]
@@ -215,7 +230,7 @@ class TestSingleStrategyCohortContext:
             captured["cohort_ids"] = [s.id for s in strategies]
             return {}
 
-        monkeypatch.setattr(strategies_routes, "verdicts_for_strategies", _fake_batch)
+        monkeypatch.setattr(strategies_routes, "_live_rigor_results_for_strategies", _fake_batch)
 
         fresh = MagicMock(id="fresh")
         v = strategies_routes._live_verdict_for_one(fresh)
@@ -286,6 +301,143 @@ class TestSingleStrategyCohortContext:
             "list route must grade the FULL library cohort; got a "
             f"{len(captured.get('cohort_ids', []))}-item cohort for a 5-item page"
         )
+
+
+class TestSingleStrategyGateRunCount:
+    """REGRESSION (#1645): ``GET /api/strategies/{id}`` runs the cohort gate ONCE.
+
+    The detail route used to build its badge from ``verdicts_for_strategies`` and
+    its numeric fields from ``_live_rigor_results_for_strategies``. Both grade the
+    FULL library, so one request ran the whole cohort gate twice — and only the
+    second path is memoized in ``services.rigor_cache``, so a warm cache still
+    paid a full cohort recompute on every request forever.
+
+    The first test's two assertions are call-count spies on ``run_rigor_gate``,
+    the unit of work the page's latency is made of. They are deliberately stated
+    in units of ``len(library)`` rather than a literal, so the guard does not go
+    quiet if the curated library grows or shrinks. The other two tests pin the
+    shape (one batch, one result object) and the fail-closed contract, which a
+    count alone would not catch.
+
+    Revert-demo (transcript in the PR body): restoring the two-call form in
+    ``_to_strategy_response`` makes the cold assertion read ``68 != 34`` and the
+    warm assertion ``34 != 0``.
+    """
+
+    @staticmethod
+    def _install_counting_gate(monkeypatch, sink: list) -> None:
+        """Count every ``run_rigor_gate`` call, still running the real gate.
+
+        Patched on the ``rigor_evaluator`` MODULE, which is where both call sites
+        resolve it (each imports it inside the function body). The module-level
+        ``run_rigor_gate`` this test file imported stays the real one, so the
+        spy cannot recurse and helpers like ``_failing_result`` are not counted.
+        """
+        real = run_rigor_gate
+
+        def _counting(*args, **kwargs):
+            sink.append(kwargs.get("strategy_id"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr("archimedes.services.rigor_evaluator.run_rigor_gate", _counting)
+
+    @pytest.mark.asyncio
+    async def test_detail_route_runs_the_cohort_gate_once_cold_and_zero_times_warm(self, monkeypatch):
+        from archimedes.api import strategies_routes as sr
+        from archimedes.main import app
+
+        library = sr.strategy_provider().list_strategies()
+        assert len(library) >= 2, "need a real curated cohort"
+        returns = {s.id: _passing_series(i) for i, s in enumerate(library)}
+
+        # Boundary mocks only: the persisted-returns read and the strategy-source
+        # read. The cohort maths and the gate itself run for real.
+        monkeypatch.setattr(
+            "archimedes.services.backtest_repository.get_all_daily_returns",
+            lambda session, ids: {sid: returns.get(sid, []) for sid in ids},
+        )
+        monkeypatch.setattr(
+            "archimedes.api.selection_bias_routes._load_strategy_code",
+            lambda path: _CLEAN_CODE,
+        )
+        calls: list = []
+        self._install_counting_gate(monkeypatch, calls)
+
+        target = library[0]
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            cold = await client.get(f"/api/strategies/{target.id}")
+            assert cold.status_code == 200
+            cold_calls = len(calls)
+            assert cold_calls == len(library), (
+                f"one cold detail request must run the cohort gate exactly once "
+                f"({len(library)} run_rigor_gate calls); got {cold_calls} "
+                f"(= {cold_calls / len(library):.1f} cohort passes)"
+            )
+
+            # The cohort is unchanged, so the rigor_cache entry the cold request
+            # wrote must serve the whole warm request. Pre-fix this was
+            # len(library), because the badge half had no cache at any layer.
+            calls.clear()
+            warm = await client.get(f"/api/strategies/{target.id}")
+            assert warm.status_code == 200
+        assert len(calls) == 0, (
+            f"a warm detail request must not recompute the cohort gate; got {len(calls)} "
+            "run_rigor_gate calls — some part of the detail path is bypassing rigor_cache"
+        )
+
+        # Same computation, same answer: the badge and the numbers a cache hit
+        # serves must still agree with what the cold miss computed.
+        assert warm.json()["passes_rigor_gate"] == cold.json()["passes_rigor_gate"]
+        assert warm.json()["dsr_p_value"] == cold.json()["dsr_p_value"]
+
+    def test_verdict_and_result_come_from_one_batch_computation(self, monkeypatch):
+        """The badge is reduced from the very result object that is served.
+
+        Guards the shape, not just the count: a future edit that recomputes the
+        verdict separately would still pass a count assertion if it happened to
+        hit the cache, but would fail here.
+        """
+        from archimedes.api import strategies_routes as sr
+
+        sentinel = _failing_result("sentinel")
+        batches: list = []
+
+        def _fake_batch(strategies):
+            batches.append([s.id for s in strategies])
+            return {"t": sentinel}
+
+        provider = MagicMock()
+        provider.list_strategies.return_value = [MagicMock(id="t")]
+        monkeypatch.setattr(sr, "strategy_provider", lambda: provider)
+        monkeypatch.setattr(sr, "_live_rigor_results_for_strategies", _fake_batch)
+
+        verdict, result = sr._live_verdict_and_result_for_one(MagicMock(id="t"))
+        assert result is sentinel, "the served numbers must be the batch's own result object"
+        assert verdict.status == FAIL, "the badge must be reduced from that same result"
+        assert len(batches) == 1, f"exactly one cohort computation; got {len(batches)}"
+
+    def test_batch_failure_still_fail_closes_to_pending(self, monkeypatch):
+        """The old `_live_verdict_for_one` had its own try/except that degraded a
+        gate failure to `pending`. Collapsing it onto the memoized path must not
+        drop that: the badge is a claim, and a crash must never surface as a PASS
+        or propagate into a 500. This guards the fail-closed sentence the new
+        docstring asserts (CLAUDE.md: a prose claim the code does not enforce is
+        the same defect as an unenforced guard).
+        """
+        from archimedes.api import strategies_routes as sr
+
+        def _boom(_strategies):
+            raise RuntimeError("cohort compute exploded")
+
+        provider = MagicMock()
+        provider.list_strategies.return_value = [MagicMock(id="t")]
+        monkeypatch.setattr(sr, "strategy_provider", lambda: provider)
+        monkeypatch.setattr(sr, "_live_rigor_results_for_strategies", _boom)
+
+        verdict, result = sr._live_verdict_and_result_for_one(MagicMock(id="t"))
+        assert verdict.status == PENDING, "a gate failure must fail CLOSED, never to a pass/fail claim"
+        assert verdict.passes is False
+        assert result is None, "no numbers may be served when the gate could not run"
 
 
 class TestRigorGateVerdict:
@@ -1081,9 +1233,21 @@ async def test_single_strategy_endpoint_numeric_fields_equal_live_gate(monkeypat
     target = strategies[0]
     series = _passing_series(5)
 
+    # Patch BOTH persisted-returns readers. This route grades through
+    # `_live_rigor_result_for_one` -> `_live_rigor_results_for_strategies`,
+    # whose DB boundary is `get_all_daily_returns` (the same boundary the
+    # sibling tests above stub) — it is NOT a loop over `get_daily_returns`
+    # since #1662 batched it into one query, so stubbing only the single-row
+    # reader leaves the cohort read live and the assertions below fall through
+    # to `None`. Both stubs express the identical fixture: `target` has a
+    # passing series, every other strategy has none.
     monkeypatch.setattr(
         "archimedes.services.backtest_repository.get_daily_returns",
         lambda session, sid: series if sid == target.id else [],
+    )
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target.id: series} if target.id in ids else {},
     )
     monkeypatch.setattr(
         "archimedes.api.selection_bias_routes._load_strategy_code",
@@ -1225,3 +1389,116 @@ async def test_single_strategy_endpoint_200s_with_no_linked_paper():
     assert served["paper_arxiv_id"] is None
     assert served["paper_title"] is None
     assert served["papers"] == []
+
+
+# ── Publish rights: same responses, O(1) queries (#1663) ────────────────────
+#
+# `GET /api/strategies/` called `wallet_can_publish` once per response row — one
+# round trip per row, each paying a `pool_pre_ping` SELECT 1 first, and paid
+# ONLY by signed-in callers (the per-row call short-circuits on anonymous), which
+# is backwards for a demo. `_publishable_strategy_ids` replaces the loop with one
+# IN query. The query-count guards and their adversarial control live in
+# `test_publishable_strategy_ids.py`; what these two tests pin is that the
+# SERVED RESPONSE did not move — anonymous and wallet-linked alike.
+
+_PUBLISH_CALLER = "0x" + "d4" * 20
+
+
+def _per_row_publishable_ids(session, strategy_ids, wallet_address, *, is_example):
+    """The pre-#1663 per-row gate, drop-in-shaped for _publishable_strategy_ids.
+
+    `bool(caller) and wallet_can_publish(...)` per row is verbatim what both
+    Library loops evaluated, so swapping this in serves the OLD answers through
+    the CURRENT route.
+    """
+    from archimedes.models.strategy_generators import wallet_can_publish
+
+    return {
+        sid
+        for sid in strategy_ids
+        if bool(wallet_address)
+        and wallet_can_publish(session, strategy_id=sid, wallet_address=wallet_address, is_example=is_example)
+    }
+
+
+async def _library_json(monkeypatch, caller, publishable_impl=None):
+    """GET /api/strategies/?limit=10, optionally with the per-row gate swapped in."""
+    import archimedes.api.strategies_routes as sr
+    from archimedes.main import app
+
+    # Hermeticity: an ambient PLATFORM_ADMIN_WALLETS would make the caller an
+    # admin, flip every can_publish to True, and silently defeat the
+    # "not all(flags)" non-vacuity check below.
+    monkeypatch.delenv("PLATFORM_ADMIN_WALLETS", raising=False)
+    monkeypatch.setattr(sr, "get_linked_wallet_address", lambda request: caller)
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {},
+    )
+    if publishable_impl is not None:
+        monkeypatch.setattr(sr, "_publishable_strategy_ids", publishable_impl)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/strategies/?limit=10")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _seed_one_generator_row(strategy_id: str, wallet: str) -> None:
+    """Give `wallet` publish rights over exactly ONE curated id.
+
+    Exactly one, deliberately: an all-True or all-False page would make the
+    byte-identity assertion below pass for an implementation that ignored the
+    DB entirely.
+    """
+    from archimedes.db import get_session
+    from archimedes.models.identity import WalletIdentity
+    from archimedes.models.strategy_generators import record_generator
+
+    with get_session() as session:
+        session.merge(WalletIdentity(wallet_address=wallet, actor_class="human"))
+        # The production writer, which is insert-if-not-exists — `archimedes.db`'s
+        # engine is a module-level singleton, so the per-test DATABASE_URL does
+        # not actually give each test a fresh file and a raw INSERT would trip
+        # the (strategy_id, wallet_address) unique constraint on the second test.
+        record_generator(session, strategy_id=strategy_id, wallet_address=wallet)
+        session.commit()
+
+
+@pytest.mark.asyncio
+async def test_library_response_identical_to_per_row_gate_for_a_linked_wallet(monkeypatch):
+    """A signed-in caller's page is byte-identical to what the per-row gate served."""
+    import archimedes.api.strategies_routes as sr
+
+    strategies = sr.strategy_provider().list_strategies()
+    assert strategies, "need at least one curated strategy"
+    _seed_one_generator_row(strategies[0].id, _PUBLISH_CALLER)
+
+    batched = await _library_json(monkeypatch, _PUBLISH_CALLER)
+    legacy = await _library_json(monkeypatch, _PUBLISH_CALLER, publishable_impl=_per_row_publishable_ids)
+
+    # Non-vacuity: the fixture must produce a genuine MIX, or "identical" would
+    # hold for an implementation that hardcoded one answer.
+    flags = [s["can_publish"] for s in batched["strategies"]]
+    assert any(flags), "seed did not reach the route — every row is can_publish=False"
+    assert not all(flags), "every row is can_publish=True — the fixture grants too much to discriminate"
+
+    assert batched == legacy
+
+
+@pytest.mark.asyncio
+async def test_library_response_identical_to_per_row_gate_for_an_anonymous_visitor(monkeypatch):
+    """The anonymous short-circuit is not relaxed: a visitor still sees
+    can_publish=False everywhere, exactly as before."""
+    import archimedes.api.strategies_routes as sr
+
+    strategies = sr.strategy_provider().list_strategies()
+    assert strategies, "need at least one curated strategy"
+    # Seeded for a DIFFERENT wallet — a visitor must not inherit its rights.
+    _seed_one_generator_row(strategies[0].id, _PUBLISH_CALLER)
+
+    batched = await _library_json(monkeypatch, None)
+    legacy = await _library_json(monkeypatch, None, publishable_impl=_per_row_publishable_ids)
+
+    assert batched == legacy
+    assert not any(s["can_publish"] for s in batched["strategies"])

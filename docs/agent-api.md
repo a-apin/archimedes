@@ -14,10 +14,19 @@ Two reasons this matters:
 2. **The agent-user segment** — an agent that sends a non-browser `User-Agent` is
    classified as an external agent by the telemetry middleware and its
    `generation_started` is attributed in the conversion funnel ([#787](https://github.com/a-apin/archimedes/issues/787)).
+   An agent holding an **API key** does better: it is classified `keyed` from the
+   credential itself rather than from a header it chose.
 
-**READ** needs no authentication. **GENERATE requires Better Auth session**:
+**READ** needs no authentication. **GENERATE requires an account credential**:
 anonymous `POST /api/generate/start` returns 401, and per-job stream/status/jobs/candidates
 reads are scoped by canonical user ID. Wallet connection alone never authenticates.
+
+Two credentials establish that account identity, and **they are interchangeable
+everywhere except key management**: the Better Auth **session cookie**, and an
+`Authorization: Bearer archim_…` **API key** (see [API keys](#api-keys-bearer)). Both
+resolve to the same canonical user ID at the same chokepoint
+(`api/account_auth.py`), so no route, quota, rate limit, or paywall can tell them
+apart — a key is a credential, never a bypass.
 
 ## Quick start
 
@@ -256,6 +265,58 @@ Use `ARCHIMEDES_EMAIL` and `ARCHIMEDES_PASSWORD` for reference client. Never pas
 credentials as command-line arguments or commit them. `--ephemeral` creates disposable
 account for smoke testing.
 
+### API keys (Bearer)
+
+A cookie expires in seven days and can only be refreshed by re-sending the account
+password. For anything unattended, mint a key once instead.
+
+```bash
+# mint (session cookie required — see below)
+curl -sS -b /tmp/agora.jar -X POST $BASE/api/account/keys \
+  -H 'Content-Type: application/json' -d '{"name":"ci-nightly"}'
+```
+
+```json
+{ "id": "9f3c1a77b204de51", "name": "ci-nightly", "prefix": "archim_9f3c1a77b204de51",
+  "created_at": "…", "last_used_at": null, "revoked_at": null,
+  "key": "archim_9f3c1a77b204de51_KtQ8yv…" }
+```
+
+Then every account-gated call in this document is one header:
+
+```bash
+curl -sS -H "Authorization: Bearer $ARCHIMEDES_KEY" $BASE/api/account/usage
+```
+
+| Endpoint | Method | Credential | Notes |
+| --- | --- | --- | --- |
+| `/api/account/keys` | `POST` | **cookie only** | Body `{"name": "…"}` (1–64 chars). `201`. Returns `key` **once**. `409 api_key_limit_reached` past 25 live keys. |
+| `/api/account/keys` | `GET` | **cookie only** | `id`, `name`, `prefix`, `created_at`, `last_used_at`, `revoked_at`. Never the key. |
+| `/api/account/keys/{id}` | `DELETE` | **cookie only** | `204`, idempotent. Another account's id → `404`. |
+| everything else account-gated | — | cookie **or** key | Identical behaviour either way. |
+
+The contract, precisely:
+
+- **Format** `archim_<key_id>_<secret>`. `secret` is 32 random bytes from `secrets`;
+  `archim_<key_id>` is the non-secret `prefix` the list returns.
+- **Shown once.** The server stores a per-key salted SHA-256 of the secret and nothing
+  else, so the token cannot be read back by anyone, including operators. Lost key →
+  revoke and mint another.
+- **Verification is constant-time** (`hmac.compare_digest`) on the hit path *and* the
+  miss path, so response timing does not tell an attacker whether a key id exists.
+- **Revocation is immediate** — read from the row on every request, no cache, no TTL.
+  The next call with a revoked key is `401`.
+- **Scoped to one account.** A key resolves to its own account and no other; another
+  account's key id is `404`, not `403`, so the surface is not an enumeration oracle.
+- **Never a bypass.** Same daily caps, same per-route rate limits, same x402 paywall,
+  same wallet precondition. A keyed `POST /api/generate/start` returns the same `402`,
+  with the same quote, that a cookie call returns.
+- **A key cannot manage keys.** The three endpoints above answer `403` to a bearer key.
+  Containment: a leaked key must not be able to mint successors that outlive your
+  revoking the one you know about.
+- **Telemetry.** A keyed caller classifies as `agent_type: "keyed"` — an identity, unlike
+  `external`, which is a User-Agent guess about an unauthenticated client.
+
 ### Optional EIP-4361 wallet link
 
 Wallet is needed only for wallet/on-chain operations. Account session must exist first.
@@ -420,13 +481,19 @@ python scripts/agent_journey.py --no-auth --read-only --monitor-address 0x<vault
 
 ### What's NOT covered here
 
-Tracked in [#788](https://github.com/a-apin/archimedes/issues/788), but out of
-scope for this document / the harness: the issue's funnel/telemetry
-acceptance line ("the agent path is reflected in the funnel/telemetry as
-`agent_type`") is only partly built. `/api/metrics` already classifies
-traffic as human/internal-agent/external-agent
-(`telemetry_middleware.py`), but the conversion funnel itself (`FunnelStore`,
-[#787](https://github.com/a-apin/archimedes/issues/787)) records
-distinct-visitor counts per stage only — `landed`, `wallet_connected`,
-`generation_started`, `vault_deployed` are not currently segmented by
-`agent_type`. Segmenting the funnel by `agent_type` remains open work.
+The reference harness (`scripts/agent_journey.py`) does **not** use API keys — it
+still drives the cookie recipe above. Teaching it the key lane is follow-up work,
+not part of the key lane itself.
+
+**Correction (2026-08-31).** An earlier version of this section said funnel
+segmentation by `agent_type` "remains open work". That was true when it was
+written and is not true now: [#788](https://github.com/a-apin/archimedes/issues/788)
+shipped, and `GET /api/metrics/funnel` returns a per-stage `by_agent_type`
+breakdown over `internal` / `keyed` / `external` / `human`. What is still open is
+**interpretation**: before the API-key lane, an authenticated agent was
+indistinguishable from a human (`classify_request` resolved a session to `human`
+before any agent heuristic ran), so historical `external: 0` at
+`generation_started` measures the absence of the question, not the absence of
+agents. `keyed` is the first `agent_type` on that endpoint that reflects a
+credential rather than a guess; readings taken before it existed cannot be
+compared with readings taken after.
