@@ -193,6 +193,84 @@ class TestRewritePinsTheKillSwitch:
         assert result.returncode == 0, result.stderr
         out = json.loads(result.stdout)
         assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "false"
+        backend = next(c for c in out["containerDefinitions"] if c["name"] == "backend")
+        assert backend["healthCheck"]["startPeriod"] == 90
+
+
+class TestRewritePinsBackendStartPeriod:
+    """CI clone of the live task-def still carries startPeriod=30.
+
+    The #1713 warmup budget is 60s. Without this pin, ECS starts counting
+    /health failures at 30s while uvicorn is still not listening — or, if
+    warmup fail-softs, the task joins the ALB cold. Same path as the
+    PAPER_ADVANCE pin: deploy.yml never terraform-applies.
+    """
+
+    def test_last_good_clone_without_healthcheck_gets_start_period_90(self):
+        """Incident-adjacent shape: last-good 011b6bfc has no healthCheck."""
+        out = _rewrite(_last_good_task_def())
+        backend = next(c for c in out["containerDefinitions"] if c["name"] == "backend")
+        hc = backend["healthCheck"]
+        assert hc["startPeriod"] == 90
+        assert hc["command"][0] == "CMD-SHELL"
+        assert "/health" in hc["command"][1]
+        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "false"
+
+    def test_live_start_period_30_is_overwritten_command_kept(self):
+        """The live cloned shape: healthCheck exists, startPeriod is 30."""
+        task_def = _last_good_task_def()
+        custom_cmd = [
+            "CMD-SHELL",
+            "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1",
+        ]
+        for container in task_def["containerDefinitions"]:
+            if container["name"] == "backend":
+                container["healthCheck"] = {
+                    "command": custom_cmd,
+                    "interval": 30,
+                    "timeout": 5,
+                    "retries": 3,
+                    "startPeriod": 30,
+                }
+        out = _rewrite(task_def)
+        backend = next(c for c in out["containerDefinitions"] if c["name"] == "backend")
+        hc = backend["healthCheck"]
+        assert hc["startPeriod"] == 90
+        assert hc["command"] == custom_cmd
+        assert hc["interval"] == 30
+        assert hc["timeout"] == 5
+        assert hc["retries"] == 3
+        nginx = next(c for c in out["containerDefinitions"] if c["name"] == "nginx")
+        assert "healthCheck" not in nginx
+
+    def test_warmup_budget_fits_inside_the_pinned_start_period(self):
+        """Source pin: budget 60 vs startPeriod 30 is the review finding.
+
+        MUTATION: raise WARMUP_BUDGET_SECONDS above the rewrite pin, or
+        lower BACKEND_HEALTHCHECK_START_PERIOD below 60. Either way this
+        fails. The rewrite script must not import archimedes (deploy.yml
+        python3, stdlib only); the coupling is asserted from the test.
+        """
+        from archimedes.services.request_path_warmup import WARMUP_BUDGET_SECONDS
+
+        mod = _load_rewrite()
+        assert mod.PAPER_ADVANCE_VALUE == "false"
+        assert mod.BACKEND_HEALTHCHECK_START_PERIOD >= WARMUP_BUDGET_SECONDS
+        assert mod.BACKEND_HEALTHCHECK_START_PERIOD == 90
+        source = REWRITE_PY.read_text(encoding="utf-8")
+        assert "BACKEND_HEALTHCHECK_START_PERIOD = 90" in source
+        assert 'PAPER_ADVANCE_VALUE = "false"' in source
+
+    def test_nginx_and_auth_healthchecks_are_not_rewritten(self):
+        task_def = _last_good_task_def()
+        for container in task_def["containerDefinitions"]:
+            if container["name"] == "nginx":
+                container["healthCheck"] = {"command": ["CMD-SHELL", "true"], "startPeriod": 15}
+        out = _rewrite(task_def)
+        nginx = next(c for c in out["containerDefinitions"] if c["name"] == "nginx")
+        assert nginx["healthCheck"]["startPeriod"] == 15
+        auth = next(c for c in out["containerDefinitions"] if c["name"] == "auth")
+        assert "healthCheck" not in auth
 
 
 class TestDeployYmlIsThePathThatShips:

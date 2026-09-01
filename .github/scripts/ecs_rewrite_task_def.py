@@ -15,11 +15,17 @@ This script is the path that actually ships. It:
 1. Retags the backend / nginx / auth images to this commit.
 2. Pins ``PAPER_ADVANCE_ENABLED=false`` on the backend container, whether
    the cloned definition had the name unset, ``true``, or already ``false``.
-3. Drops the describe-only fields ``register-task-definition`` rejects.
+3. Pins the backend container ``healthCheck.startPeriod`` to 90s so a
+   cloned live revision (startPeriod 30) cannot leave the #1713 warmup
+   budget (60s) outside ECS's ignored-failure window. Command / interval
+   / timeout / retries on an existing healthCheck are preserved; a clone
+   with no healthCheck gets the same command ecs.tf declares.
+4. Drops the describe-only fields ``register-task-definition`` rejects.
 
-terraform apply is still required for other ``ecs.tf`` drift. This flag
-must not depend on it. Flip-back of the tick is this pin *and* the ecs.tf
-line, after #1632 has a proven cause and a fix — do not flip it here.
+terraform apply is still required for other ``ecs.tf`` drift. These pins
+must not depend on it. Flip-back of the tick is the PAPER_ADVANCE pin
+*and* the ecs.tf line, after #1632 has a proven cause and a fix — do
+not flip it here. Do not terraform-noop ``deployment_minimum_healthy_percent``.
 """
 
 from __future__ import annotations
@@ -32,6 +38,22 @@ from typing import Any
 PAPER_ADVANCE_NAME = "PAPER_ADVANCE_ENABLED"
 PAPER_ADVANCE_VALUE = "false"
 BACKEND_CONTAINER = "backend"
+
+# Must be >= archimedes.services.request_path_warmup.WARMUP_BUDGET_SECONDS
+# (60). 90 matches ecs.tf health_check_grace_period_seconds / alb.tf grace.
+# Live cloned revisions still carry startPeriod=30; without this pin the
+# 60s warmup budget sits outside the ignored-failure window and a slow
+# prime is killed (or, worse, the task is marked healthy while still
+# warming — the #1713 bug if warmup fail-softs). Do not lower this below
+# the warmup budget. Do not raise desiredCount. Do not flip PAPER_ADVANCE.
+BACKEND_HEALTHCHECK_START_PERIOD = 90
+BACKEND_HEALTHCHECK_COMMAND = [
+    "CMD-SHELL",
+    "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1",
+]
+BACKEND_HEALTHCHECK_INTERVAL = 30
+BACKEND_HEALTHCHECK_TIMEOUT = 5
+BACKEND_HEALTHCHECK_RETRIES = 3
 
 # Same drop-list the previous inline jq used. These fields come back from
 # ``describe-task-definition`` and ``register-task-definition`` will not
@@ -63,6 +85,26 @@ def pin_backend_paper_advance_off(environment: list[dict[str, Any]] | None) -> l
     return pinned
 
 
+def pin_backend_healthcheck_start_period(health_check: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a healthCheck with startPeriod pinned, existing command kept.
+
+    A cloned last-good revision may have no healthCheck at all, or one
+    with startPeriod 30. Overwriting startPeriod only would drop a
+    missing command (register-task-definition rejects that) or leave 30
+    in place if we skipped a missing block. Existing command / interval
+    / timeout / retries are preserved so this pin cannot silently replace
+    the /health probe.
+    """
+    pinned = dict(health_check or {})
+    if not pinned.get("command"):
+        pinned["command"] = list(BACKEND_HEALTHCHECK_COMMAND)
+        pinned.setdefault("interval", BACKEND_HEALTHCHECK_INTERVAL)
+        pinned.setdefault("timeout", BACKEND_HEALTHCHECK_TIMEOUT)
+        pinned.setdefault("retries", BACKEND_HEALTHCHECK_RETRIES)
+    pinned["startPeriod"] = BACKEND_HEALTHCHECK_START_PERIOD
+    return pinned
+
+
 def rewrite_registered_task_definition(
     task_def: dict[str, Any],
     *,
@@ -88,6 +130,7 @@ def rewrite_registered_task_definition(
             saw_backend = True
             next_container["image"] = backend_image
             next_container["environment"] = pin_backend_paper_advance_off(container.get("environment"))
+            next_container["healthCheck"] = pin_backend_healthcheck_start_period(container.get("healthCheck"))
         elif name == "nginx":
             next_container["image"] = nginx_image
         elif name == "auth":
