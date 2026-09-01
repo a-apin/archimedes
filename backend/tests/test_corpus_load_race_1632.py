@@ -59,19 +59,17 @@ class TestLoadCorpusIsSerialized:
 
 
 class TestHealthProbeDoesNotLoadTheCorpus:
-    @pytest.fixture()
-    def client(self):
+    # ASGITransport, NOT TestClient: entering TestClient's context manager runs
+    # the app's startup lifespan, whose background corpus seed writes ~18k rows
+    # into the shared test DB and poisons every empty-DB test that runs after
+    # this one in the same process. Precedent: test_health_always_answers.py's
+    # _get_health, which exists for exactly this reason.
+    async def test_health_reports_the_count_and_never_calls_load_corpus(self, monkeypatch):
+        from httpx import ASGITransport, AsyncClient
+
+        import archimedes.services.corpus_service as corpus_service
         from archimedes.main import app
         from archimedes.services.health_cache import health_probe_cache
-        from fastapi.testclient import TestClient
-
-        health_probe_cache.clear()
-        with TestClient(app) as c:
-            yield c
-        health_probe_cache.clear()
-
-    def test_health_reports_the_count_and_never_calls_load_corpus(self, monkeypatch, client):
-        import archimedes.services.corpus_service as corpus_service
 
         def _forbidden(*_a, **_k):  # pragma: no cover - the guard IS the failure
             raise AssertionError(
@@ -82,9 +80,14 @@ class TestHealthProbeDoesNotLoadTheCorpus:
         monkeypatch.setattr(strategy_fusion, "load_corpus", _forbidden)
         monkeypatch.setattr(corpus_service, "count_corpus_papers", lambda **_k: 1234)
 
-        resp = client.get("/health")
-        assert resp.status_code == 200
-        assert resp.json()["corpus_papers"] == 1234
+        health_probe_cache.clear()
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/health")
+            assert resp.status_code == 200
+            assert resp.json()["corpus_papers"] == 1234
+        finally:
+            health_probe_cache.clear()
 
 
 class TestCountMatchesTheEmbargoRule:
