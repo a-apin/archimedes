@@ -8,10 +8,16 @@
 //   corpus_db_count  = COUNT(papers) — metadata records; the Corpus page
 //                      reports the same number. The committed JSONL seed is
 //                      the floor; intake can grow the table past it.
-//   corpus_papers    = count_corpus_papers() — embargo-filtered scalar
-//                      COUNT on papers (`published < day-after-cutoff`,
-//                      blank excluded). Still ≤ corpus_db_count by
-//                      construction (same table, one extra WHERE). The
+//   corpus_papers    = count_corpus_papers() published by /health — scalar
+//                      COUNT of papers the generation surface would load,
+//                      with the Xia Outcome Embargo cutoff mirrored in SQL
+//                      (`published != '' AND published < day-after-cutoff`).
+//                      Same meaning as before; no longer a full
+//                      load_corpus() materialization. Still ≤
+//                      corpus_db_count by construction (same table, one
+//                      extra WHERE). On the day #1740 deploys the number
+//                      may read slightly higher than the old strict-`<`
+//                      Python filter (papers exactly 30 days old). The
 //                      user-facing "Generation currently loads N" still
 //                      means the size of the corpus generation would load.
 //

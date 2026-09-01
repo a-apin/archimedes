@@ -10,7 +10,7 @@
 // The two /health fields are different populations, not a completeness
 // ratio of a committed manifest:
 //   corpus_db_count = COUNT(papers)  (Corpus page)
-//   corpus_papers   = count_corpus_papers()  (embargo-filtered COUNT; ≤ db_count)
+//   corpus_papers   = count_corpus_papers()  (/health; embargo-mirrored SQL COUNT; ≤ db_count)
 //
 // Same idiom as oracle-copy.test.js / ipfs-pinning-copy.test.js: the
 // formatter is unit-tested against the live numbers, and Architecture.jsx
