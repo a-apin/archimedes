@@ -145,9 +145,14 @@ the additive count is the conservative, defensible deflation. It can only make t
 **stricter** (anti-goal compliant): with `n_candidates ≥ 1` it is always `≥ library_size`,
 the prior (under-deflating) value.
 
-**Why not effective-N (correlation-adjusted) here.** `compute_dsr` already accepts an
-`average_correlation` and can deflate by effective *independent* trials
-`N_eff = N / (1 + (N-1)ρ̄)` — the principled refinement when candidates are correlated
+**Why not correlation-adjusted deflation here.** *(#1558/#1559, 2026-08-31: this
+paragraph originally named `N_eff = N / (1 + (N-1)ρ̄)` as the correlation refinement.
+That form — the Kish design effect — was never the correlated `E[max]`; the shipped
+correction scales the independent-trial `E[max]` by `√(1−ρ̄)`. The reasoning below is
+unaffected: it turns on shipping the additive count first, not on which correlation
+form the refinement uses.)* `compute_dsr` already accepts an
+`average_correlation` and can deflate by scaling `E[max]` by `√(1−ρ̄)`
+— the principled refinement when candidates are correlated
 (same brief, overlapping universes). We deliberately ship the **simple additive count
 first** (smaller blast radius, strictly conservative) and leave the candidate-pool
 correlation correction as a follow-up; over-deflation (treating correlated candidates as
@@ -223,7 +228,8 @@ independent searches they aren't.
 
 **What ships.** The live society path (`agents/generation_pipeline.py`) estimates ρ̄ from
 the candidate pool's own return series via `compute_average_pairwise_correlation` (no
-change to that function or to `compute_dsr`'s `N_eff` formula — both are reused as-is) and
+change to that function or to `compute_dsr`'s correlation term — both are reused as-is;
+that term was the `N_eff` form when this addendum was written and is `√(1−ρ̄)` as of #1559) and
 feeds it into the same `compute_dsr` call each candidate's DSR was already computed with,
 at the same `num_trials`. `_patch_dsr_with_pool_correlation` runs once every candidate's
 return series is known (mirroring the existing `_patch_pbo` two-pass shape: DSR is first
@@ -238,8 +244,10 @@ from their own CSCV evaluator over a parameter-variant grid, not the buy-and-hol
 series this correlation estimate is scoped to, and are excluded from the pool the same way
 `_patch_pbo` already excludes them from cross-candidate PBO.
 
-**Why this can only relax, never loosen past the no-correction floor.** `N_eff = N / (1 +
-(N-1)ρ̄)` satisfies `1 ≤ N_eff ≤ N` for any `ρ̄ ∈ [0, 1]`, so the corrected DSR p-value sits
+**Why this can only relax, never loosen past the no-correction floor.** *(#1559: argued
+here from `1 ≤ N_eff ≤ N`; the conclusion is unchanged under the shipped form, but the
+premise is now `0 ≤ √(1−ρ̄) ≤ 1`, which shrinks `E[max]` by at most a factor of one.)*
+`√(1−ρ̄)` satisfies `0 ≤ √(1−ρ̄) ≤ 1` for any `ρ̄ ∈ [0, 1]`, so the corrected DSR p-value sits
 between the ρ̄=0 (approach A) value and the value at `num_trials=1` (no multiple-testing
 penalty at all) — it never exceeds the latter, so the gate is never made looser than the
 IID-Sharpe baseline. At ρ̄→1 (candidates fully collapse to one effective trial) the
@@ -475,24 +483,30 @@ three parts: an AST pass over the DSL interpreter proving every bar-indexed read
 carries an offset ≤ 0 (bar *t* or earlier); a walk of the validated spec proving
 it uses nothing outside that audited surface; and the broker
 cheat-on-close/cheat-on-open check charged on the real `cerebro` the backtest
-ran. The verdict is three-state — `passed_structural` /
-`passed_declared_only` / `failed` — and **only `passed_structural` clears the
-LEAK criterion**. The LLM's own boolean survives as `look_ahead_declared`, a
-record with no vote.
+ran. The verdict is four-state — `pass` / `fail` / `pending` (nothing was
+audited) / `degenerate` (the audit ran and could not decide) — and **only `pass`
+clears the LEAK criterion**. The LLM's own boolean does not survive in any form:
+`look_ahead_safe` is deleted from the DSL schema, the `StrategySpec` dataclass
+and the generation prompt, so there is no declaration left to read back.
 
 Two consequences worth stating plainly, because they pull in opposite
 directions and both are deliberate:
 
-- **Deployability is fail-closed.** `passed_declared_only` — the structural
-  audit could not be completed — blocks the gate exactly as hard as `failed`.
-  An unfinished audit is not evidence.
-- **Rendering is honest.** That same state must be *shown* as "not audited",
-  never as a failure, because nothing found a leak — nothing finished looking.
-  The verdict carries `look_ahead_render_state`
-  (`passed` / `not_checked` / `failed`) as a separate axis from the gating
-  boolean for exactly this reason, and `gate_details["look_ahead"]` renders a
-  leg that never ran as `NOT_RUN (…) — blocks admission (fail-closed)` rather
-  than `FAIL`.
+- **Deployability is fail-closed.** `pending` and `degenerate` block the gate
+  exactly as hard as `fail`. An audit that reached no verdict is not evidence.
+- **Rendering is honest.** Those same states must be *shown* as "not audited" /
+  "undecidable", never as a failure, because nothing found a leak — nothing
+  concluded. The four-state `look_ahead_status` is the single vocabulary every
+  surface reads (there is no second render vocabulary to keep in sync), and
+  `gate_details["look_ahead"]` renders those legs as
+  `NOT_RUN (…) — blocks admission (fail-closed)` /
+  `DEGENERATE (…) — blocks admission (fail-closed)` rather than `FAIL`.
+- **Persisted rows get the same treatment.** `GET /api/selection-bias/gate/{id}`
+  for a generated strategy grades stored columns, not a live spec, so it reads
+  `look_ahead_audit_source` alongside the boolean: a row whose provenance is the
+  retired `self_attested` (the boolean *was* the LLM's declaration) or
+  `dsl_audit_not_run` is `pending`, not a pass — a stored `True` from the old
+  self-attested path no longer deploys anything.
 
 What still keeps generated strategies badge-gated is the remaining wiring: the
 live *per-level* re-grade path takes curated strategies only. That is a

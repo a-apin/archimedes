@@ -73,6 +73,17 @@ def _failing_series(seed: int = 99, n: int = 500) -> list[float]:
     return np.random.default_rng(seed).normal(0.0, 0.02, n).tolist()
 
 
+def _failing_result(strategy_id: str):
+    """A REAL ``RigorGateResult`` that fails the gate.
+
+    A real result rather than a MagicMock so ``_verdict_from_result`` exercises
+    the same ``RigorGateVerdict.from_result`` reduction the production path runs
+    (``is_degenerate`` → ``passes_all`` → ladder fields), not a mock's
+    auto-attributes.
+    """
+    return run_rigor_gate(strategy_id=strategy_id, daily_returns=_failing_series(), num_trials=1)
+
+
 # ── live_rigor_gate unit tests (the single source of truth) ─────────────
 
 
@@ -191,11 +202,15 @@ class TestSingleStrategyCohortContext:
 
         captured = {}
 
+        # #1645: the delegate is now the SAME memoized batch the numeric fields
+        # read (`_live_rigor_results_for_strategies`), not a second uncached run
+        # through `verdicts_for_strategies`. The #902 invariant this test guards
+        # — the cohort is the full library — is unchanged.
         def _fake_batch(strategies):
             captured["cohort_ids"] = [s.id for s in strategies]
-            return {target.id: RigorGateVerdict.failed()}
+            return {target.id: _failing_result("s1")}
 
-        monkeypatch.setattr(strategies_routes, "verdicts_for_strategies", _fake_batch)
+        monkeypatch.setattr(strategies_routes, "_live_rigor_results_for_strategies", _fake_batch)
 
         v = strategies_routes._live_verdict_for_one(target)
         assert captured["cohort_ids"] == ["s0", "s1", "s2"]
@@ -215,7 +230,7 @@ class TestSingleStrategyCohortContext:
             captured["cohort_ids"] = [s.id for s in strategies]
             return {}
 
-        monkeypatch.setattr(strategies_routes, "verdicts_for_strategies", _fake_batch)
+        monkeypatch.setattr(strategies_routes, "_live_rigor_results_for_strategies", _fake_batch)
 
         fresh = MagicMock(id="fresh")
         v = strategies_routes._live_verdict_for_one(fresh)
@@ -286,6 +301,143 @@ class TestSingleStrategyCohortContext:
             "list route must grade the FULL library cohort; got a "
             f"{len(captured.get('cohort_ids', []))}-item cohort for a 5-item page"
         )
+
+
+class TestSingleStrategyGateRunCount:
+    """REGRESSION (#1645): ``GET /api/strategies/{id}`` runs the cohort gate ONCE.
+
+    The detail route used to build its badge from ``verdicts_for_strategies`` and
+    its numeric fields from ``_live_rigor_results_for_strategies``. Both grade the
+    FULL library, so one request ran the whole cohort gate twice — and only the
+    second path is memoized in ``services.rigor_cache``, so a warm cache still
+    paid a full cohort recompute on every request forever.
+
+    The first test's two assertions are call-count spies on ``run_rigor_gate``,
+    the unit of work the page's latency is made of. They are deliberately stated
+    in units of ``len(library)`` rather than a literal, so the guard does not go
+    quiet if the curated library grows or shrinks. The other two tests pin the
+    shape (one batch, one result object) and the fail-closed contract, which a
+    count alone would not catch.
+
+    Revert-demo (transcript in the PR body): restoring the two-call form in
+    ``_to_strategy_response`` makes the cold assertion read ``68 != 34`` and the
+    warm assertion ``34 != 0``.
+    """
+
+    @staticmethod
+    def _install_counting_gate(monkeypatch, sink: list) -> None:
+        """Count every ``run_rigor_gate`` call, still running the real gate.
+
+        Patched on the ``rigor_evaluator`` MODULE, which is where both call sites
+        resolve it (each imports it inside the function body). The module-level
+        ``run_rigor_gate`` this test file imported stays the real one, so the
+        spy cannot recurse and helpers like ``_failing_result`` are not counted.
+        """
+        real = run_rigor_gate
+
+        def _counting(*args, **kwargs):
+            sink.append(kwargs.get("strategy_id"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr("archimedes.services.rigor_evaluator.run_rigor_gate", _counting)
+
+    @pytest.mark.asyncio
+    async def test_detail_route_runs_the_cohort_gate_once_cold_and_zero_times_warm(self, monkeypatch):
+        from archimedes.api import strategies_routes as sr
+        from archimedes.main import app
+
+        library = sr.strategy_provider().list_strategies()
+        assert len(library) >= 2, "need a real curated cohort"
+        returns = {s.id: _passing_series(i) for i, s in enumerate(library)}
+
+        # Boundary mocks only: the persisted-returns read and the strategy-source
+        # read. The cohort maths and the gate itself run for real.
+        monkeypatch.setattr(
+            "archimedes.services.backtest_repository.get_all_daily_returns",
+            lambda session, ids: {sid: returns.get(sid, []) for sid in ids},
+        )
+        monkeypatch.setattr(
+            "archimedes.api.selection_bias_routes._load_strategy_code",
+            lambda path: _CLEAN_CODE,
+        )
+        calls: list = []
+        self._install_counting_gate(monkeypatch, calls)
+
+        target = library[0]
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            cold = await client.get(f"/api/strategies/{target.id}")
+            assert cold.status_code == 200
+            cold_calls = len(calls)
+            assert cold_calls == len(library), (
+                f"one cold detail request must run the cohort gate exactly once "
+                f"({len(library)} run_rigor_gate calls); got {cold_calls} "
+                f"(= {cold_calls / len(library):.1f} cohort passes)"
+            )
+
+            # The cohort is unchanged, so the rigor_cache entry the cold request
+            # wrote must serve the whole warm request. Pre-fix this was
+            # len(library), because the badge half had no cache at any layer.
+            calls.clear()
+            warm = await client.get(f"/api/strategies/{target.id}")
+            assert warm.status_code == 200
+        assert len(calls) == 0, (
+            f"a warm detail request must not recompute the cohort gate; got {len(calls)} "
+            "run_rigor_gate calls — some part of the detail path is bypassing rigor_cache"
+        )
+
+        # Same computation, same answer: the badge and the numbers a cache hit
+        # serves must still agree with what the cold miss computed.
+        assert warm.json()["passes_rigor_gate"] == cold.json()["passes_rigor_gate"]
+        assert warm.json()["dsr_p_value"] == cold.json()["dsr_p_value"]
+
+    def test_verdict_and_result_come_from_one_batch_computation(self, monkeypatch):
+        """The badge is reduced from the very result object that is served.
+
+        Guards the shape, not just the count: a future edit that recomputes the
+        verdict separately would still pass a count assertion if it happened to
+        hit the cache, but would fail here.
+        """
+        from archimedes.api import strategies_routes as sr
+
+        sentinel = _failing_result("sentinel")
+        batches: list = []
+
+        def _fake_batch(strategies):
+            batches.append([s.id for s in strategies])
+            return {"t": sentinel}
+
+        provider = MagicMock()
+        provider.list_strategies.return_value = [MagicMock(id="t")]
+        monkeypatch.setattr(sr, "strategy_provider", lambda: provider)
+        monkeypatch.setattr(sr, "_live_rigor_results_for_strategies", _fake_batch)
+
+        verdict, result = sr._live_verdict_and_result_for_one(MagicMock(id="t"))
+        assert result is sentinel, "the served numbers must be the batch's own result object"
+        assert verdict.status == FAIL, "the badge must be reduced from that same result"
+        assert len(batches) == 1, f"exactly one cohort computation; got {len(batches)}"
+
+    def test_batch_failure_still_fail_closes_to_pending(self, monkeypatch):
+        """The old `_live_verdict_for_one` had its own try/except that degraded a
+        gate failure to `pending`. Collapsing it onto the memoized path must not
+        drop that: the badge is a claim, and a crash must never surface as a PASS
+        or propagate into a 500. This guards the fail-closed sentence the new
+        docstring asserts (CLAUDE.md: a prose claim the code does not enforce is
+        the same defect as an unenforced guard).
+        """
+        from archimedes.api import strategies_routes as sr
+
+        def _boom(_strategies):
+            raise RuntimeError("cohort compute exploded")
+
+        provider = MagicMock()
+        provider.list_strategies.return_value = [MagicMock(id="t")]
+        monkeypatch.setattr(sr, "strategy_provider", lambda: provider)
+        monkeypatch.setattr(sr, "_live_rigor_results_for_strategies", _boom)
+
+        verdict, result = sr._live_verdict_and_result_for_one(MagicMock(id="t"))
+        assert verdict.status == PENDING, "a gate failure must fail CLOSED, never to a pass/fail claim"
+        assert verdict.passes is False
+        assert result is None, "no numbers may be served when the gate could not run"
 
 
 class TestRigorGateVerdict:
@@ -1081,9 +1233,21 @@ async def test_single_strategy_endpoint_numeric_fields_equal_live_gate(monkeypat
     target = strategies[0]
     series = _passing_series(5)
 
+    # Patch BOTH persisted-returns readers. This route grades through
+    # `_live_rigor_result_for_one` -> `_live_rigor_results_for_strategies`,
+    # whose DB boundary is `get_all_daily_returns` (the same boundary the
+    # sibling tests above stub) — it is NOT a loop over `get_daily_returns`
+    # since #1662 batched it into one query, so stubbing only the single-row
+    # reader leaves the cohort read live and the assertions below fall through
+    # to `None`. Both stubs express the identical fixture: `target` has a
+    # passing series, every other strategy has none.
     monkeypatch.setattr(
         "archimedes.services.backtest_repository.get_daily_returns",
         lambda session, sid: series if sid == target.id else [],
+    )
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {target.id: series} if target.id in ids else {},
     )
     monkeypatch.setattr(
         "archimedes.api.selection_bias_routes._load_strategy_code",
@@ -1225,3 +1389,441 @@ async def test_single_strategy_endpoint_200s_with_no_linked_paper():
     assert served["paper_arxiv_id"] is None
     assert served["paper_title"] is None
     assert served["papers"] == []
+
+
+# ── Publish rights: same responses, O(1) queries (#1663) ────────────────────
+#
+# `GET /api/strategies/` called `wallet_can_publish` once per response row — one
+# round trip per row, each paying a `pool_pre_ping` SELECT 1 first, and paid
+# ONLY by signed-in callers (the per-row call short-circuits on anonymous), which
+# is backwards for a demo. `_publishable_strategy_ids` replaces the loop with one
+# IN query. The query-count guards and their adversarial control live in
+# `test_publishable_strategy_ids.py`; what these two tests pin is that the
+# SERVED RESPONSE did not move — anonymous and wallet-linked alike.
+
+_PUBLISH_CALLER = "0x" + "d4" * 20
+
+
+def _per_row_publishable_ids(session, strategy_ids, wallet_address, *, is_example):
+    """The pre-#1663 per-row gate, drop-in-shaped for _publishable_strategy_ids.
+
+    `bool(caller) and wallet_can_publish(...)` per row is verbatim what both
+    Library loops evaluated, so swapping this in serves the OLD answers through
+    the CURRENT route.
+    """
+    from archimedes.models.strategy_generators import wallet_can_publish
+
+    return {
+        sid
+        for sid in strategy_ids
+        if bool(wallet_address)
+        and wallet_can_publish(session, strategy_id=sid, wallet_address=wallet_address, is_example=is_example)
+    }
+
+
+async def _library_json(monkeypatch, caller, publishable_impl=None):
+    """GET /api/strategies/?limit=10, optionally with the per-row gate swapped in."""
+    import archimedes.api.strategies_routes as sr
+    from archimedes.main import app
+
+    # Hermeticity: an ambient PLATFORM_ADMIN_WALLETS would make the caller an
+    # admin, flip every can_publish to True, and silently defeat the
+    # "not all(flags)" non-vacuity check below.
+    monkeypatch.delenv("PLATFORM_ADMIN_WALLETS", raising=False)
+    monkeypatch.setattr(sr, "get_linked_wallet_address", lambda request: caller)
+    monkeypatch.setattr(
+        "archimedes.services.backtest_repository.get_all_daily_returns",
+        lambda session, ids: {},
+    )
+    if publishable_impl is not None:
+        monkeypatch.setattr(sr, "_publishable_strategy_ids", publishable_impl)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/strategies/?limit=10")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _seed_one_generator_row(strategy_id: str, wallet: str) -> None:
+    """Give `wallet` publish rights over exactly ONE curated id.
+
+    Exactly one, deliberately: an all-True or all-False page would make the
+    byte-identity assertion below pass for an implementation that ignored the
+    DB entirely.
+    """
+    from archimedes.db import get_session
+    from archimedes.models.identity import WalletIdentity
+    from archimedes.models.strategy_generators import record_generator
+
+    with get_session() as session:
+        session.merge(WalletIdentity(wallet_address=wallet, actor_class="human"))
+        # The production writer, which is insert-if-not-exists — `archimedes.db`'s
+        # engine is a module-level singleton, so the per-test DATABASE_URL does
+        # not actually give each test a fresh file and a raw INSERT would trip
+        # the (strategy_id, wallet_address) unique constraint on the second test.
+        record_generator(session, strategy_id=strategy_id, wallet_address=wallet)
+        session.commit()
+
+
+@pytest.mark.asyncio
+async def test_library_response_identical_to_per_row_gate_for_a_linked_wallet(monkeypatch):
+    """A signed-in caller's page is byte-identical to what the per-row gate served."""
+    import archimedes.api.strategies_routes as sr
+
+    strategies = sr.strategy_provider().list_strategies()
+    assert strategies, "need at least one curated strategy"
+    _seed_one_generator_row(strategies[0].id, _PUBLISH_CALLER)
+
+    batched = await _library_json(monkeypatch, _PUBLISH_CALLER)
+    legacy = await _library_json(monkeypatch, _PUBLISH_CALLER, publishable_impl=_per_row_publishable_ids)
+
+    # Non-vacuity: the fixture must produce a genuine MIX, or "identical" would
+    # hold for an implementation that hardcoded one answer.
+    flags = [s["can_publish"] for s in batched["strategies"]]
+    assert any(flags), "seed did not reach the route — every row is can_publish=False"
+    assert not all(flags), "every row is can_publish=True — the fixture grants too much to discriminate"
+
+    assert batched == legacy
+
+
+@pytest.mark.asyncio
+async def test_library_response_identical_to_per_row_gate_for_an_anonymous_visitor(monkeypatch):
+    """The anonymous short-circuit is not relaxed: a visitor still sees
+    can_publish=False everywhere, exactly as before."""
+    import archimedes.api.strategies_routes as sr
+
+    strategies = sr.strategy_provider().list_strategies()
+    assert strategies, "need at least one curated strategy"
+    # Seeded for a DIFFERENT wallet — a visitor must not inherit its rights.
+    _seed_one_generator_row(strategies[0].id, _PUBLISH_CALLER)
+
+    batched = await _library_json(monkeypatch, None)
+    legacy = await _library_json(monkeypatch, None, publishable_impl=_per_row_publishable_ids)
+
+    assert batched == legacy
+    assert not any(s["can_publish"] for s in batched["strategies"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The executable DSL spec on the passport detail route (#1646)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `StrategyResponse.strategy_spec` is the validated machine-readable DSL that
+# actually runs the strategy. It existed on `StrategyPassport.strategy_spec`
+# and `strategy_store.strategy_spec` but was stripped before the API boundary,
+# so the passport page could never show a reader the rules behind the prose.
+#
+# The cases below pin the whole contract, positive and negative:
+#   1. the owner of a row with a spec gets the spec back, unredacted;
+#   2. a non-owner does NOT — INCLUDING on a published row the same request
+#      reads in full, because the #1557 matrix files "machine-readable DSL
+#      spec" under REASONING, and publishing shares the result, not the
+#      derivation;
+#   3. no LIST surface carries it (the issue's explicit anti-goal), pinned
+#      structurally — every `.strategy_spec =` assignment in the routes module
+#      must sit inside `get_strategy` — AND at each of the two shared response
+#      builders, which is the seam a future refactor would actually break;
+#   4. a corrupt spec column degrades to null instead of 500ing the route.
+#
+# Hermetic: `_spec_tmp_db` genuinely rebinds `archimedes.db.engine` /
+# `SessionLocal` to a per-test tmp SQLite via the shared `redirect_to_tmp_sqlite`
+# helper and restores them after. That is deliberately NOT the file-level
+# autouse `_use_tmp_db` above, which only sets `DATABASE_URL` + calls
+# `init_db()`: `archimedes.db` binds its engine once at import time, so setting
+# the env var afterwards rebinds nothing and these tests would read and WRITE
+# the ambient dev database (observed while writing them: 37 real curated
+# passports appearing in a list assertion, and a UNIQUE-constraint collision
+# between two parametrizations of the same test, which under a genuinely
+# per-test DB is impossible). Fixing this file's autouse fixture wholesale is a separate
+# change; scoping the real isolation to the new tests keeps them honest without
+# perturbing the 45 that already pass.
+#
+# Auth is the signed SIWE fixture cookie that conftest's autouse
+# `_legacy_siwe_test_adapter` maps onto a canonical Better Auth user (the shape
+# established by test_brief_on_passport.py / test_strategy_ownership.py) — a
+# real signed session, not header spoofing. No live DB, no Redis, no network.
+
+_SPEC_W_OWNER = "0xAbC0000000000000000000000000000000001646"  # mixed case on purpose
+_SPEC_W_STRANGER = "0x0000000000000000000000000000000000001647"
+
+# A real DSL-shaped spec, not a `{"a": 1}` placeholder: a nested dict is what
+# the field actually carries, and a flat one would not prove the structure
+# survives the round trip through a Text column intact.
+_SPEC_FIXTURE = {
+    "asset_universe": ["SPY", "TLT"],
+    "entry": {"all": [{"indicator": "rsi", "window": 14, "op": "<", "value": 30}]},
+    "exit": {"any": [{"indicator": "rsi", "window": 14, "op": ">", "value": 70}]},
+    "position_sizing": "equal_weight",
+    "rebalance_frequency": "weekly",
+}
+# The distinctive leaf of the fixture. Asserting on THIS rather than on the
+# `strategy_spec` key is what makes the redaction tests real: a refactor that
+# free-forms the spec into some other key (a nested passport blob, a debug
+# echo) still trips them.
+_SPEC_TELL = "rsi"
+
+
+@pytest.fixture
+def _spec_tmp_db(tmp_path):
+    """Genuinely-isolated per-test SQLite — see the section note above."""
+    from tests.db_isolation import redirect_to_tmp_sqlite
+
+    yield from redirect_to_tmp_sqlite(tmp_path)
+
+
+def _spec_user_id(wallet: str) -> str:
+    """The canonical user id conftest's legacy SIWE adapter mints for a fixture
+    cookie. Derived from the wallet rather than hard-coded so it cannot drift
+    from the adapter (whose payload is lower-cased at signing)."""
+    return f"legacy-test:{wallet.lower()}"
+
+
+def _spec_cookies(wallet: str) -> dict[str, str]:
+    import time
+
+    from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
+
+    return {_COOKIE_NAME: _sign_session(wallet, time.time())}
+
+
+def _seed_spec_row(
+    sid: str,
+    *,
+    strategy_spec: str | None,
+    owner_user_id: str | None = None,
+    is_published: bool = False,
+) -> None:
+    """A StrategyRecord (carrying the spec column + ownership) plus its
+    StrategyPassportRecord mirror under the SAME id — what `_persist_candidate`
+    writes for every generated strategy.
+
+    `strategy_spec` is passed as the RAW column value (a JSON string, or a
+    deliberately corrupt one) because that is what the defensive decoder under
+    test actually receives.
+    """
+    from archimedes.db import get_session
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_store import StrategyRecord
+
+    with get_session() as session:
+        session.add(
+            StrategyRecord(
+                id=sid,
+                content_hash=("0x" + sid).ljust(66, "0"),
+                generation_method="debate",
+                source_papers="[]",
+                strategy_name="Spec Test Strategy",
+                thesis="test thesis",
+                asset_universe='["SPY"]',
+                risk_profile="moderate",
+                status="candidate",
+                is_example=False,
+                is_published=is_published,
+                owner_user_id=owner_user_id,
+                strategy_spec=strategy_spec,
+            )
+        )
+        session.add(
+            StrategyPassportRecord(
+                id=sid,
+                generation_method="debate",
+                methodology_summary="Test methodology",
+                asset_universe='["SPY"]',
+                position_sizing="equal_weight",
+                rebalance_frequency="weekly",
+                status="candidate",
+                regime_tag="regime_neutral",
+                passes_rigor_gate=False,
+                owner_user_id=owner_user_id,
+            )
+        )
+        session.commit()
+
+
+def _spec_client(wallet: str | None = None) -> AsyncClient:
+    from archimedes.main import app
+
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies=_spec_cookies(wallet) if wallet else None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_detail_route_returns_strategy_spec_to_the_row_owner(_spec_tmp_db):
+    """THE feature: `GET /api/strategies/{id}` hands the owner back the exact
+    validated DSL spec stored for their row, structurally intact.
+
+    Asserted as whole-dict equality rather than a truthiness check — a
+    partially-serialized spec (nested conditions flattened, numbers
+    stringified) would still be truthy, and a spec the page renders as code is
+    only worth rendering if it is the spec that runs.
+    """
+    import json
+
+    sid = "spec-detail-owner"
+    _seed_spec_row(sid, strategy_spec=json.dumps(_SPEC_FIXTURE), owner_user_id=_spec_user_id(_SPEC_W_OWNER))
+
+    async with _spec_client(_SPEC_W_OWNER) as client:
+        resp = await client.get(f"/api/strategies/{sid}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["strategy_spec"] == _SPEC_FIXTURE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_wallet", [_SPEC_W_STRANGER, None], ids=["signed-in-stranger", "anonymous"])
+async def test_detail_route_hides_strategy_spec_from_non_owners(_spec_tmp_db, caller_wallet):
+    """PRIVACY GUARD — the negative half, and the reason the spec takes
+    `is_strategy_reasoning_visible` rather than either of the two predicates
+    already in scope at that line.
+
+    The row is PUBLISHED, so `is_strategy_visible` grants the request in full:
+    the caller legitimately reads the card, gets a 200, and sees the
+    methodology. What they must NOT get is the executable spec. Reusing
+    `is_strategy_visible` (the check that already ran ten lines up, and the
+    obvious thing to reach for) would look correct and would hand every
+    published user strategy's runnable definition to anonymous callers —
+    exactly the #1557 hole, reopened on a new field.
+    """
+    import json
+
+    sid = "spec-detail-published"
+    _seed_spec_row(
+        sid,
+        strategy_spec=json.dumps(_SPEC_FIXTURE),
+        owner_user_id=_spec_user_id(_SPEC_W_OWNER),
+        is_published=True,
+    )
+
+    async with _spec_client(caller_wallet) as client:
+        resp = await client.get(f"/api/strategies/{sid}")
+
+    assert resp.status_code == 200, "published row must stay readable — this is a redaction, not a 404"
+    body = resp.json()
+    assert body["id"] == sid
+    assert body["methodology_summary"] == "Test methodology", "the card itself is still public"
+    assert body["strategy_spec"] is None
+    assert _SPEC_TELL not in resp.text
+
+
+def test_strategy_spec_is_assigned_only_inside_the_detail_route():
+    """ANTI-GOAL GUARD (stated verbatim in #1646: "Do NOT expose
+    ``strategy_spec`` on the **list** response"), enforced structurally.
+
+    Parses ``strategies_routes.py`` and asserts that EVERY assignment to a
+    ``.strategy_spec`` attribute in the module sits inside ``get_strategy`` —
+    the single-strategy detail route. AST, not grep, so a comment mentioning
+    the field or a read like ``row.strategy_spec`` cannot trip it and a real
+    assignment cannot hide behind formatting.
+
+    This is the guard a route-level list assertion could not honestly give.
+    The two shared response builders below are each pinned individually, but
+    "no list surface carries the spec" is a claim about the module as a whole:
+    a third builder added next quarter would satisfy both of those tests and
+    still leak. Here it fails.
+    """
+    import ast
+    import pathlib
+
+    import archimedes.api.strategies_routes as mod
+
+    tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding="utf-8"))
+
+    offenders: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Assign):
+                continue
+            for target in sub.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "strategy_spec":
+                    offenders.append((node.name, sub.lineno))
+
+    assert offenders, "no `.strategy_spec = ` assignment found at all — the wiring is gone, not merely misplaced"
+    bad = [(fn, line) for fn, line in offenders if fn != "get_strategy"]
+    assert not bad, (
+        "`strategy_spec` may only be populated by the single-strategy detail route "
+        f"`get_strategy`; found assignments in {bad} (function, line). A shared "
+        "response builder that sets it puts an unbounded JSON blob on every row of "
+        "every list payload, and on the public leaderboard."
+    )
+
+
+def test_passport_to_strategy_response_never_sets_strategy_spec(_spec_tmp_db):
+    """GUARD: the SHARED passport response builder — behind Library
+    (`_passport_responses`), the public leaderboard
+    (`_public_generated_strategy_responses`) and the owned-rows board — must
+    never populate `strategy_spec`, even from a row that has one.
+
+    Pinned at the seam rather than only at a route: if a future edit moves the
+    spec lookup INTO this helper, the detail-route test above still passes
+    while every list surface silently starts shipping the field. Mirrors
+    `test_passport_to_strategy_response_never_sets_brief_intent`, which guards
+    `brief_intent` at this exact seam for the same reason.
+    """
+    import json
+
+    from archimedes.api.strategies_routes import _passport_to_strategy_response
+    from archimedes.db import get_session
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+
+    sid = "spec-shared-builder-guard"
+    _seed_spec_row(sid, strategy_spec=json.dumps(_SPEC_FIXTURE), owner_user_id=_spec_user_id(_SPEC_W_OWNER))
+
+    with get_session() as session:
+        record = session.query(StrategyPassportRecord).filter_by(id=sid).first()
+        assert record is not None
+        resp = _passport_to_strategy_response(record, session=session)
+
+    assert resp.strategy_spec is None
+
+
+def test_to_strategy_response_never_sets_strategy_spec():
+    """GUARD, second seam: `_to_strategy_response` is the OTHER shared builder
+    — it serves the curated library list (`list_strategies`, the route the
+    anti-goal names by name) and `leaderboard_routes.py`'s curated board, as
+    well as the curated branch of the detail route.
+
+    So the spec is attached on the detail route's curated branch instead, and
+    this pins that it is not attached here. Fed a passport that HAS a spec: a
+    builder that ignored the field would pass a `strategy_spec=None` fixture
+    trivially, which is exactly the "test passes against the unfixed code"
+    trap.
+    """
+    from archimedes.api.strategies_routes import _to_strategy_response
+    from archimedes.models.strategy import StrategyPassport
+
+    s = StrategyPassport(
+        id="spec-curated-builder-guard",
+        papers=[],
+        methodology_summary="curated",
+        asset_universe=["SPY"],
+        strategy_spec=_SPEC_FIXTURE,
+    )
+    resp = _to_strategy_response(s, verdict=RigorGateVerdict.pending(), rigor_result=None)
+
+    assert resp.strategy_spec is None
+
+
+@pytest.mark.asyncio
+async def test_detail_route_serves_null_strategy_spec_for_a_corrupt_column(_spec_tmp_db):
+    """A corrupt spec column degrades to `null` — not a 500, not a plausible
+    fragment.
+
+    `strategy_spec` is a Text column holding JSON, so a truncated write or a
+    bad backfill is representable. `StrategyRecord.decoded_strategy_spec()`
+    already fails soft for `to_dict()`; this pins that the passport route
+    inherits that behaviour rather than acquiring a new 500 surface — the
+    honest-absence rule applied to a field the page renders.
+    """
+    sid = "spec-detail-corrupt"
+    _seed_spec_row(sid, strategy_spec='{"entry": [', owner_user_id=_spec_user_id(_SPEC_W_OWNER))
+
+    async with _spec_client(_SPEC_W_OWNER) as client:
+        resp = await client.get(f"/api/strategies/{sid}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["strategy_spec"] is None

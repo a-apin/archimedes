@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
-import { EXAMPLE_BRIEFS } from "../data/exampleBriefs";
+import FreeGenerationBanner from "./FreeGenerationBanner";
+import { SURPRISE_BRIEFS } from "../data/surpriseBriefs";
+import { pickSurpriseBrief } from "../data/pickSurpriseBrief";
 import { ASSET_GROUPS, SUPPORTED_ASSETS } from "../data/assetUniverse";
 import { apiGet, apiPostWithMeta } from "../api";
 import { getAddress } from "../config";
@@ -11,6 +13,7 @@ import { GENERATION_QUOTE_ENABLED } from "../featureFlags";
 import { depositToGateway, getGatewayBalance, parseUsdcAmount, paymentPayerAddress, paymentWalletKind, signGatewayPayment, walletSupportsPayment } from "../x402";
 import { ensureSessionLinked, getOrCreateSessionAccount } from "../payment-session";
 import {
+	DEFAULT_DEPTH,
 	DEPTH_OPTIONS,
 	PAYMENT_STATUS,
 	deriveQuoteView,
@@ -33,12 +36,30 @@ const shortAddr = (addr) => (addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : 
 // `_MAX_ASSETS` there to re-verify.
 const ENGINE_C_ASSET_CAP = 6;
 
-// /generate spine page — redesigned per issue #872.
+// /generate spine page — redesigned per issue #872, re-laid-out per #1642.
 //
 // Layout (top to bottom):
 //   1. Model selector (ModelCostPanel)
 //   2. Brief input + submit
 //   3. Recent Generations job table
+//
+// MOBILE-FIRST (#1642). The phone layout is the base stylesheet, not a
+// media-query afterthought: `.generate-workbench` is a single column at
+// every width by default and only becomes the two-column brief+rail grid at
+// `min-width: 900px` (App.css, the "#1642 — Generate, mobile-first" block at
+// the end of the file). Consequence for anyone editing the markup: source
+// order IS the phone order. The brief card is first because it is the thing
+// the page is for; the context rail (model picker + pipeline-inputs note)
+// follows it, because on a 375px screen a rail above the input would push
+// the input below the fold.
+//
+// "Surprise me" (#1642) replaced the always-visible three-entry
+// "Examples — click to fill" list. The bank is ../data/surpriseBriefs.js
+// (124 entries) and NOTHING from it renders until the button is pressed —
+// no preview, no fallback list on error, nothing at mount. The picked
+// entry goes straight into the textarea; the picker
+// (../data/pickSurpriseBrief.js) is passed the previous pick's id so two
+// presses in a row can never return the same brief.
 //
 // Submitting queues a job and adds a row to the table; the user STAYS on
 // the page. Clicking a row opens that job's live SSE stream as a drill-down
@@ -101,10 +122,17 @@ export default function Generate({ onNavigate, onStageChange }) {
 	// ── Advanced options (hidden by default) ──
 	const [advancedOpen, setAdvancedOpen] = useState(false);
 	const [riskAppetite, setRiskAppetite] = useState("moderate");
-	const [depth, setDepth] = useState(5);
+	const [depth, setDepth] = useState(DEFAULT_DEPTH);
 	const [selectedAssets, setSelectedAssets] = useState([]);
 	const [assetQuery, setAssetQuery] = useState("");
 	const [strategyName, setStrategyName] = useState("");
+
+	// ── Surprise Me (#1642) ──
+	// Holds ONLY the id of the last pick, never the brief text: the text lives
+	// in `intent` (the textarea) once applied, so there is no second place a
+	// bank entry could leak onto the screen before the button is pressed.
+	const [lastSurpriseId, setLastSurpriseId] = useState(null);
+	const [surpriseLabel, setSurpriseLabel] = useState("");
 
 	// ── Drill-down: which job's stream to show (null = table view) ──
 	const [drillInJobId, setDrillInJobId] = useState(null);
@@ -660,6 +688,16 @@ export default function Generate({ onNavigate, onStageChange }) {
 		}
 	};
 
+	// Surprise Me: draw a brief the user has not just seen and drop it in the
+	// box. `lastSurpriseId` is the exclusion, so pressing twice always moves.
+	const handleSurprise = () => {
+		const pick = pickSurpriseBrief(SURPRISE_BRIEFS, lastSurpriseId);
+		if (!pick) return;
+		setLastSurpriseId(pick.id);
+		setSurpriseLabel(pick.label);
+		applyExample(pick);
+	};
+
 	// ── Asset picker helpers ──
 	const toggleAsset = (a) =>
 		setSelectedAssets((prev) =>
@@ -725,6 +763,10 @@ export default function Generate({ onNavigate, onStageChange }) {
 				</p>
 			</header>
 
+			{/* Free-generation allowance (#1643) — one isolated component, one
+			    mount point. Renders nothing when there is no honest number to
+			    show (signed out, request failed, backend reported null). */}
+
 			<div className="generate-workbench">
 				{/* ── 1. BRIEF INPUT + SUBMIT ── */}
 				<section className="card generate-brief">
@@ -758,13 +800,23 @@ export default function Generate({ onNavigate, onStageChange }) {
 					<label className="label mb-1 block" htmlFor="generate-brief">
 						Your brief
 					</label>
+					{/* Short hint only. The long-form prompting tutorial lives in
+					    docs/writing-a-brief.md (#1642) — one home for the prose, a
+					    link here, no duplicated copy to drift apart. */}
 					<p
 						className="caption mb-2"
 						id="generate-brief-help"
 						style={{ color: "var(--text-3)" }}
 					>
-						A good brief names concrete assets or classes, a mechanism (momentum
-						/ vol-managed / hedge / mean-reversion), and a goal.
+						Name assets, a mechanism, and a goal.{" "}
+						<a
+							className="generate-brief-guide-link"
+							href="https://github.com/a-apin/archimedes/blob/main/docs/writing-a-brief.md"
+							target="_blank"
+							rel="noreferrer"
+						>
+							How to write a brief →
+						</a>
 					</p>
 
 					<textarea
@@ -778,27 +830,33 @@ export default function Generate({ onNavigate, onStageChange }) {
 						disabled={starting}
 					/>
 
-					{/* Example briefs */}
-					<div className="mb-3">
-						<div className="caption mb-1.5" style={{ color: "var(--text-3)" }}>
-							Examples — click to fill:
-						</div>
-						<div className="flex flex-col gap-1.5">
-							{EXAMPLE_BRIEFS.map((ex) => (
-								<button
-									key={ex.id}
-									type="button"
-									onClick={() => applyExample(ex)}
-									disabled={starting}
-									className="generate-example"
-								>
-									<span style={{ color: "var(--accent)", marginRight: 6 }}>
-										→
-									</span>
-									{ex.label}
-								</button>
-							))}
-						</div>
+					{/* Surprise Me (#1642) — the ONLY example-related control on the
+					    page. No brief text renders here in any state: the pick goes
+					    into the textarea above, and this region announces only which
+					    one landed (a label, for the screen-reader user who cannot see
+					    the box repaint). Nothing renders before the first press. */}
+					<div className="generate-surprise mb-3">
+						<button
+							type="button"
+							onClick={handleSurprise}
+							disabled={starting}
+							className="generate-surprise-btn"
+						>
+							<span
+								className="i-lucide-shuffle w-4 h-4"
+								aria-hidden="true"
+							/>
+							Surprise me
+						</button>
+						<p
+							className="caption generate-surprise-hint mb-0"
+							role="status"
+							aria-live="polite"
+						>
+							{surpriseLabel
+								? `Filled in: ${surpriseLabel}. Press again for another.`
+								: "Fills the box with an example brief — a different one each press."}
+						</p>
 					</div>
 
 					{/* Advanced options — collapsed by default */}
@@ -821,7 +879,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 							Advanced options
 							{(selectedAssets.length > 0 ||
 								riskAppetite !== "moderate" ||
-								depth !== 5) && (
+								depth !== DEFAULT_DEPTH) && (
 								<span
 									className="tag tag-accent"
 									style={{ fontSize: "0.7rem", padding: "1px 6px" }}
@@ -857,7 +915,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 											onChange={(e) => setDepth(Number(e.target.value))}
 											className="chat-input w-auto px-2 py-1"
 											disabled={starting}
-											title="How many papers the engine considers"
+											title="How many papers the engine retrieves and shows the model. It is asked to fuse at least 5 of them, and to name what it rejected when it cites fewer."
 										>
 											{DEPTH_OPTIONS.map((n) => (
 												<option key={n} value={n}>
@@ -1077,8 +1135,26 @@ export default function Generate({ onNavigate, onStageChange }) {
 					)}
 
 					{/* Submit row */}
+					{/* ↑ That marker is load-bearing: ui/test/generation-credits.test.js
+					    slices the credit notice's JSX from its own comment to this
+					    exact string. Keep it verbatim, and keep new markup BELOW it
+					    so the slice stays scoped to the notice.
+
+					    ── Gating-banner mount point (#1643) ──
+					    Deliberately empty here. The generation gating banner is an
+					    isolated component owned by #1643; it mounts into this slot,
+					    immediately above the submit controls, so the two changes do
+					    not have to touch the same lines. #1642 builds no gating
+					    logic — if this div is still empty, #1643 has not landed. */}
+					<div className="generate-gate-slot" data-generate-gate-slot>
+						<FreeGenerationBanner />
+					</div>
+
+					{/* `generate-submit-row` (not a bare flex utility chain) because
+					    the phone layout stacks it: the live status region above, a
+					    full-width submit below — see the #1642 block in App.css. */}
 					<div
-						className="flex items-center justify-between flex-wrap gap-2"
+						className="generate-submit-row flex items-center justify-between flex-wrap gap-2"
 						style={{ marginTop: 2 }}
 					>
 						{/* Every outcome of pressing Generate — start failure, quote not
@@ -1303,7 +1379,7 @@ export default function Generate({ onNavigate, onStageChange }) {
 						</div>
 						{!payPanelReady && (
 							<button
-								className="btn btn-primary"
+								className="btn btn-primary generate-submit-btn"
 								onClick={startJob}
 								disabled={starting || !intent.trim() || !quoteReady}
 								aria-describedby={
@@ -1365,7 +1441,15 @@ export default function Generate({ onNavigate, onStageChange }) {
 
 			{/* ── 2. JOB REGISTER ── */}
 			<section className="generate-register" aria-label="Generation register">
-				<GenerationStatus activeJobId={lastJobId} onDrillIn={handleDrillIn} />
+				{/* `onNavigate` was already in this component's scope (line ~92) and
+				    threaded into GenerationStream, but never into the job register —
+				    so a finished generation could only reopen its own stream, never
+				    the strategy it produced (#1646). */}
+				<GenerationStatus
+					activeJobId={lastJobId}
+					onDrillIn={handleDrillIn}
+					onNavigate={onNavigate}
+				/>
 			</section>
 		</div>
 	);

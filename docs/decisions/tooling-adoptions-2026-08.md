@@ -166,3 +166,62 @@ also a hard ceiling on the value of a docs-only slice.
 row here with its cost. `docs/api/` (10 files) or `backend/archimedes/services/` are the
 obvious candidates; the second is the first slice that would produce claims about behaviour
 rather than about prose.
+
+### Amendment 3 — 2026-08-31: boundary widened codebase-wide; brief rewritten; no run yet
+
+**The owner's verdict on amendment 2's output was that the scope was too limited to be
+worth much and the brief that produced it was poor.** Both are addressed here, and neither
+is addressed by a generation run — this amendment records a change to the *inputs*, with
+the honest note that nothing has been generated against them.
+
+**What changed.**
+
+| | |
+|---|---|
+| `.openwikiignore` | Allow-list widened from `docs/quant/` (8 files) to the running system plus everything it claims about itself: `backend/archimedes/` + `backend/migrations/` + the dependency/deploy contracts, `analytics-engine/src` + `strategies`, `ui/src/`, `contracts/`, `infra/`, `.github/`, `scripts/`, **all** of `docs/`, and the root config files. |
+| `scripts/check_openwiki_ignore.mjs` | 35 cases → **129**. Every directory the boundary deliberately leaves out (`backend/tests/`, `ui/test/`, `auth/`, `cli/`, `wallet-setup/`, `company-site/`, `nginx/`, `reports/`, `skills/`, root `tests/`, `submodules/`, `data/`, `docs/archive/`) now has a case asserting it is denied, so a future widening turns the guard red before the `!` line is added. New secret cases cover `*.tfstate` / `*.tfvars` — the class that only becomes reachable once the boundary includes `infra/`. |
+| `openwiki/INSTRUCTIONS.md` | Rewritten end to end. The brief now states a purpose (code↔docs alignment; complexity made enumerable), a citation discipline (behaviour claims cite the implementing line, never the documenting one; a code comment is documentation), a required page set, and the ceilings every page must state. |
+
+**Why widen rather than take one more slice.** The one-slice-at-a-time rule was written to
+bound an unmeasured bill, and it did its job. It is the wrong rule for the question the wiki
+is now being asked. A documentation-only boundary can establish that two documents disagree;
+it cannot establish that both are wrong. Three of amendment 2's seven conflicts could not be
+settled from documentation at all, and Önder's eighth — a stale `N_eff` formula every doc in
+the slice reproduced *consistently* — was invisible to a doc-only reader by construction.
+The cost-bounding intent survives as staged waves recorded here, one row each.
+
+**The new boundary, measured** with OpenWiki's own matcher, 2026-08-31:
+
+| | Bootstrap slice | Now |
+|---|---|---|
+| Files | 8 | **825** |
+| Lines | 2,006 | **199,396** |
+| Bytes | 113 KB | **10.0 MB** |
+
+Roughly 90× by volume. Budget for the model reading that, not the 113 KB figure in
+amendment 2.
+
+**Guard evidence.** 129/129 cases correct, exit 0, and shown to reject before being trusted
+— five injected breaks, each exiting 1:
+
+| Injected break | Result |
+|---|---|
+| Drop the `/*` exclude-everything rule | exit 1 — 14 failures; `auth/`, `cli/`, `submodules/`, `.secrets.baseline`, `.gitignore` and the traversal cases all become readable |
+| Move `*.tfstate` / `*.tfvars` **above** the allow-list | exit 1 — `infra/terraform.tfstate`, `.tfstate.backup` and `prod.tfvars` re-admitted by `!/infra/` |
+| Delete `!/backend/archimedes/` | exit 1 — 9 failures; the implementation the widening exists for goes dark |
+| Move `docs/archive/` **above** the allow-list | exit 1 — 210 KB of superseded history re-admitted by `!/docs/` |
+| Empty the file | exit 1 — "parsed to zero usable rules — enforcement is a no-op" |
+| Restored | exit 0 — 129/129 |
+
+**Not done, and it is the point.** **No wiki was generated against this boundary.** The
+pages committed under `openwiki/` are still amendment 2's `docs/quant/` output and are
+labelled as such in `AGENTS.md` and `docs/agent-wiki.md`. The codebase-wide run is separate
+work; when it happens it adds a row here per wave, with wall clock and output, including a
+negative verdict if that is the honest one.
+
+**Deployment, noted here because it changes where this output lands.** The site build
+(`mkdocs build --strict`, [#1624](https://github.com/a-apin/archimedes/pull/1624)) stays.
+The GitHub Pages *publish* — dark since 2026-08-20 behind three manual console steps — is
+replaced by S3 + CloudFront + Route 53 on our own account, serving
+`docs.archimedes-arc.com`, tracked as
+[#1634](https://github.com/a-apin/archimedes/issues/1634).

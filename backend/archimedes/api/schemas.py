@@ -183,6 +183,35 @@ class StrategyResponse(BaseModel):
     # strategy (no brief), or a legacy generated row the backfill migration
     # could not resolve.
     brief_intent: str | None = None
+    # The validated machine-readable DSL spec that RUNS this strategy — the
+    # same dict a fusion proposal emits, stored on ``StrategyPassport.
+    # strategy_spec`` / ``strategy_store.strategy_spec`` (#1646). The passport
+    # page renders it so a reader can see the executable rules behind the
+    # prose, instead of taking ``methodology_summary`` on faith.
+    #
+    # REASONING, not card content — and that classification is not a judgement
+    # call made here, it is quoted from the #1557 matrix in
+    # ``services/strategy_visibility.py``, which names "machine-readable DSL
+    # spec" in the REASONING column beside the debate transcript and the raw
+    # return series. So the gate is ``is_strategy_reasoning_visible``: public
+    # for ``is_example`` house rows, OWNER-ONLY for a user's row **including a
+    # published one**. Publishing consents to sharing the result, not the
+    # executable derivation — the identical rule ``GET /{id}/returns`` and
+    # ``GET /{id}/debate`` already enforce by 404ing, and the same reason
+    # ``POST /api/paper/deployments``'s ``_spec_for_strategy`` fails closed
+    # ("the thing a marketplace would license, not give away").
+    #
+    # Populated ONLY by the single-strategy detail route (``get_strategy``),
+    # exactly like ``brief_intent`` above and for a second, independent
+    # reason: the shared ``_passport_to_strategy_response`` /
+    # ``_passport_responses`` builders back Library and the public
+    # leaderboard, and a 100-row list payload (already heavy with full-library
+    # grading, #1173) must not carry 100 arbitrary-size JSON blobs. Both
+    # reasons point the same way, so this field is set at the route, never in
+    # a shared helper. ``None`` = not the caller's to read, a row with no spec
+    # (curated code-path strategies carry a ``strategy_code_path`` instead),
+    # or a row persisted before the column existed.
+    strategy_spec: dict[str, Any] | None = None
     asset_universe: list[str]
     # Provenance of the asset_universe pick (#857): "user" | "model" | "full",
     # or None for rows written before this field existed (curated strategies,
@@ -300,9 +329,13 @@ class StrategyResponse(BaseModel):
     cost_model_id: str | None = None
     # Where look_ahead_audit_passed came from: "broker_config_only" (an
     # execution-timing check that never fails) | "ast_audit" |
-    # "dsl_structural_audit" (the DSL spec was proven inside the audited
-    # interpreter surface) | "self_attested" (no completed audit — the boolean
-    # beside it is False). Without it a constant True reads as a passed audit.
+    # "dsl_structural_audit" (the DSL path's derived verdict: the spec was
+    # checked against the audited interpreter surface and the audit concluded) |
+    # "dsl_audit_not_run" (DSL path, the audit reached no verdict — the boolean
+    # beside it is False because nothing was checked, not because a check
+    # failed) | "self_attested" (RETIRED — the LLM's own removed
+    # look_ahead_safe declaration; historical rows only, never an audit result).
+    # Without it a constant True reads as a passed audit.
     look_ahead_audit_source: str | None = None
 
     # Equity curve for charting
@@ -426,6 +459,38 @@ class TradeExecutedResponse(BaseModel):
     direction: str  # "buy" | "sell"
     amount: float = 0.0
     value_usdc: float = 0.0
+
+
+class TraceDetailResponse(TraceResponse):
+    """A single trace with the rest of the body the hash was computed over.
+
+    Everything in :class:`TraceResponse` is what a *list row* needs. This adds
+    the fields a reader needs to actually audit one decision, and they are not
+    decoration: ``market_context``, ``portfolio_before``, ``portfolio_after``
+    and ``consulted_paper_hashes`` are four of the thirteen ``_HASH_FIELDS``
+    (``models/trace.py``) that go into the anchored keccak256. Without them the
+    only way to see what was committed was ``GET /api/traces/{id}/canonical``,
+    a raw-JSON developer surface — so the anchored claim was, in practice,
+    unreadable by the person whose money the decision moved.
+
+    Defaults are empty rather than ``None``: a trace persisted before a field
+    existed, or one projected from the on-chain registry alone (which carries
+    no body at all), genuinely has nothing here. An empty dict renders as an
+    honest absence; the caller must not read it as "the agent considered
+    nothing". ``verification_mode`` already carries whether a body existed.
+
+    ``settlement_tx_hashes`` and ``ipfs_cid`` are deliberately OUTSIDE the
+    hashed set — they are only knowable after the trade, and the committed
+    bytes are immutable (#903). They are surfaced here as provenance, never as
+    part of the hash preimage.
+    """
+
+    market_context: dict = {}
+    portfolio_before: dict = {}
+    portfolio_after: dict = {}
+    consulted_paper_hashes: list[str] = []
+    settlement_tx_hashes: list[str] = []
+    ipfs_cid: str | None = None
 
 
 class TraceListResponse(BaseModel):
@@ -578,49 +643,6 @@ class PoolListResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 # Contract Addresses (for frontend to call on-chain directly)
 # ═══════════════════════════════════════════════════════════════
-
-
-# ═══════════════════════════════════════════════════════════════
-# Chat (per-vault)
-# ═══════════════════════════════════════════════════════════════
-
-
-class ChatMessageResponse(BaseModel):
-    """A single chat message in a vault's chat room."""
-
-    id: int
-    vault_address: str
-    wallet_address: str
-    message: str
-    is_ai: bool = False
-    verified: bool = False  # True when wallet was proof-linked to posting account
-    created_at: str  # ISO 8601
-
-
-class ChatMessageListResponse(BaseModel):
-    """Paginated list of chat messages for a vault."""
-
-    messages: list[ChatMessageResponse]
-    total: int
-    has_more: bool = False
-
-
-class ChatPostRequest(BaseModel):
-    """Post a new message to a vault's chat.
-
-    wallet_address is optional; server uses current account's selected verified
-    linked wallet. Body value may only match that server-resolved wallet.
-    """
-
-    wallet_address: str | None = None
-    message: str
-
-
-class ChatPostResponse(BaseModel):
-    """Response after posting a message. Includes AI response if triggered."""
-
-    message: ChatMessageResponse
-    ai_response: ChatMessageResponse | None = None
 
 
 # ═══════════════════════════════════════════════════════════════

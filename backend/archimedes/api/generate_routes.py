@@ -47,7 +47,7 @@ from archimedes.api.generate_schemas import (
 )
 from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
-from archimedes.services import generation_credits, generation_payment
+from archimedes.services import free_generations, generation_credits, generation_payment
 from archimedes.services.generation_quota import enforce_generation_quota
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import EVENT_LOG_TTL, get_job_store
@@ -105,9 +105,11 @@ _STALLED_AFTER_SECONDS = 300
 # this bound.
 _DEFAULT_GENERATION_TIMEOUT_SECONDS = 600
 
-# Live registry of in-flight asyncio tasks per job. Lets cancel_job actually
-# stop the work — without this, /cancel only flips Redis status while the
-# agent keeps burning LLM tokens to completion.
+# Registry of the in-flight asyncio tasks THIS process is running, for local
+# liveness/diagnostics only. It is deliberately NOT the cancellation
+# mechanism (#1667): a process-local dict cannot see a job started by another
+# task, so cancel_job goes through the shared Redis flag
+# (`JobStore.request_cancel`) that the pipeline polls at its stage boundaries.
 _RUNNING_TASKS: dict[str, asyncio.Task] = {}
 
 
@@ -454,66 +456,137 @@ async def start_generation(
     # job_id exists).
     payment = None
     credit_id = None
+    free_grant_id = None
     if generation_payment.payment_required():
-        if not linked_wallet:
-            # The wallet-connection precondition. 409 (not 402): the blocker is
-            # account state, not a missing payment. NOTE the faucet is the one
-            # human-only step (#1294) — an agent hitting this must have its
-            # wallet funded by a human before payment can succeed.
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "reason": "wallet_link_required",
-                    "message": (
-                        "Generation requires a linked, funded wallet. Link a wallet to your account "
+        # FREE PATH (#1643 — the owner's 2026-08-31 product review REVERSES the
+        # 2026-08-19 "no free path" directive). An account is still required for
+        # every generation, free or paid — `require_current_user` above is
+        # unconditional and there is deliberately no wallet-only path — but the
+        # first FREE_GENERATIONS_PER_ACCOUNT (default 3) runs on a VERIFIED
+        # account need no wallet and no payment. The slot is claimed BEFORE the
+        # gate it opens, so N concurrent first-generation calls cannot each be
+        # granted one (services/free_generations.py, and the unique constraint
+        # behind it). Everything from grant #4 onward is byte-for-byte the
+        # behaviour below, unchanged.
+        #
+        # `email_verified` is owner decision D1 (2026-08-31, recorded on #1653):
+        # the allowance unlocks on a verified email, not on account creation
+        # alone — accounts are free and unlimited, a working inbox is not, so
+        # verification is what prices disposable-account farming of free LLM
+        # runs. An unverified caller is NOT refused here; it simply falls
+        # through to the wallet gate + paywall it had before this path existed.
+        # The flag is threaded from CurrentUser (api/account_auth.py parses
+        # Better Auth's `emailVerified` in exactly one place) and is a required
+        # keyword argument, so a future call site cannot forget it.
+        #
+        # The claim lives INSIDE this flag branch on purpose: under flag-off
+        # nothing is gated and nothing is charged, so burning a lifetime
+        # allowance there would silently spend a user's free runs during a
+        # period when generation was free for everyone anyway.
+        free_grant_id = free_generations.claim(user.id, email_verified=user.email_verified)
+        if free_grant_id is None:
+            if not linked_wallet:
+                # The wallet-connection precondition. 409 (not 402): the blocker is
+                # account state, not a missing payment. NOTE the faucet is the one
+                # human-only step (#1294) — an agent hitting this must have its
+                # wallet funded by a human before payment can succeed.
+                # Funnel (#1643): this is the exhausted-the-free-tier boundary —
+                # the transition the conversion instrument most needs to see.
+                await record_funnel(request, "wallet_gate_shown")
+                # Two DIFFERENT dead ends share this status code, and telling a
+                # caller the wrong one wastes its next request: an account that
+                # spent its three free runs has only the wallet left, while an
+                # unverified account has two ways out and the cheaper one is the
+                # inbox it already owns. `reason` stays `wallet_link_required`
+                # (the machine contract every client already branches on);
+                # `free_generations_locked_reason` is the new, additive field
+                # that distinguishes them, and the message names BOTH unlocks
+                # when both are real.
+                locked = free_generations.locked_reason(email_verified=user.email_verified)
+                if locked == free_generations.LOCK_EMAIL_UNVERIFIED:
+                    message = (
+                        "Two ways to generate. (1) Verify your email to unlock "
+                        f"{free_generations.allowance()} free generations on this account — no wallet and no "
+                        "payment needed. We emailed a verification link when you signed up; "
+                        "POST /api/auth/send-verification-email re-sends it. "
+                        "(2) Or link a wallet now (POST /api/wallets/challenge → /api/wallets/verify), "
+                        "fund it with testnet USDC (the faucet currently requires a human), and pay per run. "
+                        "See GET /api/generate/quote for the price."
+                    )
+                else:
+                    message = (
+                        "Your free generations are used up. Generation now requires a linked, funded "
+                        "wallet. Link a wallet to your account "
                         "(POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC "
                         "(the faucet currently requires a human), then retry. "
                         "See GET /api/generate/quote for the price."
-                    ),
-                },
-            )
-        payment, credit_id = await _paywall_with_credit(request, linked_wallet, user.id)
-        if payment is not None:
-            # Surface the settlement receipt (PAYMENT-RESPONSE) to the payer.
-            for name, value in (payment.response_headers or {}).items():
-                response.headers[name] = value
+                    )
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "wallet_link_required",
+                        "free_generations_locked_reason": locked,
+                        "message": message,
+                    },
+                )
+            payment, credit_id = await _paywall_with_credit(request, linked_wallet, user.id)
+            if payment is not None:
+                # Surface the settlement receipt (PAYMENT-RESPONSE) to the payer.
+                for name, value in (payment.response_headers or {}).items():
+                    response.headers[name] = value
 
-    # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
-    # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a
-    # non-entitled premium request is rejected (HTTP 402) without burning any
-    # work — and is NOT silently downgraded to the free default model. Free
-    # models (and the unset/default case) always pass.
-    # Normal account use and free models need no wallet.
-    enforce_model_entitlement(req.model, linked_wallet)
+    # From here to the enqueue, a claimed free slot is at risk: the entitlement
+    # gate can raise 402 and the enqueue can error, and either would leave the
+    # allowance spent on a generation that never ran. Same shape, and the same
+    # reason, as _paywall_with_credit's `except BaseException: void; raise`.
+    try:
+        # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
+        # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a
+        # non-entitled premium request is rejected (HTTP 402) without burning any
+        # work — and is NOT silently downgraded to the free default model. Free
+        # models (and the unset/default case) always pass.
+        # Normal account use and free models need no wallet. A free-tier caller
+        # is NOT exempt: the free allowance buys the default model, not premium.
+        enforce_model_entitlement(req.model, linked_wallet)
 
-    store = get_job_store()
-    # Free-tier selection (defense in depth — the UI also restricts this).
-    # Runs AFTER the entitlement gate above: a non-entitled premium request has
-    # already been rejected with 402, so this only ever sees an allowlisted free
-    # model, an entitled premium id, junk, or None. Only an allowlisted free-tier
-    # id is honored for the pipeline; everything else (incl. entitled premium,
-    # which cannot serve until Bedrock activation — roadmap T3.8) falls back to
-    # the env default, so behavior is UNCHANGED when no valid free model is picked.
-    selected_model = req.model if is_allowed_model(req.model) else None
-    if req.model and selected_model is None:
-        logger.info("generate: ignoring non-allowlisted model %r; using env default", sanitize_log_value(req.model))
-    # Canonical Better Auth ownership is server-derived and follows the job
-    # through persistence. Wallet provenance stays optional.
-    job_id = await store.enqueue(
-        job_type="generate",
-        payload={
-            "brief": req.brief.model_dump(),
-            "n_candidates": req.n_candidates,
-            "owner_user_id": user.id,
-            "owner_wallet": linked_wallet,
-            # The allowlist-filtered model the pipeline will actually use (None →
-            # env default). enforce_model_entitlement (above) has already rejected
-            # a non-entitled premium request with 402, so anything reaching here is
-            # either an allowlisted free model or None — auditable provenance for
-            # the tier the run was authorized for.
-            "model": selected_model,
-        },
-    )
+        store = get_job_store()
+        # Free-tier selection (defense in depth — the UI also restricts this).
+        # Runs AFTER the entitlement gate above: a non-entitled premium request has
+        # already been rejected with 402, so this only ever sees an allowlisted free
+        # model, an entitled premium id, junk, or None. Only an allowlisted free-tier
+        # id is honored for the pipeline; everything else (incl. entitled premium,
+        # which cannot serve until Bedrock activation — roadmap T3.8) falls back to
+        # the env default, so behavior is UNCHANGED when no valid free model is picked.
+        selected_model = req.model if is_allowed_model(req.model) else None
+        if req.model and selected_model is None:
+            logger.info("generate: ignoring non-allowlisted model %r; using env default", sanitize_log_value(req.model))
+        # Canonical Better Auth ownership is server-derived and follows the job
+        # through persistence. Wallet provenance stays optional.
+        job_id = await store.enqueue(
+            job_type="generate",
+            payload={
+                "brief": req.brief.model_dump(),
+                "n_candidates": req.n_candidates,
+                "owner_user_id": user.id,
+                "owner_wallet": linked_wallet,
+                # The allowlist-filtered model the pipeline will actually use (None →
+                # env default). enforce_model_entitlement (above) has already rejected
+                # a non-entitled premium request with 402, so anything reaching here is
+                # either an allowlisted free model or None — auditable provenance for
+                # the tier the run was authorized for.
+                "model": selected_model,
+            },
+        )
+    except BaseException:
+        if free_grant_id is not None:
+            free_generations.release(free_grant_id)
+        raise
+
+    # The free slot is bound to its generation only now, once the job is queued
+    # — the same "spend only what was delivered" point at which a paid credit is
+    # consumed below.
+    if free_grant_id is not None:
+        free_generations.stamp_job(free_grant_id, job_id=job_id)
 
     # Payment receipt (Dan's directive: "we must provide people with their
     # receipts"). Only when a real settled PaymentInfo exists — flag-off and
@@ -545,6 +618,12 @@ async def start_generation(
     # Conversion funnel (#787): a generation actually started for this visitor —
     # the key "tried the product" transition. Fail-safe; never blocks the response.
     await record_funnel(request, "generation_started")
+    # …and, when it was one of the account's free runs (#1643), which side of
+    # the new gate it fell on. Emitted here rather than at claim time so a
+    # released slot (the except above) is never counted as a free generation
+    # the visitor actually received.
+    if free_grant_id is not None:
+        await record_funnel(request, "free_generation_used")
     emit_identity_event(
         wallet=linked_wallet,
         event_type="generation_started",
@@ -932,15 +1011,23 @@ async def cancel_job(
 ) -> dict[str, str]:
     """Cancel a running job. Idempotent.
 
-    Hard cancellation: looks up the asyncio.Task driving the job and calls
-    ``task.cancel()`` on it. The pipeline's ``except CancelledError`` branch
-    emits the synthetic error event + flips Redis status to ``cancelled``.
+    Cancellation is a **durable Redis flag**, not a local task handle (#1667).
+    The pipeline polls that flag at its stage boundaries and stops from
+    whichever task is actually running it. This is the only shape that works
+    once the service runs more than one task: ``_RUNNING_TASKS`` is
+    process-local, so at ``MinCapacity=2`` this POST landed on the task that
+    started the job barely half the time — and every other time the old code
+    returned ``{"status": "cancelled"}`` while the pipeline kept running and
+    burning LLM tokens. A worker/offload lane has no task registry at all.
 
-    Caveat: if the agent is mid-``asyncio.to_thread(llm_call)``, the OS
-    thread itself isn't cancellable (Python doesn't expose that). The
-    awaiter unblocks immediately, the in-flight LLM call burns to
-    completion but its result is discarded — no events emitted after the
-    cancellation, no strategy persisted.
+    The flag is written and read back BEFORE the job is reported cancelled;
+    if that write cannot be confirmed we return 503 rather than claim a
+    cancellation that never happened.
+
+    Caveat (unchanged): if the agent is mid-``asyncio.to_thread(llm_call)``,
+    that OS thread isn't cancellable, so the in-flight call finishes and its
+    result is discarded at the next stage boundary — no events emitted after
+    the cancellation, no strategy persisted.
     """
     store = get_job_store()
     job = await store.get(job_id)
@@ -952,8 +1039,25 @@ async def cancel_job(
     if job["status"] in ("done", "error", "cancelled"):
         return {"job_id": job_id, "status": job["status"]}
 
-    # Flip status first so observers see "cancelled" even if the cancel
-    # callback hasn't fully propagated yet.
+    # Durably request the cancel FIRST — this is what actually stops the
+    # pipeline, from any task. Nothing below may claim "cancelled" until this
+    # write is confirmed.
+    try:
+        requested = await store.request_cancel(job_id)
+    except Exception:
+        logger.exception("cancel: flag write failed for job %s", sanitize_log_value(job_id))
+        requested = False
+    if not requested:
+        # Honest failure: the job IS still running. Reporting "cancelled" here
+        # is the claims-truth violation this endpoint used to commit every time
+        # the POST landed on a task that didn't own the job.
+        raise HTTPException(
+            status_code=503,
+            detail=f"cancellation for job {job_id} could not be recorded — the job is still running; retry",
+        )
+
+    # Now the flag is durable, the status may be flipped and the terminal
+    # event pushed: observers see "cancelled" and the claim is backed.
     await store.update_status(job_id, "cancelled", error="cancelled by user")
     await store.push_event(
         job_id,
@@ -962,14 +1066,6 @@ async def cancel_job(
             "data": {"job_id": job_id, "message": "cancelled by user", "recoverable": False, "code": "CANCELLED"},
         },
     )
-
-    # Hard-cancel the task itself if we're still holding a reference.
-    task = _RUNNING_TASKS.get(job_id)
-    if task is not None and not task.done():
-        task.cancel()
-        logger.info("hard-cancelled job %s", sanitize_log_value(job_id))
-    else:
-        logger.info("cancel for %s: no live task (already finished or restart)", sanitize_log_value(job_id))
 
     return {"job_id": job_id, "status": "cancelled"}
 

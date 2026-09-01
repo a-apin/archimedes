@@ -119,24 +119,21 @@ cannot be backed on the day, the fallback column governs what is said instead.
 | "DEPLOYABLE badge on strategy passport" | `generation_pipeline.py` line 930; live rigor gate `live_rigor_gate.py` — four-state: pass / fail / pending / degenerate | **VERIFIED** | If badge shows 'pending': say "the gate is still computing; the badge resolves to DEPLOYABLE once returns are written" |
 | "Agents use product via Better Auth over HTTP" | `scripts/agent_journey.py` — account session, optional EIP-4361 wallet link, zero browser | **VERIFIED** | n/a |
 | "~280 deploy-eligible assets in Explore" | `ui/src/data/assetUniverse.js` — SUPPORTED_ASSETS computed as flat de-duped union across 8 asset groups; manual count = 282 | **VERIFIED** | Say "approximately 280" not "~300" |
-| "Three example briefs on the Generate page" | `ui/src/data/exampleBriefs.js` — three entries; first is DOGFOOD PROVEN; second and third are shape-derived placeholders | **VERIFIED (with caveat)** | Do NOT say "three dogfood-validated briefs" — say "three example briefs; the first has cleared the rigor gate in real dogfood runs" |
+| "A Surprise Me button on the Generate page draws from a ~100-brief bank" | `ui/src/data/surpriseBriefs.js` — 124 entries; the first three are the DOGFOOD PROVEN carry-overs from the retired `exampleBriefs.js`, the other 121 are curated copy that has never been run live (#1642). Machine-checked against `cheap_brief_reject` and the supported asset universe only. | **VERIFIED (with caveat)** | Do NOT say "124 validated strategies" or quote a pass rate for the bank — say "a bank of example briefs; three of them have cleared the rigor gate in real dogfood runs". The old always-visible three-example list is gone; nothing from the bank is on screen until the button is pressed. |
 | "Non-custodial ERC-4626 vault, testnet USDC, no real funds" | `ui/src/components/DepositFlow.jsx` — approve + deposit into vault on Arc testnet (chain ID 5042002); `ARCSCAN_TX` points to testnet.arcscan.app | **VERIFIED** | n/a |
 | "Insights page: real conversion funnel (landed → generation started → ...)" | `ui/src/components/Insights.jsx` — `GET /api/metrics/funnel`; `App.jsx` emits the `landed` beacon once per browser session (sessionStorage-gated) | **VERIFIED** | If funnel shows zero: say "live telemetry; counts are sparse on a fresh EC2 — the funnel infrastructure is wired" |
-| "The corpus the generation engine reads" | `App.jsx` line 236 says "1,014-paper q-fin corpus"; `Architecture.jsx` says "10,000-record q-fin metadata corpus"; these are two different representations (metadata records vs RAG-able papers) | **INCONSISTENCY IN CODE** — see note below | Do NOT cite a specific count during the recording; say "a q-fin research corpus" and let the UI show the number |
+| "The corpus the generation engine reads" | Live row count is `GET /health` `corpus_papers` / `corpus_db_count`. Do not freeze a number in the script or on `/architecture`. | **Live `/health` only** | Do NOT cite a specific count during the recording; say "a q-fin research corpus" and let the UI show the number |
 | "Trend-Crypto-Network Fusion (dsr_p=0.993, PBO=0.336, BTC/ETH/MSTR universe, DEPLOYABLE)" | Cited in session memory; NOT found in repo code or data files. MSTR is not in `ui/src/data/assetUniverse.js` (not deploy-eligible). Specific numeric values cannot be verified from code. | **NOT VERIFIED FROM CODE** — see note below | Do NOT cite this specific strategy by name or cite these specific numbers unless you can confirm them against the live DB before recording; instead, let the live generation run produce its own result and read the real numbers off the screen |
 | "Library: real backtest rows with PBO/DSR chips" | `Strategies.jsx` + `strategy_provider.py` + `live_rigor_gate.py` — chips are computed from persisted real returns | **VERIFIED** | n/a |
 | "Sole pipeline since PR #880 — no legacy fallback" | `debate_engine.py` module docstring: "The society is unconditional as of Phase-3 (T1.1 flag audit, issue #834)"; `ARCHIMEDES_DEBATE_ENABLED` flag retired | **VERIFIED** | n/a |
 | "Payments: real testnet USDC on-chain; settlement not mainnet" | `DepositFlow.jsx` uses real ERC-4626 vault on Arc testnet; x402 nanopayment marketplace (issue #713, Ricardo) is not yet shipped | **VERIFIED (testnet deposit only)** | Do NOT claim "nanopayments live"; say "testnet USDC deposits on-chain; the nanopayment marketplace is the next milestone" |
 
-> **Corpus count note.** Two numbers appear in the live codebase: `App.jsx` (route
-> meta description, rendered to logged-in users) says 1,014-paper; `Architecture.jsx`
-> and a `CorpusExplorer.jsx` code comment both say 10,000 records. These are not the
-> same thing: 10,000 is the arXiv metadata record count (indexed, not all RAG-able);
-> 1,014 is the currently-ingested count usable for generation. Additionally, the
-> project memory notes the corpus as "partially populated" in prod. **Do not claim
-> "10,000 papers" during the recording** — let the live UI show the current number
-> and read it off the screen. If the UI shows a number, quote it; if not, say
-> "a curated q-fin research corpus."
+> **Corpus count note.** Do not freeze a paper count in the script. Live row counts
+> are `GET /health` `corpus_papers` / `corpus_db_count` (the corpus probe can timeout).
+> `/architecture` reads those fields and must not quote a hardcoded library size.
+> **Do not claim "10,000 papers" during the recording** — let the live UI show the
+> current number and read it off the screen. If the UI shows a number, quote it; if
+> not, say "a curated q-fin research corpus."
 >
 > **Trend-Crypto strategy note.** The session memory records a first dogfood-proven
 > generation pass named "Trend-Crypto-Network Fusion" with dsr_p=0.993, PBO=0.336,

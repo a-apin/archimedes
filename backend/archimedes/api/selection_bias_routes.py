@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider as _provider
 from archimedes.api.limiter import limiter
+from archimedes.services.dsl_lookahead_audit import verdict_from_persisted_row
 from archimedes.services.rigor_evaluator import (
     assert_self_contained_cohort_correlation,
     compute_average_pairwise_correlation,
@@ -367,7 +368,19 @@ async def evaluate_rigor_gate(
     # hit changes no served or stored value; it just skips a redundant write. The
     # moment underlying returns change, the cache key changes and the write-back
     # resumes on the next (now-live) call.
-    from archimedes.services.rigor_cache import cohort_key, get_or_compute
+    # #1518: this memo is now TWO layers — the in-process dict, and a shared
+    # Redis-backed store underneath it. In-process alone did not amortise across
+    # the fleet, it multiplied by it: with N Fargate tasks behind the ALB, each
+    # holds its own copy and round-robin routing means a request can land on a
+    # task that has not computed this cohort yet and pays the whole ~21s
+    # recompute (measured on prod: 21.9s → 0.68s → 20.9s within a minute, which a
+    # 600s TTL cannot produce). `model_list_codec(StrategyRigorResult)` is what
+    # lets the value cross the process boundary — JSON via pydantic, so a cache
+    # HIT decodes to a value indistinguishable from what a MISS computed,
+    # four-state verdict vocabulary (`passes_all` / `pending` / `degenerate`)
+    # included. Both invalidation triggers survive the move: the key below still
+    # carries `cohort_key`, and `rigor_cache.clear()` now bumps a shared epoch.
+    from archimedes.services.rigor_cache import cohort_key, get_or_compute, model_list_codec
 
     code_versions = {s.id: getattr(s, "strategy_code_hash", None) for s in strategies}
     cache_key = f"selection_bias_gate:strictness={strictness}:" + cohort_key(
@@ -538,7 +551,12 @@ async def evaluate_rigor_gate(
     # strategies_routes.py's `_live_rigor_results_for_strategies` (same failure
     # class: an empty result must never get "sticky" for the TTL) and costs
     # nothing when `_compute()` returns its normal non-empty list.
-    results = get_or_compute(cache_key, _compute, cache_if=bool)
+    results = get_or_compute(
+        cache_key,
+        _compute,
+        cache_if=bool,
+        shared_codec=model_list_codec(StrategyRigorResult),
+    )
 
     # Copilot review (PR #1040): on a rigor_cache HIT, `results` are memoized
     # StrategyRigorResult objects whose `library_pbo` reflects whatever was
@@ -780,7 +798,18 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
             latest.num_trials_in_selection if latest else None,
         )
         persisted_pbo = latest.pbo_score if latest else None
-        persisted_look_ahead = bool(latest.look_ahead_audit_passed) if latest else False
+        # The stored boolean is not read on its own: `look_ahead_audit_source`
+        # says what produced it, and two provenances mean it is NOT an audit pass
+        # — a DSL audit that reached no verdict, and the retired "self_attested"
+        # rows whose boolean was the generating model's own look_ahead_safe
+        # declaration. Both come back False with a `pending` status, so the
+        # detail line says NOT_RUN instead of accusing the strategy of a leak,
+        # and neither can deploy on a claim nothing measured. See
+        # dsl_lookahead_audit.verdict_from_persisted_row.
+        persisted_look_ahead, persisted_la_status, persisted_la_reason = verdict_from_persisted_row(
+            latest.look_ahead_audit_passed if latest else False,
+            latest.look_ahead_audit_source if latest else None,
+        )
 
     gate_result = run_rigor_gate(
         strategy_id=strategy_id,
@@ -788,6 +817,8 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         num_trials=num_trials,
         library_pbo=persisted_pbo,
         look_ahead_audit_passed=persisted_look_ahead,
+        look_ahead_status=persisted_la_status,
+        look_ahead_not_run_reason=persisted_la_reason,
         in_sample_sharpe=None,
         average_correlation=0.0,
         strictness_level=strictness,

@@ -1,12 +1,13 @@
 """The paper trace BODY — issue #1575, build step 4.
 
 ``build_paper_trace`` stops at the hash and touches neither Redis nor the
-chain (the same seam ``construction_trace.py`` holds), so everything here is
-pure. What is pinned is the set of choices that make a paper trace honest and
-reachable, each of which is a decision someone could reasonably undo:
+chain (the same seam the retired ``construction_trace.py`` held), so
+everything here is pure. What is pinned is the set of choices that make a
+paper trace honest and reachable, each of which is a decision someone could
+reasonably undo:
 
-  * ``vault_address=""``, NOT ``construction_trace.UNBOUND_VAULT`` — the
-    sentinel is world-readable while ``PUBLIC_TRACE_VAULTS`` is unarmed.
+  * ``vault_address=""``, NOT the zero-address sentinel — the sentinel is
+    world-readable while ``PUBLIC_TRACE_VAULTS`` is unarmed.
   * ``decision_type="rebalance"``, NOT ``"paper_rebalance"`` — a new value
     fails #1569's frozenset SILENTLY.
   * ``confidence == 0.0`` and ``consulted_paper_hashes == []`` — absences
@@ -96,13 +97,21 @@ def test_decision_type_is_the_conforming_value_not_a_paper_specific_one():
 
 
 def test_the_vault_is_blank_never_the_zero_address_sentinel():
-    """``construction_trace.UNBOUND_VAULT`` would make an unstamped paper
-    trace WORLD-READABLE: ``is_public_trace_vault`` returns True for any
-    non-blank address while ``PUBLIC_TRACE_VAULTS`` is unarmed, which is the
-    live state. A blank vault is fail-closed. This is pinned against the real
-    predicate, not asserted."""
-    from archimedes.services.construction_trace import UNBOUND_VAULT
+    """The zero-address sentinel would make an unstamped paper trace
+    WORLD-READABLE: ``is_public_trace_vault`` returns True for any non-blank
+    address while ``PUBLIC_TRACE_VAULTS`` is unarmed, which is the live state.
+    A blank vault is fail-closed. This is pinned against the real predicate,
+    not asserted.
+
+    The sentinel used to be imported as ``construction_trace.UNBOUND_VAULT``.
+    That module was a zero-caller dead surface and this PR deletes it, so the
+    literal is inlined here. Nothing about the property changes: what is under
+    test is ``is_public_trace_vault``'s behaviour on a non-blank address, and
+    the zero address is simply the most tempting non-blank value to reach for.
+    """
     from archimedes.services.trace_visibility import is_public_trace_vault
+
+    UNBOUND_VAULT = "0x0000000000000000000000000000000000000000"
 
     trace = _build()
     assert trace.vault_address == ""

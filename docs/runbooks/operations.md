@@ -20,7 +20,7 @@ Running, configuring, and operating the Archimedes stack — local and productio
 `docker compose up -d --build` brings up 6 services (see [`SETUP.md`](../../SETUP.md#step-2--spin-up-the-stack-recommended-path) for the table). Beyond what's listed there:
 
 - **Backend** is wired to start the autonomous agent loop, oracle price feeder, statistical regime detector, Kelly/risk-parity portfolio constructor, and the four-control selection-bias gate as in-process services. The `agent` and `oracle` standalone containers run their own loops independently.
-- **Postgres** persists strategies, backtests, reasoning traces, the 10,000-paper q-fin corpus, and vault metadata. Volume `pgdata` survives `docker compose down`.
+- **Postgres** persists strategies, backtests, reasoning traces, the q-fin paper corpus (live count: `GET /health` `corpus_papers` / `corpus_db_count`), and vault metadata. Volume `pgdata` survives `docker compose down`.
 - **Redis** holds live regime classifications, agent heartbeat, trace index, and the job queue. Volatile by design — fine to lose on restart.
 - **`archimedes-corpus-artifact`** named volume is mounted but currently empty — reserved for the future KB-pipeline artifact build (per [`docs/corpus-architecture.md`](../corpus-architecture.md)).
 
@@ -188,7 +188,7 @@ The local docker-compose stack runs the same code as the EC2 deployment. To veri
 ./scripts/check-parity.sh https://archimedes-arc.com   # or against prod
 ```
 
-This checks `/health` and asserts: live LLM backend, non-empty corpus (≥10,000 papers), fusion enabled.
+This checks `/health` and asserts: live LLM backend, non-empty corpus (`corpus_papers > 0`; do not freeze a floor here), fusion enabled.
 
 Full production infrastructure (ECS Fargate behind an ALB, CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1, CI/CD and Terraform) is documented in [`docs/architecture.md`](../architecture.md) and the Terraform under `infra/`. The old `docs/infra-setup.md` is archived and describes a single EC2 box that no longer exists.
 

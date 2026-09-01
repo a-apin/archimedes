@@ -53,10 +53,42 @@ from archimedes.services.strategy_signal_evaluator import GLOBAL_ASSETS
 
 logger = logging.getLogger(__name__)
 
-# Hard floor: a fusion of one paper is just extraction (the architect's job).
+# ── The three paper knobs (#1636) ───────────────────────────────────────────
+#
+# These used to be ONE knob wearing three hats, which is why a generated
+# strategy cited two papers almost every time: `max_papers` was retrieval
+# width AND the fusion budget AND (via the `>= 2` gate) the definition of a
+# successful fusion. Split apart:
+#
+#   MIN_PAPERS        — the HARD validity floor. A one-paper "fusion" is just
+#                       extraction, so this rejects. It is deliberately NOT
+#                       raised to 5: raising it converts a thin corpus into a
+#                       GENERATION_UNAVAILABLE instead of into an honest,
+#                       narrower strategy.
+#   FUSE_TARGET_MIN   — what we ASK the model to fuse when that many papers
+#                       are actually on the table. Never enforced as a reject:
+#                       a shortfall is justified (in `fusion_reasoning`) and
+#                       logged, never blocked. Padding the citation list with a
+#                       paper whose mechanism the model cannot name launders
+#                       weak evidence into the provenance record and the
+#                       passport, where citation count reads as evidence depth
+#                       — that is strictly worse than an honest 2.
+#   FUSION_MAX_PAPERS — retrieval width + prompt budget. `max_papers` clamps
+#                       into [MIN_PAPERS, FUSION_MAX_PAPERS].
 MIN_PAPERS = 2
-# Hard cap: token + cross-paper-coherence budget. max_papers clamps into here.
-FUSION_MAX_PAPERS = 6
+FUSE_TARGET_MIN = 5
+FUSION_MAX_PAPERS = 30
+
+# The one default every entry point uses. It is deliberately > FUSE_TARGET_MIN:
+# a brief that offers the model exactly as many papers as we ask it to cite is
+# an invitation to pad, because rejecting even one paper is then automatically
+# a shortfall. Above the target there is room to reject honestly.
+#
+# It is deliberately NOT FUSION_MAX_PAPERS either: at ~300 input tokens/paper,
+# 30 papers × the debate's default 10 proposer steers is ~90k input tokens of
+# evidence per generation before a single candidate is backtested. 30 stays
+# available as an explicit user pick; nobody is defaulted into it.
+DEFAULT_MAX_PAPERS = 8
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -512,15 +544,17 @@ class FusionBrief:
     `asset_classes` is a required-overlap filter (empty = no asset filter).
     `risk_appetite` shapes the synthesis envelope (RISK_PROFILE_PARAMS), it
     does not hard-filter papers. `strategic_direction` biases ranking and is
-    passed verbatim to the prompt. `max_papers` is clamped to
-    [MIN_PAPERS, FUSION_MAX_PAPERS]; the >=2 floor is non-negotiable.
+    passed verbatim to the prompt. `max_papers` is RETRIEVAL WIDTH (how many
+    abstracts the model is shown), clamped to [MIN_PAPERS, FUSION_MAX_PAPERS];
+    the >=2 floor is non-negotiable. It is NOT how many papers we ask the
+    model to fuse — that is FUSE_TARGET_MIN, and it is a request, not a gate.
     `market_context` carries live regime/market data (3rd input).
     """
 
     asset_classes: list[str] = field(default_factory=list)
     risk_appetite: RiskProfile | str = RiskProfile.MODERATE
     strategic_direction: str = ""
-    max_papers: int = 4
+    max_papers: int = DEFAULT_MAX_PAPERS
     market_context: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -582,9 +616,31 @@ def _manifest_path() -> Path | None:
 def load_corpus(path: Path | None = None) -> list[CorpusPaper]:
     """Load corpus papers — DB-backed, with file-based fallback.
 
-    Tries the DB first. If the papers table is empty, falls back to the
-    static manifest file (backward-compat for local dev without DB seeding).
+    Precedence:
+
+    1. **An explicit ``path`` is authoritative.** That file, and nothing else:
+       the DB is not consulted at all, and a ``path`` that does not exist yields
+       an empty corpus rather than silently substituting another source. A
+       caller who names a manifest is answering "which papers", not offering a
+       hint (issue #1640 — the argument used to be discarded whenever the
+       ``papers`` table happened to be non-empty, which made the result depend
+       on ambient database state the caller never asked about).
+    2. With no ``path``: the DB first — every production caller takes this
+       branch, and it is the source of record post-#1240 (seeded from the
+       manifest, then extended by arXiv intake, then embargo- and decay-filtered
+       by ``load_papers_from_db``).
+    3. Still no ``path`` and an empty/unavailable DB: the file fallback resolved
+       by ``_manifest_path()``, which honours ``ARCHIMEDES_CORPUS_MANIFEST``.
+       Backward-compat for local dev without DB seeding.
+
+    Note what rule 1 does *not* say: ``ARCHIMEDES_CORPUS_MANIFEST`` is not a
+    DB bypass. It names where the *file fallback* reads from — production sets
+    it (``infra/ecs.tf``, ``docker-compose.yml``) while still wanting the DB —
+    so it is consulted only once step 2 has come up empty.
     """
+    if path is not None:
+        return _load_corpus_from_file(path)
+
     # DB path first
     try:
         from archimedes.services.corpus_service import load_papers_from_db
@@ -676,6 +732,20 @@ def select_candidates(
     corpus: list[CorpusPaper],
     regime_bias: str | None = None,
 ) -> list[CorpusPaper]:
+    """The papers only — see :func:`select_candidates_scored` for the scores.
+
+    Kept as the module's primary entry point (every existing caller wants the
+    papers). It drops the rerank float; a caller that needs to cut at a
+    similarity floor rather than at a rank uses the scored variant.
+    """
+    return [p for p, _score in select_candidates_scored(brief, corpus, regime_bias)]
+
+
+def select_candidates_scored(
+    brief: FusionBrief,
+    corpus: list[CorpusPaper],
+    regime_bias: str | None = None,
+) -> list[tuple[CorpusPaper, float | None]]:
     """Deterministic, explainable, pre-LLM. The model never widens this set.
 
     1. Asset-class overlap filter (skipped if no asset_classes given).
@@ -684,6 +754,16 @@ def select_candidates(
        arxiv_id for total order.
     3. Semantic rerank via paper_rag (defense-in-depth: keyword + semantic).
     4. Take top `paper_budget`.
+
+    Returns ``(paper, score)`` pairs. The score is whatever the rerank seam
+    (``paper_rag.augment_candidate_scores``) reported, and it is NOT always a
+    measured similarity — that seam returns a uniform ``1.0`` when semantic
+    retrieval is disabled, which is a sentinel, not a score. ``None`` means
+    the rerank did not run at all (import/call failure), so the ordering is
+    keyword-only. This is retained rather than discarded (#1636) so a later
+    change can cut the candidate set at a similarity FLOOR instead of at a
+    rank — at a 30-paper width the rank tail is where fabricated mechanisms
+    would come from. Nothing cuts on it today.
 
     Args:
         regime_bias: "bull" or "bear" — biases retrieval toward momentum/trend
@@ -711,15 +791,15 @@ def select_candidates(
     # Semantic rerank: defense-in-depth behind the keyword filter.
     # When FUSION_SEMANTIC_RETRIEVAL is off or fails, keyword ranking is
     # preserved unchanged.
+    scored: list[tuple[CorpusPaper, float | None]] = [(c, None) for c in ranked]
     try:
         from archimedes.services.paper_rag import augment_candidate_scores
 
-        scored = augment_candidate_scores(brief.strategic_direction, ranked)
-        ranked = [c for c, _s in scored]
+        scored = list(augment_candidate_scores(brief.strategic_direction, ranked))
     except Exception as exc:
         logger.debug("fusion: semantic rerank skipped, keyword-only: %s", exc)
 
-    return ranked[: brief.paper_budget]
+    return scored[: brief.paper_budget]
 
 
 def _recency_key(published: str) -> str:
@@ -771,12 +851,35 @@ class FusionProposal:
     # persisted so the passport/reasoning trace says so honestly instead of
     # silently proceeding as if the request was fully honored.
     universe_gaps: list[str] = field(default_factory=list)
+    # (#1636) How many papers were actually PUT IN FRONT OF THE MODEL for this
+    # proposal. Without it, `len(source_arxiv_ids) == 2` is unreadable: it could
+    # be a model that rejected 28 papers with named reasons, or a steer so thin
+    # that two is everything there was. The budget-vs-used pair is what makes a
+    # shortfall auditable instead of merely small. 0 on the non-fusion statuses
+    # (disabled / insufficient_corpus / unparseable), where no prompt was built.
+    papers_offered: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def is_actionable(self) -> bool:
-        """True only for a real, parseable, >=2-paper fusion."""
+        """True only for a real, parseable, >=2-paper fusion.
+
+        Still keyed on MIN_PAPERS, never on FUSE_TARGET_MIN: a justified
+        shortfall is a first-class outcome, not a failure (#1636). Making the
+        target a gate here is exactly the "fail generation instead of improving
+        it" move the issue rules out.
+        """
         return self.status == "ok" and len(self.source_arxiv_ids) >= MIN_PAPERS
+
+    @property
+    def is_shortfall(self) -> bool:
+        """True when fewer than FUSE_TARGET_MIN papers were cited (#1636).
+
+        A signal, never a gate — read it to surface "2 of 30, here's why"
+        rather than to reject. False for a non-``ok`` proposal, which has a
+        status of its own to report.
+        """
+        return self.status == "ok" and len(self.source_arxiv_ids) < FUSE_TARGET_MIN
 
 
 # ── Prompt construction ─────────────────────────────────────────
@@ -787,27 +890,47 @@ using the Archimedes DSL (closed-enum vocabulary). For asset_universe, list the 
 tickers the mechanism trades from the user's selected assets (in user_steer); the \
 platform overrides this with the user's chosen universe, so do not default to a \
 single broad-market proxy. Valid rebalance_frequency values: \
-daily, weekly, monthly. Valid indicators: sma_N, ema_N, rsi_N, momentum_N (replace \
-N with an integer period). momentum_N is the trailing N-bar RETURN, centred on 0 \
-(+0.05 means +5%); write momentum thresholds on that scale — e.g. \
-{"gt": ["momentum_20", 0]} means "trailing 20-bar return is positive". \
+daily, weekly, monthly. Valid indicators: sma_N, ema_N, rsi_N, momentum_N, \
+realized_vol_N (replace N with an integer period). momentum_N is the trailing \
+N-bar RETURN, centred on 0 (+0.05 means +5%); write momentum thresholds on that \
+scale — e.g. {"gt": ["momentum_20", 0]} means "trailing 20-bar return is \
+positive". realized_vol_N is the ANNUALIZED standard deviation of the last N \
+daily returns, so 0.15 means 15% annualized vol — e.g. \
+{"lt": ["realized_vol_20", 0.15]} means "the last 20 bars were calm". \
 Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
-or logic ops (and, or, not). Position sizing types: full_invested_when_in_market, \
-equal_weight, volatility_target (needs annual_pct). look_ahead_safe MUST be true. \
+or logic ops (and, or, not). Position sizing types: full_invested_when_in_market \
+(all-in while the entry condition holds; no other keys), equal_weight (1/N of \
+the account per name in asset_universe; no other keys), inverse_vol \
+(equal_weight scaled by reference_vol_annual / realized vol; the ONLY extra key \
+is reference_vol_annual, optional, must be > 0, defaults to 0.15), \
+volatility_target (the ONLY extra key is annual_pct, required, > 0). \
+position_sizing accepts NO other keys — a key outside that list is a hard \
+validation error, not an ignored field, so do not invent one. Do NOT emit any \
+field asserting the strategy's own correctness or look-ahead safety; the \
+platform derives that structurally from the spec and ignores anything you \
+claim about it. \
+>>>>>>> origin/main
 parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
 values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \
 Keys must reference indicators used in entry/exit conditions."""
 
 
 _SYSTEM_PROMPT = (
-    """You are Archimedes Fusion, an AI quant-research synthesizer. \
+    f"""You are Archimedes Fusion, an AI quant-research synthesizer. \
 You design a NOVEL trading-strategy hypothesis by FUSING the mechanisms of \
 MULTIPLE peer-reviewed quantitative-finance papers into one combined approach.
 
 Hard rules:
-- You MUST fuse AT LEAST TWO of the provided papers. A single-paper answer is \
-invalid — that is a different tool's job. You may use a subset of the papers, \
-but never fewer than two and never a paper not in the provided list.
+- You MUST fuse AT LEAST {FUSE_TARGET_MIN} of the provided papers when that \
+many are provided; NEVER fewer than {MIN_PAPERS}. A single-paper answer is \
+invalid — that is a different tool's job — and never cite a paper not in the \
+provided list.
+- If you cite fewer than {FUSE_TARGET_MIN}, you MUST justify the shortfall in \
+`fusion_reasoning`, naming each rejected paper and why it contributes no \
+distinct mechanism. Padding the citation list with a paper whose mechanism \
+you cannot name is WORSE than an honest shortfall: citation count is read \
+downstream as evidence depth, so a fabricated mechanism launders weak \
+evidence into the provenance record.
 - Reference papers ONLY by an arxiv_id from the provided candidates. Never \
 invent a paper or an arxiv_id.
 - OPTIMIZE FOR NOVELTY. The edge is the combination the literature has NOT \
@@ -820,7 +943,10 @@ plainly that empirical validation (backtest / DSR / PBO) is pending.
 - Respect the user's risk envelope (USYC floor/ceiling, target vol, max DD) \
 as a synthesis constraint, not as a paper filter.
 
-Output STRICT JSON ONLY (no prose, no markdown fences), exactly this schema:
+"""
+    # NOT an f-string from here down: the JSON schema below is full of literal
+    # braces. The interpolated half is the paper-count rule above.
+    + """Output STRICT JSON ONLY (no prose, no markdown fences), exactly this schema:
 {
   "strategy_name": "<short working name for the fused strategy>",
   "thesis": "<the fused strategy in plain language, honest it is pre-backtest>",
@@ -838,7 +964,6 @@ literature>",
     "exit": {"lt": ["close", "sma_200"]},
     "position_sizing": {"type": "full_invested_when_in_market"},
     "source_arxiv_ids": ["<from source_arxiv_ids above>"],
-    "look_ahead_safe": true,
     "indicators": ["sma_200"],
     "parameter_variants": {"sma_200": [150, 175, 200, 225, 250]}
   }
@@ -867,7 +992,11 @@ def _build_user_prompt(brief: FusionBrief, candidates: list[CorpusPaper]) -> str
             "risk_envelope": RISK_PROFILE_PARAMS[rp],
             "strategic_direction": brief.strategic_direction
             or "(none given — optimize for novelty within the asset steer)",
+            # Three distinct numbers, not one repeated (#1636): the hard floor
+            # that rejects, the target we ask for, and the width of the set we
+            # are showing. Only min_papers_to_fuse is enforced server-side.
             "min_papers_to_fuse": MIN_PAPERS,
+            "target_papers_to_fuse": FUSE_TARGET_MIN,
             "max_papers_to_fuse": brief.paper_budget,
         },
         "candidate_papers": [
@@ -919,6 +1048,7 @@ class StrategyFusion:
         backend: LLMBackend | None = None,
         corpus: list[CorpusPaper] | None = None,
         model: str | None = None,
+        candidates: list[CorpusPaper] | None = None,
     ) -> None:
         # Backend/corpus are injectable for offline tests. They are resolved
         # lazily in `propose` so constructing the service never triggers an
@@ -933,6 +1063,14 @@ class StrategyFusion:
         # the env default. Was the gap that let the debate proposer silently run
         # on Nova regardless of the user's pick (spec §8 item 10 / fix A3).
         self._model = model
+        # An ALREADY-SELECTED candidate set, used verbatim (#1636). The debate
+        # proposer runs `select_candidates(fb, corpus, regime_bias=R)` itself
+        # and then handed the result in as `corpus=`, so `propose` re-ran
+        # `select_candidates` over it — a second rerank that DROPPED the
+        # regime_bias, silently discarding the very ordering the steer paid
+        # for. Passing the set here skips the re-selection entirely. None
+        # keeps the original behavior (select from `corpus`).
+        self._candidates = candidates
 
     def _resolve_backend(self) -> LLMBackend:
         if self._backend is not None:
@@ -956,8 +1094,14 @@ class StrategyFusion:
                 "to enable multi-paper, novelty-seeking synthesis.",
             )
 
-        corpus = self._resolve_corpus()
-        candidates = select_candidates(brief, corpus)
+        if self._candidates is not None:
+            # Pre-selected by the caller (the debate proposer, which already
+            # ran select_candidates WITH its regime_bias) — used verbatim so
+            # that ordering is not thrown away by a second, bias-free rerank.
+            candidates = list(self._candidates)
+        else:
+            corpus = self._resolve_corpus()
+            candidates = select_candidates(brief, corpus)
         if len(candidates) < MIN_PAPERS:
             return _inert_proposal(
                 brief,
@@ -1013,6 +1157,23 @@ class StrategyFusion:
                 f"Model did not fuse at least {MIN_PAPERS} of the provided "
                 "papers (after dropping any hallucinated ids). No "
                 "single-paper hypothesis is produced.",
+            )
+
+        # (#1636) The honest-fewer record. A citation count below the target is
+        # ACCEPTED — MIN_PAPERS is the only hard reject — but it is never
+        # silent: the budget-vs-used pair is logged on every proposal that
+        # falls short, so "cited 2" is distinguishable from "cited 2 of 30"
+        # in the logs and, via `papers_offered`, on the artifact itself.
+        papers_offered = len(candidates)
+        if len(source_ids) < FUSE_TARGET_MIN:
+            logger.warning(
+                "fusion: shortfall — model cited %d paper(s) of %d offered "
+                "(target %d, hard floor %d); accepted, not blocked — the "
+                "justification belongs in fusion_reasoning",
+                len(source_ids),
+                papers_offered,
+                FUSE_TARGET_MIN,
+                MIN_PAPERS,
             )
 
         # Extract strategy_spec if present. Weak-JSON models (Nova Micro) often
@@ -1073,6 +1234,7 @@ class StrategyFusion:
             strategy_spec=strategy_spec,
             universe_source=universe_source,
             universe_gaps=universe_gaps,
+            papers_offered=papers_offered,
         )
 
 
@@ -1090,11 +1252,12 @@ def default_backend(model: str | None = None) -> LLMBackend:
     return FusionCannedBackend()
 
 
-def default_fusion(model: str | None = None) -> StrategyFusion:
-    """Factory used by the fusion job path (`_run_fusion_job` in `strategies_routes.py`).
-
-    ``model`` threads the user's selected model through to the lazily-resolved
-    backend (A3 seam, T1.1) so ``served_model`` provenance is truthful; ``None``
-    preserves the env-default behavior.
-    """
-    return StrategyFusion(model=model)
+# NOTE: ``default_fusion(model=None)`` used to live here as the factory for the
+# fusion job path (``_run_fusion_job`` in ``api/strategies_routes.py``). That
+# route was deleted on 2026-08-31 and the factory went with it — it had no other
+# caller in the tree or on any open branch. The debate society deliberately does
+# NOT use a shared factory: ``debate_engine._propose_pool`` constructs
+# ``StrategyFusion(model=..., corpus=evidence)`` per proposal so the user's model
+# pick and the regime-steered evidence set are both explicit (the A3 seam,
+# docs/specs/multi-agent-debate-spec.md §8). Re-adding a module-level factory
+# would reintroduce the model-blind singleton that seam exists to prevent.

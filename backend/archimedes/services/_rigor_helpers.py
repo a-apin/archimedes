@@ -696,13 +696,19 @@ def compute_average_pairwise_correlation(
 ) -> float:
     """Average off-diagonal Pearson correlation across a set of return series.
 
-    Feeds the Deflated Sharpe Ratio's effective-number-of-trials correction:
-    the expected best-of-N null Sharpe is computed at the effective trial count
-    ``N_eff = N / (1 + (N-1)*rho_bar)`` (the equicorrelated effective number of
-    independent tests) when the N trials are correlated, because correlated
-    trials carry fewer *independent* bets than their nominal count. The caller
+    Feeds the Deflated Sharpe Ratio's correlated-trials correction: the
+    expected best-of-N null Sharpe is the independent-trial ``E[max]`` scaled by
+    ``sqrt(1 - rho_bar)``, because under equicorrelation the factor common to
+    every trial passes straight through the maximum (see ``_dsr_from_stats``
+    for the one-factor derivation). Correlated trials offer fewer distinct
+    chances to get lucky, so the expected best-of-N null is lower. The caller
     that holds the selection set (the strategy library, or a parameter-variant
     grid) computes this and passes it into ``compute_dsr`` / ``run_rigor_gate``.
+
+    #1558/#1559: this previously fed an effective trial count
+    ``N_eff = N / (1 + (N-1)*rho_bar)``. That is the Kish design effect, not an
+    expectation-of-maximum, and it under-deflated by 2x-10x; do not reintroduce
+    it here or in the callers.
 
     Args:
         returns: Either ``{id: series}`` or a 2-D array/list (rows = trials,

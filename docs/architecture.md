@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-31
+> **updated:** 2026-09-01
 > **superseded-by:** —
 
 > Identity and deploy topology amended for Better Auth account ownership (2026-08). (2026-07-14)
@@ -46,7 +46,7 @@
                      └──────────────────────────────────────────────────────────────┘
 ```
 
-Product spine (canonical, [`docs/user-stories.md`](user-stories.md)): **generate → rigor-gate → execute → monitor → explore**.
+Product spine (canonical, [`docs/user-stories.md`](user-stories.md)): **generate → rigor-gate → (roadmap: execute → monitor) → explore**. Generate, rigor-gate, and explore are shipped. Vault execute/monitor is roadmap.
 
 ---
 
@@ -61,11 +61,11 @@ canvas `#09090B`).
 | Component | Path | Role |
 |---|---|---|
 | Router / page shell | [`ui/src/App.jsx`](../ui/src/App.jsx) | Path-based routes: landing, explore, leaderboard, corpus, architecture, generate, library, `strategy/:id`, portfolio, reasoning, learnings, marketplace, publish, subscriptions, insights, vault-detail |
-| Sidebar nav | [`ui/src/components/Layout.jsx`](../ui/src/components/Layout.jsx) | Groups: Discover (Explore/Leaderboard/Corpus/Architecture), Build (Generate/Library), My Desk (Portfolio/Reasoning/Learnings), Marketplace (Marketplace/Publish/Subscriptions), Insights |
+| Sidebar nav | [`ui/src/navConfig.js`](../ui/src/navConfig.js) (data), [`ui/src/components/Layout.jsx`](../ui/src/components/Layout.jsx) (render) | **(2026-08-31, #1641)** Groups: Strategy (Explore/Corpus/Generate/Library), Position (Paper Trading/Reasoning/Leaderboard, plus flag-hidden Portfolio/Quant Lab/Learnings), Market (Marketplace/Publish/Subscriptions — flag-hidden), Ops (Insights/Account). Every entry is labelled — there is no ungrouped item. Architecture is **not** here: it is public-only (`/architecture`, #1370/#1400) |
 | Generate surface | [`ui/src/components/Generate.jsx`](../ui/src/components/Generate.jsx), `GenerationStream.jsx`, `FusionResult.jsx`, `RejectedCandidates.jsx`, `RigorStrictnessControl.jsx`, `ModelCostPanel.jsx` | Brief input → SSE stream of debate progress → K=1 winner + considered-rejects + rigor verdict + model cost picker |
 | Strategy passport | [`ui/src/components/StrategyPassport.jsx`](../ui/src/components/StrategyPassport.jsx) | Paper anchors, rigor verdict cards, backtest vs paper-claim deltas, trace verify |
 | Vault deploy | [`ui/src/components/CreateVaultModal.jsx`](../ui/src/components/CreateVaultModal.jsx) (lines 155–195, 386–388), `DepositFlow.jsx` | **Client-side, user signs everything**: `createVault()` → `setAgent()` (2 sigs), then the 3-step approve → deposit → allocate flow |
-| Portfolio / vaults | [`ui/src/components/Portfolio.jsx`](../ui/src/components/Portfolio.jsx), `VaultDetail.jsx`, `VaultChat.jsx` | On-chain reads via viem against `NEW_CONTRACTS.vaultFactory` |
+| Portfolio / vaults | [`ui/src/components/Portfolio.jsx`](../ui/src/components/Portfolio.jsx), `VaultDetail.jsx` | On-chain reads via viem against `NEW_CONTRACTS.vaultFactory` |
 | Trace viewer / verify | [`ui/src/components/Reasoning.jsx`](../ui/src/components/Reasoning.jsx) | Recompute keccak hash, check against `traceRegistry` on-chain |
 | Marketplace | [`ui/src/components/MarketplacePage.jsx`](../ui/src/components/MarketplacePage.jsx), `PublishPage.jsx`, `SubscriptionsPage.jsx`, `StrategyDetailPage.jsx` | Publish / subscribe / earnings withdraw surfaces |
 | Corpus | [`ui/src/components/CorpusExplorer.jsx`](../ui/src/components/CorpusExplorer.jsx), `CorpusGraph.jsx`, `CorpusKG.jsx` | Renders real KB artifacts; explicit empty state on 503 (pipeline not yet run) |
@@ -87,7 +87,7 @@ canvas `#09090B`).
 | Config | [`api/config_routes.py`](../backend/archimedes/api/config_routes.py) | `GET /api/config/contracts` — serves the contract addresses from the ECS task env ([`infra/ecs.tf`](../infra/ecs.tf)) |
 | Agent manifest | [`api/agent_manifest_routes.py`](../backend/archimedes/api/agent_manifest_routes.py) | Agent-discoverability surface (`/api/agent/manifest`) per [`docs/agent-api.md`](agent-api.md) |
 | Leaderboard | [`api/leaderboard_routes.py`](../backend/archimedes/api/leaderboard_routes.py) | **(2026-08-31, #1563)** Two boards, never mixed: `GET /api/leaderboard` is 100% backtest-era and stamps every row `performance_basis="backtest_research"`; `GET /api/leaderboard/live-paper` returns rows only for real deployments, and the "is this ledger real" test lives in exactly one place, `build_live_paper_leaderboard` |
-| Others | `explore_routes.py` (281-synth universe), `portfolio_routes.py`, `traces_routes.py`, `regime_routes.py`, `proposals_routes.py` (owner-scoped), `user_routes.py`, `metrics_routes.py`, `risk_routes.py`, `swap_routes.py`, `papers_routes.py`, `chat_routes.py` | Product surfaces for the spine |
+| Others | `explore_routes.py` (281-synth universe), `portfolio_routes.py`, `traces_routes.py`, `regime_routes.py`, `proposals_routes.py` (owner-scoped), `user_routes.py`, `metrics_routes.py`, `risk_routes.py`, `swap_routes.py`, `papers_routes.py` | Product surfaces for the spine |
 | Middleware | [`api/telemetry_middleware.py`](../backend/archimedes/api/telemetry_middleware.py), [`api/funnel_middleware.py`](../backend/archimedes/api/funnel_middleware.py), [`api/limiter.py`](../backend/archimedes/api/limiter.py), [`api/auth_guard.py`](../backend/archimedes/api/auth_guard.py) | Telemetry, visitor funnel, rate limits, auth |
 
 `/health` + `/api/health` (`main.py:495-706`) expose honesty flags including `corpus_kg_built`
@@ -117,7 +117,7 @@ the machine-readable claim-integrity surface the new page should read from.
 |---|---|---|
 | LLM seam | [`services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) | Multi-provider **Converse** backend: AWS Bedrock **Amazon Nova Micro** default; BYOK; local-Ollama single-user path. `response.model` is provenance-of-record |
 | Corpus retrieval | [`services/paper_rag.py`](../backend/archimedes/services/paper_rag.py) | Stage-2 **query-time** rerank over the keyword-filtered candidates — nothing is read from a stored embedding index (none exists). `all-MiniLM-L6-v2` when the model loads in-process, lexical TF-IDF cosine otherwise. **(2026-08-31)** `paper_rag` has four states — `live` (a model object is loaded in *this* process) · `ready` (weights on disk, nothing has retrieved yet — deliberately **not** live, since presence on disk is not proof) · `degraded` (load attempted and failed) · `disabled`. Prod currently reports `ready`, and the two claims are published separately so neither can stand in for the other: `paper_rerank_model_live` is the process fact, `corpus_embedded_at_rest` the corpus one (false, derived from the schema — #1488, #778). 150-candidate cap, bounded embedding cache, `torch.set_num_threads(1)` (the #885 outage guardrails) |
-| Corpus ingest | [`services/corpus_service.py`](../backend/archimedes/services/corpus_service.py), [`services/arxiv_corpus.py`](../backend/archimedes/services/arxiv_corpus.py), [`services/arxiv_pipeline.py`](../backend/archimedes/services/arxiv_pipeline.py) | 10,000-paper JSONL manifest seed into Postgres |
+| Corpus ingest | [`services/corpus_service.py`](../backend/archimedes/services/corpus_service.py), [`services/arxiv_corpus.py`](../backend/archimedes/services/arxiv_corpus.py), [`services/arxiv_pipeline.py`](../backend/archimedes/services/arxiv_pipeline.py) | JSONL manifest seed into Postgres (live count: `GET /health` `corpus_papers` / `corpus_db_count`) |
 | KB pipeline | [`services/kb_runner.py`](../backend/archimedes/services/kb_runner.py), [`services/kb_artifacts.py`](../backend/archimedes/services/kb_artifacts.py) | Scheduled runner triggering SPECTER2 embeddings / HDBSCAN clusters / REBEL+SciSpacy KG builds (the "KB pipeline"); artifacts served by `corpus_routes` |
 | Rigor gate | [`services/live_rigor_gate.py`](../backend/archimedes/services/live_rigor_gate.py) | **Single source of truth** for `passes_rigor_gate`: four-state pass/fail/pending/**degenerate**, computed live from persisted real returns — never a cached boolean (issue #821, the #1 rule) |
 | Rigor math | [`services/rigor_evaluator.py`](../backend/archimedes/services/rigor_evaluator.py), [`services/_rigor_helpers.py`](../backend/archimedes/services/_rigor_helpers.py), [`services/sharpe_statistics.py`](../backend/archimedes/services/sharpe_statistics.py), [`services/rigor_profiles.py`](../backend/archimedes/services/rigor_profiles.py), [`services/rigor_cache.py`](../backend/archimedes/services/rigor_cache.py) | DSR, PBO, walk-forward OOS, look-ahead audit; strictness profiles |
@@ -244,11 +244,11 @@ Runbook: [`infra/runbooks/ecs-fargate-cutover.md`](../infra/runbooks/ecs-fargate
 
 ## 5. Flow — Corpus (papers → retrievable knowledge)
 
-1. **Seed**: 10,000-paper JSONL manifest → Postgres (`services/corpus_service.py::seed_from_manifest`, boot-time in `main.py:139`).
+1. **Seed**: committed JSONL manifest → Postgres (`services/corpus_service.py::seed_from_manifest`, boot-time in `main.py:139`). Live counts: `GET /health` `corpus_papers` / `corpus_db_count` — do not freeze a number here; the corpus probe can timeout.
 2. **Seed writes text, and stops there**: metadata + abstracts land in Postgres; the `papers` schema carries no vector column, so there is nothing stored for a query to look up. Ranking is computed per request instead (§2.3). The ingest-time vectorisation described in [`docs/corpus-architecture.md`](corpus-architecture.md) is the target design, not the deployed one.
 3. **KB pipeline** ([`services/kb_runner.py`](../backend/archimedes/services/kb_runner.py), own compose service / scheduled-Fargate target (PR #1071, merged; apply pending)): SPECTER2 embeddings, HDBSCAN clusters, REBEL+SciSpacy knowledge graph → artifacts → [`api/corpus_routes.py`](../backend/archimedes/api/corpus_routes.py). With no artifact, `/graph` raises **503 `kb_artifact_not_found`** and `/kg/*` returns **empty entity/relation sets** — neither synthesises from arXiv metadata (#201). `corpus_kg_built` flag in `/health`; both behaviours pinned by `backend/tests/test_corpus_claim_integrity.py`.
 4. **Retrieval at generate time**: keyword filter → query-time rerank (§2.3).
-5. **Honest state** (verified against prod 2026-08-19): all 10,000 rows are present with title + abstract, but there are **no embeddings** (no embedding column anywhere in the schema), `corpus_meta` = 0 rows, and `kg_entities`/`kg_relations` = 0/0 — so retrieval is **lexical**, and the KG/graph endpoints 503. What is missing is the artifact layer, not the papers (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
+5. **Honest state**: the `papers` table holds metadata + abstracts (live row count is `GET /health` `corpus_db_count`, not a number frozen in this file). There are **no embeddings** (no embedding column anywhere in the schema), `corpus_meta` = 0 rows, and `kg_entities`/`kg_relations` = 0/0 — so retrieval is **lexical**, and the KG/graph endpoints 503. What is missing is the artifact layer, not the papers (issue #778). Build decision: **HYBRID** — custom KB spine (Postgres + MiniLM) + optional Bedrock-KB retrieval bridge; Neptune ruled out; a MiniLM-only no-AWS local option exists.
 
 ## 6. Flow — Identity / accounts + linked wallets
 

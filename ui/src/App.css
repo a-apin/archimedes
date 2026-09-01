@@ -51,15 +51,22 @@
      #8a8a93 on #16161a = 5.27:1 (was #71717a = 3.73:1).
 
      --text-4 (#3f3f46) is a border/decoration token here and must not be used
-     as a text colour on this palette — 1.73:1 on --surface-2. KNOWN OPEN
-     ISSUE, not a claim that the tree is clean: AssetModal.jsx and
-     AssetGroupModal.jsx portal to document.body, i.e. OUTSIDE .app-site, so
-     their "Current price" / "24h change" / "24h high" / "24h low" captions
-     resolve this base token and render at 1.73–1.83:1. Same portal mechanism
-     that forced the --chart-label fix below; the --text-4 half is unfixed
-     because raising the base token would also brighten every hairline that
-     legitimately uses it as decoration. It needs the call sites moved to
-     --text-3, not a token bump. */
+     as a text colour on this palette — 1.73:1 on --surface-2, 1.83:1 on
+     --surface-1. It stays dark on purpose: raising it would brighten every
+     hairline that legitimately uses it as decoration (the scrollbar-thumb
+     hover below, DepositFlow's spinner track, AuthPage's password-strength
+     meter segments), so the fix is to move call sites to --text-3, never to
+     bump the token — #1318.
+
+     What resolves this palette is everything rendered outside both shells:
+     the auth screen, the 404, the error-boundary fallback, and anything
+     portalled to document.body (createPortal escapes BOTH .app-site and
+     .public-site — the same mechanism that forced the --chart-label fix
+     below). Every portalled dialog that was painting text with --text-4 now
+     resolves --text-3 instead (5.59:1 on --surface-1, 5.27:1 on --surface-2);
+     ui/test/a11y.test.js computes those ratios and re-checks every portalled
+     subtree it can find by walking src/ for createPortal, so a dialog added
+     later is covered without anyone remembering to register it. */
 	--text-1: #fafafa;
 	--text-2: #a1a1aa;
 	--text-3: #8a8a93;
@@ -2033,201 +2040,22 @@ button.primary:disabled {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   CHAT PANEL
+   TEXT INPUT (historically the vault-chat composer)
    ═══════════════════════════════════════════════════════════════ */
 
-.chat-panel {
-	background: var(--surface-1);
-	border: 1px solid var(--glass-border);
-	border-radius: 12px;
-	overflow: hidden;
-	display: flex;
-	flex-direction: column;
-}
-
-.chat-panel-collapsed .chat-messages,
-.chat-panel-collapsed .chat-input-area {
-	display: none;
-}
-
-.chat-panel-open {
-	height: 480px;
-}
-
-/* Header */
-.chat-header {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	padding: 12px 16px;
-	background: var(--surface-2);
-	border-bottom: 1px solid var(--glass-border);
-	cursor: pointer;
-	user-select: none;
-}
-.chat-header:hover {
-	background: var(--surface-3);
-}
-
-.chat-header-left {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-.chat-icon {
-	font-size: 1rem;
-}
-.chat-title {
-	font-size: 0.85rem;
-	font-weight: 600;
-	color: var(--text-1);
-}
-.chat-count {
-	font-size: 0.7rem;
-	color: var(--text-3);
-	background: var(--surface-4);
-	padding: 2px 7px;
-	border-radius: 10px;
-}
-.chat-toggle {
-	color: var(--text-3);
-	font-size: 0.7rem;
-}
-
-/* Messages area */
-.chat-messages {
-	flex: 1;
-	overflow-y: auto;
-	padding: 12px 16px;
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
-}
-
-.chat-empty {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	flex: 1;
-	color: var(--text-3);
-	font-size: 0.85rem;
-	text-align: center;
-	padding: 40px 20px;
-}
-
-.chat-hint {
-	font-size: 0.75rem;
-	color: var(--text-4);
-	margin-top: 6px;
-}
-
-/* Message bubble */
-.chat-msg {
-	max-width: 85%;
-	padding: 8px 12px;
-	border-radius: 10px;
-	background: var(--surface-3);
-	border: 1px solid var(--glass-border);
-}
-
-.chat-msg-own {
-	align-self: flex-end;
-	background: rgba(var(--accent-rgb), 0.08);
-	border-color: rgba(var(--accent-rgb), 0.15);
-}
-
-.chat-msg-ai {
-	align-self: flex-start;
-	background: rgba(96, 165, 250, 0.06);
-	border-color: rgba(96, 165, 250, 0.12);
-	max-width: 90%;
-}
-
-.chat-msg-header {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	margin-bottom: 4px;
-}
-
-.chat-msg-avatar {
-	font-size: 0.85rem;
-}
-
-.chat-msg-sender {
-	font-size: 0.7rem;
-	font-weight: 600;
-	color: var(--text-2);
-}
-
-.chat-msg-time {
-	font-size: 0.65rem;
-	color: var(--text-4);
-	margin-left: auto;
-}
-
-.chat-msg-body {
-	font-size: 0.82rem;
-	color: var(--text-1);
-	line-height: 1.5;
-	word-break: break-word;
-}
-.chat-msg-ai .chat-msg-body {
-	color: var(--text-2);
-}
-
-/* Bold markdown-style text in AI messages */
-.chat-msg-ai .chat-msg-body strong,
-.chat-msg-ai .chat-msg-body b {
-	color: var(--text-1);
-}
-
-/* Input area */
-.chat-input-area {
-	border-top: 1px solid var(--glass-border);
-	padding: 10px 12px;
-	background: var(--surface-2);
-}
-
-.chat-error {
-	font-size: 0.75rem;
-	color: var(--negative);
-	margin-bottom: 8px;
-}
-
-.chat-input-row {
-	display: flex;
-	gap: 8px;
-}
+/* Per-vault chat was deleted 2026-08-31; every other rule from the old
+   CHAT PANEL block (.chat-panel, .chat-header*, .chat-messages, .chat-msg*,
+   .chat-input-area, .chat-input-row, .chat-error, .chat-send-btn) went with
+   its component. `.chat-input` survives on its own merits: it is the generic
+   form-field style, used 18 times across Generate, DepositFlow, CreateVaultModal,
+   WelcomeProfileModal and CorpusKG, and `.app-site .chat-input` below is
+   asserted on by ui/test/a11y.test.js. The name is now a misnomer; renaming it
+   is a separate, mechanical change. */
 
 .chat-input {
 	flex: 1;
 	background: var(--surface-3);
 	font-size: 0.82rem;
-}
-
-.chat-send-btn {
-	background: var(--accent);
-	color: #000;
-	border: none;
-	border-radius: 8px;
-	width: 36px;
-	height: 36px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	cursor: pointer;
-	font-size: 1rem;
-	transition: background 0.15s;
-}
-.chat-send-btn:hover:not(:disabled) {
-	background: var(--accent-hover);
-}
-.chat-send-btn:disabled {
-	opacity: 0.4;
-	cursor: not-allowed;
 }
 
 /* Status message reuse */
@@ -3420,6 +3248,15 @@ button:where(.tag) {
 .catalog-filter {
 	width: 180px;
 	flex-shrink: 0;
+}
+/* The search-scope sentence sits between the controls and the result count;
+   it is the input's accessible description (aria-describedby), so it must stay
+   rendered rather than being hidden on small viewports. */
+.catalog-search-scope {
+	font-size: 0.76rem;
+	color: var(--text-3);
+	margin: -8px 0 10px;
+	max-width: 62ch;
 }
 .catalog-results-info {
 	font-size: 0.8rem;
@@ -5188,21 +5025,25 @@ button:where(.tag) {
 	width: 100%;
 }
 
+/* MOBILE-FIRST (#1642): the base rule IS the phone layout — one column,
+   source order, no rail. The two-column brief+rail grid and the sticky rail
+   are the ENHANCEMENT, and live in the "#1642 — Generate, mobile-first" block
+   at the end of this file behind `min-width: 900px`. Do not move the grid
+   back up here: a desktop base + a max-width collapse is exactly the shape
+   #1642 replaced. */
 .generate-workbench {
 	display: grid;
-	grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
-	gap: 22px;
+	grid-template-columns: 1fr;
+	gap: 18px;
 	align-items: start;
 }
 
 .generate-brief {
-	padding: clamp(22px, 3vw, 34px);
+	padding: 18px;
 	border-top: 3px solid var(--app-action) !important;
 }
 
 .generate-context-rail {
-	position: sticky;
-	top: 88px;
 	display: grid;
 	gap: 14px;
 }
@@ -5251,24 +5092,9 @@ button:where(.tag) {
 	text-align: left;
 }
 
-.generate-example {
-	width: 100%;
-	padding: 8px 10px;
-	border: 1px solid var(--glass-border);
-	border-radius: 3px;
-	background: transparent;
-	color: var(--text-2);
-	font-size: 0.82rem;
-	line-height: 1.4;
-	text-align: left;
-	cursor: pointer;
-}
-
-.generate-example:hover {
-	border-color: var(--app-verify);
-	background: rgba(121, 201, 183, 0.045);
-	color: var(--text-1);
-}
+/* `.generate-example` (the retired "Examples — click to fill" list) was
+   deleted here with its markup in #1642; its replacement is
+   `.generate-surprise-btn` in the #1642 block at the end of this file. */
 
 .generate-advanced-toggle {
 	display: flex;
@@ -5504,13 +5330,15 @@ button:where(.tag) {
 }
 
 @media (max-width: 900px) {
-	.generate-workbench,
+	/* `.generate-workbench` / `.generate-context-rail` left this block in
+	   #1642 — they no longer need un-collapsing here because they are never
+	   collapsed in the first place (single column and static are their base
+	   state; see the #1642 block at the end of this file). */
 	.passport-workspace,
 	.portfolio-workspace {
 		grid-template-columns: 1fr;
 	}
 
-	.generate-context-rail,
 	.passport-authority,
 	.portfolio-activity {
 		position: static;
@@ -5588,7 +5416,9 @@ button:where(.tag) {
 		display: none;
 	}
 
-	.generate-brief,
+	/* `.generate-brief` left this block in #1642: 18px is now its BASE padding
+	   (mobile-first), so a max-width override that widened it back to 20px on
+	   the narrowest screens was backwards. It scales UP at min-width instead. */
 	.passport-panel,
 	.passport-deploy {
 		padding: 20px;
@@ -8238,7 +8068,6 @@ body:has(.public-site) {
 	border-color: var(--glass-border);
 }
 
-.generate-example:hover,
 .portfolio-page .vault-card-clickable:hover,
 .portfolio-page .trace-card:hover {
 	border-color: var(--app-action);
@@ -8908,16 +8737,6 @@ body:has(.public-site) {
 	color: var(--accent);
 }
 
-.chat-header {
-	width: 100%;
-	border: 0;
-	background: transparent;
-	color: inherit;
-	font: inherit;
-	text-align: left;
-	cursor: pointer;
-}
-
 .corpus-error {
 	display: grid;
 	max-width: 620px;
@@ -9277,5 +9096,852 @@ body:has(.public-site) {
 		animation-iteration-count: 1 !important;
 		scroll-behavior: auto !important;
 		transition-duration: 0.01ms !important;
+	}
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Library loading skeleton + gate-pending chip — issue #1645
+   ---------------------------------------------------------------------------
+   APPENDED BLOCK. Several builders are editing this file concurrently, so this
+   block is scoped to the Library page's own components (`.lib-skeleton*`,
+   `.lib-chip-checking`), touches no existing rule, and stays at the end of the
+   file. Anything added after it should follow the same convention.
+
+   Rendered by `StrategyListSkeleton` in ui/src/components/Strategies.jsx while
+   the two strategy-list fetches are in flight, replacing the bare "Loading…"
+   caption that used to sit where the table was about to be.
+
+   NO GRADIENT. The first cut of this block used a `linear-gradient` sweep for
+   the shimmer, which ui/test/public-visuals.test.js rejects with a file-wide
+   `assert.doesNotMatch(css, /gradient\(/i)` — the calm-precision rule is that
+   this product's surfaces are flat. It pulses opacity instead, the same idiom
+   `@keyframes pulse` already uses above.
+
+   The pulse needs no `prefers-reduced-motion` rule of its own: the block at
+   line ~9281 above zeroes `animation-duration` for every descendant of
+   `.app-site` with `!important` (so source order does not matter), and the
+   Library renders inside it (Layout.jsx: `shell app-site`). Both checked by
+   grep before relying on them. The bars also carry a visible flat
+   `--surface-2` tint, so with animation disabled they still read as
+   placeholders rather than disappearing.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.lib-skeleton-rows {
+	border: 1px solid var(--glass-border);
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.lib-skeleton-row {
+	display: grid;
+	grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) 72px 72px;
+	gap: 14px;
+	align-items: center;
+	padding: 14px;
+	border-bottom: 1px solid var(--glass-border);
+}
+
+.lib-skeleton-row:last-child {
+	border-bottom: 0;
+}
+
+.lib-skeleton-bar {
+	height: 11px;
+	border-radius: 5px;
+	background: var(--surface-2);
+	animation: lib-skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+.lib-skeleton-name {
+	width: 100%;
+}
+
+.lib-skeleton-meta {
+	width: 78%;
+}
+
+.lib-skeleton-num {
+	width: 100%;
+	justify-self: end;
+}
+
+/* Staggered so the rows read as one surface filling in rather than as every
+   bar blinking in lockstep. */
+.lib-skeleton-row:nth-child(2n) .lib-skeleton-bar {
+	animation-delay: 0.16s;
+}
+
+.lib-skeleton-row:nth-child(3n) .lib-skeleton-bar {
+	animation-delay: 0.32s;
+}
+
+@keyframes lib-skeleton-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+
+	50% {
+		opacity: 0.45;
+	}
+}
+
+@media (max-width: 700px) {
+	.lib-skeleton-row {
+		grid-template-columns: minmax(0, 2fr) 64px;
+	}
+
+	.lib-skeleton-row .lib-skeleton-meta,
+	.lib-skeleton-row .lib-skeleton-num:last-child {
+		display: none;
+	}
+}
+
+/* The deployability chip's "we have not asked yet" state. Deliberately quieter
+   than every real verdict the chip can render — it is the absence of a verdict,
+   not a verdict of its own. */
+.lib-chip-checking {
+	font-variant-numeric: tabular-nums;
+	opacity: 0.75;
+}
+
+/* ============================================================
+   #1647 — Cookie / browser-storage consent (component-scoped)
+
+   Appended as one block at the very end of App.css and scoped to
+   `.consent-*` and `.storage-disclosure*` only, so it cannot
+   collide with the other UI work in flight against this file.
+   Do not interleave these rules with the blocks above.
+
+   PALETTE NOTE. `.consent-banner` mounts in main.jsx as a sibling
+   of <App/>, i.e. OUTSIDE both `.public-site` and `.app-site`, so
+   it resolves the BASE tokens (--surface-2 #16161a, --text-1
+   #fafafa, --text-2 #a1a1aa, --text-3 #8a8a93 — the last two are
+   the ≥4.5:1 pair pinned in the :root comment at the top of this
+   file). `.storage-disclosure` renders inside `.public-site` and
+   resolves that shell's palette instead. Neither uses --text-4 as
+   a text colour.
+
+   Nothing here portals to document.body, so a11y.test.js's
+   portal-region walk does not apply to this block.
+   ============================================================ */
+
+.consent-banner {
+	position: fixed;
+	z-index: 60;
+	inset: auto 0 0 0;
+	background: var(--surface-2);
+	border-top: 1px solid var(--field-border);
+	color: var(--text-1);
+	font-family: var(--sans);
+	max-height: 85vh;
+	overflow-y: auto;
+	box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.consent-banner__inner {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 1.25rem;
+	align-items: flex-start;
+	justify-content: space-between;
+	max-width: 1180px;
+	margin: 0 auto;
+	padding: 1.1rem 1.5rem;
+}
+
+.consent-banner__copy {
+	flex: 1 1 26rem;
+	min-width: 0;
+}
+
+.consent-banner__title {
+	font-size: 1rem;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+	margin-bottom: 0.35rem;
+	color: var(--text-1);
+}
+
+.consent-banner__copy p {
+	color: var(--text-2);
+	font-size: 0.875rem;
+	line-height: 1.55;
+	max-width: 62ch;
+}
+
+.consent-banner__note {
+	margin-top: 0.4rem;
+	color: var(--text-3);
+	font-size: 0.8125rem;
+}
+
+.consent-banner__note a,
+.consent-banner__copy a {
+	color: var(--accent);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+
+.consent-banner__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: center;
+}
+
+.consent-banner__panel {
+	border-top: 1px solid var(--glass-border);
+	max-width: 1180px;
+	margin: 0 auto;
+	padding: 1rem 1.5rem 1.4rem;
+}
+
+.consent-btn {
+	appearance: none;
+	cursor: pointer;
+	font-family: var(--sans);
+	font-size: 0.8125rem;
+	font-weight: 600;
+	line-height: 1;
+	padding: 0.6rem 0.95rem;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--field-border);
+	background: transparent;
+	color: var(--text-1);
+}
+
+.consent-btn:hover {
+	border-color: var(--accent);
+}
+
+.consent-btn--primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--canvas);
+}
+
+.consent-btn--primary:hover {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+}
+
+.consent-btn--quiet {
+	border-color: transparent;
+	color: var(--text-2);
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+
+.consent-btn--quiet:hover {
+	color: var(--text-1);
+	border-color: transparent;
+}
+
+/* The banner sits outside .public-site / .app-site, so neither shell's
+   focus ring reaches it. Without this rule its controls would have no
+   visible focus indicator at all (WCAG 2.4.7). */
+.consent-banner :focus-visible {
+	outline: 3px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: var(--radius-sm);
+}
+
+.consent-choices__set {
+	border: 0;
+	display: grid;
+	gap: 1rem;
+}
+
+.consent-choices__legend {
+	font-size: 0.75rem;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--text-3);
+	padding: 0;
+	margin-bottom: 0.5rem;
+}
+
+.consent-choices__row {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 0.75rem;
+	align-items: start;
+}
+
+.consent-choices__input {
+	width: 1.05rem;
+	height: 1.05rem;
+	margin-top: 0.2rem;
+	accent-color: var(--accent);
+}
+
+.consent-choices__label {
+	display: inline-block;
+	font-size: 0.9375rem;
+	font-weight: 600;
+	color: var(--text-1);
+	cursor: pointer;
+}
+
+.consent-choices__summary {
+	color: var(--text-2);
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	margin-top: 0.15rem;
+	max-width: 70ch;
+}
+
+.consent-choices__keys {
+	list-style: none;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	margin-top: 0.5rem;
+	padding: 0;
+}
+
+.consent-choices__keys li {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 0.4rem;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-sm);
+	padding: 0.2rem 0.45rem;
+}
+
+.consent-choices__keys code {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	color: var(--text-1);
+	overflow-wrap: anywhere;
+}
+
+.consent-choices__keys span {
+	font-size: 0.6875rem;
+	color: var(--text-3);
+}
+
+.consent-choices__actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem;
+	margin-top: 1rem;
+}
+
+.consent-choices__status {
+	color: var(--text-3);
+	font-size: 0.8125rem;
+	margin: 0;
+}
+
+.storage-disclosure__group {
+	margin-top: 2rem;
+}
+
+.storage-disclosure__group-title {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.6rem;
+	font-size: 1.0625rem;
+	color: var(--text-1);
+}
+
+.storage-disclosure__group-title span {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	color: var(--text-3);
+}
+
+.storage-disclosure__group-note {
+	color: var(--text-2);
+	font-size: 0.875rem;
+	line-height: 1.55;
+	margin-top: 0.35rem;
+	max-width: 78ch;
+}
+
+/* Wide table, narrow phone: the table scrolls inside its own box so the
+   page body never scrolls sideways. */
+.storage-disclosure__scroll {
+	margin-top: 0.85rem;
+	overflow-x: auto;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-md);
+}
+
+.storage-disclosure__table {
+	border-collapse: collapse;
+	width: 100%;
+	min-width: 52rem;
+	font-size: 0.8125rem;
+	text-align: left;
+}
+
+.storage-disclosure__caption {
+	text-align: left;
+	padding: 0.6rem 0.85rem;
+	color: var(--text-3);
+	font-size: 0.75rem;
+}
+
+.storage-disclosure__table th,
+.storage-disclosure__table td {
+	border-top: 1px solid var(--glass-border);
+	padding: 0.6rem 0.85rem;
+	vertical-align: top;
+	color: var(--text-2);
+	line-height: 1.5;
+}
+
+.storage-disclosure__table thead th {
+	color: var(--text-1);
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.storage-disclosure__table tbody th {
+	color: var(--text-1);
+	font-weight: 500;
+}
+
+.storage-disclosure__table code {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	overflow-wrap: anywhere;
+}
+
+.storage-disclosure__error {
+	margin-top: 1rem;
+	padding: 0.75rem 0.9rem;
+	border: 1px solid var(--negative);
+	border-radius: var(--radius-sm);
+	color: var(--negative);
+	font-size: 0.875rem;
+}
+
+.storage-disclosure .consent-choices {
+	margin-top: 2.25rem;
+	padding-top: 1.5rem;
+	border-top: 1px solid var(--glass-border);
+}
+
+@media (max-width: 700px) {
+	.consent-banner__inner {
+		padding: 1rem;
+	}
+
+	.consent-banner__actions {
+		width: 100%;
+	}
+
+	.consent-banner__panel {
+		padding: 1rem 1rem 1.25rem;
+	}
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Strategy Passport redesign — issue #1646
+   ═══════════════════════════════════════════════════════════════════════════
+
+   APPEND-ONLY BLOCK. Several UI builders are editing this file concurrently,
+   so everything for #1646 lives here, at the end, under selectors prefixed
+   with the components it belongs to (`.passport-dense`, `.passport-papers`,
+   `.passport-dsl`). No rule above this comment was modified.
+
+   Three jobs, in the order the owner raised them:
+     1. DENSITY — the passport's panels were 24px-padded cards stacked down a
+        two-column grid, so a strategy with six papers pushed the backtest
+        metrics below the fold. `.passport-dense` tightens padding and type
+        for THIS page only; the shared `.passport-panel` rule other surfaces
+        inherit is untouched.
+     2. THE PAPERS TABLE — one real <table> with fixed columns, in a bounded
+        scroll box. Bounded is the point: a table that grows with paper count
+        would reintroduce exactly the overflow the cards caused. The header
+        stays put while the body scrolls, so column meaning survives.
+     3. THE DSL — a code block that is legible without being loud, and that
+        can never push the page wider than the viewport.
+
+   Colours are drawn only from the existing palette tokens, which both
+   `:root` (dark) and `:root[data-theme="light"]` define with contrast
+   already tuned. That is why there is no light-theme override below: there
+   is no literal colour here to override. */
+
+/* ── 1. Density ────────────────────────────────────────────────────────── */
+
+.passport-dense {
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.passport-dense .passport-panel {
+	margin: 0;
+	padding: 16px 18px;
+}
+
+/* The table and the DSL are full-bleed rows in the two-column evidence grid.
+   Half-width is what made the old cards read as "squished": a five-column
+   table or a JSON block in a ~340px column wraps every line. */
+.passport-dense .passport-papers,
+.passport-dense .passport-dsl {
+	grid-column: 1 / -1;
+}
+
+.passport-dense .label {
+	margin-bottom: 6px;
+}
+
+/* ── 2. Source-papers table ────────────────────────────────────────────── */
+
+.passport-papers__head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	margin-bottom: 8px;
+}
+
+.passport-papers__head .label {
+	margin-bottom: 0;
+}
+
+/* Two independent overflow guards. `overflow-x` keeps a wide table inside its
+   own box instead of widening the page; `max-height` + `overflow-y` bounds a
+   long one so the panels below it stay reachable without a page-length scroll.
+   `overscroll-behavior` stops a flick inside the box from scrolling the page
+   once the list ends. */
+.passport-papers__scroll {
+	max-height: 19rem;
+	overflow: auto;
+	overscroll-behavior: contain;
+	border: 1px solid var(--glass-border);
+	border-radius: 8px;
+}
+
+.passport-papers__table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.8rem;
+	line-height: 1.35;
+}
+
+.passport-papers__table thead th {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: var(--surface-3);
+	color: var(--text-3);
+	text-align: left;
+	font-size: 0.66rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	white-space: nowrap;
+	padding: 7px 10px;
+	border-bottom: 1px solid var(--glass-border);
+}
+
+.passport-papers__table tbody tr + tr > * {
+	border-top: 1px solid var(--glass);
+}
+
+.passport-papers__table td,
+.passport-papers__table tbody th {
+	padding: 8px 10px;
+	vertical-align: top;
+	color: var(--text-2);
+}
+
+/* The title is the row's header cell (<th scope="row">), which browsers
+   default to bold and centred — reset both, then style it as the row's
+   primary text. Keeping it a header is what lets a screen reader announce
+   "Contribution, <paper title>" instead of reading a bare cell. */
+.passport-papers__table tbody th.passport-papers__title {
+	text-align: left;
+	font-weight: 600;
+	color: var(--text-1);
+	min-width: 12rem;
+	max-width: 22rem;
+}
+
+.passport-papers__source {
+	white-space: nowrap;
+}
+
+.passport-papers__source a {
+	display: block;
+	font-size: 0.72rem;
+	color: var(--accent);
+	text-decoration: none;
+}
+
+.passport-papers__source a:hover,
+.passport-papers__source a:focus-visible {
+	text-decoration: underline;
+}
+
+.passport-papers__num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.passport-papers__note,
+.passport-papers__hash {
+	margin-top: 8px;
+}
+
+.passport-papers__note {
+	color: var(--text-3);
+}
+
+/* ── 3. Generated DSL ──────────────────────────────────────────────────── */
+
+.passport-dsl__head {
+	margin-bottom: 8px;
+}
+
+.passport-dsl__code {
+	margin: 0;
+	padding: 12px 14px;
+	max-height: 22rem;
+	overflow: auto;
+	overscroll-behavior: contain;
+	background: var(--surface-1);
+	border: 1px solid var(--glass-border);
+	border-radius: 8px;
+	font-family: var(--mono);
+	font-size: 0.74rem;
+	line-height: 1.5;
+	/* The spec is pretty-printed with real newlines and indentation that carry
+	   the nesting, so it must not be re-wrapped — but a single long asset list
+	   must not widen the page either. Preserve the formatting and scroll. */
+	white-space: pre;
+	tab-size: 2;
+	color: var(--text-2);
+}
+
+/* Keyboard users need to reach the scroll region; the element carries
+   tabIndex={0} for that, so it also needs a visible focus ring. */
+.passport-dsl__code:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.passport-dsl__t-key {
+	color: var(--info);
+}
+
+.passport-dsl__t-string {
+	color: var(--positive);
+}
+
+.passport-dsl__t-number {
+	color: var(--warning);
+}
+
+.passport-dsl__t-boolean {
+	color: var(--accent);
+}
+
+/* `null` in a spec means "unset", and it should read quieter than a value,
+   not louder — the same honest-absence rule the em-dashes in the papers table
+   follow. */
+.passport-dsl__t-null {
+	color: var(--text-3);
+	font-style: italic;
+}
+
+.passport-dsl__t-punct {
+	color: var(--text-3);
+}
+
+.passport-dsl__note {
+	margin-top: 8px;
+	color: var(--text-3);
+}
+
+/* ── Narrow viewports ──────────────────────────────────────────────────── */
+
+@media (max-width: 700px) {
+	.passport-dense .passport-panel {
+		padding: 14px 14px;
+	}
+
+	/* Shorter boxes on a short screen: at 19rem the table alone would fill a
+	   phone viewport, which is the same "doesn't fit" complaint one breakpoint
+	   down. */
+	.passport-papers__scroll {
+		max-height: 15rem;
+	}
+
+	.passport-dsl__code {
+		max-height: 16rem;
+		font-size: 0.7rem;
+	}
+
+	.passport-papers__table tbody th.passport-papers__title {
+		min-width: 9rem;
+	}
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   #1642 — Generate page: mobile-first layout + Surprise Me
+   ══════════════════════════════════════════════════════════════════════════
+   Appended as one component-scoped block at the END of this file by
+   agreement with the other UI builders working in App.css concurrently.
+   Every selector below is prefixed `.generate-*`; nothing here reaches
+   another page's markup.
+
+   Read the ladder bottom-up, because that is the order it was designed in:
+
+     BASE (no media query)  = the 375px phone. One column, full-bleed
+                              controls, 44px targets, source order.
+     min-width: 560px       = large phone / small tablet. The two control
+                              rows (Surprise, submit) go horizontal.
+     min-width: 900px       = desktop. The brief+rail two-column grid and
+                              the sticky rail arrive HERE and only here.
+
+   The base rules for `.generate-workbench`, `.generate-brief` and
+   `.generate-context-rail` are up at their original site (~line 5207); this
+   block carries the enhancements plus everything new. There is deliberately
+   no `max-width` rule for Generate anywhere in the file — a max-width
+   collapse of a desktop base is the shape #1642 replaced.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Grid items default to `min-width: auto`, so one unbreakable string (a
+   settlement receipt hash, a wide model table) stretches the column and
+   scrolls the whole page sideways. This is the rule that keeps a 375px
+   viewport free of horizontal scroll. */
+.generate-workbench > * {
+	min-width: 0;
+}
+
+.generate-brief .generate-submit-status {
+	min-width: 0;
+}
+
+/* Receipts and addresses are unbreakable by nature — break them anywhere
+   rather than let one push the layout wider than the screen. */
+.generate-brief code {
+	overflow-wrap: anywhere;
+}
+
+/* ── Surprise Me ──────────────────────────────────────────────────────────
+   The only example-related control on the page. Full-width on a phone
+   because a 44px target that also spans the column is the easiest thing to
+   hit with a thumb; it shrinks to its content at 560px. */
+.generate-surprise {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 8px;
+}
+
+.generate-surprise-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	width: 100%;
+	/* 44px, not the WCAG 2.2 AA floor of 24px: this is a thumb target on a
+	   phone, and ui/test/a11y.test.js asserts the floor is cleared. */
+	min-height: 44px;
+	padding: 0 14px;
+	border: 1px solid var(--glass-border);
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-2);
+	font-size: 0.86rem;
+	line-height: 1.3;
+	text-align: center;
+	cursor: pointer;
+}
+
+.generate-surprise-btn:hover:not(:disabled) {
+	border-color: var(--app-verify);
+	background: var(--accent-muted);
+	color: var(--text-1);
+}
+
+.generate-surprise-btn:disabled {
+	cursor: not-allowed;
+	opacity: 0.5;
+}
+
+.generate-surprise-hint {
+	color: var(--text-3);
+}
+
+.generate-brief-guide-link {
+	color: var(--accent);
+	text-decoration: underline;
+}
+
+/* ── Gating-banner slot (#1643 mounts here) ───────────────────────────────
+   `:empty` keeps the slot from reserving space while #1643 is unlanded, so
+   this PR changes nothing visually by leaving the mount point in place. */
+.generate-gate-slot {
+	margin-bottom: 12px;
+}
+
+.generate-gate-slot:empty {
+	display: none;
+	margin-bottom: 0;
+}
+
+/* ── Submit row ───────────────────────────────────────────────────────────
+   Two-selector specificity (0,2,0) so these win over the single-class
+   UnoCSS utilities on the same element regardless of stylesheet order. */
+.generate-brief .generate-submit-row {
+	flex-direction: column;
+	align-items: stretch;
+}
+
+.generate-brief .generate-submit-btn {
+	width: 100%;
+	min-height: 44px;
+}
+
+@media (min-width: 560px) {
+	.generate-brief {
+		padding: 22px;
+	}
+
+	.generate-surprise {
+		flex-direction: row;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.generate-surprise-btn {
+		width: auto;
+	}
+
+	.generate-brief .generate-submit-row {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.generate-brief .generate-submit-btn {
+		width: auto;
+	}
+}
+
+@media (min-width: 900px) {
+	.generate-workbench {
+		grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+		gap: 22px;
+	}
+
+	.generate-brief {
+		padding: clamp(24px, 3vw, 34px);
+	}
+
+	.generate-context-rail {
+		position: sticky;
+		top: 88px;
 	}
 }

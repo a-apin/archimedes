@@ -2,13 +2,18 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 // EfficientFrontier + CorrelationMatrix deleted (Issue #383) — synthetic RNG data
 import RigorExplainer from './RigorExplainer'
-import RigorStrictnessControl, { levelLabel } from './RigorStrictnessControl'
+// The rigor-strictness CONTROL is no longer mounted on this page (#1645) — it
+// lives on the Strategy Passport, where the level is applied to a decision.
+// Only its label lookup is still needed here, for DeployabilityChip, and that
+// now has its own module so this page imports no part of the control.
+import { levelLabel } from '../rigorLevels'
 import { useRigorStrictness, BADGE_LEVEL } from '../hooks/useRigorStrictness'
 import useDialogFocus from '../hooks/useDialogFocus'
 import { ROADMAP_SURFACES_ENABLED } from '../featureFlags.js'
 
 import { apiGet, apiPost, apiDelete } from '../api'
 import { compactCostCell } from '../generationCost.js'
+import MetricValue from './MetricValue'
 import {
   isUnknownRigorGateStatus,
   warnUnknownRigorGateStatus,
@@ -20,8 +25,24 @@ import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
-function DeployabilityChip({ deploy, level }) {
-  if (!deploy) return null
+function DeployabilityChip({ deploy, level, gatePending }) {
+  // #1645: the Library now renders rows as soon as the strategy list resolves,
+  // without waiting for the (much slower) /api/selection-bias/gate call. During
+  // that window there is no entry for this row yet — and a SILENTLY ABSENT chip
+  // is not an honest rendering of "we haven't asked yet": the reader cannot tell
+  // it apart from a strategy the gate genuinely had nothing to say about. Say so.
+  if (!deploy) {
+    if (!gatePending) return null
+    return (
+      <span
+        className="tag tag-muted lib-chip-checking"
+        style={{ fontSize: '0.66rem' }}
+        title="Still loading the live rigor gate for this row — not a verdict"
+      >
+        checking&hellip;
+      </span>
+    )
+  }
   // #1358: a strategy the gate never scored (no persisted backtest data) is
   // NOT the same claim as "fails the rigor gate even at the loosest level" —
   // both used to collapse to min_passing_level == null below. Checked before
@@ -37,8 +58,8 @@ function DeployabilityChip({ deploy, level }) {
   // correctness floor", asserting a measurement that never happened. Checked
   // before blocked_by_floor for exactly the reason pending is: you cannot fail
   // a floor nothing measured you against. Same neutral treatment as pending,
-  // with its own honest sentence (the wording chat_service.py:395 already gives
-  // this state when it hands it to the LLM) rather than borrowing pending's —
+  // with its own honest sentence (the same wording the backend hands the LLM in
+  // agents/portfolio_agent.py `_format_strategies`) rather than borrowing pending's —
   // "not yet evaluated" would be a second false claim, since the data IS here.
   if (deploy.degenerate) {
     return <span className="tag tag-muted" style={{ fontSize: '0.66rem' }} title="DEGENERATE — the persisted return series is zero-variance (broken data or a zero-trade backtest), not a real evaluation">unevaluable</span>
@@ -110,12 +131,12 @@ function statusLabel(status, passesRigor) {
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
-function fmt(v, decimals = 2) {
-  return v != null ? v.toFixed(decimals) : '—'
-}
-function fmtPct(v) {
-  return v != null ? `${(v * 100).toFixed(1)}%` : '—'
-}
+// No local number formatter lives here any more. Every metric this file renders
+// goes through MetricValue / metricDomain.js (#1651): the old `fmt`/`fmtPct`
+// pair had no idea what quantity it was formatting, which is precisely how a
+// stored max_drawdown of 1.303 became a displayed "−130.3%". Re-adding one
+// would give the next cell a way around the domain check —
+// ui/test/metric-domain.test.js fails if either name comes back.
 
 // "2002-01-01" -> Date; null on bad input
 function isoToDate(iso) {
@@ -159,7 +180,7 @@ export function fmtUsd(n, fractionDigits = 0) {
 // + rigor metrics). One row per strategy; no visual hierarchy by status (the
 // STATUS column does that job).
 
-function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level, extraActions }) {
+function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level, gatePending, extraActions }) {
   const [open, setOpen] = useState(isHighlighted)
   const rowRef = useRef(null)
   const years = periodInYears(s.backtest_start, s.backtest_end)
@@ -290,30 +311,35 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
             ) : s.passes_rigor_gate === false && (
               <span role="img" aria-label="Does not pass rigor gate" className="i-lucide-x w-3.5 h-3.5 text-[var(--text-4)]" title="Does not pass rigor gate" />
             )}
-            <DeployabilityChip deploy={deploy} level={level} />
+            <DeployabilityChip deploy={deploy} level={level} gatePending={gatePending} />
           </div>
         </td>
         <td className="mono" style={{ textAlign: 'right' }}>
-          {fmt(s.sharpe_ratio)}
+          {/* Every measured number in this row goes through MetricValue, which
+              is the only formatter that knows each metric's domain and cannot
+              render a value outside it without saying so (#1651). */}
+          <MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library table" />
           {sharpeCI && (
             <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }}>
-              [{fmt(sharpeCI[0])}, {fmt(sharpeCI[1])}]
+              [<MetricValue metric="sharpe_ci_lower" value={sharpeCI[0]} row={s} surface="Library table" />, <MetricValue metric="sharpe_ci_upper" value={sharpeCI[1]} row={s} surface="Library table" />]
             </div>
           )}
           {s.dsr_p_value != null && (
             <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }}>
-              (DSR conf={s.dsr_p_value.toFixed(2)})
+              (DSR conf=<MetricValue metric="dsr_p_value" value={s.dsr_p_value} row={s} surface="Library table" />)
             </div>
           )}
         </td>
-        <td className={`mono ${signClass(s.cagr)}`} style={{ textAlign: 'right' }}>{fmtPct(s.cagr)}</td>
+        <td className={`mono ${signClass(s.cagr)}`} style={{ textAlign: 'right' }}>
+          <MetricValue metric="cagr" value={s.cagr} row={s} surface="Library table" />
+        </td>
         <td className="mono negative" style={{ textAlign: 'right' }}>
-          {s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}
+          <MetricValue metric="max_drawdown" value={s.max_drawdown} row={s} surface="Library table" />
           {/* Same defect: crossing the 0.5 overfitting threshold was signalled
               only by the colour swap to --negative (1.4.1). */}
           {s.pbo_score != null && (
             <div style={{ fontSize: '0.68rem', color: s.pbo_score > 0.5 ? 'var(--negative)' : 'var(--text-4)' }}>
-              (PBO {s.pbo_score.toFixed(2)}{s.pbo_score > 0.5 && <span aria-hidden="true"> ⚠</span>})
+              (PBO <MetricValue metric="pbo_score" value={s.pbo_score} row={s} surface="Library table" />{s.pbo_score > 0.5 && <span aria-hidden="true"> ⚠</span>})
               {s.pbo_score > 0.5 && (
                 <span className="sr-only"> — above the 0.50 overfitting threshold</span>
               )}
@@ -431,13 +457,17 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
             )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            <div><div className="caption">DSR</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.deflated_sharpe_ratio)}</div></div>
-            <div><div className="caption">PBO</div><div className="mono" style={{ fontWeight: 700 }}>{fmtPct(s.pbo_score)}</div></div>
-            <div><div className="caption">OOS Sharpe</div><div className="mono" style={{ fontWeight: 700 }}>{fmt(s.out_of_sample_sharpe)}</div></div>
+            <div><div className="caption">DSR</div><div className="mono" style={{ fontWeight: 700 }}><MetricValue metric="deflated_sharpe_ratio" value={s.deflated_sharpe_ratio} row={s} surface="Library detail" /></div></div>
+            {/* PBO is a probability in [0,1] and this cell renders it as a
+                percentage — the DOMAIN is keyed off the metric, the format is
+                the cell's choice, so the table's "0.62" and this "62.0%" stay
+                two renderings of one bounded quantity. */}
+            <div><div className="caption">PBO</div><div className="mono" style={{ fontWeight: 700 }}><MetricValue metric="pbo_score" value={s.pbo_score} row={s} format="pct" surface="Library detail" /></div></div>
+            <div><div className="caption">OOS Sharpe</div><div className="mono" style={{ fontWeight: 700 }}><MetricValue metric="out_of_sample_sharpe" value={s.out_of_sample_sharpe} row={s} surface="Library detail" /></div></div>
           </div>
           {s.paper_claimed_sharpe != null && (
             <div className="caption mt-2">
-              Paper claim: <strong>{fmt(s.paper_claimed_sharpe)}</strong> · Backtest: <strong>{fmt(s.sharpe_ratio)}</strong>
+              Paper claim: <strong><MetricValue metric="paper_claimed_sharpe" value={s.paper_claimed_sharpe} row={s} surface="Library detail" /></strong> · Backtest: <strong><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library detail" /></strong>
               {/* The pass/fail judgement against the 50% replication threshold
                   used to live in the green/red class alone — "(43%)" and
                   "(97%)" rendered identically to a colourblind reader (1.4.1).
@@ -509,7 +539,7 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
 // this build doesn't generate, so both views rendered simultaneously on
 // desktop and every strategy showed twice. A plain media query has no such
 // build-tool dependency.
-function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level, extraActions }) {
+function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level, gatePending, extraActions }) {
   const [open, setOpen] = useState(isHighlighted)
   const cardRef = useRef(null)
   const years = periodInYears(s.backtest_start, s.backtest_end)
@@ -560,12 +590,12 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
         >
           {statusLabel(s.status, s.passes_rigor_gate)}
         </span>
-        <DeployabilityChip deploy={deploy} level={level} />
+        <DeployabilityChip deploy={deploy} level={level} gatePending={gatePending} />
       </div>
       <div className="lib-card-stats">
-        <div><div className="caption">Sharpe</div><div className="mono">{fmt(s.sharpe_ratio)}</div></div>
-        <div><div className="caption">CAGR</div><div className={`mono ${signClass(s.cagr)}`}>{fmtPct(s.cagr)}</div></div>
-        <div><div className="caption">Max DD</div><div className="mono negative">{s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : '—'}</div></div>
+        <div><div className="caption">Sharpe</div><div className="mono"><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library card" /></div></div>
+        <div><div className="caption">CAGR</div><div className={`mono ${signClass(s.cagr)}`}><MetricValue metric="cagr" value={s.cagr} row={s} surface="Library card" /></div></div>
+        <div><div className="caption">Max DD</div><div className="mono negative"><MetricValue metric="max_drawdown" value={s.max_drawdown} row={s} surface="Library card" /></div></div>
         <div title={genCost.title}><div className="caption">Gen tokens</div><div className={genCost.measured ? 'mono' : 'caption'}>{genCost.label}</div></div>
       </div>
       {open && (
@@ -585,7 +615,39 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
   )
 }
 
-function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigorExplainer, onOpenPassport, deployMap, level, extraActions }) {
+// #1645: what the Library shows while the strategy lists are in flight. The
+// page previously rendered a single "Loading…" caption — 12 characters where a
+// full table was about to be, for as long as the slowest of four calls took.
+// This holds the shape of the content instead, so the wait reads as "arriving"
+// rather than "empty".
+//
+// `aria-hidden` on the bars plus one sibling live region, rather than labelled
+// placeholder rows: a screen-reader user should hear "Loading strategies" once,
+// not six rows of meaningless boxes. The animation is a pure-CSS opacity pulse
+// (App.css, `lib-skeleton-pulse` — flat, no gradient, which App.css forbids
+// file-wide), and the existing `prefers-reduced-motion` block there already
+// disables it for everything inside `.app-site`.
+function StrategyListSkeleton({ rows = 6 }) {
+  return (
+    <div className="lib-skeleton mb-4">
+      <span className="sr-only" role="status" aria-live="polite">
+        Loading strategies…
+      </span>
+      <div className="lib-skeleton-rows" aria-hidden="true">
+        {Array.from({ length: rows }, (_, i) => (
+          <div className="lib-skeleton-row" key={i}>
+            <div className="lib-skeleton-bar lib-skeleton-name" />
+            <div className="lib-skeleton-bar lib-skeleton-meta" />
+            <div className="lib-skeleton-bar lib-skeleton-num" />
+            <div className="lib-skeleton-bar lib-skeleton-num" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigorExplainer, onOpenPassport, deployMap, level, gatePending, extraActions }) {
   if (!strategies.length) return emptyState
   return (
     <>
@@ -628,6 +690,7 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
                 onOpenPassport={onOpenPassport}
                 deploy={deployMap?.[s.id]}
                 level={level}
+                gatePending={gatePending}
                 extraActions={extraActions}
               />
             ))}
@@ -645,6 +708,7 @@ function StrategyTable({ strategies, emptyState, highlightStrategyId, onOpenRigo
             onOpenPassport={onOpenPassport}
             deploy={deployMap?.[s.id]}
             level={level}
+            gatePending={gatePending}
             extraActions={extraActions}
           />
         ))}
@@ -748,12 +812,24 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
   const [gateError, setGateError] = useState('')
   const [publishedError, setPublishedError] = useState('')
   // Per-user rigor strictness (shared with the Passport slider via localStorage).
-  const [level, setLevel] = useRigorStrictness()
+  // Read-only here since #1645: Library renders the chips AT the user's level
+  // but no longer offers the setter — the rigor-strictness card moved off this
+  // page (#1645). The hook still subscribes to the shared listener set, so
+  // changing the level on the Passport re-annotates these rows on the next
+  // render.
+  const [level] = useRigorStrictness()
   // {strategy_id: {min_passing_level, blocked_by_floor, pending, degenerate}} from the live
   // gate — strictness-independent, so we fetch once and re-annotate rows
   // client-side as the slider moves. Curated strategies resolve here; generated
   // ones fall back to their badge boolean (no chip).
   const [deployMap, setDeployMap] = useState({})
+  // #1645: the deployability gate resolves independently of (and much later
+  // than) the strategy lists now, so its in-flight state is its own. True
+  // until /api/selection-bias/gate settles — success or failure.
+  const [gateLoading, setGateLoading] = useState(true)
+  // Monotonic id for the in-flight load(); a superseded run's late response is
+  // discarded rather than allowed to overwrite a newer one. See load().
+  const runIdRef = useRef(0)
   // 'generated' is the first-class tab per product feedback — pushes user
   // toward Generate when empty. Published is a hidden roadmap surface
   // (#1266/#1324) — a ?tab=published deep link must not land there with the
@@ -784,25 +860,55 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
     if (!inGenerated && inExamples) setActiveTab('examples')
   }, [highlightStrategyId, generated, examples])
 
+  // #1645: PROGRESSIVE LOAD. This used to `await Promise.allSettled([...])` and
+  // paint nothing until the SLOWEST of the four calls returned — and the slowest
+  // is structurally `/api/selection-bias/gate`, which recomputes the whole
+  // cohort rigor gate (its own module docstring measures ~8-10s, and it was
+  // returning ALB 504s against prod on 2026-08-31). So a page whose strategy
+  // list had been sitting in the browser for seconds still showed a bare
+  // "Loading…" line, which reads as broken rather than as slow.
+  //
+  // Now each response is applied the moment it settles, and only the two calls
+  // that produce ROWS hold the skeleton up. The gate is an annotation on rows
+  // that are already readable, so it lands late and fills the chips in; while
+  // it is in flight `gatePending` makes every chip say "checking…" rather than
+  // vanish (see DeployabilityChip).
+  //
+  // `runIdRef` discards a superseded run's results: `load` is also the Retry
+  // button's handler, so two runs can now genuinely overlap and an older, slower
+  // response must not overwrite a newer one.
   const load = useCallback(async () => {
+    const runId = ++runIdRef.current
+    const current = () => runIdRef.current === runId
     setLoading(true)
+    setGateLoading(true)
     setLoadError('')
     setGenError('')
     setGateError('')
     setPublishedError('')
-    try {
-      // Published is a hidden roadmap surface (#1266/#1324) — its fetch must
-      // not fire with the flag off, not just its tab stay unclickable.
-      const [seedRes, genRes, gateRes, publishedRes] = await Promise.allSettled([
-        // limit=100 (the backend's max): the endpoint defaults to 20 of the
-        // 34-strategy curated library, alphabetically — which structurally hid
-        // every currently-passing strategy (all sort past row 20). Found in
-        // the 2026-08-30 external product review ("0 of 20 examples pass").
-        apiGet('/api/strategies/?limit=100'),
-        apiGet('/api/strategies/generated'),
-        apiGet('/api/selection-bias/gate'),
-        ROADMAP_SURFACES_ENABLED ? apiGet('/api/marketplace/my-published') : Promise.resolve([]),
-      ])
+    // Published is a hidden roadmap surface (#1266/#1324) — its fetch must
+    // not fire with the flag off, not just its tab stay unclickable.
+    //
+    // limit=100 (the backend's max): the endpoint defaults to 20 of the
+    // 34-strategy curated library, alphabetically — which structurally hid
+    // every currently-passing strategy (all sort past row 20). Found in
+    // the 2026-08-30 external product review ("0 of 20 examples pass").
+    const seedPromise = apiGet('/api/strategies/?limit=100')
+    const genPromise = apiGet('/api/strategies/generated')
+    const gatePromise = apiGet('/api/selection-bias/gate')
+    // Kept on one line deliberately: ui/test/routes.test.js's #1324 guard
+    // anchors on this exact expression, and reformatting it would silently
+    // disarm someone else's regression test rather than break it loudly.
+    const publishedPromise = ROADMAP_SURFACES_ENABLED ? apiGet('/api/marketplace/my-published') : Promise.resolve([])
+
+    const settle = (promise) =>
+      promise.then(
+        (value) => ({ status: 'fulfilled', value }),
+        (reason) => ({ status: 'rejected', reason }),
+      )
+
+    const applySeed = settle(seedPromise).then((seedRes) => {
+      if (!current()) return
       if (seedRes.status === 'fulfilled') {
         const sorted = [...(seedRes.value.strategies || [])].sort(
           (a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status)
@@ -819,6 +925,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       } else {
         setLoadError(seedRes.reason?.message || 'Failed to load examples')
       }
+    })
+
+    const applyGen = settle(genPromise).then((genRes) => {
+      if (!current()) return
       if (genRes.status === 'fulfilled') {
         setGenerated((genRes.value.strategies || []).map(coerceGenerated))
         // Same fulfilled-but-degraded shape as seedRes above (#1356 review
@@ -831,6 +941,10 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       } else {
         setGenError(genRes.reason?.message || 'Failed to load generated strategies')
       }
+    })
+
+    const applyGate = settle(gatePromise).then((gateRes) => {
+      if (!current()) return
       if (gateRes.status === 'fulfilled') {
         const map = {}
         for (const r of gateRes.value.strategies || []) {
@@ -856,14 +970,41 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
       } else {
         setGateError(gateRes.reason?.message || 'Failed to load deployability status')
       }
+    })
+
+    const applyPublished = settle(publishedPromise).then((publishedRes) => {
+      if (!current()) return
       if (publishedRes.status === 'fulfilled') {
         setPublished(Array.isArray(publishedRes.value) ? publishedRes.value : [])
       } else {
         setPublishedError(publishedRes.reason?.message || 'Failed to load published strategies')
       }
+    })
+
+    // The skeleton comes down when there are ROWS to show. The gate is
+    // deliberately NOT in this list — waiting on it is the whole defect.
+    //
+    // Still inside try/finally: the pre-#1645 shape wrapped the whole load in
+    // one, and dropping it would mean a throw anywhere in the three handlers
+    // above (e.g. a 200 whose `strategies` field is not iterable) leaves
+    // `loading` true and the skeleton up forever. Same guarantee, narrower
+    // scope.
+    try {
+      await Promise.all([applySeed, applyGen, applyPublished])
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
+    // Not awaited: the caller (and the Retry button) must not block on the
+    // slowest call. `.catch` matters twice here — a detached promise's throw
+    // would otherwise be an unhandled rejection, AND a malformed gate payload
+    // would strand every chip on "checking…" instead of showing the banner.
+    applyGate
+      .catch((err) => {
+        if (current()) setGateError(err?.message || 'Failed to load deployability status')
+      })
+      .finally(() => {
+        if (current()) setGateLoading(false)
+      })
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -881,9 +1022,16 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
         </p>
       </header>
 
-      <div className="mb-5">
-        <RigorStrictnessControl level={level} onChange={setLevel} />
-      </div>
+      {/* The rigor-strictness card used to sit HERE, above every strategy
+          (#1645). It was a full `card p-5` — heading, explanatory paragraph,
+          1-5 slider, five labelled buttons, a three-metric threshold table and
+          a conditional warning box — between the user and the thing they came
+          to browse. It is not deleted from the product: the same control is
+          mounted on the Strategy Passport
+          (`StrategyPassport.jsx`, "Your strictness"), which is where the level
+          is actually applied to a decision, and `useRigorStrictness` keeps the
+          two in sync through localStorage. `level` is still read here — the
+          DeployabilityChip below annotates every row against it. */}
 
       {/* Real <button>s, not click-only <span>s: activeTab defaults to
           'generated', so a keyboard-only user was permanently pinned to that
@@ -948,7 +1096,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             </div>
           )}
           {loading ? (
-            <div className="caption mb-4">Loading…</div>
+            <StrategyListSkeleton />
           ) : genError ? (
             <div className="info-box warning mb-4">
               Couldn't load generated strategies: {genError}{' '}
@@ -1062,7 +1210,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             rigor-gate verdict looks like. They're also the candidate pool the curated-library
             path of Generate picks and weights from.
           </div>
-          {loading && <div className="caption mb-4">Loading…</div>}
+          {loading && <StrategyListSkeleton />}
           {/* Gated on !loadError, matching the Published branch below (#1356
               review round 2): loadError is set from the seed route's own
               `degraded` flag on a *fulfilled* response (see load() above), so
@@ -1077,6 +1225,15 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               onOpenPassport={openPassport}
               deployMap={deployMap}
               level={level}
+              // Only the EXAMPLES table claims "checking…". /api/selection-bias/gate
+              // iterates the curated provider library
+              // (selection_bias_routes.evaluate_rigor_gate -> _provider().list_strategies()),
+              // so a generated row has no deployMap entry before OR after that call
+              // lands — telling the reader we are "still loading the gate for this
+              // row" would be false for those rows, and the chip would flicker in
+              // and back out on the default tab. Generated rows are covered by the
+              // per-strategy /gate/{id} route on the Passport, not by this one.
+              gatePending={gateLoading && !gateError}
               emptyState={<p className="caption">No example strategies loaded.</p>}
             />
           )}
@@ -1095,7 +1252,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
             Strategies you have published to the on-chain marketplace. Subscribers
             you approve can mirror trades from your vault.
           </div>
-          {loading && <div className="caption mb-4">Loading…</div>}
+          {loading && <StrategyListSkeleton />}
           {!loading && publishedError && (
             <div className="info-box warning mb-4">
               Couldn't load published strategies: {publishedError}{' '}
@@ -1187,7 +1344,7 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               <button
                 type="button"
                 onClick={closeRigorExplainer}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-4)' }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}
                 aria-label="Close"
               >
                 <span className="i-lucide-x" style={{ width: 20, height: 20 }} />

@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../AuthContext'
 import { apiGet } from '../api'
+import MetricValue from './MetricValue'
+import { formatMetric } from '../metricDomain.js'
 
 // Single-user leaderboard (MVP pivot — no publish mechanism exists yet, so
 // ranking a global cohort was incoherent; nobody had opted into competing).
@@ -58,17 +60,15 @@ const REGIMES = [
 
 const MEDAL = { gold: '🥇', silver: '🥈', bronze: '🥉' }
 
+// Residual local formatter for page furniture that is NOT a strategy metric —
+// the StockBench benchmark sentence. Every metric with a declared domain goes
+// through MetricValue / metricDomain.js instead (#1651), so this must never
+// grow a new call site for one. The Number.isFinite guard is the reason it is
+// still allowed to exist at all: `Number(NaN).toFixed(2)` renders the literal
+// string "NaN", which is its own flavour of impossible number on the page.
 function fmt(v, d = 2) {
-  return v != null ? Number(v).toFixed(d) : '—'
-}
-function fmtPct(v, d = 1) {
-  return v != null ? `${(v * 100).toFixed(d)}%` : '—'
-}
-// Signed, so a forward return never reads as a bare magnitude.
-function fmtSignedPct(v, d = 2) {
-  if (v == null) return '—'
-  const pct = v * 100
-  return `${pct >= 0 ? '+' : '−'}${Math.abs(pct).toFixed(d)}%`
+  if (v == null || !Number.isFinite(Number(v))) return '—'
+  return Number(v).toFixed(d)
 }
 
 // ── Provenance labelling ────────────────────────────────────────────────────
@@ -159,7 +159,9 @@ function boardFdrTitle(entry, fdrLevel) {
   if (entry.board_fdr_significant == null) {
     return 'Not corrected: this row has no DSR confidence for the board-level correction to act on.'
   }
-  const adjusted = entry.board_fdr_adjusted_p != null ? ` BH-adjusted p=${fmt(entry.board_fdr_adjusted_p, 3)}.` : ''
+  const adjusted = entry.board_fdr_adjusted_p != null
+    ? ` BH-adjusted p=${formatMetric('board_fdr_adjusted_p', entry.board_fdr_adjusted_p, { row: entry, digits: 3, surface: 'Leaderboard board-FDR title' }).label}.`
+    : ''
   return entry.board_fdr_significant
     ? `Clears the board-level Benjamini–Hochberg correction at ${alpha}.${adjusted} Advisory — it does not change the rigor-gate badge.`
     : `${BOARD_FDR_NOT_DISTINGUISHABLE} (Benjamini–Hochberg, ${alpha}).${adjusted} This does not mean the strategy is unsound — the rigor gate answers that separately.`
@@ -177,7 +179,7 @@ function BoardFdrCell({ entry, fdrLevel }) {
         : <span className="tag-muted">Not distinguishable</span>}
       {entry.board_fdr_adjusted_p != null && (
         <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
-          adj p {fmt(entry.board_fdr_adjusted_p, 3)}
+          adj p <MetricValue metric="board_fdr_adjusted_p" value={entry.board_fdr_adjusted_p} row={entry} digits={3} surface="Leaderboard board-FDR" />
         </div>
       )}
     </span>
@@ -672,29 +674,49 @@ export default function Leaderboard() {
                     </div>
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
-                    <div style={{ fontWeight: 600, color: 'var(--accent)' }}>{fmt(e.conviction_score, 1)}</div>
+                    <div style={{ fontWeight: 600, color: 'var(--accent)' }}>
+                      <MetricValue metric="conviction_score" value={e.conviction_score} row={e} surface="Leaderboard" />
+                    </div>
                     <ScoreBar components={e.score_components} weights={engine?.weights} />
                   </td>
-                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.sharpe_ratio)}</td>
-                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmtPct(e.cagr)}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                    <MetricValue metric="sharpe_ratio" value={e.sharpe_ratio} row={e} surface="Leaderboard" />
+                  </td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                    <MetricValue metric="cagr" value={e.cagr} row={e} surface="Leaderboard" />
+                  </td>
+                  {/* The Math.abs() that used to sit here was a second way to
+                      render an impossible drawdown: a SIGNED value of −0.20 —
+                      the wire contract says positive fraction — came out as
+                      "−20.0%", a plausible-looking number manufactured from a
+                      contract violation. MetricValue clamps it to the 0 bound
+                      and says the reported figure was out of range (#1651). */}
                   <td style={{ padding: '10px', whiteSpace: 'nowrap', color: 'var(--negative)' }}>
-                    {e.max_drawdown != null ? `−${fmtPct(Math.abs(e.max_drawdown))}` : '—'}
+                    <MetricValue metric="max_drawdown" value={e.max_drawdown} row={e} surface="Leaderboard" />
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     {rigorBadge(e)}
                     {(e.dsr_p_value != null || e.pbo_score != null || e.out_of_sample_sharpe != null) && (
                       <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }} title="DSR confidence (0–1, higher is better): probability the Sharpe survives deflation/multiple-testing. Not a classical p-value. OOS = out-of-sample Sharpe.">
                         {[
-                          e.dsr_p_value != null && `DSR conf=${fmt(e.dsr_p_value)}`,
-                          e.pbo_score != null && `PBO ${fmt(e.pbo_score)}`,
-                          e.out_of_sample_sharpe != null && `OOS ${fmt(e.out_of_sample_sharpe)}`,
+                          e.dsr_p_value != null && (
+                            <span key="dsr">DSR conf=<MetricValue metric="dsr_p_value" value={e.dsr_p_value} row={e} surface="Leaderboard" /></span>
+                          ),
+                          e.pbo_score != null && (
+                            <span key="pbo">PBO <MetricValue metric="pbo_score" value={e.pbo_score} row={e} surface="Leaderboard" /></span>
+                          ),
+                          e.out_of_sample_sharpe != null && (
+                            <span key="oos">OOS <MetricValue metric="out_of_sample_sharpe" value={e.out_of_sample_sharpe} row={e} surface="Leaderboard" /></span>
+                          ),
                         ]
                           .filter(Boolean)
-                          .join(' · ')}
+                          .flatMap((node, i) => (i === 0 ? [node] : [<span key={`sep-${i}`}> · </span>, node]))}
                       </div>
                     )}
                   </td>
-                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{fmt(e.deflated_sharpe_ratio)}</td>
+                  <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                    <MetricValue metric="deflated_sharpe_ratio" value={e.deflated_sharpe_ratio} row={e} surface="Leaderboard" />
+                  </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     <BoardFdrCell entry={e} fdrLevel={boardFdr?.fdr_level} />
                   </td>
@@ -810,7 +832,7 @@ export default function Leaderboard() {
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                     <div style={{ fontWeight: 600, color: row.cumulative_return >= 0 ? 'var(--accent)' : 'var(--negative)' }}>
-                      {fmtSignedPct(row.cumulative_return)}
+                      <MetricValue metric="cumulative_return" value={row.cumulative_return} row={row} surface="Leaderboard live" />
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-3)' }}>realised, not annualised</div>
                   </td>

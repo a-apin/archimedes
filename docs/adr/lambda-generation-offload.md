@@ -393,10 +393,14 @@ Why:
 
 ## Consequences
 
-- Two new modules exist and nothing calls them. `run_generation_job.py` has no importer in
-  the serving path; `generation_cost_model.py` is not referenced by `generation_payment`.
-  The flat `GENERATION_PRICE_USD` is untouched and remains the default; no payment flag
-  changed.
+- Two new modules exist and neither is on a payment path. `run_generation_job.py` has no
+  importer in the serving path; `generation_cost_model.py` is still not referenced by
+  `generation_payment`. The flat `GENERATION_PRICE_USD` is untouched and remains the
+  default; no payment flag changed.
+  **Update (2026-08-31, #1217):** `generation_cost_model.py` now has one reader —
+  `services/generation_cost_rollup.py`, which aggregates its estimates for the admin-only
+  `GET /api/metrics/private/cost` dashboard. That is a report, not a charge: the quote seam
+  is untouched and the customer price is still flat.
 - The entrypoint is lane-agnostic on purpose. Whichever lane wins — Lambda, `RunTask`, or
   a worker process — it is a deployment decision on top of the same function, not a fork
   of the pipeline.
