@@ -219,7 +219,10 @@ class TestRewritePinsBackendStartPeriod:
     def test_live_start_period_30_is_overwritten_command_kept(self):
         """The live cloned shape: healthCheck exists, startPeriod is 30."""
         task_def = _last_good_task_def()
-        custom_cmd = ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1"]
+        custom_cmd = [
+            "CMD-SHELL",
+            "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")' || exit 1",
+        ]
         for container in task_def["containerDefinitions"]:
             if container["name"] == "backend":
                 container["healthCheck"] = {

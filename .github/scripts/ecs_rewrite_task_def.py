@@ -49,7 +49,7 @@ BACKEND_CONTAINER = "backend"
 BACKEND_HEALTHCHECK_START_PERIOD = 90
 BACKEND_HEALTHCHECK_COMMAND = [
     "CMD-SHELL",
-    'python -c "import urllib.request; urllib.request.urlopen(\'http://localhost:8000/health\')" || exit 1',
+    "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1",
 ]
 BACKEND_HEALTHCHECK_INTERVAL = 30
 BACKEND_HEALTHCHECK_TIMEOUT = 5
