@@ -4,15 +4,22 @@ Same decision core as a vault, different ends: positions are the fold of an
 append-only agent-trade ledger instead of an on-chain read, and "execution" is
 appending to that ledger instead of submitting a swap.
 
-WHAT THIS VALIDATES, PRECISELY. The vault mechanic is *signal FSM → aggregated
-target weights → diff against current positions → executed trades →
-bookkeeping*. Every link of that chain runs here, on the SAME code the vault
-path runs, against a real deployment, with no chain and no money. That is the
-whole reason the paper venue exists: with zero vaults deployed, this chain had
-no way to be exercised at all.
+WHAT THIS RUNS, PRECISELY. The execution engine's chain is *signal FSM →
+aggregated target weights → diff against current positions → executed trades →
+bookkeeping*. Every link of that chain runs here, on the one decision core,
+against a real deployment, with no chain and no money. That is the whole
+reason the paper venue exists: it is where the execution engine is deployed
+and exercised as a product surface in its own right.
 
 WHAT THIS IS NOT.
 
+  * It is not vault validation, and was never intended to be. Two of the vault
+    mechanic's behaviors structurally cannot fire here: this book never marks
+    to market between ticks, so drift can only come from a signal change,
+    never a price move — the price-drift half of a live rebalance is untested
+    by construction; and paper always runs ``regime=None``, so
+    regime-conditioned sizing never exercises a healthy detector. When the
+    chain venue ships, it validates those on its own risk budget.
   * It is not the track record. ``paper_daily_returns`` stays the append-only
     ledger produced by the graded replay, and this venue never writes to it.
   * It is not a valuation. ``paper_marks`` stays the mark-to-market surface,

@@ -12,11 +12,16 @@ resulting trades are sent. This package draws that line explicitly.
   ``paper_venue`` ``PaperVenue`` — the same decision, executed against a paper
                   deployment's own append-only agent-trade ledger.
 
-WHY THIS EXISTS. Zero vaults are deployed, so the vault feature's most-MVP
-piece — the agent's signal→target-weights→rebalance loop — ran against nothing
-and got no validation. Meanwhile paper deployments were advanced by a replay
-that exercises none of that loop. Pointing the same decision core at a paper
-venue validates the vault mechanic end to end with zero chain risk.
+WHY THIS EXISTS. Archimedes is two engines: a strategy GENERATION engine (the
+debate society behind the rigor gate) and a strategy EXECUTION engine — the
+agent's signal → target-weights → rebalance loop. Paper trading is where the
+execution engine deploys and runs for real: same decision core, real
+deployments, an append-only trade ledger, no chain and no money. It is the
+execution engine's product surface, not a rehearsal for something else.
+Vaults are roadmap; when the chain venue goes live it becomes a second venue
+behind the same protocol and gets its own validation on its own risk budget.
+Paper trading is not, and was never intended to be, vault validation — a green
+paper run proves the execution engine, not the vault mechanic.
 
 WHAT THIS DELIBERATELY DOES NOT DO (#1410 anti-goals, all three):
 

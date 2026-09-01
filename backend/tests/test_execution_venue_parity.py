@@ -44,7 +44,6 @@ from archimedes.execution.venue import ChainVenue, ExecutionVenue
 # Base.metadata before `redirect_to_tmp_sqlite` runs create_all — without it
 # whether `paper_agent_trades` exists depends on which test file imported the
 # module first (the import-order roulette db_isolation exists to remove).
-from archimedes.models import paper_store  # noqa: F401
 from archimedes.models.paper_store import PaperAgentTrade, PaperDeployment
 from archimedes.models.portfolio import Portfolio, PortfolioHolding, TradeDirection, TradeOrder
 from archimedes.services.portfolio_constructor import PortfolioConstructor
