@@ -9539,6 +9539,8 @@ body:has(.public-site) {
 
 	.consent-banner__panel {
 		padding: 1rem 1rem 1.25rem;
+	}
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
    #1642 — Generate page: mobile-first layout + Surprise Me
