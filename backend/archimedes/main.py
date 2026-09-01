@@ -607,11 +607,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             _logger.info("startup: backtest refresh scheduler armed")
             # Paper-trading ledgers advance on the same cadence family: one
             # appended bar per deployment per day, replayed on the graded
-            # engine (services/paper_trading.py). Same RUF006 reference rule.
-            from archimedes.services.paper_trading import paper_advance_loop
+            # engine (services/paper_trading.py). MUST NOT be
+            # create_task(paper_advance_loop()) in this process — a C abort
+            # in psycopg2/web3 on that tick (#1632) kills the interpreter
+            # that serves /health. Isolation is arm_paper_advance_for_web_tier:
+            # spawn a child, or refuse. Same RUF006 reference rule.
+            from archimedes.services.paper_trading import arm_paper_advance_for_web_tier
 
-            _app.state.paper_advance_task = asyncio.create_task(paper_advance_loop())
-            _logger.info("startup: paper-trading advance scheduler armed")
+            _app.state.paper_advance_task = asyncio.create_task(arm_paper_advance_for_web_tier())
+            _logger.info("startup: paper-trading advance scheduler armed (isolated child; in-process loop refused)")
             # Trace coverage is a claim the product makes ("auditable reasoning
             # behind every move"), so publishing being off is announced once at
             # boot rather than only discovered per-deployment (#1575 §7).
