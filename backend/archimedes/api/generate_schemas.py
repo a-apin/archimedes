@@ -27,7 +27,8 @@ from pydantic import BaseModel, Field, field_validator
 # independently and asserts equality — raising the cap on one side without
 # the other fails that test.
 _MAX_PAPERS_FLOOR = 2  # == archimedes.agents.strategy_fusion.MIN_PAPERS
-_MAX_PAPERS_CEILING = 6  # == archimedes.agents.strategy_fusion.FUSION_MAX_PAPERS
+_MAX_PAPERS_CEILING = 30  # == archimedes.agents.strategy_fusion.FUSION_MAX_PAPERS
+_MAX_PAPERS_DEFAULT = 8  # == archimedes.agents.strategy_fusion.DEFAULT_MAX_PAPERS
 
 # User-chosen strategy name limits. Whitespace is collapsed BEFORE these
 # checks, so \t/\n arriving in a paste are normalized rather than rejected;
@@ -45,15 +46,18 @@ class GenerateBrief(BaseModel):
     asset_classes: list[str] | None = None
     capital_usdc: float | None = None
     max_papers: int = Field(
-        default=5,
+        default=_MAX_PAPERS_DEFAULT,
         ge=_MAX_PAPERS_FLOOR,
         le=_MAX_PAPERS_CEILING,
         description=(
-            f"How many papers the fusion pipeline considers. Bounded to "
-            f"[{_MAX_PAPERS_FLOOR}, {_MAX_PAPERS_CEILING}] — "
+            f"How many papers the pipeline RETRIEVES and shows the model. "
+            f"Bounded to [{_MAX_PAPERS_FLOOR}, {_MAX_PAPERS_CEILING}] — "
             "strategy_fusion.py's MIN_PAPERS/FUSION_MAX_PAPERS, the range the "
             "pipeline actually enforces (a token + cross-paper-coherence "
-            "budget), not a wider nominal cap it would silently clamp anyway."
+            "budget), not a wider nominal cap it would silently clamp anyway. "
+            "This is retrieval WIDTH, not a citation quota: how many the model "
+            "is asked to fuse is strategy_fusion.FUSE_TARGET_MIN, and a "
+            "justified shortfall against it is accepted, never blocked."
         ),
     )
     name: str | None = Field(

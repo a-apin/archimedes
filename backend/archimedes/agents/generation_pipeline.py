@@ -431,6 +431,15 @@ class _CandidateResult:
     # is no debate on those paths, so there is nothing to attach. Read by
     # ``_persist_debate_transcripts`` below; never touches ``_HASH_FIELDS``.
     debate_transcript: list[dict[str, Any]] | None = None
+    # (#1636) The deterministic per-paper tally derived from that transcript —
+    # ``[{arxiv_id, title, cited_by, citations, discarded_by, discard_reasons,
+    # verdict}]`` over every paper that entered a proposer prompt. Computed by
+    # ``debate_engine._aggregate_paper_verdicts`` (0 tokens) and stamped onto
+    # every entry, same as the transcript. ``None`` on every non-debate path.
+    # NOT persisted: the transcript table's column holds the turn list and this
+    # issue explicitly carries no migration, so today this is an in-process +
+    # SSE-visible record only. Durable storage is follow-up work.
+    debate_paper_verdicts: list[dict[str, Any]] | None = None
 
 
 def _is_deployable(c: _CandidateResult) -> bool:
