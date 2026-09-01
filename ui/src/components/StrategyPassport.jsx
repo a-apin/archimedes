@@ -5,6 +5,7 @@ import { passportBackPage, passportBackLabel } from "../routes.js";
 import RigorStrictnessControl, { levelLabel } from "./RigorStrictnessControl";
 import { apiGet, apiPostWithMeta } from "../api";
 import StrategyReasoning from "./StrategyReasoning";
+import MetricValue from "./MetricValue";
 import { useRigorStrictness, BADGE_LEVEL } from "../hooks/useRigorStrictness";
 import {
 	NOT_MEASURED,
@@ -36,15 +37,9 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 // Reachable from: Library row title click (deep-link), Reasoning trace
 // "→ Strategy in Library" follow-back, FusionResult "Open in Library →" CTA.
 
-function fmt(v, digits = 2) {
-	if (v == null || !Number.isFinite(v)) return "—";
-	return Number(v).toFixed(digits);
-}
-
-function fmtPct(v) {
-	if (v == null || !Number.isFinite(v)) return "—";
-	return `${(Number(v) * 100).toFixed(1)}%`;
-}
+// No local number formatter lives here any more. Every metric this file renders
+// goes through MetricValue / metricDomain.js (#1651) — see the note in
+// Strategies.jsx; ui/test/metric-domain.test.js fails if `fmt`/`fmtPct` return.
 
 // ── Source-papers table (#1646) ────────────────────────────────────────────
 //
@@ -777,7 +772,14 @@ export default function StrategyPassport({
 										<div className="caption text-[var(--text-4)]">
 											Kelly fraction
 										</div>
-										<div className="body mono">{fmt(s.kelly_fraction)}</div>
+										<div className="body mono">
+											<MetricValue
+												metric="kelly_fraction"
+												value={s.kelly_fraction}
+												row={s}
+												surface="Passport"
+											/>
+										</div>
 									</div>
 								)}
 							</div>
@@ -817,30 +819,119 @@ export default function StrategyPassport({
 							</div>
 						)}
 						<div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+							{/* Every cell below goes through MetricValue so the passport
+							    cannot render a number outside its metric's domain without
+							    saying so, and an empty cell carries a reason rather than a
+							    bare em-dash (#1651). */}
 							<Metric
 								label="Sharpe"
-								value={fmt(s.sharpe_ratio)}
+								value={
+									<MetricValue
+										metric="sharpe_ratio"
+										value={s.sharpe_ratio}
+										row={s}
+										surface="Passport"
+									/>
+								}
 								hint={
-									s.sharpe_ci_lower != null && s.sharpe_ci_upper != null
-										? `[${fmt(s.sharpe_ci_lower)}, ${fmt(s.sharpe_ci_upper)}]`
-										: null
+									s.sharpe_ci_lower != null && s.sharpe_ci_upper != null ? (
+										<>
+											[
+											<MetricValue
+												metric="sharpe_ci_lower"
+												value={s.sharpe_ci_lower}
+												row={s}
+												surface="Passport"
+											/>
+											,{" "}
+											<MetricValue
+												metric="sharpe_ci_upper"
+												value={s.sharpe_ci_upper}
+												row={s}
+												surface="Passport"
+											/>
+											]
+										</>
+									) : null
 								}
 							/>
-							<Metric label="CAGR" value={fmtPct(s.cagr)} />
+							<Metric
+								label="CAGR"
+								value={
+									<MetricValue
+										metric="cagr"
+										value={s.cagr}
+										row={s}
+										surface="Passport"
+									/>
+								}
+							/>
 							<Metric
 								label="Max DD"
 								value={
-									s.max_drawdown != null ? `−${fmtPct(s.max_drawdown)}` : "—"
+									<MetricValue
+										metric="max_drawdown"
+										value={s.max_drawdown}
+										row={s}
+										surface="Passport"
+									/>
 								}
 							/>
-							<Metric label="Calmar" value={fmt(s.calmar_ratio)} />
-							<Metric label="Sortino" value={fmt(s.sortino_ratio)} />
-							<Metric label="Win rate" value={fmtPct(s.win_rate)} />
+							<Metric
+								label="Calmar"
+								value={
+									<MetricValue
+										metric="calmar_ratio"
+										value={s.calmar_ratio}
+										row={s}
+										surface="Passport"
+									/>
+								}
+							/>
+							<Metric
+								label="Sortino"
+								value={
+									<MetricValue
+										metric="sortino_ratio"
+										value={s.sortino_ratio}
+										row={s}
+										surface="Passport"
+									/>
+								}
+							/>
+							<Metric
+								label="Win rate"
+								value={
+									<MetricValue
+										metric="win_rate"
+										value={s.win_rate}
+										row={s}
+										surface="Passport"
+									/>
+								}
+							/>
 							<Metric
 								label="Trades"
-								value={s.total_trades != null ? s.total_trades : "—"}
+								value={
+									<MetricValue
+										metric="total_trades"
+										value={s.total_trades}
+										row={s}
+										surface="Passport"
+									/>
+								}
 							/>
-							<Metric label="ρ to SPY" value={fmt(s.correlation_to_spy)} />
+							<Metric
+								label="ρ to SPY"
+								value={
+									<MetricValue
+										metric="correlation_to_spy"
+										value={s.correlation_to_spy}
+										row={s}
+										surface="Passport"
+									/>
+								}
+							/>
 						</div>
 						{(s.backtest_start || s.backtest_end) && (
 							<div className="caption mt-3 text-[var(--text-3)]">
@@ -854,8 +945,23 @@ export default function StrategyPassport({
 						{s.paper_claimed_sharpe != null && (
 							<div className="caption mt-2">
 								Paper-claimed Sharpe:{" "}
-								<strong>{fmt(s.paper_claimed_sharpe)}</strong> · realized:{" "}
-								<strong>{fmt(s.sharpe_ratio)}</strong>{" "}
+								<strong>
+									<MetricValue
+										metric="paper_claimed_sharpe"
+										value={s.paper_claimed_sharpe}
+										row={s}
+										surface="Passport"
+									/>
+								</strong>{" "}
+								· realized:{" "}
+								<strong>
+									<MetricValue
+										metric="sharpe_ratio"
+										value={s.sharpe_ratio}
+										row={s}
+										surface="Passport"
+									/>
+								</strong>{" "}
 								{s.sharpe_ratio != null &&
 									(() => {
 										const ratio =
@@ -937,16 +1043,32 @@ export default function StrategyPassport({
 						<div className="grid grid-cols-2 md:grid-cols-4 gap-3">
 							<Metric
 								label="DSR"
-								value={fmt(s.deflated_sharpe_ratio)}
+								value={
+									<MetricValue
+										metric="deflated_sharpe_ratio"
+										value={s.deflated_sharpe_ratio}
+										row={s}
+										surface="Passport rigor"
+									/>
+								}
 								hint={
 									// Despite the wire field's legacy name (dsr_p_value), higher
 									// is better here — a confidence, not a classical significance
 									// statistic where lower is better (leaderboard_schemas.py).
 									// "p = 0.93" reads as catastrophic to a reader expecting the
 									// classical convention; it is in fact the passing case (#1358).
-									s.dsr_p_value != null
-										? `confidence = ${fmt(s.dsr_p_value, 3)}`
-										: null
+									s.dsr_p_value != null ? (
+										<>
+											confidence ={" "}
+											<MetricValue
+												metric="dsr_p_value"
+												value={s.dsr_p_value}
+												row={s}
+												digits={3}
+												surface="Passport rigor"
+											/>
+										</>
+									) : null
 								}
 							/>
 							{/* PBO of exactly 0 paired with missing DSR/OOS is almost always a
@@ -955,19 +1077,47 @@ export default function StrategyPassport({
 							<Metric
 								label="PBO"
 								value={
-									s.pbo_score == null ||
-									(s.pbo_score === 0 &&
-										s.deflated_sharpe_ratio == null &&
-										s.out_of_sample_sharpe == null)
-										? "—"
-										: fmtPct(s.pbo_score)
+									<MetricValue
+										metric="pbo_score"
+										// The placeholder case above is expressed by handing
+										// MetricValue a null, so the cell picks up the SAME
+										// pending/degenerate reason every other empty cell on
+										// this page gets instead of a bare em-dash (#1651).
+										value={
+											s.pbo_score === 0 &&
+											s.deflated_sharpe_ratio == null &&
+											s.out_of_sample_sharpe == null
+												? null
+												: s.pbo_score
+										}
+										row={s}
+										format="pct"
+										surface="Passport rigor"
+									/>
 								}
 								hint="lower = less overfit"
 							/>
-							<Metric label="OOS Sharpe" value={fmt(s.out_of_sample_sharpe)} />
+							<Metric
+								label="OOS Sharpe"
+								value={
+									<MetricValue
+										metric="out_of_sample_sharpe"
+										value={s.out_of_sample_sharpe}
+										row={s}
+										surface="Passport rigor"
+									/>
+								}
+							/>
 							<Metric
 								label="Trades"
-								value={s.total_trades != null ? s.total_trades : "—"}
+								value={
+									<MetricValue
+										metric="total_trades"
+										value={s.total_trades}
+										row={s}
+										surface="Passport rigor"
+									/>
+								}
 								hint="executed in backtest"
 							/>
 						</div>

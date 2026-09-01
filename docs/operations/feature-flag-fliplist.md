@@ -127,7 +127,8 @@ require them.
 | `GENERATION_PAYMENT_RECIPIENT` | required config | Terraform variable (#1414). Flag-on with no recipient is a deliberate 503, never a free pass. |
 | `GENERATION_DAILY_CAP_PER_USER` / `_PER_IP` | tunable | `100` / `200` in `infra/ecs.tf`. Both layers must pass; `<= 0` disables a layer. |
 | `PUBLIC_TRACE_VAULTS` | allowlist | Terraform variable. Unarmed, every unowned trace is house-public; arming it narrows visibility. Reader: [`services/trace_visibility.py`](../../backend/archimedes/services/trace_visibility.py). |
-| `PLATFORM_ADMIN_WALLETS` | allowlist | Terraform variable. Gates `/api/metrics/private/*`. **Drift gotcha:** re-pass `TF_VAR_platform_admin_wallets` on every apply or it silently empties. |
+| `PLATFORM_ADMIN_WALLETS` | allowlist | Terraform variable. Gates `/api/metrics/private/*` — as of #1648 as EVIDENCE: an account is admin when any of its OWN linked wallets is listed, not when the request's `X-Wallet-Address` header names one. **Drift gotcha:** re-pass `TF_VAR_platform_admin_wallets` on every apply or it silently empties. |
+| `PLATFORM_ADMIN_ACCOUNTS` | allowlist | Terraform variable (#1648). The account-keyed half of the same gate: canonical `auth_users.id` values and/or emails. Answered with no database read, so it is the break-glass while the datastore is down. Derive it from the wallet list with `backend/scripts/derive_platform_admin_accounts.py`. **Same drift gotcha** as the wallet list. |
 | `PUBLIC_DOMAIN` | environment discriminator | Set = production. Used as the production switch by the docs gate and the SIWE cookie policy — not a flag, but it changes behaviour like one. |
 | `APP_ENV` | environment discriminator | Feeds `FEATURE_QUANT`'s production default. |
 | `TESTING` | test harness | Forces hermetic paths (fixture pipeline, `refresh_enabled()` off). Never set in a deployed environment. |

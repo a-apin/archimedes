@@ -43,6 +43,10 @@ def _mock_store(owner_wallet: str | None):
     )
     store.update_status = AsyncMock()
     store.push_event = AsyncMock()
+    # The durable cross-process cancel flag (#1667) — cancel_job now refuses to
+    # report "cancelled" until this write is confirmed. Behaviour when it is
+    # NOT confirmed is covered in test_generate_cancel_cross_process.py.
+    store.request_cancel = AsyncMock(return_value=True)
     return store
 
 

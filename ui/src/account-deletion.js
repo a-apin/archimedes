@@ -27,6 +27,7 @@
 // privacy: it is where the Fernet-encrypted contact email lives.
 export const DELETION_ERASED = [
   { table: 'auth_sessions', label: 'every signed-in session, on every device' },
+  { table: 'api_keys', label: 'every API key minted for this account — revoked and erased; any script still holding one gets 401 on its next call' },
   { table: 'auth_accounts', label: 'your sign-in methods — the password itself, and any linked Google or GitHub' },
   { table: 'linked_wallets', label: 'your wallet links (the account↔wallet binding here, never anything on-chain)' },
   { table: 'wallet_link_challenges', label: 'any wallet-link challenge still outstanding' },

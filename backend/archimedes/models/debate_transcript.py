@@ -71,14 +71,43 @@ def sanitize_debate_text(text: str) -> str:
     return out
 
 
+#: Keys inside a structured (dict-shaped) claim or discard whose values are
+#: model-written prose and must therefore be scrubbed. ``arxiv_ids`` /
+#: ``candidate_id`` are id vocabulary the engine already validated against the
+#: evidence set — scrubbing them would corrupt provenance, not protect it.
+_SCRUBBED_CLAIM_KEYS = ("claim", "reason", "text")
+
+
+def _sanitize_claim(claim: Any) -> Any:
+    """Scrub one claim in EITHER shape (#1636).
+
+    Claims used to be plain strings. Since the debate carries paper
+    attribution they are ``{"claim", "candidate_id", "arxiv_ids"}`` dicts —
+    and the old ``isinstance(c, str)`` guard let every one of those through
+    **unscrubbed**, i.e. the exact jargon-leak path the write-time sanitizer
+    exists to close, re-opened by a shape change. Both shapes are handled;
+    anything else passes through untouched.
+    """
+    if isinstance(claim, str):
+        return sanitize_debate_text(claim)
+    if isinstance(claim, dict):
+        out = dict(claim)
+        for key in _SCRUBBED_CLAIM_KEYS:
+            if isinstance(out.get(key), str):
+                out[key] = sanitize_debate_text(out[key])
+        return out
+    return claim
+
+
 def sanitize_transcript(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply :func:`sanitize_debate_text` to every string field of every turn.
 
-    Only the two fields ``_debate_round`` actually emits per turn — ``verdict``
-    (a string) and ``claims`` (a list of strings) — are scrubbed; everything
-    else on a turn dict (``role``, ``round``) passes through untouched. A
-    non-dict entry is dropped rather than raising, matching the "best-effort,
-    never gates" posture of the debate round itself.
+    Scrubs the fields ``_debate_round`` emits per turn — ``verdict`` (a
+    string), ``claims`` (strings **or** ``{claim, candidate_id, arxiv_ids}``
+    dicts) and ``discard`` (``{arxiv_id, reason}`` dicts) — while ``role`` /
+    ``round`` and the validated arXiv ids pass through untouched. A non-dict
+    entry is dropped rather than raising, matching the "best-effort, never
+    gates" posture of the debate round itself.
     """
     sanitized: list[dict[str, Any]] = []
     for turn in transcript:
@@ -88,9 +117,10 @@ def sanitize_transcript(transcript: list[dict[str, Any]]) -> list[dict[str, Any]
         verdict = new_turn.get("verdict")
         if isinstance(verdict, str):
             new_turn["verdict"] = sanitize_debate_text(verdict)
-        claims = new_turn.get("claims")
-        if isinstance(claims, list):
-            new_turn["claims"] = [sanitize_debate_text(c) if isinstance(c, str) else c for c in claims]
+        for key in ("claims", "discard"):
+            value = new_turn.get(key)
+            if isinstance(value, list):
+                new_turn[key] = [_sanitize_claim(c) for c in value]
         sanitized.append(new_turn)
     return sanitized
 
