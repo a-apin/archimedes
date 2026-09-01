@@ -721,6 +721,18 @@ function PublicFooter() {
 				</nav>
 				<nav aria-label="Resource links">
 					<strong>Resources</strong>
+					{/* docs.archimedes-arc.com — our own S3 + CloudFront, not GitHub
+					    Pages (#1634). The trailing slash is load-bearing: the docs
+					    site uses mkdocs directory URLs, and the CloudFront function
+					    in docs-site/infra/main.tf 301s the slashless form. Guarded by
+					    ui/test/docs-link.test.js. */}
+					<a
+						href="https://docs.archimedes-arc.com/"
+						target="_blank"
+						rel="noreferrer"
+					>
+						Docs
+					</a>
 					<a href="/llms.txt">Agent API</a>
 					<a href="/.well-known/agent.json">Agent manifest</a>
 					<a

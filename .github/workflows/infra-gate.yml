@@ -41,11 +41,18 @@
 #   Verified locally with a scrubbed environment (`env -i`, no AWS_* at all):
 #   both roots return "Success! The configuration is valid." — see PR #1483.
 #
-# TWO TERRAFORM ROOTS, not one. `git ls-files '*.tf'` finds 20 files under
-# `infra/` and one under `company-site/infra/` (a deliberately standalone stack:
-# its own state key, aws provider ~> 6.0 vs the product root's ~> 5.0). They
-# cannot share a `.terraform/` directory, so they are a matrix rather than one
-# job. Covering only `infra/` would leave the workflow's own name a half-truth.
+# THREE TERRAFORM ROOTS, not one. `git ls-files '*.tf'` finds 20 files under
+# `infra/`, one under `company-site/infra/`, and one under `docs-site/infra/`.
+# The latter two are deliberately standalone stacks: their own state keys, aws
+# provider ~> 6.0 vs the product root's ~> 5.0. They cannot share a
+# `.terraform/` directory, so they are a matrix rather than one job. Covering
+# only `infra/` would leave the workflow's own name a half-truth.
+#
+# A new root must be added in BOTH places below — the `paths:` filter and the
+# `matrix.dir` list. Adding it to the matrix alone gives a job that never
+# fires on the PR that breaks it; adding it to `paths:` alone runs the two
+# existing roots and reports green on a root nobody parsed. That pairing is
+# asserted by backend/tests/test_docs_site.py::test_infra_gate_covers_the_docs_site_root.
 
 name: infra-gate
 
@@ -54,6 +61,7 @@ on:
     paths:
       - "infra/**"
       - "company-site/infra/**"
+      - "docs-site/infra/**"
       - ".github/workflows/infra-gate.yml"
 
 # Mirrors docs-gate.yml: two runs racing on successive pushes to one branch are
@@ -79,12 +87,13 @@ jobs:
     name: Infra — terraform fmt + validate (${{ matrix.dir }})
     runs-on: ubuntu-latest
     strategy:
-      # Both roots always report, so one broken root cannot mask the other.
+      # Every root always reports, so one broken root cannot mask another.
       fail-fast: false
       matrix:
         dir:
           - infra
           - company-site/infra
+          - docs-site/infra
     steps:
       # No `submodules:` — deliberate. No .tf file references a submodule path,
       # so cloning them would cost minutes for zero signal.
