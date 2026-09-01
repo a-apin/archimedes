@@ -929,7 +929,15 @@ jobs:
           # anything else, something other than this commit is serving.
           EXPECTED_VERSION: ${{ github.sha }}
         run: |
-          set -uo pipefail
+          # `set +e` is load-bearing: GitHub runs `run:` under `bash -e`, and
+          # `sample="$(curl ...)"` is an assignment whose exit status IS curl's.
+          # With -e in force a single timed-out sample (curl exit 28) aborted
+          # this whole step before `rc=$?` ran and before a single
+          # `probe N/10` line was printed — the 2026-09-01 run 33553292497 went
+          # red that way with the rollout COMPLETED; the step never got to
+          # measure whether the app was answering. Every failure below is
+          # handled explicitly through `fail`; nothing here may rely on -e.
+          set +e -uo pipefail
 
           PROBES=10
           REQUIRED_STREAK=5
