@@ -37,6 +37,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 # Imported at module top: generation_pipeline does NOT import this module at top
@@ -87,6 +89,60 @@ _CONFORMANT_INDICATORS = set(SUPPORTED_INDICATORS)
 
 # DSL price operands (not indicator aliases) — excluded from the conformance scan.
 _PRICE_OPERANDS = {"close", "open", "high", "low", "volume"}
+
+# ── Backtest fan-out pool (bounded, dedicated) ────────────────────────────────
+#
+# C-rigor backtests EVERY pooled survivor, so the fan-out is up to `_pool_max()`
+# (default 10) concurrent `cerebro.run()` calls. backtrader is pure Python and
+# therefore GIL-bound: those are not "waiting on IO" threads, they are N runnable
+# CPU threads contending with the uvicorn event loop's own thread on a task that
+# has 1-2 vCPU. Ten of them do not make the cohort ~10x faster; they make every
+# concurrently-served request wait behind GIL handoffs.
+#
+# They also used to run on the *default* executor (`asyncio.to_thread`), which is
+# the same pool `asset_market_service`, `traces_routes`, `chat_routes`,
+# `portfolio_routes` and `strategies_routes` block on. A pool whose CPython
+# default width is `min(32, os.cpu_count() + 4)` — 5 or 6 on the prod task — was
+# fully occupied by one generation's backtests, so unrelated routes queued behind
+# them. `GENERATION_MAX_CONCURRENT` (generate_routes.py) caps *pipelines*, not
+# *threads*, so it never bounded this.
+#
+# A dedicated, named, small pool fixes both halves: the CPU-bound work is capped
+# independently of how wide the pool is, and it can no longer starve the default
+# pool that serving depends on. Same motivation as the `torch.set_num_threads(1)`
+# guardrail in services/paper_rag.py (2026-07-04 reranker-starvation incident).
+_BACKTEST_POOL_HARD_MAX = 2
+_backtest_executor_lock = threading.Lock()
+_backtest_executor_instance: ThreadPoolExecutor | None = None
+
+
+def _backtest_max_workers() -> int:
+    """``DEBATE_BACKTEST_WORKERS`` clamped to ``[1, 2]`` (default 2).
+
+    The clamp is the point: the knob can make the pool narrower, never wider.
+    Widening it is what the GIL contention above forbids, so an operator typo
+    (or a well-meant "just bump it") cannot reintroduce the fan-out.
+    """
+    try:
+        requested = int(os.getenv("DEBATE_BACKTEST_WORKERS", str(_BACKTEST_POOL_HARD_MAX)))
+    except ValueError:
+        requested = _BACKTEST_POOL_HARD_MAX
+    return max(1, min(_BACKTEST_POOL_HARD_MAX, requested))
+
+
+def _backtest_executor() -> ThreadPoolExecutor:
+    """The process-wide, lazily-built backtest pool (never the default executor)."""
+    global _backtest_executor_instance
+    with _backtest_executor_lock:
+        if _backtest_executor_instance is None:
+            width = _backtest_max_workers()
+            _backtest_executor_instance = ThreadPoolExecutor(
+                max_workers=width,
+                thread_name_prefix="debate-backtest",
+            )
+            logger.info("debate C-rigor: backtest pool created (max_workers=%d, GIL-bound work)", width)
+        return _backtest_executor_instance
+
 
 # C-null passive-null bar (V_check min_cost_benefit_bps = 5 bps): a survivor must
 # beat buy-and-hold net of cost by at least this. Phase-1 proxy uses the
@@ -401,7 +457,11 @@ async def _critic_rigor(pool: list[Any], num_trials: int) -> list[tuple[Any, Any
             logger.info("debate C-rigor: dropped a candidate on backtest error: %s", exc)
             return None
 
-    results = await asyncio.gather(*(asyncio.to_thread(_backtest, p) for p in pool))
+    # Bounded + dedicated, NOT `asyncio.to_thread` (which is the default pool).
+    # See the `_backtest_executor` block above for why the fan-out is capped at 2.
+    loop = asyncio.get_running_loop()
+    executor = _backtest_executor()
+    results = await asyncio.gather(*(loop.run_in_executor(executor, _backtest, p) for p in pool))
     out: list[tuple[Any, Any]] = []
     for proposal, ev in zip(pool, results, strict=True):
         if ev is not None and ev.success and ev.rigor is not None:
