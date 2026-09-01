@@ -38,6 +38,34 @@ Cost of abandonment, stated plainly: the task keeps whatever resource it holds
 until it unwinds, so this is a tool for READ-ONLY probes on a liveness path.
 Do not wrap a state-changing call in it — an abandoned write is a write whose
 outcome you stopped watching.
+
+THE LIFECYCLE INVARIANT (#1632)
+-------------------------------
+"The task keeps whatever resource it holds" is the sentence with teeth, and the
+2026-08-31 exit-139 deaths are what it costs when nobody enforces it:
+
+    **No code path in this process may free a resource that an abandoned task
+    may still be touching. Every teardown of a resource reachable from an
+    abandonable call must first drain the strays to ZERO, and must decline to
+    free anything if the drain does not reach zero.**
+
+Abandonment inverts the usual ownership rule. Normally the caller owns the call:
+it awaits, the call finishes, the caller tears down. Abandonment *severs* that —
+the caller walks away while the callee runs on — so every teardown the caller
+still performs afterwards is a free() racing a live reader.
+
+Honest about how far this is established: the race is measured (see
+``BoundedAsyncHTTPProvider.disconnect`` and
+``tests/test_abandoned_call_session_lifecycle.py``); the step from it to #1632's
+SIGSEGV is #1632's stated *hypothesis* and is not reproduced. The invariant is
+worth holding either way — closing a transport under an in-flight request is a
+defect on its own terms, and it is cheap not to.
+
+:func:`drain_abandoned` is the enforcement primitive. Declining to free is always
+the correct fallback, because the two failure modes are not comparable: leaking a
+socket in a process that is on its way out is invisible, whereas a use-after-free
+is exactly the class of fault that dies without a Python traceback — which is why
+#1632 needed ``faulthandler`` (#1633) before it could be diagnosed at all.
 """
 
 from __future__ import annotations
@@ -74,6 +102,31 @@ def abandoned_task_count() -> int:
     they unwind, which is the signature of a dark endpoint rather than a slow
     one.
     """
+    return len(_ABANDONED)
+
+
+async def drain_abandoned(timeout: float) -> int:
+    """Wait up to ``timeout`` for the in-flight strays; return how many remain.
+
+    **Zero is the only safe number to tear down on.** An abandoned task is still
+    holding whatever the caller stopped watching — for the RPC path that is an
+    aiohttp connection sitting in its connector's ``_acquired`` set (#1632). A
+    non-zero return means a teardown MUST NOT proceed; see
+    ``BoundedAsyncHTTPProvider.disconnect``.
+
+    Waits on a snapshot because :func:`asyncio.wait` needs a fixed set, but
+    reports ``abandoned_task_count()``, the LIVE number: a stray abandoned while
+    the drain was running is still a stray, and answering from the snapshot
+    would report a clear floor that no longer holds.
+
+    Never raises on the empty case. ``asyncio.wait`` raises ``ValueError`` on an
+    empty set, and "nothing was abandoned" is the overwhelmingly common shutdown
+    — turning the quiet path into an exception would break every ordinary
+    teardown to guard the rare one.
+    """
+    strays = set(_ABANDONED)
+    if strays:
+        await asyncio.wait(strays, timeout=timeout)
     return len(_ABANDONED)
 
 

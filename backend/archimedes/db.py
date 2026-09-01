@@ -21,6 +21,7 @@ from archimedes.models.account import (
     LinkedWallet,
     WalletLinkChallenge,
 )
+from archimedes.models.api_key import ApiKeyRecord
 from archimedes.models.asset_daily_bars import AssetDailyBar
 from archimedes.models.backtest_fixtures_store import StrategyBacktestFixture
 from archimedes.models.backtest_store import BacktestResultRecord
@@ -55,6 +56,7 @@ __all__ = [
     "AuthSession",
     "AuthUser",
     "AuthVerification",
+    "ApiKeyRecord",
     "AssetDailyBar",
     "BacktestResultRecord",
     "Base",

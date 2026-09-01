@@ -50,7 +50,7 @@ const CONNECTED_ACCOUNT_LABELS = { credential: 'Email & password', google: 'Goog
 // Wired via databaseHooks.account.{create,delete}.after below.
 //
 // MUST NOT throw. Unlike sendResetPassword/sendVerificationEmail above
-// (hand-rolled fire-and-forget, or awaited inside their OWN try/catch),
+// (both hand-rolled fire-and-forget, each with its own .catch),
 // better-auth's databaseHooks create.after/delete.after are awaited by the
 // library itself as part of the write (node_modules/@better-auth/core/dist/
 // context/transaction.mjs: `for (const hook of pendingHooks) await hook();`
@@ -249,6 +249,22 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       maxPasswordLength: 128,
       revokeSessionsOnPasswordReset: true,
       requireEmailVerification: emailVerificationEnforced(env),
+      // Pinned for the same reason as emailVerification.expiresIn below and
+      // session.freshAge further down: left unset the number lives in the
+      // library, not here (better-auth/dist/api/routes/password.mjs:73
+      // `getDate(ctx.context.options.emailAndPassword.resetPasswordTokenExpiresIn
+      // || 3600 * 1, "sec")`), so nobody reading auth.js can tell how long a
+      // reset link stays live. 3600 is exactly today's effective value —
+      // this pins behaviour, it does not change it.
+      //
+      // Unlike a verification token (a stateless JWT — see expiresIn below)
+      // a reset token is a real `auth_verifications` row consumed on first
+      // use (password.mjs:157 `consumeVerificationValue`), so it is
+      // single-use AND revocable, and `verification.storeIdentifier:
+      // 'hashed'` further down means the stored identifier is not a usable
+      // token even to someone holding a database dump. Both properties are
+      // covered by auth/test/email-flows.test.js.
+      resetPasswordTokenExpiresIn: 60 * 60,
       sendResetPassword: async ({ user, url }) => {
         // Fire-and-forget ON PURPOSE — do not `await` the send. Better Auth
         // already returns an identical response body/status for a known vs.
@@ -286,22 +302,64 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     emailVerification: {
       sendOnSignUp: true,
       autoSignInAfterVerification: true,
+      // Pinned, not the library's inherited default — same reasoning as
+      // session.freshAge below (round-2 review, blocker: a security-relevant
+      // duration nobody chose is not auditable from the code). Left unset,
+      // the value comes from a DEFAULT PARAMETER buried in the library
+      // (node_modules/better-auth/dist/api/routes/email-verification.mjs:13
+      // `async function createEmailVerificationToken(secret, email, updateTo,
+      // expiresIn = 3600, extraPayload)`), so a reader of auth.js cannot see
+      // how long a verification link stays live and a library bump could
+      // change it silently. 3600 is exactly today's effective value: this
+      // pins behaviour, it does not change it. It matters more than a
+      // typical TTL because of autoSignInAfterVerification above — see
+      // auth/test/email-flows.test.js, which drives the real endpoint and
+      // shows an ANONYMOUS holder of the URL getting a live session on the
+      // first open. That makes the link a one-time bearer sign-in
+      // credential, and this number is its whole lifetime.
+      expiresIn: 60 * 60,
+      // Fire-and-forget, NOT awaited — the same anti-enumeration reasoning
+      // as sendResetPassword above, and load-bearing here for a reason that
+      // is specific to this callback's OTHER caller.
+      //
+      // On the signup path an awaited send is harmless (the caller already
+      // knows the address it just registered). The problem is
+      // /send-verification-email, which is reachable with NO session at all
+      // (better-auth/dist/api/routes/email-verification.mjs:95-117) and is
+      // exactly the endpoint the "Resend verification email" control calls
+      // — a control that only becomes load-bearing the day
+      // EMAIL_VERIFICATION_ENFORCED flips on. Better Auth defends that
+      // endpoint with a 500ms constant-time FLOOR, deliberately: an address
+      // that is unknown-or-already-verified takes the fast local
+      // JWT-signing branch, an address that is known-and-unverified takes
+      // the real send, and the floor is meant to hide the difference. A
+      // floor only hides a difference it is larger than. With the send
+      // awaited here, a real SES round trip pushes the known-and-unverified
+      // case straight through the floor and the endpoint becomes an
+      // account-existence AND verification-state oracle for any anonymous
+      // caller. Measured against a 900ms mailer before this change:
+      // unknown 504ms vs known-unverified 922ms. Not awaiting the send
+      // makes this callback's own duration independent of mailer latency,
+      // so both shapes land on the floor together. The regression guard is
+      // "the anonymous resend path does not leak..." in
+      // auth/test/email-flows.test.js; reverting to `await mailer.send(...)`
+      // makes it fail.
+      //
+      // The .catch is what keeps a mailer failure fail-soft while SES is in
+      // sandbox: an undeliverable verification mail must not 500 the signup.
+      // Loud single line; requireEmailVerification is what actually gates
+      // sign-in.
       sendVerificationEmail: async ({ user, url }) => {
-        try {
-          await mailer.send({
-            to: user.email,
-            subject: 'Verify your Archimedes account',
-            text:
-              'Verify your email address to activate your Archimedes account:\n\n'
-              + `${url}\n\n`
-              + 'If you did not create this account, ignore this message.',
-          })
-        } catch (error) {
-          // Fail-soft ON PURPOSE while SES is in sandbox: an undeliverable
-          // verification mail must not 500 the signup. Loud single line;
-          // requireEmailVerification is what actually gates sign-in.
+        mailer.send({
+          to: user.email,
+          subject: 'Verify your Archimedes account',
+          text:
+            'Verify your email address to activate your Archimedes account:\n\n'
+            + `${url}\n\n`
+            + 'If you did not create this account, ignore this message.',
+        }).catch(error => {
           console.error('verification email send failed:', error instanceof Error ? error.name : 'UnknownError')
-        }
+        })
       },
     },
     socialProviders: socialProviders(env),
@@ -602,6 +660,21 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
         // rules stay as defense-in-depth regardless: this rule (3 signups /
         // 10 min per Better Auth's rate key), nginx's /api/auth/ limit_req
         // zone, and — decisively — the per-IP DAILY generation cap
+        //
+        // CAVEAT (#1691, found by the 2026-08-31 pre-flip audit): "per Better
+        // Auth's rate key" is not per-caller in production today. The key is
+        // `${ip}|${path}` (@better-auth/core/dist/utils/ip.mjs:225), and
+        // getIp trusts a forwarded header only when it carries exactly ONE
+        // value (:189 `if (forwardedIps.length !== 1) return null`) unless
+        // advanced.ipAddress.trustedProxies is configured — which nothing
+        // below does. Behind CloudFront -> ALB -> nginx every hop appends
+        // (nginx/nginx.conf:179), so no IP resolves and the limiter falls
+        // back to one shared `no-trusted-ip|<path>` bucket, logging a
+        // warning that says so. These rules therefore bound TOTAL rate, not
+        // per-abuser rate. Layers 2 and 3 above are unaffected. Pinned in
+        // both directions by auth/test/email-flows.test.js; do not "fix" it
+        // by trusting the leftmost XFF token, which is client-controlled and
+        // strictly worse than a shared bucket.
         // (services/generation_quota.py): a fresh account does not raise its
         // address's generation allowance, so disposable accounts gain
         // nothing at the endpoint that actually spends money.

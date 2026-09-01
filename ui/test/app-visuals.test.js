@@ -274,16 +274,19 @@ test("leaderboard renders every field it sorts by, and no constant forward colum
 	assert.match(leaderboard, /fixed at generation time/);
 	const block = leaderboard.match(/const SORT_OPTIONS = \[([\s\S]*?)\]/)[1];
 	for (const [, id] of block.matchAll(/id: '([a-z_]+)'/g)) {
-		// A RENDER site is fmt(...)/fmtPct(...)-wrapped output — a bare e.<id>
-		// also matches null-CHECKS inside a render gate, which is exactly the
-		// defect this test exists to reject (a field sorted but never shown).
+		// A RENDER site is a value handed to a formatter — a bare e.<id> also
+		// matches null-CHECKS inside a render gate, which is exactly the defect
+		// this test exists to reject (a field sorted but never shown). Since
+		// #1651 the formatter is <MetricValue metric="…" value={e.<id>} />
+		// rather than the file's own fmt()/fmtPct(); both shapes count as a
+		// render, neither of them matches a bare null-check.
 		assert.match(
 			leaderboard,
-			new RegExp(`fmt(?:Pct)?\\(\\s*e\\.${id}\\b`),
-			`sort option ${id} has no fmt-rendered value`,
+			new RegExp(`(?:fmt(?:Pct)?\\(\\s*e\\.${id}\\b|value=\\{e\\.${id}\\})`),
+			`sort option ${id} has no rendered value`,
 		);
 	}
-	assert.match(leaderboard, /fmt\(\s*e\.out_of_sample_sharpe\b/);
+	assert.match(leaderboard, /value=\{e\.out_of_sample_sharpe\}/);
 	assert.doesNotMatch(leaderboard, /SB pending/);
 	assert.doesNotMatch(leaderboard, /P&L pending/);
 });

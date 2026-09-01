@@ -67,6 +67,7 @@ per-surface reference doc yet (a real gap, not an oversight to paper over).
 | `/api/selection-bias` | `archimedes.api.selection_bias_routes.selection_bias_router` | public | live | [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md) |
 | `/api/rigor` | `archimedes.api.rigor_verify_routes.rigor_verify_router` | session | live | — |
 | `/api/account` | `archimedes.api.account_usage_routes.account_usage_router` | session | live | — |
+| `/api/account/keys` | `archimedes.api.api_key_routes.api_key_router` | session | live | [`api/api-keys.md`](api/api-keys.md) |
 | `/api/payments` | `archimedes.api.payment_routes.payment_router` | session | live | [`api/generation.md`](api/generation.md) |
 | `/api/papers` | `archimedes.api.papers_routes.papers_router` | public | live | — |
 | `/api/user` | `archimedes.api.user_routes.user_router` | session | live | — |
@@ -78,9 +79,9 @@ per-surface reference doc yet (a real gap, not an oversight to paper over).
 | `/api/metrics/private` | `archimedes.api.metrics_private_routes.metrics_private_router` | private-admin | degraded-capable | [`api/admin-private.md`](api/admin-private.md) |
 | `/api/leaderboard` | `archimedes.api.leaderboard_routes.leaderboard_router` | public | degraded-capable | [`api/leaderboard-and-metrics.md`](api/leaderboard-and-metrics.md) |
 
-30 rows, one per `include_router` call in `main.py` (two calls each mount
+31 rows, one per `include_router` call in `main.py` (two calls each mount
 `generate_routes.py`'s pair of routers and `auth_siwe.py`'s legacy router
-under a shared prefix with a sibling — see notes). 14/30 have a detailed doc
+under a shared prefix with a sibling — see notes). 15/31 have a detailed doc
 in `docs/api/`; the other 16 are real documentation debt, not an oversight —
 tracked here rather than silently absent.
 
@@ -101,6 +102,14 @@ tracked here rather than silently absent.
   by `backend/tests/test_sole_generation_route_guard.py`. Historic context: it
   never had a UI consumer, and cluster-4 chose to route it through the
   generation quota meter rather than delete it; deletion is the resolution.
+- **`api_key_router`** — `session`, and **stricter than every other `session`
+  row here.** Since #1653 D3 an `Authorization: Bearer archim_…` API key
+  satisfies `require_current_user` everywhere else in this table; these three
+  routes require the Better Auth *cookie* specifically
+  (`require_session_credential`) and answer `403` to a key. A key that could
+  mint keys would issue itself successors, and revoking the token an operator
+  knows about would not end the compromise. Shares the `/api/account` prefix
+  with `account_usage_router`; the two never collide (`/usage` vs `/keys`).
 - **`traces_router`** — reads are public. `POST /publish` requires
   `X-Internal-Agent-Key` (`require_internal_agent_key`) — the agent runner
   only, never the browser.

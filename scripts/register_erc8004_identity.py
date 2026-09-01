@@ -9,9 +9,20 @@ WHAT THIS DOES
 
 WHAT THIS DOES NOT DO
     It does not make Archimedes an ERC-8004 agent. Registration mints an ERC-721 to the
-    sender, so it needs the OWNER's key — which this repo does not have and must not have.
-    Until a human runs ``--execute`` and a ``Registered`` event exists, every discovery
-    surface keeps saying ``status: registration_pending`` and that is the truth.
+    platform wallet, and that wallet is a Circle dev-controlled wallet whose key Circle
+    holds — this repo does not have it and must not have it. Until a human runs
+    ``--execute`` and a live ``ownerOf()`` read confirms the mint, every discovery surface
+    keeps saying ``status: registration_pending`` and that is the truth.
+
+WHERE THE WORK ACTUALLY HAPPENS
+    ``--execute`` and ``--verify`` are thin wrappers over
+    ``backend/archimedes/chain/erc8004_identity.py``, which is the same code path the
+    served manifest uses to decide whether it may say "registered". This file does not
+    sign anything itself: it hands ``register(string)`` to
+    ``chain.circle_signer.CircleSigner.execute_contract`` — the identical
+    ``contractExecution`` seam ``oracle_updater.push_prices_on_chain`` pushes prices
+    through. **No private key is read, held, or derived here.** (#1552's version signed
+    with a raw ``OWNER_PRIVATE_KEY`` from the environment; that path is gone.)
 
 THE STANDARD (https://eips.ethereum.org/EIPS/eip-8004)
     struct MetadataEntry { string metadataKey; bytes metadataValue; }
@@ -36,17 +47,21 @@ USAGE
     python scripts/register_erc8004_identity.py --plan --from 0xOwner...
     python scripts/register_erc8004_identity.py --plan --offline      # no RPC at all
 
-    # owner only — NOT run by CI, agents, or the backend:
-    OWNER_PRIVATE_KEY=0x... python scripts/register_erc8004_identity.py --execute
-    python scripts/register_erc8004_identity.py --execute \
-        --circle-wallet-id <id> --circle-entity-secret-ciphertext <ct>   # CIRCLE_API_KEY in env
+    # read-only: what does the chain say about our identity RIGHT NOW?
+    ERC8004_OWNER_ADDRESS=0x... python scripts/register_erc8004_identity.py --verify
+    ERC8004_OWNER_ADDRESS=0x... python scripts/register_erc8004_identity.py --verify --agent-id 7
+
+    # owner only — NOT run by CI, agents, or the backend. Credentials are Circle's
+    # (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET / WALLET_ID), the same three the oracle uses:
+    ERC8004_OWNER_ADDRESS=0x... python scripts/register_erc8004_identity.py --execute
 
 AFTER A SUCCESSFUL --execute
-    The script prints the minted agentId and the exact JSON edits to land in the same
-    commit as the transaction hash: the ``registrations`` entry for both registration
-    files, and ``_ERC8004_AGENT_ID`` / ``_ERC8004_TOKEN_URI`` in
-    ``backend/archimedes/api/agent_manifest_routes.py``. Only then may any surface say
-    "registered" — the tests enforce that ordering.
+    The script prints the minted agentId and the exact follow-up: set ``ERC8004_AGENT_ID``
+    and ``ERC8004_OWNER_ADDRESS`` in the deployment environment, and land the
+    ``registrations`` entry in both registration files plus the agent card's regenerated
+    ``erc8004`` block in one commit carrying the transaction hash. The env vars alone do
+    NOT make a surface say "registered" — they only tell the verifier which token to read;
+    the claim still comes from ``ownerOf()``.
 """
 
 from __future__ import annotations
@@ -73,11 +88,10 @@ REGISTER_STRING_SIG = "register(string)"
 REGISTERED_EVENT_SIG = "Registered(uint256,string,address)"
 
 DEFAULT_RPC = "https://rpc.testnet.arc.network"
-CIRCLE_API_BASE = "https://api.circle.com/v1/w3s"
 
-# Gas headroom over the estimate. An ERC-721 mint plus a string SSTORE is not variable
-# enough to justify more, and a fat multiplier on a chain where USDC IS gas is real money.
-GAS_MULTIPLIER = 1.25
+# No CIRCLE_API_BASE / GAS_MULTIPLIER here any more: gas and the Circle endpoint are the
+# signer's problem, and the signer is chain/circle_signer.py. A second copy of either
+# constant in this file would be a second place for them to go stale.
 
 
 def selector(signature: str) -> bytes:
@@ -113,8 +127,12 @@ def chain_id_from_caip2(chain: str) -> int:
     return int(reference)
 
 
-def already_registered(block: dict) -> bool:
-    return block.get("agentId") is not None
+def load_chain_module():
+    """Import the backend's ERC-8004 seam, adding ``backend/`` to the path like siblings do."""
+    sys.path.insert(0, str(REPO_ROOT / "backend"))
+    from archimedes.chain import erc8004_identity
+
+    return erc8004_identity
 
 
 # ── calldata ──────────────────────────────────────────────────────────────────────────
@@ -151,16 +169,12 @@ def rpc(client: httpx.Client, url: str, method: str, params: list) -> object:
 
 
 def owner_address_from_env() -> str | None:
-    """Address for ``OWNER_PRIVATE_KEY`` if it is set — the key itself is never printed."""
-    key = os.environ.get("OWNER_PRIVATE_KEY", "").strip()
-    if not key:
-        return None
-    from eth_account import Account
+    """The platform wallet, from ``ERC8004_OWNER_ADDRESS``.
 
-    try:
-        return Account.from_key(key).address
-    except (ValueError, TypeError):
-        raise SystemExit("✗ OWNER_PRIVATE_KEY is not a valid private key.") from None
+    An ADDRESS, never a key. The wallet's key lives with Circle; this script only ever
+    needs to know which address to estimate gas from and which owner to verify against.
+    """
+    return os.environ.get("ERC8004_OWNER_ADDRESS", "").strip() or None
 
 
 def preflight(client: httpx.Client, rpc_url: str, registry: str, want_chain_id: int) -> list[str]:
@@ -219,9 +233,10 @@ def plan(args: argparse.Namespace) -> int:
         doc = json.loads(REGISTRATION_FILE.read_text(encoding="utf-8"))
         print(f"  registration file: {REGISTRATION_FILE.relative_to(REPO_ROOT)}  type={doc.get('type')!r}")
 
-    if already_registered(block):
+    if block.get("agentId") is not None:
         print(
-            f"  ! the agent card already carries agentId {block['agentId']} — registering again mints a SECOND identity."
+            f"  ! the agent card already publishes agentId {block['agentId']} — run --verify before "
+            "--execute; registering again would mint a SECOND identity."
         )
 
     if args.offline:
@@ -235,7 +250,7 @@ def plan(args: argparse.Namespace) -> int:
             print(f"  rpc:               {args.rpc}")
             problems = preflight(client, args.rpc, registry, chain_id)
             if sender is None:
-                print("  gas estimate:      unavailable — no sender (pass --from 0x..., or set OWNER_PRIVATE_KEY)")
+                print("  gas estimate:      unavailable — no sender (pass --from 0x..., or set ERC8004_OWNER_ADDRESS)")
             elif problems:
                 print(f"  gas estimate:      not attempted — preflight failed (sender would be {sender})")
             else:
@@ -262,94 +277,86 @@ def plan(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── execute (owner only) ──────────────────────────────────────────────────────────────
+# ── verify + execute (owner only) ─────────────────────────────────────────────────────
+#
+# Both delegate to backend/archimedes/chain/erc8004_identity.py so the script and the
+# served manifest reach the same verdict from the same code. A CLI that had its own idea
+# of what "registered" means is how the two drift.
 
 
-def execute_with_private_key(args: argparse.Namespace, registry: str, chain_id: int, calldata: bytes) -> int:
-    from eth_account import Account
+def verify(args: argparse.Namespace) -> int:
+    """Read the registry and print what it actually says. Signs nothing, sends nothing."""
+    import asyncio
 
-    acct = Account.from_key(os.environ["OWNER_PRIVATE_KEY"].strip())
-    with httpx.Client(timeout=60.0) as client:
-        problems = preflight(client, args.rpc, registry, chain_id)
-        for problem in problems:
-            print(f"✗ {problem}")
-        if problems:
-            return 2
-        gas = estimate_gas(client, args.rpc, acct.address, registry, calldata)
-        gas_price = int(str(rpc(client, args.rpc, "eth_gasPrice", [])), 16)
-        nonce = int(str(rpc(client, args.rpc, "eth_getTransactionCount", [acct.address, "pending"])), 16)
-        tx = {
-            "to": registry,
-            "value": 0,
-            "data": "0x" + calldata.hex(),
-            "gas": int(gas * GAS_MULTIPLIER),
-            "gasPrice": gas_price,
-            "nonce": nonce,
-            "chainId": chain_id,
-        }
-        print(f"sending register() from {acct.address} (gas {tx['gas']}, nonce {nonce})…")
-        signed = acct.sign_transaction(tx)
-        tx_hash = str(rpc(client, args.rpc, "eth_sendRawTransaction", ["0x" + signed.raw_transaction.hex()]))
-        print(f"tx: {tx_hash}")
-        print("Poll eth_getTransactionReceipt for the Registered log; then run --print-followup with the agentId.")
-    return 0
-
-
-def execute_with_circle(args: argparse.Namespace, registry: str, calldata: bytes) -> int:
-    """Circle dev-controlled wallet path — the same contract-execution API the marketplace uses."""
-    api_key = os.environ.get("CIRCLE_API_KEY", "").strip()
-    if not api_key:
-        print("✗ CIRCLE_API_KEY is not set.")
+    erc8004 = load_chain_module()
+    owner = args.sender or owner_address_from_env()
+    if not owner:
+        print("\u2717 no owner address — set ERC8004_OWNER_ADDRESS or pass --from 0x…")
+        print("  Verification compares ownerOf(agentId) against a specific wallet; without one")
+        print("  there is nothing to compare and nothing can be confirmed.")
         return 2
-    if not args.circle_entity_secret_ciphertext:
-        print("✗ --circle-entity-secret-ciphertext is required for the Circle path.")
-        return 2
-    body = {
-        "walletId": args.circle_wallet_id,
-        "contractAddress": registry,
-        "callData": "0x" + calldata.hex(),
-        "entitySecretCiphertext": args.circle_entity_secret_ciphertext,
-        "idempotencyKey": args.idempotency_key,
-        "feeLevel": "MEDIUM",
-    }
-    with httpx.Client(timeout=60.0) as client:
-        resp = client.post(
-            f"{CIRCLE_API_BASE}/developer/transactions/contractExecution",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json=body,
-        )
-    # Print the raw response either way: a 4xx naming the offending field is the useful
-    # output here, not an exception trace that hides it.
-    print(f"Circle API {resp.status_code}: {resp.text}")
-    return 0 if resp.is_success else 2
+
+    agent_id = args.agent_id if args.agent_id is not None else erc8004.configured_agent_id()
+    if agent_id is None:
+        found, detail = asyncio.run(erc8004.find_agent_id(owner))
+        print(f"discovery:  {detail}")
+        if found is None:
+            print("status:     registration_pending (no identity found for this wallet)")
+            return 0
+        agent_id = found
+
+    result = asyncio.run(erc8004.verify_identity(agent_id=agent_id, expected_owner=owner))
+    print(f"registry:   {erc8004.registry_address()}")
+    print(f"agentId:    {result.agent_id}")
+    print(f"owner:      {result.owner}  (expected {result.expected_owner})")
+    print(f"tokenURI:   {result.token_uri!r}")
+    print(f"status:     {result.status}  [source: {result.source}]")
+    print(f"detail:     {result.detail}")
+    # A read that did not complete is not a verdict, so it is not a success exit code.
+    return 0 if result.source != erc8004.SOURCE_UNAVAILABLE else 1
 
 
 def execute(args: argparse.Namespace) -> int:
+    """Register, idempotently, through the Circle signer. Never touches a private key."""
+    import asyncio
+
+    erc8004 = load_chain_module()
     block = load_identity_block()
-    registry = block["identityRegistry"]
-    chain_id = chain_id_from_caip2(block["chain"])
     agent_uri = args.agent_uri or block["registrationUri"]
-    calldata = build_register_calldata(agent_uri)
-
-    if already_registered(block) and not args.allow_second_identity:
-        print(f"✗ agent card already carries agentId {block['agentId']} — refusing to mint a second")
-        print("  identity. Pass --allow-second-identity only if that is genuinely what you want.")
+    owner = args.sender or owner_address_from_env()
+    if not owner:
+        print("\u2717 ERC8004_OWNER_ADDRESS is not set (or pass --from 0x…).")
+        print("  It is the Circle wallet that will own the minted identity — without it the")
+        print("  result cannot be verified afterwards, and an unverifiable mint is not a")
+        print("  registration this project is willing to publish.")
         return 2
 
-    have_key = bool(os.environ.get("OWNER_PRIVATE_KEY", "").strip())
-    have_circle = bool(args.circle_wallet_id)
-    if have_key == have_circle:
-        print("✗ --execute needs exactly ONE owner credential:")
-        print("    OWNER_PRIVATE_KEY=0x…                      (env var, never a CLI argument)")
-        print("    --circle-wallet-id <id> --circle-entity-secret-ciphertext <ct>   (CIRCLE_API_KEY in env)")
-        print("  Both present, or neither, is ambiguous about who signs — refusing.")
-        return 2
+    print(f"EXECUTE: {REGISTER_STRING_SIG} \u2192 {erc8004.registry_address()}")
+    print(f"  agentURI:  {agent_uri}")
+    print(f"  owner:     {owner}")
+    print("  signer:    Circle dev-controlled wallet (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET / WALLET_ID)")
 
-    print(f"EXECUTE: {REGISTER_STRING_SIG} → {registry} on chain {chain_id}")
-    print(f"  agentURI: {agent_uri}")
-    if have_key:
-        return execute_with_private_key(args, registry, chain_id, calldata)
-    return execute_with_circle(args, registry, calldata)
+    result = asyncio.run(
+        erc8004.register_identity(
+            agent_uri=agent_uri,
+            expected_owner=owner,
+            agent_id=args.agent_id,
+            from_block=args.from_block,
+            allow_second_identity=args.allow_second_identity,
+        )
+    )
+    print(f"  action:    {result.action}")
+    print(f"  agentId:   {result.agent_id}")
+    print(f"  tokenURI:  {result.token_uri!r}")
+    print(f"  tx:        {result.tx_hash}")
+    print(f"  detail:    {result.detail}")
+
+    if result.action in {"noop", "registered"} and result.agent_id is not None:
+        print()
+        return print_followup(result.agent_id)
+    # "submitted" is not success: a transaction with no confirmed agentId behind it must
+    # not be treated as a registration by a caller or a CI step.
+    return 0 if result.action == "noop" else (0 if result.action == "registered" else 2)
 
 
 # ── follow-up ─────────────────────────────────────────────────────────────────────────
@@ -365,9 +372,12 @@ def print_followup(agent_id: int) -> int:
     print('   replace "registrations": [] with:')
     print("   " + json.dumps([entry], indent=2).replace("\n", "\n   "))
     print()
-    print("2. backend/archimedes/api/agent_manifest_routes.py —")
-    print(f"   _ERC8004_AGENT_ID = {agent_id}")
-    print(f"   _ERC8004_TOKEN_URI = {block['registrationUri']!r}")
+    print("2. the DEPLOYMENT environment (SSM / .env — NOT a code constant):")
+    print(f"   ERC8004_AGENT_ID={agent_id}")
+    print("   ERC8004_OWNER_ADDRESS=<the Circle wallet address that owns it>")
+    print("   These only tell the verifier WHICH token to read. The 'registered' claim still")
+    print("   comes from a live ownerOf() call on every request — set them wrong and the")
+    print("   manifest keeps saying registration_pending, which is the correct answer.")
     print()
     print("3. ui/public/.well-known/agent.json — regenerate the erc8004 block from")
     print("   erc8004_identity() so the card and the served manifest stay identical.")
@@ -381,17 +391,24 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--plan", action="store_true", help="read-only: calldata, registry/chain checks, gas (default)")
-    mode.add_argument("--execute", action="store_true", help="OWNER ONLY: sign and send register()")
+    mode.add_argument("--verify", action="store_true", help="read-only: what does the registry say right now?")
+    mode.add_argument("--execute", action="store_true", help="OWNER ONLY: send register() via the Circle signer")
     mode.add_argument("--print-followup", type=int, metavar="AGENT_ID", help="print the post-registration edits")
     ap.add_argument("--rpc", default=os.environ.get("RPC") or os.environ.get("ARC_ARC_RPC_URL") or DEFAULT_RPC)
-    ap.add_argument("--from", dest="sender", default=None, help="address to estimate gas from (plan only)")
+    ap.add_argument(
+        "--from",
+        dest="sender",
+        default=None,
+        help="the platform wallet ADDRESS (never a key) — gas estimation and ownerOf comparison",
+    )
     ap.add_argument(
         "--agent-uri", default=None, help="override the agentURI (default: the agent card's registrationUri)"
     )
     ap.add_argument("--offline", action="store_true", help="plan only: build calldata, make no RPC calls")
-    ap.add_argument("--circle-wallet-id", default=None)
-    ap.add_argument("--circle-entity-secret-ciphertext", default=None)
-    ap.add_argument("--idempotency-key", default=None)
+    ap.add_argument("--agent-id", type=int, default=None, help="verify/execute against this agentId specifically")
+    ap.add_argument(
+        "--from-block", default=0, help="first block of the mint-log scan used to discover an existing agentId"
+    )
     ap.add_argument(
         "--allow-second-identity", action="store_true", help="permit --execute when an agentId already exists"
     )
@@ -399,6 +416,8 @@ def main() -> int:
 
     if args.print_followup is not None:
         return print_followup(args.print_followup)
+    if args.verify:
+        return verify(args)
     if args.execute:
         return execute(args)
     return plan(args)

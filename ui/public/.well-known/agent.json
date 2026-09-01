@@ -1,7 +1,7 @@
 {
   "schema": "a2a-agent-card (informal, simplified)",
   "name": "Archimedes",
-  "description": "Agentic trading, grounded in research — settled on Arc. Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy, executed in a non-custodial USDC vault on the Arc testnet (chain ID 5042002).",
+  "description": "Agentic trading, grounded in research — settled on Arc. Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy and paper-trades it, commit-revealing the reasoning trace on the Arc testnet (chain ID 5042002) when anchoring succeeds — read `arc_tx_hash` rather than assuming it did. Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped.",
   "url": "https://archimedes-arc.com",
   "version": "0.1.0",
   "provider": {
@@ -26,7 +26,7 @@
     "tokenURI": null,
     "status": "registration_pending",
     "registrationUri": "https://archimedes-arc.com/.well-known/agent-registration.json",
-    "note": "Not registered on-chain: no register() transaction has been sent, so agentId and tokenURI are null and NO ERC-8004 identity, reputation, or validation claim is made. Publishing a spec-typed registration file at registrationUri is not the same as being registered. Plan the call with scripts/register_erc8004_identity.py --plan."
+    "note": "Not registered on-chain: no register() transaction has been confirmed for this deployment's wallet, so agentId and tokenURI are null and NO ERC-8004 identity, reputation, or validation claim is made. Publishing a spec-typed registration file at registrationUri is not the same as being registered. This status is re-derived from a live registry read on every request; the sibling erc8004_verification block says which reading produced it. Plan the call with scripts/register_erc8004_identity.py --plan."
   },
   "authentication": {
     "schemes": ["Better Auth session"],
@@ -111,7 +111,7 @@
         "read": "GET /api/paper/deployments/{deployment_id}",
         "stop": "POST /api/paper/deployments/{deployment_id}/stop"
       },
-      "note": "Simulated: no chain, no funds. deploy is also live and puts real capital on-chain \u2014 choosing between them trades simulation for capital at risk, not working for not working."
+      "note": "Simulated: no chain, no funds \u2014 and the only execution path this product has shipped. The deploy group's route resolves, but putting a strategy into an on-chain vault is roadmap, not shipped, and no user vault has ever been created, so there is nothing here to trade off: paper is how a strategy gets exercised today. Arc is a testnet whose USDC comes from a faucet in any case."
     },
     "deploy": {
       "status": "live",
@@ -119,7 +119,7 @@
       "routes": {
         "createVault": "POST /api/vaults/create"
       },
-      "note": "Creates a real, non-custodial vault on Arc: the caller's linked wallet owns it and the agent holds rebalance authority only, never withdraw-to-platform."
+      "note": "The deploy-a-vault journey is roadmap, not shipped: it is gated off every shipped surface (the UI's ROADMAP_SURFACES_ENABLED build flag, off by default) and no user vault has ever been created. `status: \"live\"` above describes the ROUTE — it resolves, and the contracts behind it are deployed — not a capability a user can reach; do not tell anyone Archimedes executes strategies on-chain today. The roadmap shape is non-custodial: when it ships, the caller's linked wallet will own the vault and the agent will hold rebalance authority only, never withdraw-to-platform."
     },
     "marketplace": {
       "status": "live",
@@ -153,15 +153,15 @@
     },
     {
       "id": "deploy-vault",
-      "name": "Deploy vault",
-      "description": "Execute a generated, rigor-passing strategy into a non-custodial USDC vault on Arc.",
-      "status": "live"
+      "name": "Deploy vault (roadmap)",
+      "description": "Executing a rigor-passing strategy in a non-custodial USDC vault on Arc is roadmap, not shipped. `POST /api/vaults/create` resolves and the contracts behind it are deployed, but the journey is roadmap-gated off every shipped surface and no user vault has ever been created.",
+      "status": "roadmap"
     },
     {
       "id": "monitor",
-      "name": "Monitor",
-      "description": "Read a deployed vault's live health, allocations, and performance.",
-      "status": "live"
+      "name": "Monitor a live position (roadmap)",
+      "description": "`GET /api/vaults/{address}/health` is live and answers for any address given to it, but with no user vault ever created there is no live position of a user's to read — so monitoring one is roadmap, not shipped.",
+      "status": "roadmap"
     },
     {
       "id": "publish",
