@@ -7,7 +7,7 @@
 
 **Scope:** minting Archimedes' single ERC-8004 agent identity on the Arc testnet
 IdentityRegistry, and turning the discovery surfaces from `registration_pending` to
-`registered` — honestly. Issue [#1527](https://github.com/a-apin/archimedes/issues/1527);
+`registered` — honestly. Issue [#1527](https://github.com/aprin-labs/archimedes/issues/1527);
 the scaffold it builds on is #1552.
 
 **Who runs it:** the platform owner, once. Not CI, not an agent, not the backend. The

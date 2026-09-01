@@ -27,7 +27,7 @@ gated off every public surface behind `ROADMAP_SURFACES_ENABLED`
 `ui/test/roadmap-copy.test.js`), and #1469 is open to scrub the remaining present-tense
 copy. Spine (generate → rigor-gate → execute → monitor → explore) locked in
 [`docs/user-stories.md`](docs/user-stories.md).
-Repo [`a-apin/archimedes`](https://github.com/a-apin/archimedes) · Discord **Archimedes
+Repo [`aprin-labs/archimedes`](https://github.com/aprin-labs/archimedes) · Discord **Archimedes
 Arcadia** · live at [`archimedes-arc.com`](https://archimedes-arc.com/) (Arc testnet, chain
 `5042002` / `0x4cef52`; `.com` is the sole domain — the `.app` split caused the Circle
 passkey rpId bug and was decommissioned) · [Unlicense](docs/adr/unlicense-public-domain.md).
@@ -42,7 +42,7 @@ doc here — that has happened twice.)
 ***Claims must be true.*** Every guarantee the UI, the pitch, or a grant application makes
 — rigor, non-custodial, on-chain provenance — must be backed by the live path, not a
 fixture, not a cached boolean, not a hard-coded `true`. This is the #1 rule and the thing
-Bogdan's full-tree audit ([PR #710](https://github.com/a-apin/archimedes/pull/710)) showed
+Bogdan's full-tree audit ([PR #710](https://github.com/aprin-labs/archimedes/pull/710)) showed
 we were violating. Building flashy work on a fake-strict rigor badge is building on sand.
 
 Two corollaries an agent gets wrong by default:

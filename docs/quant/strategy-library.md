@@ -21,7 +21,7 @@ delta. Admission to Tier 1 still requires passing the four-gate
 sufficient. Which strategies pass all four gates is not recorded here — the live rigor gate is the only authority on which strategies currently pass; see the PASS/CANDIDATE badges in the app and `backend/archimedes/services/live_rigor_gate.py`; the rest are honest
 `CANDIDATE`s with their failing gate shown openly.
 
-> **A note on library size, added 2026-08-31 ([#1598](https://github.com/a-apin/archimedes/issues/1598)).**
+> **A note on library size, added 2026-08-31 ([#1598](https://github.com/aprin-labs/archimedes/issues/1598)).**
 > The two findings notes in this directory — [`library-pbo.md`](library-pbo.md) and
 > [`second-wave-universe-experiment.md`](second-wave-universe-experiment.md) — were both run
 > on **2026-06-11 over 22 of the 23 strategies that existed then**. The shelf has grown
@@ -361,7 +361,7 @@ anomaly to chase.
   current volatility and next-period return.
 - **Regime:** `bear` (outperforms in bear/high-vol regimes).
 - **Status:** per the live rigor gate.
-  *(Corrected 2026-08-31, [#1598](https://github.com/a-apin/archimedes/issues/1598).)*
+  *(Corrected 2026-08-31, [#1598](https://github.com/aprin-labs/archimedes/issues/1598).)*
   This line used to assert a `CANDIDATE` verdict, explain it with 0.612 as a walk-forward
   out-of-sample Sharpe, and then retract a claim about **Faber**. Every clause of it
   belonged to a different strategy — 0.612 is Faber's DSR p-value — and the Faber sentence

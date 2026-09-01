@@ -19,7 +19,7 @@ the answer to it.
 ## Install
 
 Both distributions live in this repo and neither is on PyPI yet
-([D6](https://github.com/a-apin/archimedes/pull/1653)):
+([D6](https://github.com/aprin-labs/archimedes/pull/1653)):
 
 ```bash
 pip install -e ./cli -e ./mcp-server
@@ -62,7 +62,7 @@ The credential is resolved per call, not per process: a long-lived stdio server 
 immediately rather than living on in a captured variable.
 
 **Status of the bearer lane, honestly.** Scoped API keys are owner decision **D3** on
-[#1653](https://github.com/a-apin/archimedes/pull/1653), implemented on branch
+[#1653](https://github.com/aprin-labs/archimedes/pull/1653), implemented on branch
 `dbrowneup/1653-scoped-api-keys` and **not merged to `main` at the time of writing**. The
 header is written to that branch's spec so this server works the day it merges; until then
 a bearer key `401`s and the `401` remedy says so rather than sending you hunting a key

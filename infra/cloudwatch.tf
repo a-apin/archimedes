@@ -1367,7 +1367,7 @@ resource "aws_cloudwatch_metric_alarm" "reveal_reconcile_pending_stuck" {
 variable "deploy_drift_repo_url" {
   description = "Git remote whose branch tip the deploy-drift probe compares the running image tag against. Public HTTPS clone URL; read anonymously via git's ref advertisement (no token)."
   type        = string
-  default     = "https://github.com/a-apin/archimedes"
+  default     = "https://github.com/aprin-labs/archimedes"
 }
 
 variable "deploy_drift_git_ref" {

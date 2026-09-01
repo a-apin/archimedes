@@ -207,7 +207,7 @@ served a 404 to anyone who clicked them.
 The scaffold's answer was to drop `--strict` and live with the noise. The
 answer now is [`.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py),
 which rewrites those targets **at build time** to
-`https://github.com/a-apin/archimedes/blob/main/<path>` (preserving `#Lnn`
+`https://github.com/aprin-labs/archimedes/blob/main/<path>` (preserving `#Lnn`
 line anchors, and using `/tree/` for directories). No committed markdown was
 touched — the ~47 unique out-of-tree targets stay exactly as written, correct
 on GitHub, and now also correct on the site.

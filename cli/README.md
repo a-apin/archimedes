@@ -186,8 +186,8 @@ too.
 
 ## Links
 
-- [Repository](https://github.com/a-apin/archimedes)
-- [Issues](https://github.com/a-apin/archimedes/issues)
+- [Repository](https://github.com/aprin-labs/archimedes)
+- [Issues](https://github.com/aprin-labs/archimedes/issues)
 - [archimedes-arc.com](https://archimedes-arc.com)
 
 Released into the public domain under the [Unlicense](https://unlicense.org).

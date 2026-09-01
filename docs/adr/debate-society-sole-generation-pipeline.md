@@ -2,7 +2,7 @@
 
 > **Audience:** Archimedes team
 > **Status:** Accepted
-> **Date:** 2026-07-09 (architect deleted, `ccf4f2f` / PR [#1074](https://github.com/a-apin/archimedes/pull/1074), merged 2026-07-14)
+> **Date:** 2026-07-09 (architect deleted, `ccf4f2f` / PR [#1074](https://github.com/aprin-labs/archimedes/pull/1074), merged 2026-07-14)
 > **Owner:** Dan Browne
 > **Supersedes:** [`fusion-primary-generation.md`](fusion-primary-generation.md)
 > **Superseded-by:** —
@@ -55,7 +55,7 @@ the society was verified on the live path.
    existing clients do not break.
 2. **The Strategy Architect is deleted** — `ccf4f2f`, "[cleanup] Remove obsolete Strategy
    Architect — debate society is the sole generation path (#1064)", PR
-   [#1074](https://github.com/a-apin/archimedes/pull/1074). Deleted, not deprecated: a dead
+   [#1074](https://github.com/aprin-labs/archimedes/pull/1074). Deleted, not deprecated: a dead
    route left in the tree is a route someone re-enables.
 3. **`ARCHIMEDES_DEBATE_ENABLED` is retired**
    ([`debate_engine.py:6,205`](../../backend/archimedes/agents/debate_engine.py)). The flag

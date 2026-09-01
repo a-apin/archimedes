@@ -831,7 +831,7 @@ export default function Generate({ onNavigate, onStageChange, user }) {
 						Name assets, a mechanism, and a goal.{" "}
 						<a
 							className="generate-brief-guide-link"
-							href="https://github.com/a-apin/archimedes/blob/main/docs/writing-a-brief.md"
+							href="https://github.com/aprin-labs/archimedes/blob/main/docs/writing-a-brief.md"
 							target="_blank"
 							rel="noreferrer"
 						>

@@ -25,7 +25,7 @@ are authoritative.
 
 ## Findings notes — dated, historical, not living references
 
-*(Table added 2026-08-31, [#1598](https://github.com/a-apin/archimedes/issues/1598): these
+*(Table added 2026-08-31, [#1598](https://github.com/aprin-labs/archimedes/issues/1598): these
 four were in the directory but not in this index, and they carry the numbers most likely to
 be quoted.)* **Every one of them is a measurement at a stated vintage, not a current
 statement.** Each was run against the library, gate threshold, and `num_trials` convention

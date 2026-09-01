@@ -14,7 +14,7 @@
 > Where this doc and those drift, **the spec and the code win** — the thresholds below are
 > transcribed from `passes_all` and `_PROFILES`, not invented.
 >
-> **Reconciled 2026-08-31 ([#1598](https://github.com/a-apin/archimedes/issues/1598)):**
+> **Reconciled 2026-08-31 ([#1598](https://github.com/aprin-labs/archimedes/issues/1598)):**
 > against the live code and [`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md).
 > Two corrections landed — the threshold table is the **level-1 row of a five-level
 > strictness ladder**, not a set of literals (see below), and the promotion flow no longer

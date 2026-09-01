@@ -8,8 +8,8 @@
     "organization": "Archimedes",
     "url": "https://archimedes-arc.com"
   },
-  "documentationUrl": "https://github.com/a-apin/archimedes/blob/main/docs/agent-api.md",
-  "quickstartUrl": "https://github.com/a-apin/archimedes/blob/main/docs/agent-quickstart.md",
+  "documentationUrl": "https://github.com/aprin-labs/archimedes/blob/main/docs/agent-api.md",
+  "quickstartUrl": "https://github.com/aprin-labs/archimedes/blob/main/docs/agent-quickstart.md",
   "service": {
     "endpoint": "https://archimedes-arc.com/api",
     "manifest": "https://archimedes-arc.com/api/agent/manifest",

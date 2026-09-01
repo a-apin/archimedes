@@ -663,7 +663,7 @@ wallet key. It can do exactly what an unprivileged HTTP caller can do — the el
 journey above is still the journey, and the steps this server does not cover (sign-up,
 sign-in, wallet link, x402 signing, SSE, paper trading) are still done the way this page
 documents them. Owner decision **D2** on
-[#1653](https://github.com/a-apin/archimedes/pull/1653) chose that shape deliberately, and
+[#1653](https://github.com/aprin-labs/archimedes/pull/1653) chose that shape deliberately, and
 named the risk it carries: a second surface can drift from the API. The routes each tool
 calls are declared in `mcp-server/src/archimedes_mcp/contract.py` and asserted against the
 running app — both that they resolve and that each tool's "needs a credential" label is

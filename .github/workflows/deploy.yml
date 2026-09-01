@@ -114,7 +114,7 @@
 #
 # 3. VERIFY OIDC TRUST POLICY IS LOCKED TO THIS REPO.
 #    The role trust policy must restrict token.actions.githubusercontent.com
-#    to `repo:a-apin/archimedes:*` (or tighter: `:ref:refs/heads/main`).
+#    to `repo:aprin-labs/archimedes:*` (or tighter: `:ref:refs/heads/main`).
 #    Without that condition, any GitHub repo's Actions can assume the role.
 #    Verify with: aws iam get-role --role-name archimedes-github-deploy
 #    and inspect AssumeRolePolicyDocument's Condition block.
@@ -227,7 +227,7 @@ jobs:
         #
         # *** ACTION REQUIRED (Dan): add the `VITE_CIRCLE_CLIENT_KEY` repo
         # secret (Settings → Secrets and variables → Actions → Secrets, repo
-        # `a-apin/archimedes`) before the first real image build after this
+        # `aprin-labs/archimedes`) before the first real image build after this
         # PR merges — until then this build-arg resolves to an empty string
         # (same as today) and the wallet UI ships broken. ***
         #

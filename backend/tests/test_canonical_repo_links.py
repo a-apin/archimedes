@@ -5,10 +5,21 @@ for months. GitHub redirects renamed repositories, so the link *worked* — whic
 is exactly why nobody noticed. `docs-gate.yml`'s link checker could not catch it
 either: it verifies that links resolve, and a redirect resolves.
 
-So the check has to be on the name, not on the response. Two pre-rename
-spellings existed (`a-apin/archimedes-arcadia` and `hackagora/archimedes-arcadia`);
-both redirect to `a-apin/archimedes` today, and a redirect is a courtesy, not a
-guarantee — it breaks the moment either old name is re-claimed.
+So the check has to be on the name, not on the response. Three stale spellings
+exist now. Two came from the *repository* rename (`hackagora/archimedes-arcadia`
+and `a-apin/archimedes-arcadia`). The third came from the **organisation**
+rename of **2026-09-01**, `a-apin` → `aprin-labs`, which makes
+`a-apin/archimedes` one more redirecting spelling rather than the canonical one.
+All three redirect to `aprin-labs/archimedes` today, and a redirect is a
+courtesy, not a guarantee — it breaks the moment any of the old names is
+re-claimed.
+
+Scope of the scan below, stated plainly: it polices the `archimedes-arcadia`
+substring, which covers both repository spellings. It does **not** yet police
+the bare `a-apin` org name, because `a-apin.github.io` is quoted on purpose by
+the docs-site guards (`test_docs_site.py`, `ui/test/docs-link.test.js`) to
+record what #1634 moved off. `CANONICAL_REPO` below is the name those failure
+messages point offenders at.
 
 **Historical documents are deliberately exempt.** `docs/archive/`,
 `docs/handovers/` and `docs/audits/` record what was true at a point in time,
@@ -25,7 +36,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-CANONICAL_REPO = "a-apin/archimedes"
+CANONICAL_REPO = "aprin-labs/archimedes"
 
 # Assembled at runtime so this file does not match its own scan.
 PRE_RENAME_NAMES = ("archimedes-" + "arcadia",)

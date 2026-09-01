@@ -9,7 +9,7 @@
 > ([`../adr/num-trials-self-containment.md`](../adr/num-trials-self-containment.md)). The
 > experiment's *conclusion* is unaffected — it turns on Sharpe ratios, not on the gate
 > threshold — but three passages were corrected in place on 2026-08-31
-> ([#1598](https://github.com/a-apin/archimedes/issues/1598)) and are marked where they sit.
+> ([#1598](https://github.com/aprin-labs/archimedes/issues/1598)) and are marked where they sit.
 > Companion to
 > [`second-wave-multi-asset-strategies.md`](../plans/second-wave-multi-asset-strategies.md).
 > **TL;DR:** No. All nine second-wave strategies are admitted as `CANDIDATE`
@@ -33,7 +33,7 @@ larger and more appropriate universes, using the **identical** rigor machinery
 
 ## First: the gate is not a black hole
 
-> **Retracted 2026-08-31 ([#1598](https://github.com/a-apin/archimedes/issues/1598)).**
+> **Retracted 2026-08-31 ([#1598](https://github.com/aprin-labs/archimedes/issues/1598)).**
 > This paragraph stated how many library strategies clear the rigor gate and named them with
 > their DSR p-values. `CLAUDE.md` forbids quoting a curated-library pass count anywhere, and
 > for a concrete reason that post-dates this note: strategies reported as passing were later
@@ -119,7 +119,7 @@ we set `num_trials_in_selection`. Sweeping it on that strategy's real returns:
 | 22 (full library) | 0.941 | no | **yes** |
 | 50 | 0.896 | no | no |
 
-> **Corrected 2026-08-31 ([#1598](https://github.com/a-apin/archimedes/issues/1598)).**
+> **Corrected 2026-08-31 ([#1598](https://github.com/aprin-labs/archimedes/issues/1598)).**
 > The table shipped with a single pass/fail column computed against the 0.95 bar, and its
 > verdicts went stale twice over. Both bars are now shown side by side rather than the old
 > one being overwritten: the p-values are the measurement and have not changed, but **what
@@ -141,6 +141,6 @@ library size (22), which penalized each strategy as if it were cherry-picked as 
 **not** data-mined from the library, that was argued to be too harsh — a genuine design
 question about the gate's calibration, written up separately for a team decision rather
 than changed unilaterally. **That decision was subsequently taken this way**
-([#537](https://github.com/a-apin/archimedes/issues/537) → the self-containment ADR): the
+([#537](https://github.com/aprin-labs/archimedes/issues/537) → the self-containment ADR): the
 library size no longer enters `num_trials` on any path. Note it was **not** what blocked
 the other eight: they fail on performance, not on the penalty.
