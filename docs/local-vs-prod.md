@@ -214,7 +214,7 @@ can both hold it.
 |---|---|
 | `profiles` | `COMPOSE_PROFILES` selects `localdb` and does **not** select `runners`. |
 | `runners-off` | No funds-adjacent runner would start. Fails both if a runner loses its `profiles: ["runners"]` gate and if the active profile set would start one anyway. |
-| `no-ecr-pull` | No service carrying `build:` resolves to a remote registry with `ECR_REGISTRY` / `IMAGE_TAG` unset — the fresh-clone case. **Currently failing; that is leak 3.** |
+| `no-ecr-pull` | No service carrying `build:` resolves to a remote registry with `ECR_REGISTRY` / `IMAGE_TAG` unset — the fresh-clone case. Closed by #1683: local images resolve to project-scoped `:local` tags; the ECR pull path is the explicit opt-in overlay `docker-compose.ecr.yml`. |
 | `no-prod-secrets` | `PUBLIC_DOMAIN` blank (so `main.py`'s SSM gate never fires) and `AWS_SSM_PATH_PREFIX` blank. |
 | `local-datastores` | With `localdb` active, `DATABASE_URL` / `REDIS_URL` address the in-stack containers, not Aurora / ElastiCache. |
 
