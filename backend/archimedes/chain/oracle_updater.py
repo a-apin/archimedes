@@ -4,10 +4,16 @@ Implements IOracleUpdater from archimedes/interfaces/chain.py.
 Equity/ETF prices (and the #775 cross-check's secondary reading) come from
 the market-data provider seam (``archimedes.services.market_data_provider``,
 #1218) — default provider yfinance, unchanged behavior; vendor-swappable via
-``MARKET_DATA_PROVIDER``. Crypto still comes straight from CoinGecko
-(unaffected by that seam). Pushes prices via Circle Developer Controlled
-Wallets API (the oracle owner wallet is a Circle-managed wallet — no raw
-private key available).
+``MARKET_DATA_PROVIDER``. Crypto reaches that same seam as of #1710, through
+an ordered ``ORACLE_CRYPTO_SOURCE`` cascade whose default keeps CoinGecko as
+the primary and adds the provider seam as the documented fallback. Pushes
+prices via Circle Developer Controlled Wallets API (the oracle owner wallet is
+a Circle-managed wallet — no raw private key available).
+
+Every symbol in the push set that ends a cycle with NO price from ANY
+configured source is logged by name with its reason
+(``_log_push_exclusions``) and left unpushed. No price is ever fabricated,
+defaulted or carried forward to fill a source gap.
 """
 
 from __future__ import annotations
@@ -49,6 +55,88 @@ YFINANCE_MAP = {
 CRYPTO_MAP = {
     "sBTC": "bitcoin",
 }
+
+# Symbol → market-data-provider vendor ticker for the SAME crypto synths (#1710).
+#
+# CRYPTO_MAP above stays the push-set SSOT (``oracle_health._push_set_symbols``
+# reads it) and keeps holding CoinGecko ids; this map is the second coordinate
+# the same symbols need to be askable through the ``MARKET_DATA_PROVIDER`` seam
+# (``services.market_data_provider``). Ticker shape is the yfinance/SSOT
+# convention ("<BASE>-USD", matching ``synthetic_universe.json``'s
+# ``yfinance_ticker`` for every crypto entry) because that is what the seam's
+# adapters take: ``YFinanceProvider`` passes it straight through and
+# ``TiingoProvider._classify_tiingo_ticker`` routes it to the crypto endpoint
+# family by that exact shape.
+#
+# A symbol present in CRYPTO_MAP but absent here is not a silent gap: the
+# provider leg records "no vendor ticker mapped" as its named exclusion reason.
+CRYPTO_VENDOR_TICKERS = {
+    "sBTC": "BTC-USD",
+}
+
+# ─── Crypto source order (#1710) ───
+# Before this, the crypto leg was hardcoded to CoinGecko with NO fallback and
+# NO seam involvement, so a CoinGecko miss (429/timeout/shape change) silently
+# dropped the symbol from the push cycle — the on-chain oracle then aged out
+# and `/health`'s `oracle_fresh` flipped false with nothing in the log naming
+# the symbol as excluded. Both halves of that are fixed here: crypto is now
+# askable through the ``MARKET_DATA_PROVIDER`` seam like every other price
+# (docs/adr/market-data-sourcing.md's "reversible by build" claim was not true
+# of this leg), and a symbol no configured source could price is excluded from
+# the push attempt with a NAMED reason (never a fabricated or substituted
+# price).
+#
+# Modes map to an ordered (primary, …fallback) source list:
+#   • ``coingecko``      (DEFAULT) — CoinGecko first, provider seam as the
+#                        documented fallback. Deploying this change is a
+#                        no-op on the happy path: the price still comes from
+#                        CoinGecko with ``source="coingecko"``, byte-for-byte
+#                        as before. Only a CoinGecko MISS behaves differently
+#                        (it now has somewhere to go instead of vanishing).
+#   • ``coingecko_only`` — literal pre-#1710 behavior: CoinGecko, no fallback.
+#   • ``provider``       — seam first, CoinGecko as the documented fallback.
+#                        This is the flip to make once the active provider can
+#                        actually serve intraday crypto quotes.
+#   • ``provider_only``  — seam only, NO CoinGecko fallback. The licensing-
+#                        strict mode: the ADR's "never mix vendors" rule means
+#                        an operator who flipped to a licensed vendor may want
+#                        a miss to stay a miss rather than be quietly filled
+#                        from an unlicensed free API.
+#
+# NOTE (verified against the adapter, not assumed): ``TiingoProvider`` raises
+# ``NotImplementedError`` from ``get_intraday_quotes_batch`` — the ADR's
+# "the live oracle push … is not cutover-ready" consequence. So with
+# ``MARKET_DATA_PROVIDER=tiingo``, ``provider`` mode logs that refusal by name
+# and falls back to CoinGecko, and ``provider_only`` prices nothing. Tiingo
+# serves crypto DAILY bars only today.
+DEFAULT_CRYPTO_SOURCE = "coingecko"
+_CRYPTO_SOURCE_ORDER: dict[str, tuple[str, ...]] = {
+    "coingecko": ("coingecko", "provider"),
+    "coingecko_only": ("coingecko",),
+    "provider": ("provider", "coingecko"),
+    "provider_only": ("provider",),
+}
+
+
+def _crypto_source_order() -> tuple[str, ...]:
+    """Ordered crypto source legs from ``ORACLE_CRYPTO_SOURCE``.
+
+    Fails SAFE to the default on an unrecognized value (logged), matching
+    ``_int_env`` and ``price_source.price_source_mode`` — a config typo must
+    not crash a funds-adjacent singleton runner.
+    """
+    raw = os.getenv("ORACLE_CRYPTO_SOURCE", DEFAULT_CRYPTO_SOURCE).strip().lower()
+    order = _CRYPTO_SOURCE_ORDER.get(raw)
+    if order is None:
+        logger.warning(
+            "unknown ORACLE_CRYPTO_SOURCE=%r (expected one of %s) — falling back to %r",
+            raw,
+            ", ".join(sorted(_CRYPTO_SOURCE_ORDER)),
+            DEFAULT_CRYPTO_SOURCE,
+        )
+        return _CRYPTO_SOURCE_ORDER[DEFAULT_CRYPTO_SOURCE]
+    return order
+
 
 CIRCLE_API_BASE = "https://api.circle.com/v1/w3s"
 CIRCLE_BLOCKCHAIN = "ARC-TESTNET"
@@ -196,6 +284,10 @@ class OracleUpdater:
 
     def __init__(self) -> None:
         self._price_cache: dict[str, AssetPrice] = {}
+        # symbol → why no source produced an observation THIS cycle (#1710).
+        # Cleared at the top of every fetch_prices(); read by
+        # _log_push_exclusions to name each excluded symbol in the runner log.
+        self._source_miss_reasons: dict[str, str] = {}
         self._circle_public_key: str | None = None  # cached per instance lifetime
 
         # Circle credentials from env
@@ -267,6 +359,10 @@ class OracleUpdater:
         # runner imports cleanly.
         from archimedes.services.price_source import load_admin_prices, price_source_mode
 
+        # Named-exclusion bookkeeping is per-cycle (#1710): last cycle's reasons
+        # must never be reported against this cycle's misses.
+        self._source_miss_reasons = {}
+
         now = datetime.now(UTC)
         mode = price_source_mode()
         equity_symbols = {k: v for k, v in YFINANCE_MAP.items() if k.startswith("s")}
@@ -288,7 +384,42 @@ class OracleUpdater:
             self._price_cache[p.symbol] = p
 
         logger.info("Fetched %d prices (source=%s)", len(prices), mode)
+        self._log_push_exclusions(prices)
         return prices
+
+    def _log_push_exclusions(self, prices: list[AssetPrice]) -> None:
+        """Name every push-set symbol this cycle produced no price for (#1710).
+
+        The push set is derived the SAME way ``oracle_health._push_set_symbols``
+        derives the probed set — ``YFINANCE_MAP``'s leading-``"s"`` synth keys
+        plus ``CRYPTO_MAP`` — so the set that gets a "why it is missing" line
+        here is exactly the set ``/health``'s ``oracle_fresh`` keys on. Without
+        this, a symbol whose upstream returned nothing simply never appeared in
+        ``push_prices_on_chain``'s loop: no rejection line (that only fires for
+        a price that EXISTS and fails a gate), no exclusion line, nothing —
+        while its on-chain oracle quietly aged past ``MAX_STALENESS`` and held
+        ``archimedes-oracle-stale`` in ALARM. That is the "starved symbol"
+        failure mode #1710 reports, and it was invisible to a runner-log grep.
+
+        WARNING level on purpose: this is not a routine event, and the issue's
+        acceptance criterion ("no push-universe symbol whose source errored in
+        the prior 24h") is a grep over exactly these lines.
+
+        No price is ever synthesized to fill the gap — the anti-goal is
+        explicit in the issue and restated in the log text so a reader of the
+        line cannot mistake exclusion for substitution.
+        """
+        expected = {s for s in YFINANCE_MAP if s.startswith("s")} | set(CRYPTO_MAP)
+        have = {p.symbol for p in prices}
+        for symbol in sorted(expected - have):
+            reason = self._source_miss_reasons.get(symbol) or "no observation returned by any configured source"
+            logger.warning(
+                "oracle push exclusion: %s EXCLUDED from this push cycle — %s. "
+                "No price fabricated or substituted; the on-chain oracle keeps its previous "
+                "value and will read stale until a source returns data for this symbol.",
+                symbol,
+                reason,
+            )
 
     async def _fetch_cascade(
         self, equity_symbols: dict[str, str], now: datetime, *, strict_pyth: bool
@@ -672,8 +803,12 @@ class OracleUpdater:
            backend-only widening would revert on-chain and burn a tx).
 
         Single-source design (deferred multi-source to v2 per issue #508):
-        Each symbol currently has exactly one upstream source (yfinance for
-        equities/futures, CoinGecko for sBTC). Multi-source corroboration
+        Each symbol still resolves to exactly ONE upstream observation per
+        cycle. #1710 gave the crypto leg an ordered FALLBACK chain
+        (``ORACLE_CRYPTO_SOURCE``) — a second source is consulted only when the
+        first produced nothing, and the winner's true vendor is stamped on
+        ``AssetPrice.source``. That is failover, not corroboration; no two
+        sources are ever compared here. Multi-source corroboration
         would require N independent feeds; that is a v2 enhancement documented
         in docs/design.md § Price Oracle. Today, we validate upstream
         freshness and deviation bounds against the last known good on-chain
@@ -1029,17 +1164,81 @@ class OracleUpdater:
 
         quotes = get_provider().get_intraday_quotes_batch(symbols)
         source = provider_name()
+        # Named-exclusion bookkeeping (#1710): a ticker the provider had no data
+        # for is absent from `quotes` per the seam's per-item-skip contract. Record
+        # WHY here so _log_push_exclusions can name it instead of the push cycle
+        # dropping the symbol with nothing in the log tying it to a source gap.
+        for synth_symbol, ticker in symbols.items():
+            if synth_symbol not in quotes:
+                self._source_miss_reasons[synth_symbol] = (
+                    f"provider {source!r} returned no intraday observation for {ticker}"
+                )
         return [
             AssetPrice(symbol=synth_symbol, price_usd=price, timestamp=timestamp, source=source)
             for synth_symbol, (price, _bar_ts) in quotes.items()
         ]
 
     async def _fetch_crypto(self, timestamp: datetime) -> list[AssetPrice]:
-        """Fetch crypto prices from CoinGecko API."""
+        """Fetch crypto prices through an ordered, NAMED source cascade (#1710).
+
+        Order comes from ``ORACLE_CRYPTO_SOURCE`` (see ``_crypto_source_order``
+        and the constant block's mode table). Default ``coingecko`` keeps
+        CoinGecko as the primary — an unchanged happy path — and adds the
+        ``MARKET_DATA_PROVIDER`` seam as the documented fallback, which is what
+        puts this leg behind the vendor abstraction the market-data ADR claims
+        the whole codebase already sits behind.
+
+        Every returned price carries its TRUE ``source`` (``"coingecko"`` or the
+        active provider name), so a downstream consumer — including the #775
+        cross-check, which treats "same source" as "skip" — can still tell the
+        vendors apart. Nothing is filled in from a stale cache and no default
+        is invented: a symbol no leg could price is left OUT of the result with
+        its reason recorded in ``_source_miss_reasons`` for
+        ``_log_push_exclusions`` to name.
+        """
+        order = _crypto_source_order()
         results: list[AssetPrice] = []
+        served: set[str] = set()
+        reasons: dict[str, list[str]] = {}
+
+        for leg in order:
+            remaining = {s: cg_id for s, cg_id in CRYPTO_MAP.items() if s not in served}
+            if not remaining:
+                break
+            if leg == "coingecko":
+                got, why = await self._fetch_crypto_coingecko(remaining, timestamp)
+            else:
+                got, why = await self._fetch_crypto_provider(sorted(remaining), timestamp)
+            results.extend(got)
+            served.update(p.symbol for p in got)
+            for symbol, msg in why.items():
+                reasons.setdefault(symbol, []).append(msg)
+
+        for symbol in CRYPTO_MAP:
+            if symbol in served:
+                continue
+            self._source_miss_reasons[symbol] = (
+                f"crypto sources exhausted (ORACLE_CRYPTO_SOURCE order: {'→'.join(order)}): "
+                + " | ".join(reasons.get(symbol, ["no source attempted"]))
+            )
+        return results
+
+    async def _fetch_crypto_coingecko(
+        self, wanted: dict[str, str], timestamp: datetime
+    ) -> tuple[list[AssetPrice], dict[str, str]]:
+        """CoinGecko leg. Returns ``(prices, {symbol: named failure reason})``.
+
+        Behavior for a symbol CoinGecko DOES serve is unchanged from the
+        pre-#1710 implementation, down to the URL and the ``source`` string.
+        What changed is that a failure now produces a reason string the caller
+        can attribute to the symbol, instead of only a log line that the push
+        loop never sees.
+        """
+        results: list[AssetPrice] = []
+        reasons: dict[str, str] = {}
         try:
             async with aiohttp.ClientSession() as session:
-                for symbol, cg_id in CRYPTO_MAP.items():
+                for symbol, cg_id in wanted.items():
                     try:
                         url = f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd"
                         async with session.get(url) as resp:
@@ -1054,11 +1253,78 @@ class OracleUpdater:
                                         source="coingecko",
                                     )
                                 )
+                            else:
+                                reasons[symbol] = f"coingecko HTTP {resp.status} for id {cg_id!r}"
                     except Exception as e:
                         logger.warning(f"Failed to fetch {symbol} from CoinGecko: {e}")
+                        reasons[symbol] = f"coingecko fetch failed for id {cg_id!r}: {e}"
         except Exception as e:
             logger.warning(f"Crypto fetch error: {e}")
-        return results
+            for symbol, cg_id in wanted.items():
+                reasons.setdefault(symbol, f"coingecko session error (id {cg_id!r}): {e}")
+        return results, reasons
+
+    async def _fetch_crypto_provider(
+        self, wanted: list[str], timestamp: datetime
+    ) -> tuple[list[AssetPrice], dict[str, str]]:
+        """Market-data-provider leg (#1218 seam) for crypto. Returns
+        ``(prices, {symbol: named failure reason})``.
+
+        Uses the same batched intraday call the equity leg uses
+        (``get_intraday_quotes_batch``) so the two legs share one vendor
+        abstraction rather than two. Like ``_fetch_yfinance``, this stamps the
+        POLL time rather than the vendor's bar time — the known, tracked
+        honesty gap documented on that method (a bar-time change is split out
+        to its own review because it would stop every off-hours push), and
+        keeping the two legs identical here means this change cannot quietly
+        alter what ``_validate_for_push``'s staleness gate compares.
+
+        A provider that cannot serve intraday at all (``TiingoProvider`` raises
+        ``NotImplementedError`` — the ADR's stated "live oracle push is not
+        cutover-ready" consequence) is reported by name for every requested
+        symbol rather than swallowed.
+        """
+        from archimedes.services.market_data_provider import get_provider, provider_name
+
+        results: list[AssetPrice] = []
+        reasons: dict[str, str] = {}
+
+        tickers = {s: CRYPTO_VENDOR_TICKERS[s] for s in wanted if s in CRYPTO_VENDOR_TICKERS}
+        for symbol in wanted:
+            if symbol not in CRYPTO_VENDOR_TICKERS:
+                reasons[symbol] = "no vendor ticker mapped in CRYPTO_VENDOR_TICKERS — provider leg cannot ask for it"
+        if not tickers:
+            return results, reasons
+
+        name = provider_name()
+        try:
+            quotes = await asyncio.to_thread(get_provider().get_intraday_quotes_batch, tickers)
+        except NotImplementedError as e:
+            for symbol, ticker in tickers.items():
+                reasons[symbol] = (
+                    f"provider {name!r} does not implement intraday quotes for {ticker} "
+                    f"(daily bars only — see docs/adr/market-data-sourcing.md): {e}"
+                )
+            logger.warning(
+                "crypto provider leg unavailable: MARKET_DATA_PROVIDER=%s cannot serve intraday quotes (%s)",
+                name,
+                e,
+            )
+            return results, reasons
+        except Exception as e:
+            for symbol, ticker in tickers.items():
+                reasons[symbol] = f"provider {name!r} fetch failed for {ticker}: {e}"
+            logger.warning("crypto provider leg failed (provider=%s): %s", name, e)
+            return results, reasons
+
+        for symbol, ticker in tickers.items():
+            quote = quotes.get(symbol)
+            if quote is None:
+                reasons[symbol] = f"provider {name!r} returned no observation for {ticker}"
+                continue
+            price = quote[0] if isinstance(quote, tuple) else quote
+            results.append(AssetPrice(symbol=symbol, price_usd=price, timestamp=timestamp, source=name))
+        return results, reasons
 
     async def _fetch_yfinance_single(self, symbol: str) -> tuple[float, datetime] | None:
         """Fetch a single provider price + its bar timestamp (e.g. VIX, or the
