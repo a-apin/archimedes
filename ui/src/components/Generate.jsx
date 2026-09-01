@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
+import FreeGenerationBanner from "./FreeGenerationBanner";
 import { SURPRISE_BRIEFS } from "../data/surpriseBriefs";
 import { pickSurpriseBrief } from "../data/pickSurpriseBrief";
 import { ASSET_GROUPS, SUPPORTED_ASSETS } from "../data/assetUniverse";
@@ -762,6 +763,10 @@ export default function Generate({ onNavigate, onStageChange }) {
 				</p>
 			</header>
 
+			{/* Free-generation allowance (#1643) — one isolated component, one
+			    mount point. Renders nothing when there is no honest number to
+			    show (signed out, request failed, backend reported null). */}
+
 			<div className="generate-workbench">
 				{/* ── 1. BRIEF INPUT + SUBMIT ── */}
 				<section className="card generate-brief">
@@ -1141,7 +1146,9 @@ export default function Generate({ onNavigate, onStageChange }) {
 					    immediately above the submit controls, so the two changes do
 					    not have to touch the same lines. #1642 builds no gating
 					    logic — if this div is still empty, #1643 has not landed. */}
-					<div className="generate-gate-slot" data-generate-gate-slot />
+					<div className="generate-gate-slot" data-generate-gate-slot>
+						<FreeGenerationBanner />
+					</div>
 
 					{/* `generate-submit-row` (not a bare flex utility chain) because
 					    the phone layout stacks it: the live status region above, a

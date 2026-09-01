@@ -1,3 +1,5 @@
+import { canStore } from "./storage-consent.js";
+
 const STORAGE_KEY = "archimedes.theme";
 
 // localStorage can throw (Safari ITP in an embedded/third-party context,
@@ -23,7 +25,12 @@ export function applyTheme(theme) {
 	// Storage failure must not prevent current-page theme updates.
 	document.documentElement.setAttribute("data-theme", next);
 	try {
-		localStorage.setItem(STORAGE_KEY, next);
+		// Functional category (#1647): with functional storage rejected — or
+		// simply not yet consented to — the theme applies to this page and is
+		// deliberately NOT persisted. getStoredTheme's dark default is the
+		// fallback, which is why rejecting costs a reload's memory, not the
+		// toggle itself.
+		if (canStore(STORAGE_KEY)) localStorage.setItem(STORAGE_KEY, next);
 	} catch {
 		// Non-fatal: theme will not persist across reloads.
 	}
