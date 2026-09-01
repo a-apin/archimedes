@@ -14,17 +14,12 @@ neither docstring has to disambiguate the other's meaning inline.
 
 Honesty note (mirrors docs/agent-api.md): READ — including the rigor readback
 ``GET /api/strategies/{strategy_id}``, which is a PUBLIC read like its siblings — plus
-AUTH, WALLETLINK, GENERATE, ACCOUNT, RIGOR, PAPER (simulated deployments, no chain,
-no funds), DEPLOY, and the marketplace PUBLISH/SUBSCRIBE + MONITOR endpoints are all
-live today. The T3.2 contract redeploy (issue #588, closed 2026-07-14) landed 289
-contracts on Arc testnet on 2026-07-09: DEPLOY calls the real, deployed VaultFactory
-(``chain_executor.create_vault``), MONITOR reads a real vault's on-chain health, and
-marketplace PUBLISH/SUBSCRIBE provision real vaults + Circle wallets against those same
-contracts — the same "session + linked wallet" gating as every other live group here,
-with no remaining code-level gate that singles them out as not-yet-wired. This manifest
-makes no claim about marketplace payment/billing settlement (that is tracked
-separately and out of scope for this file — see the ``auth`` block below, which
-advertises no payment scheme).
+AUTH, WALLETLINK, GENERATE, ACCOUNT, RIGOR, and PAPER (simulated deployments, no chain,
+no funds) are live today. DEPLOY, marketplace PUBLISH/SUBSCRIBE, and MONITOR exist as
+routes but are **not a public surface**: vault execute/monitor is roadmap (no user vault
+has ever been created; the UI journey is gated off every shipped build), and marketplace
+is not a product a visitor can use. This manifest makes no claim about marketplace
+payment/billing settlement.
 
 The ``erc8004`` block (#1527) is the on-chain identity leg and is deliberately the
 weakest claim in this document: the spec-typed registration file is published, and
@@ -155,13 +150,14 @@ async def get_agent_manifest():
         # tests/test_agent_manifest_static_consistency.py so the pair cannot drift
         # again, in either direction.
         "blurb": (
-            "Agentic trading, grounded in research — settled on Arc. Turns a "
-            "natural-language investment intent into a research-grounded, "
-            "rigor-gated portfolio strategy and paper-trades it, "
-            "commit-revealing the reasoning trace on the Arc testnet "
-            "(chain ID 5042002) when anchoring succeeds — read `arc_tx_hash` "
-            "rather than assuming it did. Executing strategies in "
-            "non-custodial USDC vaults on Arc is roadmap, not shipped."
+            "Turns a natural-language investment intent into a research-grounded, "
+            "rigor-gated portfolio strategy on Arc public testnet "
+            "(chain ID 5042002). Generation is not anchored on-chain. Simulated "
+            "paper deployments are live: paper_daily_returns is the "
+            "graded track record the rigor gate sees. paper_agent_trades "
+            "(PR #1704, not on main) is not a live path. Neither is on-chain "
+            "execution proof. Executing strategies in non-custodial USDC "
+            "vaults on Arc is roadmap, not shipped."
         ),
         "docs": {
             "llms_txt": "/llms.txt",
@@ -276,11 +272,10 @@ async def get_agent_manifest():
                     "verify": "POST /api/rigor/verify",
                 },
             },
-            # Paper trading is simulated (no chain, no funds) and was the first
-            # deployment path to go live. `deploy` below is now ALSO live
-            # (post-T3.2, #588 closed) for a real, non-custodial on-chain vault —
-            # an agent choosing between the two trades simulation-only for
-            # real capital at risk, not "works" vs "doesn't work".
+            # Simulated paper deployments (POST /api/paper/deployments) are live.
+            # The graded book is paper_daily_returns. paper_agent_trades is an
+            # executor ledger from PR #1704 and is not on main — status "live"
+            # below does not advertise that table. `deploy` is roadmap.
             "paper": {
                 "status": "live",
                 "auth_required": True,
@@ -291,36 +286,31 @@ async def get_agent_manifest():
                     "stop": "POST /api/paper/deployments/{deployment_id}/stop",
                 },
             },
-            # Live post-T3.2 (#588 closed 2026-07-14; 289 contracts landed on Arc
-            # testnet 2026-07-09). create_vault calls the real, deployed
-            # VaultFactory and transfers Ownable ownership to the caller's linked
-            # wallet (non-custodial) — same gating (session + linked wallet) as
-            # every other authenticated group above, no remaining feature gate.
+            # Roadmap, not a public surface. create_vault calls the deployed
+            # VaultFactory, but the journey is gated off every shipped UI and
+            # no user vault has ever been created.
             "deploy": {
-                "status": "live",
+                "status": "roadmap",
                 "auth_required": True,
                 "routes": {
                     "create_vault": "POST /api/vaults/create",
                 },
             },
-            # Live post-T3.2, same as `deploy` above: publish/subscribe are wired
-            # to the redeployed contracts (real vault creation, real Circle
-            # dev-controlled subscriber wallets, on-chain fee-cap enforcement).
-            # This status is about the ROUTES, not about billing: whether a
-            # subscription's recurring USDC charge settles for real is a
-            # separate, still-open concern (PAYMENTS_DRY_RUN) tracked outside
-            # this file — this manifest advertises no payment scheme either way.
+            # Marketplace is not a public surface. Route strings exist; do not
+            # present publish/subscribe as a shipped journey. Billing settlement
+            # rides PAYMENTS_DRY_RUN and is not claimed here.
             "marketplace": {
-                "status": "live",
+                "status": "roadmap",
                 "auth_required": True,
                 "routes": {
                     "publish": "POST /api/marketplace/publish",
                     "subscribe": "POST /api/marketplace/subscribe",
                 },
             },
-            # Live post-T3.2: reads a real vault's on-chain health once one exists.
+            # Roadmap: the health route resolves, but with no user vault there
+            # is no live position of a user's to read.
             "monitor": {
-                "status": "live",
+                "status": "roadmap",
                 "auth_required": False,
                 "routes": {
                     "vault_health": "GET /api/vaults/{address}/health",
@@ -329,6 +319,6 @@ async def get_agent_manifest():
         },
         "faucet": {
             "url": "https://faucet.circle.com/",
-            "description": "Free Arc testnet USDC (also used as gas on Arc). No real funds at risk.",
+            "description": "Free Arc testnet USDC (also used as gas on Arc). No mainnet money; generation still settles real testnet USDC — read GET /api/generate/quote.",
         },
     }

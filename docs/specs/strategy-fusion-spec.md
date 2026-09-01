@@ -5,7 +5,8 @@
 > [`backend/archimedes/agents/strategy_fusion.py`](../../backend/archimedes/agents/strategy_fusion.py)
 > (650 lines, feature-flagged, DB-first corpus reads with file fallback). **What ships
 > today:** the 3-input fusion engine (`POST /api/strategies/generate`) consuming
-> user brief × live market regime × 10,000-paper corpus → grounded strategy spec.
+> user brief × live market regime × the q-fin corpus (live count: `GET /health`
+> `corpus_papers` / `corpus_db_count`) → grounded strategy spec.
 > **What's deferred:** the SPECTER2 + RAG + minimal KG retrieval upgrade
 > (GitHub issue `#96`, now *unblocked* after `#95` engine v2 merged; previously
 > keyword-only selection). See also

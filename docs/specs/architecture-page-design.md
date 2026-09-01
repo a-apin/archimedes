@@ -224,8 +224,10 @@ unaffected — they are non-custodial today.
 
 **Label:** Where the ideas come from
 
-**Body:** Generation starts from a corpus of quantitative-finance research — a 10,000-paper
-manifest spanning statistical finance, portfolio math, market microstructure, and agentic AI.
+**Body:** Generation starts from a corpus of quantitative-finance research — arXiv
+q-fin preprints spanning statistical finance, portfolio math, market microstructure, and agentic AI.
+Do not freeze a paper count in this spec: live values are `GET /health` `corpus_papers` /
+`corpus_db_count`.
 At generate time, retrieval runs in two stages: a keyword/asset-class filter, then a relevance
 rerank against your brief, computed at request time over each candidate's title and abstract,
 with no vector index behind it. `/health`'s `paper_rag` field says which scorer is running:
@@ -234,8 +236,8 @@ production state today). Retrieved papers are
 embargo-filtered — nothing published after a decision point can inform it — and every citation
 carries its arXiv ID and content hash.
 
-**Honesty card (live-driven):** The corpus is being hydrated: `{ingested}` of the 10,000
-manifest papers are fully ingested and retrievable today *(live count)*. The knowledge-graph
+**Honesty card (live-driven):** The corpus is being hydrated: `{ingested}` of the
+manifest papers are fully ingested and retrievable today *(live count from `/health`)*. The knowledge-graph
 layer (citation graph over the corpus) is built by a pipeline that has not yet produced its
 first production artifact — the Corpus page shows exactly that, rather than a synthesized
 graph. Generation requires at least two relevant papers or it declines to run.
@@ -249,8 +251,9 @@ is unreproducible — run as code in the live path:
 
 - **Outcome Embargo** — decisions only see papers published before the decision time.
 - **Time-Aware Retrieval** — relevance decays with paper age, faster in volatile regimes.
-- **Hierarchy of Truth** — chain state outranks the LLM's narrative; a consistency check
-  (V_check) fails any rebalance where they disagree.
+- **Hierarchy of Truth** — when vault execution ships, chain state will outrank the LLM's
+  narrative; a consistency check (V_check) will fail any rebalance where they disagree.
+  That path is not live.
 - **Source Tracking** — every cited paper carries (arXiv ID, version, content hash), anchored
   with the trace.
 

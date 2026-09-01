@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-31
+> **updated:** 2026-09-01
 > **superseded-by:** —
 
 Every public claim Archimedes makes, with a verdict on each and the code that backs it.
@@ -12,9 +12,10 @@ file is where that rule becomes checkable instead of aspirational: one row per c
 citation per row, and a test (`backend/tests/test_claims_ledger.py`) that fails when a
 citation stops resolving.
 
-**Measured against `main` on 2026-08-31.** Every `TRUE` row below was re-read in the live
+**Measured against `main` on 2026-09-01.** Every `TRUE` row below was re-read in the live
 tree on that date — the citation is the thing that was read, not a remembered fact. A row
-whose evidence could not be confirmed is not marked `TRUE`.
+whose evidence could not be confirmed is not marked `TRUE`. The 2026-09-01 copy-honesty
+pass moved the remaining `OVER-CLAIMED` generation-on-chain tags to `CHANGED`.
 
 ## How to read a row
 
@@ -61,6 +62,8 @@ checks that recur:
 | Every vault / non-custodial / custody claim on this page | `RETRACTED` | #1469. `ui/test/roadmap-copy.test.js` source-scans this file for `/vault\|non-?custodial\|custody/i` with no carve-outs — which is why the file's own comments are written around the words. |
 | "Arc census live — ≥N reported instances" | `TRUE` | `ui/src/components/Landing.jsx:504` renders "Live census unavailable · No cached count substituted" when `GET /api/config/contracts` fails or the pool count is unreadable. The count is a floor by construction (`:16` scopes it to five core fields). |
 | The page quotes no strategy pass count and no performance number | `TRUE` | The only percentage on the page is "70/30" — a methodology parameter, not a result. Deliberate; see `ui/src/components/Landing.jsx:90`. |
+| Footer / announcement — "No real funds" | `CHANGED` | Was an unqualified "No real funds" on `PublicLayout.jsx` and the Landing footer, which read as *nothing you sign moves value* after the generation paywall shipped (`dry_run: false`). Narrowed to no mainnet money; generation fee is real testnet USDC: `ui/src/components/PublicLayout.jsx:23`, `ui/src/components/Landing.jsx:762`. |
+| "Does Archimedes trade for me?" paper-trading split | `CHANGED` | Landing FAQ no longer names the unmerged `paper_agent_trades` table as a visitor path. `ui/src/components/Landing.jsx:182` says simulated paper trading grades `paper_daily_returns`, not on-chain execution proof. The two-book split from [PR #1704](https://github.com/a-apin/archimedes/pull/1704#issuecomment-5493036672) lives on machine surfaces (`agent.json` paper note), which state that table is not on main. |
 
 ## Security page — `ui/src/components/Security.jsx`
 
@@ -115,21 +118,21 @@ unset, so the boundary holds under both answers.
 |---|---|---|
 | Vault execution — "**Execute** and **monitor** are roadmap … When it ships, a strategy that survives the gate *will be* deployable into a non-custodial vault on Arc … Today it will not." | `CHANGED` | `README.md:24`, rewritten to the future tense in the 2026-08-31 README refresh, which is what #1469's scrub had done for Landing, `/security`, and `ui/index.html` without reaching the README. The facts behind the retraction are unchanged: the route is real (`backend/archimedes/api/vaults_routes.py:330`), the journey is gated off every shipped surface (`ui/src/featureFlags.js:57`), and zero user vaults have ever been deployed. `README.md:211` repeats the limitation in the limitations list. The pin that held this row honest was removed from `backend/tests/test_claims_ledger.py` in the same commit, per that test's own instruction. |
 | "How many strategies in the curated library currently pass is **unestablished** — this file will never quote a count" | `TRUE` | `README.md:37`. Matches `CLAUDE.md` § corollaries. No count appears anywhere in the file. |
-| "The corpus is 10,000 arXiv preprints, not peer-reviewed papers. Candidate selection over it is a keyword filter ... no vector column" | `TRUE` | `README.md:190`. `/health` is the authority the line points at: `backend/archimedes/main.py:1197` publishes `corpus_papers`, `:1084` publishes `corpus_embedded_at_rest` from a schema probe, and the rerank cap is published beside it (`:1093`). |
+| "The corpus is arXiv preprints, not peer-reviewed papers … Do not freeze that count in prose; the corpus probe can timeout" | `CHANGED` | Was "The corpus is 10,000 arXiv preprints". `README.md:191` now points at `/health` `corpus_papers` / `corpus_db_count` and refuses to freeze a number. `backend/archimedes/main.py:1586` still publishes `corpus_papers`; `:1473` / `:1604` publish `corpus_embedded_at_rest`; the rerank cap is at `:1606`. |
 | "The knowledge graph is not built ... `GET /api/corpus/graph` refuses with 503 `kb_artifact_not_found`" | `TRUE` | `backend/archimedes/api/corpus_routes.py:276` raises exactly that; `backend/archimedes/main.py:1110` derives `corpus_kg_built` from a live entity count rather than a constant. |
 | "Arc has no mainnet yet; mainnet launch, real-funds custody, and the regulatory architecture are roadmap" | `TRUE` | `README.md:44`, true on 2026-08-31. **Date-gated:** #1241 records this as false from Sept 16. Re-check on that date; nothing in CI will tell you. |
 | "Payments are real (USDC on Arc); settlement is stubbed pending mainnet" | `TRUE` | Two switches, and the line is right about both. Generation settles for real where deployed (`backend/archimedes/services/generation_payment.py:56`, `:72`); marketplace settlement rides the separate `PAYMENTS_DRY_RUN`, which defaults to dry-run (`backend/archimedes/services/generation_payment.py:74`). |
-| "Not every reasoning trace is anchored on-chain ... check `arc_tx_hash` before treating a trace as anchored" | `TRUE` | `README.md:217`. This is the general form the `ui/index.html` meta tags are missing. |
+| "Not every reasoning trace is anchored on-chain ... check `arc_tx_hash` before treating a trace as anchored" | `TRUE` | `README.md:217`. This is the general form the `ui/index.html` meta tags now match. |
 | CLI exit codes are a stable contract, published machine-readably | `CHANGED` | **Was `OVER-CLAIMED`: the published table omitted a code the CLI actually exits with.** `cli/src/archimedes_cli/exits.py:33` defines `INCOMPLETE = 4` (added for #1481) and `cli.py:587` exits with it on the real `verify` path, but `cli/src/archimedes_cli/manifest.py:19` published only `0`/`1`/`2`/`3` — so an agent branching on the machine-readable table hit an undocumented `4`. Fixed by #1705 (issue #1697), the `archimedes generate` work, which published `4` and added `5`–`8` for the new command's outcomes (`exits.py:48` `PAYMENT_REQUIRED`, `:77` `STILL_RUNNING`). The completeness defect is now guarded rather than pinned: `test_claims_ledger.TestLedgerClaimsMatchTheTree::test_the_published_exit_code_table_covers_every_code_the_cli_defines` derives the expected set from `exits.py`, so a future code added without publishing it fails. The originally-documented four were always accurate, and the `AUTH`-reuses-`2` rationale is sound (`exits.py:25`); the defect was completeness, not correctness. |
 
 ## Agent surfaces — `ui/public/llms.txt`, `ui/public/.well-known/agent.json`
 
 | Claim | Status | What backs it |
 |---|---|---|
-| "executed in non-custodial USDC vaults on Arc testnet" (llms.txt header) | `CHANGED` | Was the highest-severity open row here: present tense, on the surface built for agent consumers, while no user vault has ever been created. #1650 rewrote it to "Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped" — `ui/public/llms.txt:8`, mirroring `CLAUDE.md`'s own framing — and step 6 of the agent journey with it (`:41-45`). The mention is kept, in the future tense, on purpose. |
-| `agent.json` `description` — "executed in a non-custodial USDC vault on the Arc testnet" | `CHANGED` | Same sentence, same fix, same PR: `ui/public/.well-known/agent.json:4` now claims in present tense only what ships — generation, the rigor gate, paper trading — hedges the trace anchor the way `README.md:168` does ("when anchoring succeeds — read `arc_tx_hash` rather than assuming it did"), and states the vault journey as roadmap. The served twin — `/api/agent/manifest`'s `blurb`, `backend/archimedes/api/agent_manifest_routes.py:141` — carries the identical string, and `backend/tests/test_agent_manifest_static_consistency.py` now asserts the two are equal and that neither says "executed in". |
-| `agent.json` `skills[deploy-vault].status: "live"` | `CHANGED` | The route exists (`backend/archimedes/api/vaults_routes.py:330`), so `endpoints.deploy.status: "live"` stays — it is route-truthful, and `backend/tests/test_agent_manifest_static_consistency.py:110` pins it. The *skill* made no such distinction, so #1650 moved it to `status: "roadmap"` with a description that says which half is live: `ui/public/.well-known/agent.json:157`. `skills[monitor]` moved for the same reason (`:163`): the health route answers, but there is no user vault to point it at. |
-| `agent.json` `endpoints.paper.note` — "deploy is also live and puts real capital on-chain" | `CHANGED` | Testnet faucet USDC is not real capital — `README.md:27` says so in as many words ("No real money is at risk, by design") — and the sentence was aimed at an agent choosing between two paths, one of which does not exist. Rewritten by #1650: `ui/public/.well-known/agent.json:114` now says paper is the only shipped execution path and names the testnet faucet. |
+| "executed in non-custodial USDC vaults on Arc testnet" (llms.txt header) | `CHANGED` | Was the highest-severity open row here: present tense, on the surface built for agent consumers, while no user vault has ever been created. #1650 rewrote it to "Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped" — `ui/public/llms.txt:10`, mirroring `CLAUDE.md`'s own framing — and the paper-trade step of the agent journey with it. The mention is kept, in the future tense, on purpose. |
+| `agent.json` `description` — "executed in a non-custodial USDC vault on the Arc testnet" | `CHANGED` | Same sentence, same fix, then split the paper books: `ui/public/.well-known/agent.json:4` says simulated paper deployments are live (`paper_daily_returns`), `paper_agent_trades` (PR #1704, not on main) is not a live path, generation is not anchored, and vault execution is roadmap, not shipped. The served twin — `/api/agent/manifest`'s `blurb`, `backend/archimedes/api/agent_manifest_routes.py:152` — carries the identical string, and `backend/tests/test_agent_manifest_static_consistency.py` asserts the two are equal and that neither says "executed in". |
+| `agent.json` `skills[deploy-vault].status: "live"` / `endpoints.deploy.status: "live"` | `CHANGED` | #1650 moved the *skill* to `status: "roadmap"` while leaving `endpoints.deploy.status: "live"` as route-truthful. The 2026-09-01 copy-honesty pass moved the endpoint too: `ui/public/.well-known/agent.json` `endpoints.deploy.status` is `"roadmap"`, matching the served manifest (`backend/archimedes/api/agent_manifest_routes.py`). Marketplace skills `publish` / `subscribe` moved from `"live"` to `"roadmap"` in the same pass — marketplace is not a public surface. `backend/tests/test_agent_manifest_static_consistency.py` pins deploy / marketplace / monitor as `"roadmap"`. |
+| `agent.json` `endpoints.paper.note` — "deploy is also live and puts real capital on-chain" | `CHANGED` | Testnet faucet USDC is not real capital. Rewritten by #1650, then split: `ui/public/.well-known/agent.json:114` `status: "live"` names simulated `POST /api/paper/deployments` whose graded book is `paper_daily_returns`. `paper_agent_trades` is PR #1704, not on main, and is not what that status advertises. Vault execution is roadmap, not shipped. |
 | `agent-registration.json` `description` — same present-tense vault sentence | `CHANGED` | Not previously in this ledger, and it should have been: `ui/public/.well-known/agent-registration.json:4` carried the agent-card sentence verbatim. #1650 rewrote the prose to match and touched nothing else in the file — the ERC-8004 semantics (`registrations`, `supportedTrust`, `erc8004`, `active`) are #1626's lane and are unchanged. |
 | The machine surfaces cannot regress to present-tense vault execution | `TRUE` | `ui/test/roadmap-copy.test.js:280` scans `ui/public/`'s six machine surfaces and requires every sentence mentioning a vault, custody, or "real capital" to carry `roadmap` or `not shipped` in that same sentence; `:295` and `:304` are the two patterns. Anti-vacuity is explicit: the six sentences removed by #1650 are kept verbatim in the file and each must still trip the guard, the identifier exemption is asserted not to swallow any of them, and a separate test requires the roadmap mention to still be *present* so a scrub cannot pass by deletion. |
 | `agent.json` `endpoints.generate.note` — quote is public and authoritative; prod answers `payment_required: true`, `dry_run: false`, `$2.000000`; the code defaults are the opposite | `TRUE` | `backend/archimedes/services/generation_payment.py:56` reads `GENERATION_PAYMENT_REQUIRED` and defaults off; `:72` defaults dry-run on. `backend/archimedes/api/generate_routes.py:449` is the 402 that carries the x402 requirements. |
@@ -144,7 +147,7 @@ unset, so the boundary holds under both answers.
 | Claim | Status | What backs it |
 |---|---|---|
 | Vault / non-custodial framing in all four cards | `RETRACTED` | #1469 rewrote the meta description, OG card, Twitter card and JSON-LD together, on the reasoning that a claim retracted on the page but left in the share card is still shipped. Guarded by `ui/test/roadmap-copy.test.js`. |
-| "records the whole decision on Arc public testnet" (meta description) / "check the reasoning trace on-chain" (Twitter) / "on-chain reasoning provenance" (JSON-LD) | `OVER-CLAIMED` | `ui/index.html:9`, `:60`, `:95`. All three describe the *generation* journey the same tags introduce, and that journey writes nothing on-chain — see the Landing "Inspect" row. `README.md:217` has the accurate wording; these three tags do not. |
+| "records the whole decision on Arc public testnet" (meta description) / "check the reasoning trace on-chain" (Twitter) / "on-chain reasoning provenance" (JSON-LD) | `CHANGED` | Was `OVER-CLAIMED`. The three tags now describe generate → rigor-gate → inspect, and say generation is not anchored: `ui/index.html:9`, `:60`, `:95`. Guarded by `ui/test/public-visuals.test.js`. `README.md:217` already had the accurate wording. |
 | "A research-grounded strategy-generation instrument with visible selection-bias checks" | `TRUE` | `ui/index.html:95`. The selection-bias checks are visible and live — `backend/archimedes/services/rigor_evaluator.py:486` computes the board-level correction and `backend/archimedes/services/live_rigor_gate.py:151` the per-strategy verdict. |
 
 ## `ui/src/components/Architecture.jsx`
@@ -152,17 +155,20 @@ unset, so the boundary holds under both answers.
 | Claim | Status | What backs it |
 |---|---|---|
 | "with every decision hashed on-chain before anything acts on it" | `CHANGED` | Now only in the `ROADMAP_SURFACES_ENABLED` branch of the hero ternary (`ui/src/components/Architecture.jsx:86`), and that flag defaults false (`ui/src/featureFlags.js:28`), so the shipped build does not say it. |
-| "Non-custodial by contract, not by promise" (rendered unconditionally) | `RETRACTED` | Replaced by `OnChainExecutionRoadmap` — "Non-custodial vault execution is on the roadmap; not yet live" (`ui/src/components/Architecture.jsx:599`, `:615`). The "Live user vaults on Arc" hero tile was removed rather than left reporting a live zero. |
-| "x402-gated strategy access" / the nanopayment marketplace section | `CHANGED` | The section still exists but is flag-gated off the shipped build (`ui/src/components/Architecture.jsx:1232`), and its own honesty note says fee settlement is in dry-run (`:830`). |
-| Honesty-ledger rows read from `/health` rather than being asserted | `TRUE` | `ui/src/components/Architecture.jsx:1085` renders "live value unavailable" on a health error instead of substituting a value; the corpus panel's contract is documented at `:838`. |
+| "Non-custodial by contract, not by promise" (rendered unconditionally) | `RETRACTED` | Replaced by `OnChainExecutionRoadmap` — "Non-custodial vault execution is on the roadmap; not yet live" (`ui/src/components/Architecture.jsx:613`). The "Live user vaults on Arc" hero tile was removed rather than left reporting a live zero. |
+| "x402-gated strategy access" / the nanopayment marketplace section | `CHANGED` | The section still exists but is flag-gated off the shipped build (`ui/src/components/Architecture.jsx:1239`), and its own honesty note says fee settlement is in dry-run (`:830`). |
+| "before anything can run live" (flag-off hero) | `CHANGED` | Was present-tense vault implication. Flag-off hero is now generate → rigor-gate → explore, with vault execute/monitor named as roadmap: `ui/src/components/Architecture.jsx:87`. |
+| "Not one paper-derived alpha strategy clears our bar" (curated pass count of zero) | `CHANGED` | Removed. The page now says the pass count is unestablished and will never quote a count: `ui/src/components/Architecture.jsx` rigor honesty note. `CLAUDE.md` forbids quoting a curated pass count, including zero. |
+| Xia Hierarchy of Truth — "the rebalance loop reads holdings from chain … before the trade is committed" | `CHANGED` | Was written as a live path. Copy now future-tenses the chain-holdings half and says the path is not live: `ui/src/components/Architecture.jsx:928`. Guarded by `ui/test/public-visuals.test.js`. |
+| Honesty-ledger rows read from `/health` rather than being asserted | `TRUE` | `ui/src/components/Architecture.jsx:1090` renders "live value unavailable" on a health error instead of substituting a value; the corpus panel's contract is documented at `:838`. |
 
 ## `docs/user-stories.md`
 
 | Claim | Status | What backs it |
 |---|---|---|
-| "Vault execution reads as present tense throughout this doc ... it is roadmap, not shipped product" | `CHANGED` | Banner added 2026-08-31 (`docs/user-stories.md:16`). It labels the problem rather than fixing it: `:30` still reads "allocating it into your non-custodial vault on Arc" and `:105` still reads "③ EXECUTE". The banner is the honest interim; the body is the residual. |
-| "10,000 q-fin research papers" | `TRUE` | Same backing as the README corpus row — `backend/archimedes/main.py:1197`. |
-| "Arc has **no mainnet** — it's testnet-only" | `TRUE` | `docs/user-stories.md:35`, true on 2026-08-31, and date-gated the same way as the README row. |
+| "Vault execution reads as present tense throughout this doc ... it is roadmap, not shipped product" | `CHANGED` | Banner plus body, 2026-09-01 (`docs/user-stories.md:8`). Execute/monitor are labeled roadmap in the spine (`:109`, `:115`); CreateVaultModal is marked roadmap in the click-path mermaid. Lower-page stories that still read as a live user vault — generate deploy CTA, `/portfolio` as depositor, library Vault Leaderboard, passport on-chain Verify, landing “provenance-anchored” — were future-tensed or killed in the same honesty pass. The judge happy-path no longer walks Deploy as shipped. |
+| "10,000 q-fin research papers" | `CHANGED` | Removed. The one-liner and the MVP-scope paragraph now point at live `GET /health` `corpus_papers` / `corpus_db_count` and refuse to freeze a number (`docs/user-stories.md`). |
+| "Arc has **no mainnet** — it's testnet-only" | `TRUE` | `docs/user-stories.md`, true on 2026-09-01, and date-gated the same way as the README row. |
 
 ## `docs/agent-quickstart.md`
 
@@ -223,10 +229,10 @@ one worth acting on: it was a live machine-readable contract that under-publishe
    records the move. `test_selection_bias_routes.TestBoardFdrStaysOffThePerStrategyGate`
    fails if the key reappears — so the comment now points a reader at an endpoint that is
    guaranteed *not* to have it. The user-visible copy is unaffected and stays `TRUE`.
-2. **The machine surfaces lag the human ones.** `README.md:13`, `ui/public/llms.txt:5`,
-   and three `agent.json` fields still carry the vault-execution framing that #1469
-   removed from Landing, `/security`, and `ui/index.html`. `ui/test/roadmap-copy.test.js`
-   guards the three scrubbed files and only those, so nothing catches the drift.
+2. ~~**The machine surfaces lag the human ones.**~~ **FIXED (#1650, then 2026-09-01
+   copy-honesty).** `ui/test/roadmap-copy.test.js` now scans `ui/public/` machine
+   surfaces; deploy / marketplace / monitor advertise `roadmap`; generation SEO tags
+   no longer claim an on-chain generation trace.
 
 ## Not covered here
 
