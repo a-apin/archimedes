@@ -1,7 +1,7 @@
 {
   "schema": "a2a-agent-card (informal, simplified)",
   "name": "Archimedes",
-  "description": "Agentic trading, grounded in research — settled on Arc. Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy and paper-trades it, commit-revealing the reasoning trace on the Arc testnet (chain ID 5042002) when anchoring succeeds — read `arc_tx_hash` rather than assuming it did. Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped.",
+  "description": "Agentic trading, grounded in research — settled on Arc. Turns a natural-language investment intent into a research-grounded, rigor-gated portfolio strategy. Traces are written; not every trace is anchored on the Arc testnet (chain ID 5042002) — read `arc_tx_hash` rather than assuming it did. Executing strategies in non-custodial USDC vaults on Arc is roadmap, not shipped.",
   "url": "https://archimedes-arc.com",
   "version": "0.1.0",
   "provider": {
@@ -13,7 +13,10 @@
   "service": {
     "endpoint": "https://archimedes-arc.com/api",
     "manifest": "https://archimedes-arc.com/api/agent/manifest",
-    "protocols": ["REST+JSON", "Server-Sent Events (generation streaming)"]
+    "protocols": [
+      "REST+JSON",
+      "Server-Sent Events (generation streaming)"
+    ]
   },
   "capabilities": {
     "streaming": true,
@@ -29,11 +32,22 @@
     "note": "Not registered on-chain: no register() transaction has been confirmed for this deployment's wallet, so agentId and tokenURI are null and NO ERC-8004 identity, reputation, or validation claim is made. Publishing a spec-typed registration file at registrationUri is not the same as being registered. This status is re-derived from a live registry read on every request; the sibling erc8004_verification block says which reading produced it. Plan the call with scripts/register_erc8004_identity.py --plan."
   },
   "authentication": {
-    "schemes": ["Better Auth session"],
-    "methods": ["emailPassword", "google", "github"],
+    "schemes": [
+      "Better Auth session"
+    ],
+    "methods": [
+      "emailPassword",
+      "google",
+      "github"
+    ],
     "description": "Use /api/auth/* and retain session cookie. Optional EIP-4361 wallet proof uses /api/wallets/* and never creates a session.",
     "walletLinkChainId": 5042002,
-    "walletLinkProviders": ["metamask", "browser", "circle", "headless"],
+    "walletLinkProviders": [
+      "metamask",
+      "browser",
+      "circle",
+      "headless"
+    ],
     "walletLinkProviderForAgents": "headless"
   },
   "endpoints": {
@@ -111,7 +125,7 @@
         "read": "GET /api/paper/deployments/{deployment_id}",
         "stop": "POST /api/paper/deployments/{deployment_id}/stop"
       },
-      "note": "Simulated: no chain, no funds \u2014 and the only execution path this product has shipped. The deploy group's route resolves, but putting a strategy into an on-chain vault is roadmap, not shipped, and no user vault has ever been created, so there is nothing here to trade off: paper is how a strategy gets exercised today. Arc is a testnet whose USDC comes from a faucet in any case."
+      "note": "The paper_daily_returns book is the graded track record the rigor gate sees. The paper_agent_trades executor ledger is not shipped (pending #1704). Two books, neither is vault validation: putting a strategy into an on-chain vault is roadmap, not shipped, and no user vault has ever been created, so do not round this up into paper trading validating the vault. Generation charges $2 faucet USDC; Arc is a public testnet."
     },
     "deploy": {
       "status": "live",
@@ -128,7 +142,7 @@
         "publish": "POST /api/marketplace/publish",
         "subscribe": "POST /api/marketplace/subscribe"
       },
-      "note": "live describes the routes: publish/subscribe are wired to the redeployed contracts. It does not assert that a subscription's recurring USDC charge settles for real \u2014 that rides PAYMENTS_DRY_RUN, a DIFFERENT switch from the one the generation paywall reports (GENERATION_PAYMENTS_DRY_RUN was split off precisely so the generation rail could go live without un-drying marketplace settlement). No public endpoint publishes the marketplace switch's runtime value, so this card makes no claim about it \u2014 unlike endpoints.generate, whose price is quotable and real."
+      "note": "live describes the routes: publish/subscribe are wired to the redeployed contracts. It does not assert that a subscription's recurring USDC charge settles for real — that rides PAYMENTS_DRY_RUN, a DIFFERENT switch from the one the generation paywall reports (GENERATION_PAYMENTS_DRY_RUN was split off precisely so the generation rail could go live without un-drying marketplace settlement). No public endpoint publishes the marketplace switch's runtime value, so this card makes no claim about it — unlike endpoints.generate, whose price is quotable and real."
     },
     "monitor": {
       "status": "live",
@@ -148,8 +162,8 @@
     {
       "id": "paper-trade",
       "name": "Paper trade",
-      "description": "Deploy a rigor-passing strategy to a simulated paper portfolio and read its running performance. No chain, no funds.",
-      "status": "live"
+      "description": "Two books, neither is vault validation: paper_daily_returns is the graded track record the rigor gate sees, paper_agent_trades is the executor ledger and is not shipped (pending #1704), and this is not a vault book. Do not describe the executor as live.",
+      "status": "roadmap"
     },
     {
       "id": "deploy-vault",
