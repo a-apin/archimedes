@@ -1,10 +1,15 @@
-# Archimedes docs site — mkdocs-material config for issue #1381 (option B:
-# GitHub Pages). Builds the existing docs/ tree plus the agent-generated
-# openwiki/ tree as-is; no content was moved or rewritten to make this file.
-# See docs/runbooks/docs-site-setup.md for the three manual console/DNS steps
-# the *deploy* needs to go live, and .github/workflows/docs-site.yml for the
-# jobs — the build runs on every docs-path push and PR, the deploy stays
-# gated on the DOCS_SITE_ENABLED repo variable until those steps are done.
+# Archimedes docs site — mkdocs-material config. Builds the existing docs/ tree
+# plus the agent-generated openwiki/ tree as-is; no content was moved or
+# rewritten to make this file (#1381).
+#
+# The built site is served from our own S3 + CloudFront at the site_url below
+# (docs-site/infra/main.tf, issue #1634 — not GitHub Pages). See
+# docs/runbooks/docs-site-setup.md for the apply/publish/rollback procedure and
+# .github/workflows/docs-site.yml for the jobs: the build runs on every
+# docs-path push and PR, the publish runs on pushes to main.
+#
+# site_url is the canonical host and is not free to drift: ui/test/docs-link.test.js
+# asserts the product's Docs links point at the same host.
 
 site_name: Archimedes
 site_url: https://docs.archimedes-arc.com
@@ -87,6 +92,7 @@ nav:
   - Product:
       - user-stories.md
       - agent-api.md
+      - specs/agent-native-onboarding-spec.md
       - asset-universe.md
       - demo-script-lepton.md
 

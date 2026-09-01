@@ -37,8 +37,10 @@ Discovery rules, all mechanical, all reproducible with ripgrep:
    what catches a flag that is *injected* but has no reader (a dead flag) as
    well as one that has a reader but no row.
 5. **Repo-variable flags**: ``vars.X`` in ``.github/workflows/*.yml``
-   (``DEPLOY_ENABLED``, ``RUNNER_DEPLOY_ENABLED``, ``DOCS_SITE_ENABLED`` gate
-   whole deploy jobs — they belong on a go-live checklist).
+   (``DEPLOY_ENABLED`` and ``RUNNER_DEPLOY_ENABLED`` gate whole deploy jobs —
+   they belong on a go-live checklist). ``DOCS_SITE_ENABLED`` used to be a
+   third; #1634 retired it when the docs site moved to our own S3 + CloudFront,
+   where the bucket's existence is the gate.
 6. **Shell escape hatches**: ``${X:-}`` in ``infra/scripts`` / ``scripts``,
    flag-shaped only.
 
