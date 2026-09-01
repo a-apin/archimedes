@@ -436,10 +436,24 @@ class _CandidateResult:
     # verdict}]`` over every paper that entered a proposer prompt. Computed by
     # ``debate_engine._aggregate_paper_verdicts`` (0 tokens) and stamped onto
     # every entry, same as the transcript. ``None`` on every non-debate path.
-    # NOT persisted: the transcript table's column holds the turn list and this
-    # issue explicitly carries no migration, so today this is an in-process +
-    # SSE-visible record only. Durable storage is follow-up work.
+    # (#1739) Now DURABLE: ``_persist_debate_transcripts`` appends it to the
+    # same ``debate_transcripts.transcript_json`` list the turns ride, so no
+    # migration was needed to stop it dying with the request.
     debate_paper_verdicts: list[dict[str, Any]] | None = None
+    # (#1739) The budget-vs-used pair, carried off the proposal instead of
+    # being left in a log line. ``papers_offered`` is how many papers were put
+    # in front of the proposer; ``distinct_mechanism_papers`` is how many of
+    # the CITED ones name a mechanism tied to an indicator the spec actually
+    # trades. Together they make ``len(source_arxiv_ids)`` readable: "2 of 30
+    # offered, 2 attributed" is a different claim from "5 cited, 1 attributed".
+    # Both 0 on every non-fusion path (fixture / buy-and-hold), which never saw
+    # a paper — 0 there means "no papers were offered", not "attribution failed".
+    papers_offered: int = 0
+    distinct_mechanism_papers: int = 0
+    # (#1739) The proposal's per-paper mechanism prose. ``reasoning`` above
+    # already falls back to ``novelty_rationale``, so it cannot be read as "the
+    # model named each paper's contribution"; this field is that text or "".
+    fusion_reasoning: str = ""
 
 
 def _is_deployable(c: _CandidateResult) -> bool:
@@ -1008,6 +1022,50 @@ async def _persist_generation_cost(
         logger.warning("cost record: durable persist failed for job %s (non-blocking)", job_id, exc_info=True)
 
 
+def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
+    """The candidate's transcript plus one trailing paper-attribution entry (#1739).
+
+    ``debate_paper_verdicts`` was computed for free off the transcript we
+    already paid for and then thrown away at the end of the request — the run
+    that argued over 30 papers left no durable record of which ones it engaged
+    with. Same for ``fusion_reasoning``, the model's per-paper mechanism prose,
+    which ``_CandidateResult.reasoning`` collapses with ``novelty_rationale``.
+
+    Both ride the EXISTING ``transcript_json`` column as one extra list entry —
+    no migration, no new table, no schema change (#1739 carries none). The
+    entry keeps the turn shape (``role``/``verdict``) so a reader that walks
+    turns sees an honest summary line rather than a blank card, and carries the
+    machine-readable tally alongside it.
+
+    The prose is scrubbed here because ``sanitize_transcript`` only knows the
+    turn keys it was written for — writing unsanitized model text into this
+    table would re-open the leak its write-time sanitizer exists to close.
+    """
+    from archimedes.models.debate_transcript import sanitize_debate_text
+
+    transcript = list(c.debate_transcript or [])
+    verdicts = c.debate_paper_verdicts or []
+    reasoning = (c.fusion_reasoning or "").strip()
+    if not verdicts and not reasoning:
+        return transcript
+    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
+    summary = (
+        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
+        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
+        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
+    )
+    return [
+        *transcript,
+        {
+            "role": "attribution",
+            "round": None,
+            "verdict": summary,
+            "paper_verdicts": verdicts,
+            "fusion_reasoning": sanitize_debate_text(reasoning),
+        },
+    ]
+
+
 async def _persist_debate_transcripts(
     *,
     job_id: str,
@@ -1026,6 +1084,12 @@ async def _persist_debate_transcripts(
     from data already collected by the time this is called. Non-debate
     candidates (fusion, fixture, single-agent) carry ``debate_transcript=None``
     and are skipped — there is nothing to persist for them.
+
+    (#1739) Each row also carries the run's ``debate_paper_verdicts`` tally and
+    the proposal's ``fusion_reasoning``, appended by
+    :func:`_transcript_with_paper_record` as one extra entry on the same JSON
+    list the column already holds — so the per-paper record outlives the
+    request instead of being in-process + SSE-visible only.
 
     Best-effort, like the sibling :func:`_persist_generation_cost`: this runs
     after the winner's strategy row already landed, so a failure here must
@@ -1048,7 +1112,7 @@ async def _persist_debate_transcripts(
                     strategy_id=strategy_ids.get(c.candidate_id),
                     generation_id=job_id,
                     candidate_id=c.candidate_id,
-                    transcript=c.debate_transcript,
+                    transcript=_transcript_with_paper_record(c),
                 )
                 written += 1
             session.commit()

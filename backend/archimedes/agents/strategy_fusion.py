@@ -858,6 +858,20 @@ class FusionProposal:
     # shortfall auditable instead of merely small. 0 on the non-fusion statuses
     # (disabled / insufficient_corpus / unparseable), where no prompt was built.
     papers_offered: int = 0
+    # (#1739) The paper→mechanism map: one entry per CITED paper the model
+    # could tie to a named mechanism AND to indicator aliases that literally
+    # appear in the validated spec's entry/exit conditions. Server-filtered in
+    # ``propose`` — an id the model invented, or a spec_element that is not in
+    # the spec, never survives into this list. Empty on every non-``ok``
+    # status, and empty on an ``ok`` proposal whose model emitted no map.
+    paper_mechanisms: list[dict[str, Any]] = field(default_factory=list)
+    # (#1739) How many of ``source_arxiv_ids`` survive that filter with at
+    # least one spec element attached. This is the honest read of "how many
+    # papers does this strategy actually trade the mechanism of", as opposed
+    # to ``len(source_arxiv_ids)``, which is the model's own claim. It LABELS,
+    # it never gates: a 5-citation / 1-mechanism proposal is still actionable,
+    # it just says so (#1636's honest-shortfall rule).
+    distinct_mechanism_papers: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -908,11 +922,17 @@ position_sizing accepts NO other keys — a key outside that list is a hard \
 validation error, not an ignored field, so do not invent one. Do NOT emit any \
 field asserting the strategy's own correctness or look-ahead safety; the \
 platform derives that structurally from the spec and ignores anything you \
-claim about it. \
->>>>>>> origin/main
+claim about it.
 parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
 values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \
-Keys must reference indicators used in entry/exit conditions."""
+Keys must reference indicators used in entry/exit conditions.
+paper_mechanisms is a TOP-LEVEL field of the proposal, NOT a key inside \
+strategy_spec — do not emit it here. It maps each cited paper to the part of \
+this spec it produced: each entry's spec_elements must name indicator aliases \
+that actually appear in the spec's entry/exit conditions (the same rule \
+parameter_variants keys follow). An alias that is not in entry/exit is \
+dropped, and a cited paper left with no surviving spec_element counts as \
+UNATTRIBUTED."""
 
 
 _SYSTEM_PROMPT = (
@@ -933,6 +953,13 @@ downstream as evidence depth, so a fabricated mechanism launders weak \
 evidence into the provenance record.
 - Reference papers ONLY by an arxiv_id from the provided candidates. Never \
 invent a paper or an arxiv_id.
+- Every id in `source_arxiv_ids` MUST have a matching entry in \
+`paper_mechanisms` naming the one mechanism that paper contributes and the \
+`spec_elements` — indicator aliases that literally appear in the spec's \
+entry/exit conditions — it produced. If you cannot name the mechanism a paper \
+contributes to THIS spec, OMIT that id from `source_arxiv_ids` entirely; do \
+NOT pad the citation list with it and do not invent a mechanism for it. An \
+honest shorter list is correct; a longer one you cannot map is laundering.
 - OPTIMIZE FOR NOVELTY. The edge is the combination the literature has NOT \
 published. Published single-paper alpha decays post-publication (McLean & \
 Pontiff 2016) — your value is the non-obvious synthesis, not re-stating one \
@@ -953,6 +980,11 @@ as a synthesis constraint, not as a paper filter.
   "source_arxiv_ids": ["<arxiv_id from candidates>", "<another>", ...],
   "fusion_reasoning": "<what mechanism EACH cited paper contributes and how \
 they combine>",
+  "paper_mechanisms": [
+    {"arxiv_id": "<from source_arxiv_ids>",
+     "mechanism": "<the one mechanism THIS paper contributes>",
+     "spec_elements": ["<indicator alias used in entry/exit>", "..."]}
+  ],
   "novelty_rationale": "<why this specific combination is not already in the \
 literature>",
   "risk_notes": "<key risks + the pre-backtest / selection-bias caveat>",
@@ -1145,6 +1177,18 @@ class StrategyFusion:
         seen: set[str] = set()
         source_ids = [i for i in source_ids if not (i in seen or seen.add(i))]
 
+        # (#1739) Paper→mechanism map, id half — the SAME anti-hallucination
+        # shape as the valid_ids filter directly above: an entry naming a paper
+        # this proposal does not cite is dropped, never repaired. The
+        # spec_elements half runs further down, once there is a VALIDATED spec
+        # whose indicator aliases can be checked against.
+        cited_ids = set(source_ids)
+        paper_mechanisms: list[dict[str, Any]] = [
+            e
+            for e in (parsed.get("paper_mechanisms") or [])
+            if isinstance(e, dict) and str(e.get("arxiv_id", "")) in cited_ids
+        ]
+
         if len(source_ids) < MIN_PAPERS:
             logger.warning(
                 "fusion: model fused %d valid papers (<%d); declined",
@@ -1187,6 +1231,7 @@ class StrategyFusion:
             strategy_spec = _repair_spec(backend, brief, parsed)
         universe_source: str | None = None
         universe_gaps: list[str] = []
+        validated_spec = None
         if not isinstance(strategy_spec, dict):
             strategy_spec = None
         else:
@@ -1204,12 +1249,48 @@ class StrategyFusion:
             # model emission — must degrade to honest text-only HERE, not
             # surface later as a DSLError mid-evaluation/debate.
             try:
-                validate_strategy_spec(strategy_spec)
+                validated_spec = validate_strategy_spec(strategy_spec)
             except DSLError as exc:
                 logger.warning("fusion: strategy_spec failed DSL validation (%s) — falling back to text-only", exc)
                 strategy_spec = None
                 universe_source = None
                 universe_gaps = []
+                validated_spec = None
+
+        # (#1739) Paper→mechanism map, spec_elements half. ``indicators`` on the
+        # validated spec is exactly the alias set ``strategy_dsl`` checks
+        # ``parameter_variants`` keys against (strategy_dsl.py:269-274): an
+        # alias that entry/exit never uses is not part of what this spec
+        # trades, so a paper "attributed" to it is not attributed at all. The
+        # entry is KEPT with its claim and its id — only the unsupported
+        # element is stripped, the debate's keep-the-claim/strip-the-id honesty
+        # pattern (debate_engine.py:467-501) — and it then contributes 0 to the
+        # count. No validated spec (text-only fallback) → no aliases → every
+        # entry is unattributed, which is the honest read of a proposal that
+        # trades nothing yet.
+        valid_elements: set[str] = set(validated_spec.indicators) if validated_spec is not None else set()
+        paper_mechanisms = [
+            {
+                "arxiv_id": str(e.get("arxiv_id", "")),
+                "mechanism": str(e.get("mechanism", "") or "").strip(),
+                "spec_elements": [
+                    el for el in (e.get("spec_elements") or []) if isinstance(el, str) and el in valid_elements
+                ],
+            }
+            for e in paper_mechanisms
+        ]
+        distinct_mechanism_papers = len({e["arxiv_id"] for e in paper_mechanisms if e["spec_elements"]})
+        if distinct_mechanism_papers < len(source_ids):
+            # LABEL, never gate (#1636): a citation the model cannot tie to a
+            # traded indicator is recorded as unattributed, not deleted and not
+            # a reject. The pair is what makes "cites 5" readable.
+            logger.warning(
+                "fusion: paper→mechanism attribution — %d of %d cited paper(s) name a mechanism "
+                "tied to an indicator this spec actually trades; the remainder are recorded as "
+                "unattributed (labelled, never blocked)",
+                distinct_mechanism_papers,
+                len(source_ids),
+            )
 
         risk_notes = str(parsed.get("risk_notes", "")).strip()
         if universe_gaps:
@@ -1235,6 +1316,8 @@ class StrategyFusion:
             universe_source=universe_source,
             universe_gaps=universe_gaps,
             papers_offered=papers_offered,
+            paper_mechanisms=paper_mechanisms,
+            distinct_mechanism_papers=distinct_mechanism_papers,
         )
 
 
