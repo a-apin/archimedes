@@ -568,7 +568,4 @@ class TestPinPathStaysGone:
             for n, line in enumerate(text.splitlines(), start=1)
             if any(needle in line for needle in needles)
         ]
-        assert offenders == [], (
-            "agent_runner.py must reveal hash-only (#1526); found pin-path residue: "
-            f"{offenders}"
-        )
+        assert offenders == [], f"agent_runner.py must reveal hash-only (#1526); found pin-path residue: {offenders}"

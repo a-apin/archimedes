@@ -1574,9 +1574,7 @@ class StrategyRunner:
                             )
                             await asyncio.sleep(wait_s)
                     if self._lease_ok:
-                        reveal_tx, reveal_block = await trace_publisher.reveal(
-                            trace_id, trace, storage_pointer=""
-                        )
+                        reveal_tx, reveal_block = await trace_publisher.reveal(trace_id, trace, storage_pointer="")
                     else:
                         logger.error(
                             "[tick %s] LEASE NOT HELD — skipping on-chain REVEAL this cycle "
