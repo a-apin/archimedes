@@ -36,11 +36,27 @@ def _isolated_env(tmp_path, monkeypatch):
 
 @pytest.fixture
 def cached_session(tmp_path):
-    """Write a session cache exactly as ``archimedes login`` would, and hand back the token."""
+    """Write a session cache exactly as ``archimedes login`` would against LOCAL HTTP
+    (the bare cookie name), and hand back the token."""
     from archimedes_cli.session import SESSION_COOKIE_NAME, save_session
 
     token = "SESSION-TOKEN-b8b1f0c2e5a94d17"
     save_session(api_url=TEST_API_URL, cookies={SESSION_COOKIE_NAME: token}, email="agent@example.test")
+    assert (Path(tmp_path) / ".config" / "archimedes" / "session.json").exists()
+    return token
+
+
+@pytest.fixture
+def cached_secure_session(tmp_path):
+    """The same, but as ``archimedes login`` would cache it against PRODUCTION — the
+    ``__Secure-``-prefixed cookie name Better Auth actually issues over HTTPS
+    (``useSecureCookies: production`` in ``auth/auth.js``). A separate fixture, not a
+    parametrization of ``cached_session`` above, so a test can assert on the exact name
+    it expects without threading a parameter through every caller."""
+    from archimedes_cli.session import SECURE_SESSION_COOKIE_NAME, save_session
+
+    token = "SESSION-TOKEN-secure-3a9c7e1f0b6d"
+    save_session(api_url=TEST_API_URL, cookies={SECURE_SESSION_COOKIE_NAME: token}, email="agent@example.test")
     assert (Path(tmp_path) / ".config" / "archimedes" / "session.json").exists()
     return token
 

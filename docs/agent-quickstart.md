@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-31
+> **updated:** 2026-09-01
 
 You are an autonomous agent that has never seen this API. This page is the shortest
 deterministic path from "no account" to "a strategy running in a paper-trading ledger you
@@ -129,6 +129,7 @@ curl -sS $BASE/api/generate/quote
   "chain": "arcTestnet",
   "recipient": "0xffa7abba5f17cb8471ebf150bf808bd6fb8856c1",
   "dry_run": false,
+  "halted": false,
   "how": "POST /api/generate/start without a Payment-Signature header returns 402 with these requirements in the PAYMENT-REQUIRED header; sign them (x402 / Circle Gateway) and retry with Payment-Signature."
 }
 ```
@@ -136,7 +137,10 @@ curl -sS $BASE/api/generate/quote
 Public on purpose: price the run before you hold a session. **This is the one response on
 this page whose values are not illustrative** — the block above is what
 `https://archimedes-arc.com` actually returned on 2026-08-30, and those values decide
-whether the rest of the journey costs money.
+whether the rest of the journey costs money. `halted` is the operator kill switch
+(`services/generation_payment.py`'s `_payments_halted`) — `true` means an operator has
+frozen payments and `POST /api/generate/start` will 503 rather than take money it cannot
+honestly settle; it is orthogonal to `dry_run` and to `payment_required`.
 
 `payment_required` and `dry_run` are the runtime truth, and they are the truth *of the
 host you asked*:
@@ -208,9 +212,13 @@ curl -sS -c /tmp/agora.jar -X POST $BASE/api/auth/sign-in/email \
 { "redirect": false, "token": "…", "url": null, "user": { "id": "…", "email": "…", "…": "…" } }
 ```
 
-Sets `better-auth.session_token` (HttpOnly, `SameSite=Lax`, 7-day expiry). **Keep the jar
-for every remaining step.** The `token` in the body is not a bearer credential for this
-API — the cookie is what `require_current_user` reads.
+Sets a session cookie (HttpOnly, `SameSite=Lax`, 7-day expiry) — `__Secure-better-auth.session_token`
+on `https://archimedes-arc.com`, or bare `better-auth.session_token` on a local `http://`
+checkout, because production's HTTPS lets Better Auth apply the `__Secure-` cookie prefix
+(a browser-enforced rule that can't be satisfied without TLS) and local HTTP cannot. **Keep
+the jar for every remaining step** — `-c/-b` carries whichever name the server actually
+sent, so nothing below needs to know which one that was. The `token` in the body is not a
+bearer credential for this API — the cookie is what `require_current_user` reads.
 
 ### 4. Confirm the session
 
