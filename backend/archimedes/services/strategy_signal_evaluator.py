@@ -663,11 +663,20 @@ def _fetch_price_history(symbol: str, period: str = "2y") -> pd.Series:
     yf_ticker = entry[0]
 
     try:
-        from archimedes.services.market_data_provider import get_provider
+        from archimedes.services.market_data_provider import get_provider, provider_name
 
         fetched = get_provider().get_daily_close_batch({symbol: yf_ticker}, period=period)
         close = fetched.get(symbol)
         if close is None or close.empty:
+            # Named, never silent (#1710) — same reason as the batch path below.
+            logger.warning(
+                "market-data gap: no price history for %s (%s) from provider %r (period=%s) — "
+                "EXCLUDED, no series synthesized.",
+                symbol,
+                yf_ticker,
+                provider_name(),
+                period,
+            )
             return pd.Series(dtype=float)
         close = close.copy()
         close.name = symbol
@@ -733,6 +742,30 @@ def _fetch_price_histories(
         series.name = synth
         _cache_put(synth, series)
         result[synth] = series
+
+    # Name the symbols the vendor had NO data for (#1710). The seam's
+    # documented per-item-skip contract leaves an unfetchable ticker simply
+    # ABSENT from `fetched`, so before this the only trace was whatever the
+    # vendor library itself chose to print — for yfinance, a bare
+    # "possibly delisted; no price data found" ERROR carrying vendor tickers
+    # and no synth symbols, no provider name and no indication that the
+    # evaluator then ran a strategy over a universe missing those names. This
+    # line is the operator-legible half: which synths, which vendor tickers,
+    # which provider. Excluded, never padded or forward-filled.
+    missing = sorted(set(ticker_for_synth) - set(result))
+    if missing:
+        from archimedes.services.market_data_provider import provider_name
+
+        logger.warning(
+            "market-data gap: no price history for %d/%d requested symbols from provider %r "
+            "(period=%s) — %s. These symbols are EXCLUDED from signal evaluation this run; "
+            "no series is synthesized to replace them.",
+            len(missing),
+            len(ticker_for_synth),
+            provider_name(),
+            period,
+            ", ".join(f"{s}({ticker_for_synth[s]})" for s in missing),
+        )
 
     return result
 

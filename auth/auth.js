@@ -50,7 +50,7 @@ const CONNECTED_ACCOUNT_LABELS = { credential: 'Email & password', google: 'Goog
 // Wired via databaseHooks.account.{create,delete}.after below.
 //
 // MUST NOT throw. Unlike sendResetPassword/sendVerificationEmail above
-// (hand-rolled fire-and-forget, or awaited inside their OWN try/catch),
+// (both hand-rolled fire-and-forget, each with its own .catch),
 // better-auth's databaseHooks create.after/delete.after are awaited by the
 // library itself as part of the write (node_modules/@better-auth/core/dist/
 // context/transaction.mjs: `for (const hook of pendingHooks) await hook();`
@@ -249,6 +249,22 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       maxPasswordLength: 128,
       revokeSessionsOnPasswordReset: true,
       requireEmailVerification: emailVerificationEnforced(env),
+      // Pinned for the same reason as emailVerification.expiresIn below and
+      // session.freshAge further down: left unset the number lives in the
+      // library, not here (better-auth/dist/api/routes/password.mjs:73
+      // `getDate(ctx.context.options.emailAndPassword.resetPasswordTokenExpiresIn
+      // || 3600 * 1, "sec")`), so nobody reading auth.js can tell how long a
+      // reset link stays live. 3600 is exactly today's effective value —
+      // this pins behaviour, it does not change it.
+      //
+      // Unlike a verification token (a stateless JWT — see expiresIn below)
+      // a reset token is a real `auth_verifications` row consumed on first
+      // use (password.mjs:157 `consumeVerificationValue`), so it is
+      // single-use AND revocable, and `verification.storeIdentifier:
+      // 'hashed'` further down means the stored identifier is not a usable
+      // token even to someone holding a database dump. Both properties are
+      // covered by auth/test/email-flows.test.js.
+      resetPasswordTokenExpiresIn: 60 * 60,
       sendResetPassword: async ({ user, url }) => {
         // Fire-and-forget ON PURPOSE — do not `await` the send. Better Auth
         // already returns an identical response body/status for a known vs.
@@ -286,22 +302,64 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     emailVerification: {
       sendOnSignUp: true,
       autoSignInAfterVerification: true,
+      // Pinned, not the library's inherited default — same reasoning as
+      // session.freshAge below (round-2 review, blocker: a security-relevant
+      // duration nobody chose is not auditable from the code). Left unset,
+      // the value comes from a DEFAULT PARAMETER buried in the library
+      // (node_modules/better-auth/dist/api/routes/email-verification.mjs:13
+      // `async function createEmailVerificationToken(secret, email, updateTo,
+      // expiresIn = 3600, extraPayload)`), so a reader of auth.js cannot see
+      // how long a verification link stays live and a library bump could
+      // change it silently. 3600 is exactly today's effective value: this
+      // pins behaviour, it does not change it. It matters more than a
+      // typical TTL because of autoSignInAfterVerification above — see
+      // auth/test/email-flows.test.js, which drives the real endpoint and
+      // shows an ANONYMOUS holder of the URL getting a live session on the
+      // first open. That makes the link a one-time bearer sign-in
+      // credential, and this number is its whole lifetime.
+      expiresIn: 60 * 60,
+      // Fire-and-forget, NOT awaited — the same anti-enumeration reasoning
+      // as sendResetPassword above, and load-bearing here for a reason that
+      // is specific to this callback's OTHER caller.
+      //
+      // On the signup path an awaited send is harmless (the caller already
+      // knows the address it just registered). The problem is
+      // /send-verification-email, which is reachable with NO session at all
+      // (better-auth/dist/api/routes/email-verification.mjs:95-117) and is
+      // exactly the endpoint the "Resend verification email" control calls
+      // — a control that only becomes load-bearing the day
+      // EMAIL_VERIFICATION_ENFORCED flips on. Better Auth defends that
+      // endpoint with a 500ms constant-time FLOOR, deliberately: an address
+      // that is unknown-or-already-verified takes the fast local
+      // JWT-signing branch, an address that is known-and-unverified takes
+      // the real send, and the floor is meant to hide the difference. A
+      // floor only hides a difference it is larger than. With the send
+      // awaited here, a real SES round trip pushes the known-and-unverified
+      // case straight through the floor and the endpoint becomes an
+      // account-existence AND verification-state oracle for any anonymous
+      // caller. Measured against a 900ms mailer before this change:
+      // unknown 504ms vs known-unverified 922ms. Not awaiting the send
+      // makes this callback's own duration independent of mailer latency,
+      // so both shapes land on the floor together. The regression guard is
+      // "the anonymous resend path does not leak..." in
+      // auth/test/email-flows.test.js; reverting to `await mailer.send(...)`
+      // makes it fail.
+      //
+      // The .catch is what keeps a mailer failure fail-soft while SES is in
+      // sandbox: an undeliverable verification mail must not 500 the signup.
+      // Loud single line; requireEmailVerification is what actually gates
+      // sign-in.
       sendVerificationEmail: async ({ user, url }) => {
-        try {
-          await mailer.send({
-            to: user.email,
-            subject: 'Verify your Archimedes account',
-            text:
-              'Verify your email address to activate your Archimedes account:\n\n'
-              + `${url}\n\n`
-              + 'If you did not create this account, ignore this message.',
-          })
-        } catch (error) {
-          // Fail-soft ON PURPOSE while SES is in sandbox: an undeliverable
-          // verification mail must not 500 the signup. Loud single line;
-          // requireEmailVerification is what actually gates sign-in.
+        mailer.send({
+          to: user.email,
+          subject: 'Verify your Archimedes account',
+          text:
+            'Verify your email address to activate your Archimedes account:\n\n'
+            + `${url}\n\n`
+            + 'If you did not create this account, ignore this message.',
+        }).catch(error => {
           console.error('verification email send failed:', error instanceof Error ? error.name : 'UnknownError')
-        }
+        })
       },
     },
     socialProviders: socialProviders(env),
@@ -605,10 +663,64 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
         // (services/generation_quota.py): a fresh account does not raise its
         // address's generation allowance, so disposable accounts gain
         // nothing at the endpoint that actually spends money.
+        //
+        // WHAT "Better Auth's rate key" RESOLVES TO (#1691, fixed here). The
+        // key is `${ip}|${path}` (@better-auth/core/dist/utils/ip.mjs:225).
+        // Until #1691 no ip resolved in production: getIp trusts a forwarded
+        // header only when it carries exactly ONE value (ip.mjs:189 `if
+        // (forwardedIps.length !== 1) return null`), and behind
+        // CloudFront -> ALB -> nginx every hop appends to X-Forwarded-For, so
+        // the limiter fell back to a single shared `no-trusted-ip|<path>`
+        // bucket for the entire internet. advanced.ipAddress.ipAddressHeaders
+        // below now points the resolver at the single-valued, nginx-SET
+        // X-Client-IP header instead — the same trusted value layers 2 and 3
+        // key on. These rules are per-rate-key, and the rate key is now that
+        // header; see the ipAddress block for exactly whose address it is.
+        // Pinned in both directions by auth/test/email-flows.test.js; do not
+        // "fix" it further by trusting the leftmost XFF token, which is
+        // client-controlled and strictly worse than a shared bucket.
         '/sign-up/email': { window: 600, max: 3 },
+        // Pinned, not inherited — the same argument session.freshAge rests on.
+        // These two are the mail-sending endpoints, so they are the pair the
+        // EMAIL_VERIFICATION_ENFORCED flip puts under load and the pair SES
+        // production access is judged on. The values match the library's own
+        // default for this path set (better-auth/dist/api/rate-limiter/
+        // index.mjs:378-382, window 60 / max 3), so this changes no behaviour;
+        // it makes the bound readable here and stops a library upgrade from
+        // moving a security-relevant number silently.
+        '/request-password-reset': { window: 60, max: 3 },
+        '/send-verification-email': { window: 60, max: 3 },
       },
     },
     advanced: {
+      // Where the rate limiter gets its client IP (#1691). Better Auth's getIp
+      // walks these header names in order (@better-auth/core/dist/utils/ip.mjs
+      // :203) and trusts a value only if it is single-valued; the DEFAULT list
+      // is ['x-forwarded-for'], which is multi-hop behind CloudFront -> ALB ->
+      // nginx and so resolved to null on every production request, collapsing
+      // every rate-limit bucket into one global `no-trusted-ip|<path>`.
+      //
+      // x-client-ip is set — not appended — by nginx from its realip-resolved
+      // $remote_addr (nginx/nginx.conf, the server-level proxy header block),
+      // so a caller cannot supply it: whatever the client sends under that name
+      // is overwritten before the request reaches this process. It is the same
+      // value the FastAPI limiter and the daily generation cap already key on
+      // via X-Real-IP. Behind CloudFront it identifies the CloudFront EDGE, not
+      // the viewer (nginx trusts only the ALB CIDR) — so buckets are per-edge:
+      // unspoofable, no longer global, coarser than one caller. Say that, don't
+      // round it up to "per user".
+      //
+      // Deliberately NOT trustedProxies: that would re-admit X-Forwarded-For
+      // and require carrying CloudFront's published edge ranges in this file,
+      // where a stale list degrades silently back to the shared bucket. And
+      // deliberately not a fallback to 'x-forwarded-for' after this one — a
+      // single-valued XFF reaching this process is exactly the shape a
+      // direct-to-container caller can forge. No header, no key: the limiter
+      // falls back to its shared bucket, which fails safe (over-limiting), not
+      // open.
+      ipAddress: {
+        ipAddressHeaders: ['x-client-ip'],
+      },
       useSecureCookies: production,
       defaultCookieAttributes: {
         httpOnly: true,

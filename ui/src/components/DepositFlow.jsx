@@ -16,6 +16,7 @@ import {
 } from '../config'
 import { isAddress, parseUnits } from 'viem'
 import { executeUserOp, encodeCall } from '../circle-tx-executor'
+import { canStore } from '../storage-consent.js'
 
 const ARCSCAN_TX = 'https://testnet.arcscan.app/tx'
 const STORAGE_PREFIX = 'archimedes_deposit_'
@@ -42,7 +43,11 @@ function loadProgress(vaultAddress) {
 
 function saveProgress(vaultAddress, stepIndex, txHashes) {
   try {
-    localStorage.setItem(`${STORAGE_PREFIX}${vaultAddress}`, JSON.stringify({ stepIndex, txHashes }))
+    // Functional category (#1647): resume-after-reload is convenience, not
+    // correctness. With functional storage rejected the step list restarts on
+    // a reload; transactions already broadcast are untouched either way.
+    const key = `${STORAGE_PREFIX}${vaultAddress}`
+    if (canStore(key)) localStorage.setItem(key, JSON.stringify({ stepIndex, txHashes }))
   } catch { /* storage unavailable */ }
 }
 

@@ -194,8 +194,8 @@ async def get_funnel(
 
     Every stage in the ``source=visitor`` response also carries
     ``by_agent_type`` (issue #788): the same distinct-visitor count, broken out
-    by the telemetry middleware's classification (``internal``/``external``/
-    ``human``), so agent conversion through the funnel can be measured
+    by the telemetry middleware's classification (``internal``/``keyed``/
+    ``external``/``human``), so agent conversion through the funnel can be measured
     separately from human conversion. Additive — ``distinct_visitors`` and the
     ratios are unchanged. Empty per stage on ``source=identity`` (no
     per-request agent_type there).

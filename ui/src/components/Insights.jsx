@@ -26,8 +26,12 @@ import { insights as ROADMAP_COPY } from '../roadmapCopyApp.js'
 //     SESSIONS that reached that step) — the two numbers are not expected to
 //     match, and the copy says so explicitly rather than leaving readers to
 //     guess.
-//   - Conversion funnel: distinct visitors through landed → wallet_connected →
-//     generation_started → vault_deployed, with step-conversion %.
+//   - Conversion funnel: distinct visitors through landed → generation_started
+//     → free_generation_used → wallet_gate_shown → wallet_connected →
+//     vault_deployed, with step-conversion %. (#1643 reordered this: the first
+//     three generations on an account need no wallet, so a visitor generates
+//     BEFORE connecting one. The labels below only rename the backend's
+//     STAGES; the order is the backend's.)
 //   - Visitor insights: distinct visitors by country + device, drawn from the
 //     SAME JS-gated `landed` beacon population as the funnel, attributed once
 //     per visitor (issue #854 finding #6: a Redis SADD first-seen gate in
@@ -59,9 +63,14 @@ import { insights as ROADMAP_COPY } from '../roadmapCopyApp.js'
 // flag (it's a real server-side stage, see /api/metrics/funnel); the label
 // — and the row itself — is gated so a public dashboard doesn't hold out a
 // permanently 0/0% roadmap stage as a tracked product goal (#1354).
+// Key order matters: the funnel API returns stages in backend STAGES order and
+// this map only renames them, so the two must describe the same journey (#1643
+// put generation ahead of the wallet — the first three generations are free).
 const CORE_FUNNEL_LABELS = {
   landed: 'Landed',
   generation_started: 'Tried Generate',
+  free_generation_used: 'Used a Free Generation',
+  wallet_gate_shown: 'Hit the Wallet Gate',
   wallet_connected: 'Connected Wallet',
 }
 const FUNNEL_LABELS = ROADMAP_SURFACES_ENABLED

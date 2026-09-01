@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { getStoredWalletName } from '../config'
+import { canStore } from '../storage-consent.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 const STORAGE_PREFIX = 'archimedes.welcomeProfileSeen.'
@@ -42,7 +43,11 @@ export default function WelcomeProfileModal({ walletAddr, onDone, mode = 'welcom
     // Edit mode never touches the gate — only the welcome flow sets it.
     if (isEdit) return
     if (walletAddr) {
-      localStorage.setItem(STORAGE_PREFIX + walletAddr.toLowerCase(), '1')
+      // Functional category (#1647): with functional storage rejected the
+      // "already asked this wallet" marker is not kept, so the skippable
+      // welcome prompt can appear again — the stated fallback.
+      const key = STORAGE_PREFIX + walletAddr.toLowerCase()
+      if (canStore(key)) localStorage.setItem(key, '1')
     }
   }
 

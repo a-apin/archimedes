@@ -5,7 +5,8 @@
 > [`backend/archimedes/agents/strategy_fusion.py`](../../backend/archimedes/agents/strategy_fusion.py)
 > (650 lines, feature-flagged, DB-first corpus reads with file fallback). **What ships
 > today:** the 3-input fusion engine (`POST /api/strategies/generate`) consuming
-> user brief × live market regime × 10,000-paper corpus → grounded strategy spec.
+> user brief × live market regime × the q-fin corpus (live count: `GET /health`
+> `corpus_papers` / `corpus_db_count`) → grounded strategy spec.
 > **What's deferred:** the SPECTER2 + RAG + minimal KG retrieval upgrade
 > (GitHub issue `#96`, now *unblocked* after `#95` engine v2 merged; previously
 > keyword-only selection). See also
@@ -76,8 +77,9 @@ user (or an upstream agent) supplies a `FusionBrief`:
 | `asset_classes` | `list[str]` | Required-overlap filter. A paper is eligible only if its category/title/abstract evidences at least one requested class (substring + a small synonym map: `equities`, `rates`, `credit`, `fx`, `commodities`, `crypto`, `vol`, `macro`). Empty list = no asset filter (corpus-wide, still novelty-ranked). |
 | `risk_appetite` | `str` → `RiskProfile` | Maps to `RISK_PROFILE_PARAMS`. Passed into the prompt as the synthesis constraint envelope (USYC floor/ceiling, target vol, max DD). Does **not** hard-filter papers (a paper is a building block, not a risk-tagged strategy) — it shapes the synthesis, not the candidate set. |
 | `strategic_direction` | `str` | Free-text steer (e.g. *"regime-switching overlays on a carry core"*). Used for keyword-biased ranking of candidates and passed verbatim into the synthesis prompt. |
-| `max_papers` | `int` | Upper bound on fused papers. Clamped to `[2, FUSION_MAX_PAPERS]` (hard cap 6 — token + coherence budget). |
-| `min_papers` | (enforced, not user-settable below 2) | **Hard floor of 2.** A fusion of one paper is just extraction — that is the architect's job. If fewer than 2 eligible candidates survive filtering, fusion declines with a labelled, honest "insufficient corpus coverage" proposal rather than degrading to single-paper output. |
+| `max_papers` | `int` | **Retrieval width** — how many abstracts the model is shown. Clamped to `[2, FUSION_MAX_PAPERS]` (hard cap **30** since #1636; was 6). Not a citation quota. Defaults to `DEFAULT_MAX_PAPERS = 8` at every entry point (`GenerateBrief`, `FusionBrief`, `POST /api/strategies/generate`) — deliberately above the fuse target so the model has room to reject a paper honestly. |
+| `min_papers` | (enforced, not user-settable below 2) | **Hard floor of 2.** A fusion of one paper is just extraction — that is the architect's job. If fewer than 2 eligible candidates survive filtering, fusion declines with a labelled, honest "insufficient corpus coverage" proposal rather than degrading to single-paper output. **Unchanged by #1636 and deliberately so:** raising it to the fuse target would convert a thin corpus into a failed generation instead of a narrower strategy. |
+| `FUSE_TARGET_MIN` | (constant, not user-settable) | **5 — what the prompt ASKS for, never a gate** (#1636). The model must justify a shortfall in `fusion_reasoning`, naming each rejected paper. Citing fewer is accepted, recorded on `FusionProposal.is_shortfall` and in a `fusion: shortfall — …` log line carrying the used-vs-offered pair. Padding the citation list with a paper whose mechanism the model cannot name is worse than an honest 2: the 30-paper set comes off a **lexical substring** filter reranked over ≤150 candidates, so its tail is plausibly noise, and citation count is read downstream (passport, provenance record) as evidence depth. |
 
 ### Deterministic pre-LLM candidate selection
 

@@ -20,7 +20,7 @@ export default function PublicLayout({ user, children }) {
 			<div className="public-announcement" role="note">
 				<span>Research prototype</span>
 				<strong>Arc public testnet</strong>
-				<span>No real funds</span>
+				<span>No mainnet money</span>
 			</div>
 			<header className="public-header">
 				<div className="public-header__inner">
@@ -46,6 +46,19 @@ export default function PublicLayout({ user, children }) {
 						</a>
 						<a href="/architecture" className="public-nav__link">
 							Architecture
+						</a>
+						{/* The documentation site, served from our own infra
+						    (docs-site/infra/main.tf, #1634). External host, so it
+						    opens in a new tab and carries rel="noreferrer" like the
+						    footer's off-site links. Guarded by
+						    ui/test/docs-link.test.js. */}
+						<a
+							href="https://docs.archimedes-arc.com/"
+							className="public-nav__link"
+							target="_blank"
+							rel="noreferrer"
+						>
+							Docs
 						</a>
 						<button
 							type="button"

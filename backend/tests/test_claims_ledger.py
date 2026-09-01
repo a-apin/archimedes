@@ -59,8 +59,14 @@ ALLOWED_STATUSES = frozenset({"TRUE", "CHANGED", "RETRACTED", "OVER-CLAIMED", "P
 # That is what lets the ledger keep writing a bare `agent.json` or `live_rigor_gate.py` as
 # shorthand for a path it already gave in full, without those shorthands being read as
 # citations to files at the repo root that do not exist.
+# `conf` and `tf` joined the list on 2026-08-31 with the Security-page rows. That page's
+# claims are enforced in `nginx/nginx.conf` (the CSP, HSTS, framing and rate-limit zones)
+# and pinned in `infra/ecs.tf` (the money switches), so without those two extensions its
+# most load-bearing evidence would have been backticked prose the guard silently skipped —
+# a row reading as cited while nothing resolved it. Both require a directory component
+# like every other citation, so a bare `nginx.conf` shorthand is still not a citation.
 _CITATION_RE = re.compile(
-    r"`((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.(?:py|jsx|js|md|json|txt|sol|html|xml|yml|yaml|toml|sh|css)"
+    r"`((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.(?:py|jsx|js|md|json|txt|sol|html|xml|yml|yaml|toml|sh|css|conf|tf)"
     r"|(?:README|CLAUDE|SETUP|AGENTS)\.md)"
     r"(?::(\d+)(?:-\d+)?)?`"
 )
@@ -96,6 +102,23 @@ _SYMBOL_PINS: tuple[tuple[str, str], ...] = (
     ("ui/src/routes.js", "PUBLIC_PATHS"),
     ("ui/src/featureFlags.js", "ROADMAP_SURFACES_ENABLED"),
     ("cli/src/archimedes_cli/exits.py", "INCOMPLETE = 4"),
+    # Security-page rows (2026-08-31). Every one of these is a symbol a Security-page
+    # sentence is *about* — the cookie flags the page enumerates, the headers it lists, the
+    # rate-limit zone it distinguishes, the paywall functions it describes. A rename here
+    # leaves the page asserting enforcement that no longer has that name.
+    ("auth/auth.js", "useSecureCookies: production"),
+    ("auth/auth.js", "sameSite: 'lax'"),
+    ("nginx/nginx.conf", "zone=api_write:10m rate=20r/m"),
+    ("nginx/nginx.conf", 'add_header X-Frame-Options "DENY" always;'),
+    ("nginx/nginx.conf", 'Permissions-Policy "geolocation=(), microphone=(), camera=()"'),
+    ("backend/archimedes/api/account_auth.py", '"cookie": request.headers.get("cookie", "")'),
+    ("backend/archimedes/api/auth_guard.py", "hmac.compare_digest"),
+    ("backend/archimedes/services/generation_payment.py", "def settles_real_value"),
+    ("backend/archimedes/services/generation_payment.py", "async def enforce_generation_payment"),
+    ("backend/archimedes/services/generation_payment.py", "payer_mismatch"),
+    ("infra/ecs.tf", '{ name = "GENERATION_PAYMENT_REQUIRED", value = "true" }'),
+    ("infra/ecs.tf", '{ name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" }'),
+    ("ui/test/roadmap-copy.test.js", "EXECUTION_CLAIM_PATTERN"),
 )
 
 # The ledger records that board-level FDR MOVED to the leaderboard (#1564/#1580), so the
@@ -106,12 +129,18 @@ _ABSENCE_PIN = ("backend/archimedes/api/selection_bias_routes.py", "class BoardL
 
 # The sentences the ledger's OVER-CLAIMED rows say are still live. See the module
 # docstring: fixing one of these SHOULD break this test.
+#
+# The two agent-surface entries retired themselves in #1650, exactly as designed:
+# scrubbing the sentence turned this test red, which is what forced the ledger rows
+# from OVER-CLAIMED to CHANGED in the same change. They are not replaced by
+# "must stay absent" pins here — that property belongs to the surfaces' own guard
+# (``ui/test/roadmap-copy.test.js``, which requires roadmap tense on every vault
+# sentence in ``ui/public/``), not to a ledger-citation test.
 _OPEN_OVERCLAIMS: tuple[tuple[str, str], ...] = (
-    ("README.md", "non-custodial vault on the Arc testnet"),
-    ("ui/public/llms.txt", "executed in non-custodial USDC"),
-    ("ui/public/.well-known/agent.json", "executed in a non-custodial USDC vault"),
-    ("ui/index.html", "records the whole decision on Arc public testnet"),
-    ("docs/user-stories.md", "into your non-custodial vault on Arc"),
+    # The index.html generation-on-chain tags and the user-stories present-tense
+    # vault sentence were FIXED by the 2026-09-01 copy-honesty pass. Their
+    # ledger rows moved OVER-CLAIMED → CHANGED in the same change. No open
+    # over-claim pins remain here; a new OVER-CLAIMED row must add a pin.
 )
 
 
@@ -330,21 +359,34 @@ class TestLedgerClaimsMatchTheTree:
             "leaderboard. Either the move was reverted or the ledger row is wrong."
         )
 
-    def test_published_exit_codes_still_omit_incomplete(self):
-        """The ledger's CLI row says the published manifest under-publishes its own contract.
+    def test_the_published_exit_code_table_covers_every_code_the_cli_defines(self):
+        """Successor to ``test_published_exit_codes_still_omit_incomplete``.
 
-        `exits.py` defines `INCOMPLETE = 4` and `cli.py` exits with it, but `manifest.py`'s
-        `EXIT_CODES` — the machine-readable table an agent branches on — stops at `3`. This
-        is the same self-retiring shape as the OVER-CLAIMED pins: fixing the manifest turns
-        this red, which forces the ledger row to move in the same change.
+        That test was a self-retiring pin: it asserted the manifest's ``EXIT_CODES``
+        still stopped at ``3`` while ``exits.py`` defined ``INCOMPLETE = 4``, and it
+        instructed whoever fixed the manifest to move the ledger row and delete it.
+        The CLI ``generate`` work did exactly that — it published ``4`` and added
+        ``5``–``8`` — so the pin is retired and the ledger row is now ``CHANGED``.
+
+        What replaces it is the guard the original defect actually wanted: not "is
+        this one omission still present" but "can an omission happen again". Adding
+        a code to ``exits.py`` without publishing it now fails here. The CLI's own
+        suite asserts the same invariant from the other side
+        (``cli/tests/test_manifest.py``); this copy exists because the ledger row
+        rests on it and CI runs the backend suite on every PR, including ones that
+        touch ``cli/`` without running the CLI suite.
         """
         manifest = (REPO_ROOT / "cli/src/archimedes_cli/manifest.py").read_text(encoding="utf-8")
-        block = re.search(r"EXIT_CODES\s*=\s*\{(.*?)\}", manifest, re.DOTALL)
+        exits_src = (REPO_ROOT / "cli/src/archimedes_cli/exits.py").read_text(encoding="utf-8")
+        block = re.search(r"EXIT_CODES\s*=\s*\{(.*?)\n\}", manifest, re.DOTALL)
         assert block is not None, "EXIT_CODES table not found in manifest.py — the ledger row cites it"
-        assert '"4"' not in block.group(1), (
-            "manifest.py's EXIT_CODES now publishes exit code 4. Good — that was the defect "
-            "the ledger's CLI row recorded. Move that row from OVER-CLAIMED to CHANGED, cite "
-            "the PR that fixed it, and delete this test."
+        published = set(re.findall(r'"(\d+)":', block.group(1)))
+        defined = set(re.findall(r"^[A-Z_]+ = (\d+)$", exits_src, re.MULTILINE))
+        assert defined, "no exit codes parsed from exits.py — the parser broke, not the contract"
+        assert defined <= published, (
+            f"exits.py defines codes the manifest does not publish: {sorted(defined - published)}. "
+            "The machine-readable table is what a CI job branches on; an unpublished code is an "
+            "undocumented one."
         )
 
     def test_open_overclaims_are_still_present(self):
