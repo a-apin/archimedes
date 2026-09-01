@@ -39,10 +39,7 @@ from archimedes.api.selection_bias_routes import (
 )
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
-from archimedes.services.live_rigor_gate import (
-    RigorGateVerdict,
-    verdicts_for_strategies,
-)
+from archimedes.services.live_rigor_gate import RigorGateVerdict
 from archimedes.services.rigor_evaluator import RigorGateResult
 
 logger = logging.getLogger(__name__)
@@ -107,8 +104,12 @@ def _to_strategy_response(
     from archimedes.services.return_source_classifier import classify_strategy
 
     if verdict is None:
-        verdict = _live_verdict_for_one(s)
-        rigor_result = _live_rigor_result_for_one(s)
+        # ONE cohort gate run, not two (#1645). Both the badge and the numeric
+        # fields are derived from the same memoized RigorGateResult — see
+        # `_live_verdict_and_result_for_one`. This mirrors what `list_strategies`
+        # has done since #868; the single-strategy path was the last caller
+        # still paying for a second, uncached full-library gate run.
+        verdict, rigor_result = _live_verdict_and_result_for_one(s)
 
     bt = strategy_provider().get_backtest_result(s.id)
     # has_real: a BacktestResultRecord (persisted daily-returns row) exists.
@@ -255,24 +256,67 @@ def _to_strategy_response(
     )
 
 
+def _live_verdict_and_result_for_one(s: Strategy) -> tuple[RigorGateVerdict, RigorGateResult | None]:
+    """Badge + numbers for a single strategy from ONE cohort gate run (#1645).
+
+    **Why this exists (perf).** ``_to_strategy_response`` used to call
+    ``_live_verdict_for_one`` (→ ``verdicts_for_strategies``) *and*
+    ``_live_rigor_result_for_one`` (→ ``_live_rigor_results_for_strategies``).
+    Both grade the FULL library, so one ``GET /api/strategies/{id}`` ran the
+    whole cohort gate **twice** — measured 68 ``run_rigor_gate`` calls against a
+    34-strategy library. Worse, only the second path is memoized in
+    ``services.rigor_cache``: ``verdicts_for_strategies`` has no cache at any
+    layer, so a warm cache still cost a full cohort recompute (34 calls) on
+    every request, forever. Measured on prod 2026-08-31, anonymous:
+    ``GET /api/strategies/{id}`` returned ``X-Response-Time-Ms: 28144.0`` /
+    ``25072.2`` / ``28554.9`` on three consecutive calls — ~2x the ~13s the
+    list route costs for the same cohort, and flat across repeats because the
+    uncached half can never warm up.
+
+    Deriving the badge from the already-computed ``RigorGateResult`` is exactly
+    what ``list_strategies`` has done since #868 (see ``_verdict_from_result``);
+    this makes the detail path use the same single computation.
+
+    **Why this is safe (correctness).** It is the same gate, not a cheaper one.
+    ``RigorGateVerdict.from_result`` is the identical reduction
+    ``verdict_from_returns`` applies, and it is applied to a result produced by
+    ``run_rigor_gate`` over the FULL library cohort (``_library_cohort_including``
+    — the #902/#1173 invariant is unchanged). Every non-graded case still
+    fail-closes to ``pending``: a strategy with <10 persisted returns is absent
+    from the batch dict, a DB/cohort failure degrades the batch to ``{}``, and
+    ``_verdict_from_result(None)`` is ``pending``.
+
+    It also *removes* a real divergence. ``verdicts_for_strategies`` builds cohort
+    PBO/avg-correlation from every series with ≥10 observations, while
+    ``_live_rigor_results_for_strategies`` first excludes zero-variance series
+    (#868) — both files carry a ``TODO(A7)`` naming that split. The detail route
+    was serving a badge from the first cohort filter next to numbers from the
+    second; now both come from one run, so the detail badge cannot disagree with
+    the detail numbers or with the list badge.
+    """
+    result = _live_rigor_result_for_one(s)
+    return _verdict_from_result(result), result
+
+
 def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
     """Live rigor-gate verdict for a single strategy (#821).
 
-    Used by the single-strategy fetch path (``get_strategy``). Delegates to
-    ``verdicts_for_strategies`` over the FULL library so the verdict is computed
-    with the same cohort PBO + avg correlation context the list badge uses,
-    keeping the detail view consistent with the list. ``num_trials`` is
-    self-contained (1 per strategy, decouple #2) — it does NOT come from the
-    library size; only PBO/avg_correlation are cohort-derived. No real returns
-    → ``pending``, never a fixture value. Never raises: any failure degrades to
-    ``pending`` (fail-closed badge).
+    Grades over the FULL library so the verdict carries the same cohort PBO +
+    avg correlation context the list badge uses, keeping the detail view
+    consistent with the list. ``num_trials`` is self-contained (1 per strategy,
+    decouple #2) — it does NOT come from the library size; only
+    PBO/avg_correlation are cohort-derived. No real returns → ``pending``,
+    never a fixture value. Never raises: any failure degrades to ``pending``
+    (fail-closed badge).
+
+    Since #1645 this is the badge half of ``_live_verdict_and_result_for_one``
+    rather than a second, uncached gate run through ``verdicts_for_strategies``
+    — see that function's docstring for the measurement and the correctness
+    argument. Callers that also need the numbers should call the pair directly;
+    calling both this and ``_live_rigor_result_for_one`` would repeat the cache
+    lookup for no benefit.
     """
-    try:
-        cohort = _library_cohort_including(s)
-        return verdicts_for_strategies(cohort).get(s.id, RigorGateVerdict.pending())
-    except Exception as exc:
-        logger.warning("live verdict failed for %s (badge → pending): %s", s.id, exc)
-        return RigorGateVerdict.pending()
+    return _live_verdict_and_result_for_one(s)[0]
 
 
 def _library_cohort_including(s: Strategy) -> list[Strategy]:
@@ -520,6 +564,79 @@ def _verdict_from_result(result: RigorGateResult | None) -> RigorGateVerdict:
     return RigorGateVerdict.from_result(result)
 
 
+def _publishable_strategy_ids(
+    session,
+    strategy_ids: list[str],
+    wallet_address: str | None,
+    *,
+    is_example: bool,
+) -> set[str]:
+    """Which of ``strategy_ids`` this wallet may publish — O(1) queries, not O(N).
+
+    Both Library listings used to call ``wallet_can_publish`` once per response
+    row. Each call is a single ``.first()``
+    (``models/strategy_generators.py``), so a 34-row curated page issued 34
+    extra sequential round trips, every one of them paying a ``pool_pre_ping``
+    ``SELECT 1`` (``db.py``) first. Worse, the per-row call short-circuits on an
+    anonymous caller — so a visitor paid nothing and the signed-in owner paid
+    all 34, which is backwards for a demo (#1663).
+
+    Same answers, one ``IN`` query:
+
+    * **Anonymous callers still pay nothing.** The empty-``wallet_address``
+      short-circuit below reproduces the old ``bool(caller) and ...`` guard
+      exactly — no query is issued and every row gets ``can_publish=False``.
+      This is not relaxed; a visitor must not be told they can publish.
+    * **The ``PLATFORM_ADMIN_WALLETS`` override is delegated, never re-derived.**
+      It stays inside ``wallet_can_publish``, which this function calls at most
+      once. Re-parsing that env var here would create a third copy of the
+      parsing (``models/strategy_generators.py`` and
+      ``api/metrics_private_routes.py`` already hold two), and a copy that
+      drifts silently changes who is allowed to publish. That is why this is
+      1 + at-most-1 queries rather than literally one: the extra lookup buys
+      single-sourced publish semantics, and it is a constant, not a per-row
+      cost.
+
+    The probe is aimed at an id the wallet demonstrably did NOT generate, so
+    ``wallet_can_publish``'s DB half is ``False`` by construction and a ``True``
+    answer isolates the admin bit exactly. It is skipped entirely when it could
+    not change an answer (non-example rows have no admin override; a wallet that
+    generated every id is already fully covered), and an actual admin costs zero
+    extra queries because the override returns before the row lookup runs.
+    """
+    from archimedes.models.strategy_generators import StrategyGenerator, wallet_can_publish
+
+    if not wallet_address or not strategy_ids:
+        return set()
+
+    ids = list(dict.fromkeys(strategy_ids))
+    # wallet_can_publish lower-cases its argument and record_generator stores
+    # the lower-cased form; match that here rather than trusting the caller's
+    # casing.
+    wallet = wallet_address.lower()
+
+    generated = {
+        row[0]
+        for row in session.query(StrategyGenerator.strategy_id)
+        .filter(
+            StrategyGenerator.strategy_id.in_(ids),
+            StrategyGenerator.wallet_address == wallet,
+        )
+        .all()
+    }
+
+    if not is_example:
+        return generated
+
+    ungenerated = [sid for sid in ids if sid not in generated]
+    if not ungenerated:
+        return generated
+
+    if wallet_can_publish(session, strategy_id=ungenerated[0], wallet_address=wallet, is_example=True):
+        return set(ids)
+    return generated
+
+
 # ── Library listing ─────────────────────────────────────────────
 
 
@@ -549,7 +666,6 @@ async def list_strategies(
     stable filter key; the served status reflects the live verdict.
     """
     from archimedes.db import get_session
-    from archimedes.models.strategy_generators import wallet_can_publish
 
     status_filter = StrategyStatus(status) if status else None
 
@@ -628,11 +744,13 @@ async def list_strategies(
     caller = get_linked_wallet_address(request)
     responses: list[StrategyResponse] = []
     with get_session() as session:
+        # One IN query for the whole window's publish rights (#1663) — this was
+        # a per-row wallet_can_publish call, i.e. one round trip per response
+        # row, paid only by signed-in callers.
+        publishable = _publishable_strategy_ids(session, [s.id for s in window], caller, is_example=True)
         for s in window:
             resp = _to_strategy_response(s, _verdict_from_result(rigor_results.get(s.id)), rigor_results.get(s.id))
-            resp.can_publish = bool(caller) and wallet_can_publish(
-                session, strategy_id=s.id, wallet_address=caller, is_example=True
-            )
+            resp.can_publish = s.id in publishable
             responses.append(resp)
     return StrategyListResponse(
         strategies=responses,
@@ -659,7 +777,6 @@ async def list_generated_strategies(
     from sqlalchemy import and_, or_
 
     from archimedes.db import get_session
-    from archimedes.models.strategy_generators import wallet_can_publish
     from archimedes.models.strategy_store import StrategyRecord
 
     caller = get_linked_wallet_address(request)  # None when anonymous — never an error
@@ -695,12 +812,13 @@ async def list_generated_strategies(
             from archimedes.models.generation_cost import generation_costs_for_strategies
 
             costs = generation_costs_for_strategies(session, [r.id for r in records])
+            # One IN query for the whole page's publish rights (#1663), same
+            # shape as the generation-cost read directly above.
+            publishable = _publishable_strategy_ids(session, [r.id for r in records], caller, is_example=False)
             page = []
             for r in records:
                 d = r.to_dict()
-                d["can_publish"] = bool(caller) and wallet_can_publish(
-                    session, strategy_id=r.id, wallet_address=caller, is_example=False
-                )
+                d["can_publish"] = r.id in publishable
                 d["generation_cost"] = costs.get(r.id)
                 page.append(d)
             # Citation truth: ``StrategyRecord.to_dict()`` returns source_papers
@@ -1358,15 +1476,18 @@ def _passport_responses(records, session) -> list[StrategyResponse]:
     boundary ``live_rigor_gate`` and the selection-bias route already read
     through, and the one the suite mocks — then hands each row its own slice.
 
-    **Cost, stated honestly:** ``get_all_daily_returns`` is a Python loop over
-    ``get_daily_returns``, so this is N indexed single-row reads, not one batched
-    query. It is the same query count reading per row would cost; the helper buys
-    a single mocking boundary and one failure decision, not a batching win. Each
-    read deserializes that strategy's whole ``artifact_json`` blob, so the real
-    cost scales with the generated corpus, and ``list_passports`` has no LIMIT.
-    Making the degenerate answer cheap needs it persisted at write time rather
-    than re-derived on read — tracked separately; do not paper over it here by
-    skipping rows, because which rows you skip is exactly the claim at stake.
+    **Cost, stated honestly (updated by #1662).** This used to read "N indexed
+    single-row reads, not one batched query" — true when ``get_all_daily_returns``
+    was a Python loop over ``get_daily_returns``. It is now ONE windowed query
+    for the whole cohort, so the round trips no longer scale with the number of
+    records. What did NOT change is the bytes: the query still projects each
+    winning row's ``artifact_json``, and each is deserialized to find its
+    ``daily_returns``, so the transfer + parse cost still scales with the
+    generated corpus and ``list_passports`` still has no LIMIT. Making the
+    degenerate answer genuinely cheap needs ``daily_returns`` persisted at write
+    time rather than re-derived on read — tracked separately; do not paper over
+    it here by skipping rows, because which rows you skip is exactly the claim
+    at stake.
     """
     if not records:
         return []

@@ -45,7 +45,7 @@ def _brace_block(text: str, search_from: int) -> str:
     raise AssertionError(f"unbalanced braces starting at offset {open_idx}")
 
 
-def _compose_config(*, local: bool) -> dict:
+def _compose_config(*, local: bool, env_overrides: dict[str, str] | None = None) -> dict:
     template = (ROOT / ".env.example").read_text()
     # Full-line substitution, not a prefix replace: .env.example now ships a
     # non-empty placeholder value (PLACEHOLDER_SECRET in auth/auth.js), so a
@@ -56,6 +56,18 @@ def _compose_config(*, local: bool) -> dict:
     template = re.sub(
         r"^BETTER_AUTH_SECRET=.*$", f"BETTER_AUTH_SECRET={TEST_AUTH_SECRET}", template, count=1, flags=re.MULTILINE
     )
+    # Opt-in env deltas on top of the shipped template, applied the same
+    # full-line way as BETTER_AUTH_SECRET above. Used to exercise the
+    # "operator deliberately points a compose run at SSM" path without
+    # weakening the fresh-clone default the other tests assert on.
+    for key, value in (env_overrides or {}).items():
+        line = f"{key}={value}"
+        template, replaced = re.subn(
+            rf"^{re.escape(key)}=.*$", lambda _m, _line=line: _line, template, count=1, flags=re.MULTILINE
+        )
+        if not replaced:
+            template = f"{template.rstrip()}\n{line}\n"
+
     command = ["docker", "compose"]
     if local:
         template = template.replace("\nCOMPOSE_PROFILES=localdb\n", "\nCOMPOSE_PROFILES=localdb,runners\n", 1)
@@ -140,6 +152,123 @@ class TestLocalSetupContract(unittest.TestCase):
         )
         self.assertNotIn("migrate", self.production_config["services"])
         self.assertEqual(self.production_config["services"]["nginx"]["ports"][0]["published"], "80")
+
+    def test_fresh_clone_compose_never_resolves_the_ssm_prefix_to_a_real_path(self) -> None:
+        """#1044 leak 2, second half. `.env.example` ships
+        `AWS_SSM_PATH_PREFIX=` (blank) so that a fresh clone cannot address the
+        production parameter store — but compose's `:-` substitutes on EMPTY as
+        well as unset, so a `${AWS_SSM_PATH_PREFIX:-/archimedes/prod/}` default
+        in docker-compose.yml silently put the real prod prefix back into the
+        container and made that blank default decorative:
+
+            $ cp .env.example .env && docker compose config | grep SSM
+            AWS_SSM_PATH_PREFIX: /archimedes/prod/
+
+        That left main.py's PUBLIC_DOMAIN gate as the *only* thing between a
+        local `docker compose up` on a credentialed dev machine and real
+        production secrets. This test asserts both halves of the defence, at
+        the point where the value is actually resolved rather than at the point
+        where it is written: the template ships blank, AND nothing in the
+        compose graph re-arms it."""
+        self.assertEqual(
+            self.env.get("AWS_SSM_PATH_PREFIX"),
+            "",
+            ".env.example must ship AWS_SSM_PATH_PREFIX blank — production sets it in infra/ecs.tf, not from this file",
+        )
+        for label, config in (("local", self.config), ("production-model", self.production_config)):
+            for service_name, service in config["services"].items():
+                resolved = (service.get("environment") or {}).get("AWS_SSM_PATH_PREFIX")
+                self.assertIn(
+                    resolved,
+                    (None, ""),
+                    f"{label} compose resolves AWS_SSM_PATH_PREFIX={resolved!r} for service "
+                    f"{service_name!r} from an unmodified .env.example. A fresh clone must not "
+                    "name a real SSM path: with ambient AWS creds that is a live handle on "
+                    "production secrets, one regressed PUBLIC_DOMAIN gate away from being read "
+                    "(#1044).",
+                )
+
+    def test_exported_ssm_prefix_still_reaches_the_container(self) -> None:
+        """Over-correction guard, paired with the test above. Blanking the
+        compose default must not remove the opt-in: an operator who exports
+        AWS_SSM_PATH_PREFIX (deliberately mimicking prod locally) still gets it
+        plumbed through. A fix that made the prefix unreachable would pass the
+        previous test and break the thing it exists to allow."""
+        config = _compose_config(local=True, env_overrides={"AWS_SSM_PATH_PREFIX": "/archimedes/prod/"})
+        self.assertEqual(
+            config["services"]["backend"]["environment"]["AWS_SSM_PATH_PREFIX"],
+            "/archimedes/prod/",
+        )
+
+    def test_prod_task_definition_sets_the_env_var_the_ssm_gate_keys_on(self) -> None:
+        """The other side of #1044's gate, which no test covered.
+
+        `main.py` loads SSM secrets only when PUBLIC_DOMAIN is set. That makes
+        PUBLIC_DOMAIN — not AWS_SSM_PATH_PREFIX, not credential presence — the
+        single variable separating local from production. The failure mode this
+        guards is silent and asymmetric: dropping PUBLIC_DOMAIN from the ECS
+        task definition breaks nothing at plan/apply time and nothing at
+        container start, it just means the backend never loads its SSM secrets
+        and boots degraded (EMAIL_ENCRYPTION_KEY fail-close, DATABASE_URL
+        fallbacks) — a production outage caused by an edit to a file the
+        backend tests otherwise never read.
+
+        Pinned as a pair, in the idiom of the nginx healthCheck test above:
+        the gate's shape in main.py, and the variable's presence in the
+        `backend` container block of infra/ecs.tf specifically (a file-wide
+        grep would stay green with the backend block deleted, since `auth` and
+        `nginx` also mention the domain)."""
+        main_py = (ROOT / "backend/archimedes/main.py").read_text()
+        self.assertEqual(
+            main_py.count("load_ssm_secrets()"),
+            1,
+            "main.py must contain exactly one load_ssm_secrets() call site — a second, "
+            "ungated one would reopen #1044 while the gated one kept this test green",
+        )
+        self.assertRegex(
+            main_py,
+            r'if os\.getenv\("PUBLIC_DOMAIN"\):\n\s+load_ssm_secrets\(\)',
+            "main.py's load_ssm_secrets() call must sit directly under an "
+            '`if os.getenv("PUBLIC_DOMAIN"):` gate — ungated, ambient AWS credentials on a '
+            "developer machine pull real production secrets into a local run (#1044)",
+        )
+
+        ecs_tf = (ROOT / "infra/ecs.tf").read_text()
+        container_name_starts = [m.start() for m in re.finditer(r'^\s*name\s*=\s*"', ecs_tf, re.MULTILINE)]
+        backend_decl = re.search(r'^\s*name\s*=\s*"backend"\s*$', ecs_tf, re.MULTILINE)
+        self.assertIsNotNone(backend_decl, 'infra/ecs.tf defines no container named "backend"')
+        assert backend_decl is not None  # narrow for the type checker
+        backend_start = backend_decl.start()
+        backend_end = next((s for s in container_name_starts if s > backend_start), len(ecs_tf))
+        backend_container = ecs_tf[backend_start:backend_end]
+
+        public_domain = re.search(
+            r'\{\s*name\s*=\s*"PUBLIC_DOMAIN"\s*,\s*value\s*=\s*"([^"]+)"',
+            backend_container,
+        )
+        self.assertIsNotNone(
+            public_domain,
+            'the "backend" container in infra/ecs.tf declares no PUBLIC_DOMAIN environment '
+            "entry — main.py gates the SSM secret load on it, so without it the production "
+            "task boots with none of its SSM-backed secrets (#1044)",
+        )
+        assert public_domain is not None  # narrow for the type checker
+        self.assertTrue(
+            public_domain.group(1).startswith("https://"),
+            f"PUBLIC_DOMAIN in infra/ecs.tf is {public_domain.group(1)!r}; it must be "
+            "scheme-qualified (CORS and wallet-link bindings compare full origins)",
+        )
+
+        ssm_prefix = re.search(
+            r'\{\s*name\s*=\s*"AWS_SSM_PATH_PREFIX"\s*,\s*value\s*=\s*"([^"]+)"',
+            backend_container,
+        )
+        self.assertIsNotNone(
+            ssm_prefix,
+            'the "backend" container in infra/ecs.tf declares no AWS_SSM_PATH_PREFIX — '
+            "production names its own prefix here precisely because the compose default and "
+            "the code default are both blank (#1044)",
+        )
 
     def test_nginx_proxies_backend_docs_through_sole_ingress(self) -> None:
         nginx = (ROOT / "nginx/nginx.conf").read_text()

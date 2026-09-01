@@ -5,6 +5,8 @@ import { isInsightsPageBlocked, resolveInsightsAdminState } from "./insightsGate
 import { useAuth } from "./AuthContext";
 import { defaultFeatures, fetchFeatures } from "./features";
 import { pageToPath, resolveRoute } from "./routes";
+import { canStore } from "./storage-consent.js";
+import { useStorageConsent } from "./hooks/useStorageConsent.js";
 import Architecture from "./components/Architecture";
 import AuthPage from "./components/AuthPage";
 import Landing from "./components/Landing";
@@ -26,6 +28,9 @@ function currentRoute(features) {
 
 export default function App() {
 	const { user, loading: authLoading } = useAuth();
+	// Storage-consent record (#1647). Read here only so the analytics beacon
+	// effect below re-evaluates the moment the visitor answers the banner.
+	const [consent] = useStorageConsent();
 	const [features, setFeatures] = useState(defaultFeatures);
 	const [route, setRoute] = useState(() => currentRoute(defaultFeatures));
 	// Admin-gate probe result for /app/insights (owner directive 2026-08-20,
@@ -75,10 +80,18 @@ export default function App() {
 		return () => window.removeEventListener("popstate", onPopState);
 	}, [features]);
 
+	// Analytics category (#1647). The per-tab dedupe marker AND the beacon it
+	// guards are both suppressed when analytics consent is withheld — which
+	// includes the state before any choice is made. Suppressing only the
+	// marker would have been worse than useless: the beacon would then fire on
+	// every route change. Re-runs when the recorded choice changes, so
+	// accepting analytics reports the landing without needing a reload.
 	useEffect(() => {
+		const LANDED_KEY = "archimedes_landed";
+		if (!canStore(LANDED_KEY)) return;
 		try {
-			if (sessionStorage.getItem("archimedes_landed")) return;
-			sessionStorage.setItem("archimedes_landed", "1");
+			if (sessionStorage.getItem(LANDED_KEY)) return;
+			sessionStorage.setItem(LANDED_KEY, "1");
 		} catch {
 			// Storage may be blocked; metric stays best-effort.
 		}
@@ -88,7 +101,7 @@ export default function App() {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ stage: "landed" }),
 		}).catch(() => {});
-	}, []);
+	}, [consent]);
 
 	useEffect(() => {
 		// Anonymous-OK app pages never bounce to sign-in; auth is required only

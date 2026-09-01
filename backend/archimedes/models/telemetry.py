@@ -78,9 +78,11 @@ class FunnelStageCount(BaseModel):
     step_conversion: float = Field(..., description="distinct_visitors / previous-stage count (0.0-1.0).")
     by_agent_type: dict[str, int] = Field(
         default_factory=dict,
-        description="distinct_visitors at this stage, broken out by agent_type ('internal'/'external'/'human') "
-        "so agent conversion can be measured separately from human (issue #788). Empty for source=identity, "
-        "which has no per-request agent_type.",
+        description="distinct_visitors at this stage, broken out by agent_type "
+        "('internal'/'keyed'/'external'/'human') so agent conversion can be measured separately from "
+        "human (issue #788). 'keyed' is a caller authenticated by a scoped API key (#1653 D3) — an "
+        "identity, unlike 'external', which is a User-Agent guess about an unauthenticated client. "
+        "Empty for source=identity, which has no per-request agent_type.",
     )
 
 

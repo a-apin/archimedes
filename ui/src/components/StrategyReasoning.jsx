@@ -39,6 +39,27 @@ import { anchorState } from "../trace-binding";
 const TRACE_LIMIT = 20;
 const REASONING_EXCERPT = 240;
 
+// A debate claim arrives in one of TWO shapes and both are real data (#1636):
+//
+//   - a plain string — every row persisted before the debate carried paper
+//     attribution. Rendering these as `[object Object]`-proof text is not
+//     enough; they must keep rendering exactly as they always did.
+//   - `{claim, candidate_id, arxiv_ids}` — the current shape. `arxiv_ids` has
+//     already been filtered server-side against the papers the proposers
+//     actually read, so an id here is real. An EMPTY array is meaningful and
+//     is shown as such: the claim was made without grounding it in a listed
+//     paper, and saying so is the whole point of keeping it.
+function claimText(claim) {
+	if (typeof claim === "string") return claim;
+	if (claim && typeof claim === "object") return String(claim.claim ?? "");
+	return "";
+}
+
+function claimArxivIds(claim) {
+	if (!claim || typeof claim !== "object" || Array.isArray(claim)) return null;
+	return Array.isArray(claim.arxiv_ids) ? claim.arxiv_ids : null;
+}
+
 function formatWhen(ts) {
 	if (!ts) return "—";
 	const asDate = new Date(ts);
@@ -170,8 +191,35 @@ function GenerationDebate({ strategyId }) {
 						)}
 						{Array.isArray(turn.claims) && turn.claims.length > 0 && (
 							<ul className="caption mt-1.5 leading-relaxed pl-4 list-disc">
-								{turn.claims.map((claim, j) => (
-									<li key={j}>{claim}</li>
+								{turn.claims.map((claim, j) => {
+									const ids = claimArxivIds(claim);
+									return (
+										<li key={j}>
+											{claimText(claim)}
+											{ids !== null &&
+												(ids.length > 0 ? (
+													<span className="caption" style={{ opacity: 0.75 }}>
+														{" "}
+														— {ids.map((id) => `arXiv:${id}`).join(", ")}
+													</span>
+												) : (
+													<span className="caption" style={{ opacity: 0.75 }}>
+														{" "}
+														— not attributed to a listed paper
+													</span>
+												))}
+										</li>
+									);
+								})}
+							</ul>
+						)}
+						{Array.isArray(turn.discard) && turn.discard.length > 0 && (
+							<ul className="caption mt-1.5 leading-relaxed pl-4 list-disc">
+								{turn.discard.map((d, j) => (
+									<li key={j} style={{ opacity: 0.75 }}>
+										Discarded arXiv:{d?.arxiv_id}
+										{d?.reason ? ` — ${d.reason}` : ""}
+									</li>
 								))}
 							</ul>
 						)}

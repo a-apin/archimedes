@@ -1,12 +1,22 @@
-# Docs Site Setup — GitHub Pages via mkdocs-material
+# Docs Site — S3 + CloudFront at `docs.archimedes-arc.com`
 
 > **Status:** runbook. **Owner:** Dan Browne. **Updated:** 2026-08-31.
 
 `docs/` **and the agent-generated `openwiki/` tree** are built into a static
 site by [`mkdocs.yml`](../../mkdocs.yml) (theme: mkdocs-material) and published
-by [`.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml)
-to GitHub Pages. This is issue #1381, Dan's decision: **option B, GitHub
-Pages** — migrate to something else later only if we outgrow it.
+to **`docs.archimedes-arc.com`** — an S3 bucket behind a CloudFront
+distribution **in our own AWS account**, described by
+[`docs-site/infra/main.tf`](../../docs-site/infra/main.tf) and published by
+[`.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml).
+
+This is issue #1634, Dan's hosting call recorded there on 2026-08-31. It
+replaces the earlier GitHub Pages plan (#1381), which never went live: the
+domain is in our Route 53 zone, in the account that already terminates TLS and
+keeps access logs, and publishing from a third party would have meant a second
+control plane and no way to put the docs behind the same edge policy as
+everything else. The **build** half is unchanged — `mkdocs build --strict`
+still runs on every docs-path push and PR, and is still the gate described at
+the bottom of this page.
 
 `openwiki/` lives at the repository root, outside `docs_dir`, so mkdocs cannot
 see it by itself; [`.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py)
@@ -14,86 +24,137 @@ mounts it at `/openwiki/` and stamps the agent-generated banner on each page.
 The section index, with the full provenance note, is
 [`../agent-wiki.md`](../agent-wiki.md).
 
-## Which half is live and which is still gated
+## What is where
 
-The workflow's two jobs have **different** gates, and only one of them is inert:
-
-- **`build`** runs on every qualifying push to `main` and on every PR that
-  touches a docs path. It is a real check — `mkdocs build --strict` fails on a
-  link into `docs/` or `openwiki/` that names a file which does not exist. It
-  needs no repo settings and no DNS, so nothing below blocks it. (It used to be
-  gated too, which meant the site could rot unnoticed for as long as the
-  variable stayed unset.)
-- **`deploy`** is gated on the repo variable `DOCS_SITE_ENABLED == "true"` (the
-  same pattern as `deploy-runners.yml`'s `RUNNER_DEPLOY_ENABLED`) and never runs
-  from a pull request, so until step 3 below it simply **skips** (grey, not
-  red). If the variable is flipped before Pages is enabled, the deploy job fails
-  harmlessly at `actions/deploy-pages`: no partial deploy, no site, nothing
-  outside the workflow run's own red X.
-
-## Dan's three manual steps to go live
-
-None of these can be done by a workflow or from the CLI with the access this
-repo's automation has — all three are one-time, human, console actions.
-
-### 1. Repo Settings → Pages
-
-1. GitHub → `a-apin/archimedes` → **Settings → Pages**.
-2. **Build and deployment → Source:** select **GitHub Actions** (not "Deploy
-   from a branch"). This is what creates the `github-pages` deployment
-   *environment* that `docs-site.yml`'s `deploy` job publishes into — the
-   workflow's `actions/deploy-pages` step has nothing to deploy to until this
-   is set, which is the whole of why it fails today.
-3. **Custom domain:** enter `docs.archimedes-arc.com` and save. GitHub will
-   show "improperly configured" / a DNS error until step 2 (Route 53) below
-   also exists — that's expected, not a sign anything here is wrong.
-4. Once the DNS check goes green, tick **Enforce HTTPS**. GitHub provisions
-   the certificate itself (Let's Encrypt, via its own ACME flow) — nothing to
-   do in ACM for this.
-5. Re-run the `docs-site` workflow (push a no-op or use **Actions → Docs Site
-   (GitHub Pages) → Run workflow**) to do the first real deploy.
-
-### 2. Route 53 — CNAME record
-
-In the `archimedes-arc.com` hosted zone (same account/profile as the rest of
-prod DNS — `ArchimedesDanAdmin` / us-east-1):
-
-| Field | Value |
+| Piece | Where |
 |---|---|
-| Name | `docs.archimedes-arc.com` |
-| Type | `CNAME` |
-| Value | `a-apin.github.io` |
-| TTL | 300 (or the zone default) |
+| Bucket, CloudFront distribution, ACM cert, Route 53 alias | [`docs-site/infra/main.tf`](../../docs-site/infra/main.tf) — its own terraform root, its own state key (`docs-site/terraform.tfstate`) |
+| Build (`mkdocs build --strict`) | `build` job in [`docs-site.yml`](../../.github/workflows/docs-site.yml) |
+| Publish (`aws s3 sync` + CloudFront invalidation) | `deploy` job in the same workflow, on pushes to `main` only |
+| CI's AWS identity | the existing OIDC role `archimedes-github-deploy` ([`infra/scripts/setup-github-oidc.sh`](../../infra/scripts/setup-github-oidc.sh)) |
+| Terraform `fmt` + `validate` in CI | [`infra-gate.yml`](../../.github/workflows/infra-gate.yml)'s matrix (`docs-site/infra` is one of its roots) |
 
-This is the standard GitHub Pages custom-apex-subdomain pattern — a `CNAME`
-record on a subdomain, pointing at `<org>.github.io` (not at a per-repo
-`<org>.github.io/<repo>` path; GitHub resolves the right repo from the Pages
-config once the custom domain is set in step 1). No record creation was done
-as part of this scaffold — this table is instructions for Dan, not evidence
-of a change already made.
+There is **no repo-variable gate and no console step.** The bucket is the gate:
+until the terraform below has been applied, the publish job prints a NO-OP
+notice and skips, and the build keeps running as normal.
 
-### 3. Flip the workflow gate
+## Going live (one time)
 
-GitHub → `a-apin/archimedes` → **Settings → Secrets and variables → Actions
-→ Variables** → New repository variable: `DOCS_SITE_ENABLED` = `true`.
-Then run the workflow once (**Actions → Docs Site (GitHub Pages) → Run
-workflow**) rather than waiting for the next docs push. Until this variable
-exists and equals `true`, the **deploy** job skips — that's the safety that
-lets this merge before steps 1–2 are done. The **build** job runs either way;
-if it is green, everything except the three steps on this page is done.
+Everything here runs from a checkout with `AWS_PROFILE=ArchimedesDanAdmin`.
 
-### Why there's no `docs/CNAME` file
+### 1. Apply the terraform
 
-Classic "Deploy from a branch" GitHub Pages reads the custom domain from a
-`CNAME` file committed to the published branch/folder. This repo uses the
-`actions/deploy-pages` flow instead (`upload-pages-artifact` +
-`deploy-pages`), where the custom domain is a **repo setting** (step 1 above,
-part 3), not a file — `deploy-pages` writes it into the Pages environment
-config directly. A `docs/CNAME` file would do nothing useful here (mkdocs
-would just copy it into the built site as an inert static file) and would be
-one more place the domain string could drift from Settings, so it's
-deliberately not present. If Archimedes ever migrates *off* `deploy-pages`
-back to branch-deploy Pages, that's the moment to add one — not before.
+```bash
+cd docs-site/infra
+terraform init
+terraform plan      # read it: ~12 resources, all new, none outside this root
+terraform apply
+```
+
+ACM validation is DNS-based against the `archimedes-arc.com` zone the same
+root reads, so `apply` blocks for a few minutes on
+`aws_acm_certificate_validation.docs` and then on the CloudFront distribution
+reaching `Deployed`. Expect 15–20 minutes end to end; that is CloudFront, not
+a hang.
+
+Outputs you will want:
+
+```bash
+terraform output -raw bucket           # archimedes-docs-site-037613907429
+terraform output -raw distribution_id
+terraform output -raw url              # https://docs.archimedes-arc.com
+```
+
+### 2. Grant CI the publish permissions
+
+The publish job authenticates as `archimedes-github-deploy` (OIDC, no stored
+keys). That role's inline policy is written by
+[`infra/scripts/setup-github-oidc.sh`](../../infra/scripts/setup-github-oidc.sh),
+which now includes the docs-site statements (`s3:ListBucket` /
+`GetObject` / `PutObject` / `DeleteObject` on the bucket,
+`cloudfront:CreateInvalidation` on this account's distributions,
+`cloudfront:ListDistributions`). Re-run it to apply them:
+
+```bash
+./infra/scripts/setup-github-oidc.sh            # dry run — prints what it would do
+./infra/scripts/setup-github-oidc.sh --apply
+```
+
+Skipping this does not break the build. It does **not** silently skip either:
+once the bucket exists, a role that cannot read it gets a 403 from
+`head-bucket`, and the workflow fails with "the OIDC role is missing the
+docs-site grants" rather than reporting the stack as unapplied. A permissions
+outage that renders as a routine skip is the failure mode
+[`docs/architectural-principles.md`](../architectural-principles.md) § fail-soft
+exists to prevent.
+
+### 3. Publish the first build
+
+```bash
+gh workflow run docs-site.yml
+```
+
+Or push any docs change to `main`. Then check:
+
+```bash
+curl -sSI https://docs.archimedes-arc.com/ | head -1                    # HTTP/2 200
+curl -sSI http://docs.archimedes-arc.com/  | head -1                    # HTTP/1.1 301
+curl -sS  https://docs.archimedes-arc.com/openwiki/quickstart/ \
+  | grep -c "Agent-generated page"                                      # >= 1
+dig +short docs.archimedes-arc.com                                      # CloudFront, no github.io
+```
+
+The `openwiki/` check is the one worth keeping: mkdocs uses **directory URLs**
+(`/openwiki/quickstart/` → `openwiki/quickstart/index.html`), and CloudFront's
+`default_root_object` only covers `/`. The `archimedes-docs-directory-index`
+CloudFront Function in the terraform is what maps the rest; if that check
+returns 0 while `/` returns 200, the function is the thing to look at, not DNS.
+
+## Publishing by hand
+
+The workflow does this on every docs-path push to `main`. The manual
+equivalent — for the first apply, for a rollback, or when Actions is down:
+
+```bash
+# from the repo root
+pip install mkdocs-material==9.7.7          # pin matches docs-site.yml
+mkdocs build --strict --site-dir _site
+
+BUCKET="$(terraform -chdir=docs-site/infra output -raw bucket)"
+DIST="$(terraform -chdir=docs-site/infra output -raw distribution_id)"
+
+aws s3 sync _site "s3://$BUCKET" --delete
+aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/*"
+```
+
+> **`--delete` is why the workflow refuses to sync a truncated build.** A sync
+> from an empty or half-built `_site` would *delete the live site* rather than
+> update it. The workflow's "Refuse to publish an empty or truncated site" step
+> requires `index.html`, `404.html`, and at least 50 `index.html` pages (there
+> are 177 as of 2026-08-31) before the sync runs. Doing it by hand, look at
+> `find _site -name index.html | wc -l` before you paste the sync.
+
+## Rollback
+
+There is no "previous deployment" button to press: the bucket holds one copy of
+the site, and rolling back means rebuilding an older commit and syncing it.
+
+```bash
+git switch --detach <last-good-sha>
+mkdocs build --strict --site-dir _site
+aws s3 sync _site "s3://$BUCKET" --delete
+aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/*"
+git switch -                                  # back to where you were
+```
+
+The invalidation is the part people forget — without it CloudFront keeps
+serving the bad build from the edge for hours, and the bucket looking correct
+is not evidence the site is.
+
+If the *infrastructure* is what went wrong rather than the content,
+`terraform apply` in `docs-site/infra` against the previous commit of
+`main.tf` is the fix; the root shares no resource with `infra/`, so a revert
+here cannot move anything in the product stack.
 
 ## Local preview
 
@@ -104,9 +165,8 @@ mkdocs serve
 
 Serves at `http://127.0.0.1:8000` with live reload on any `docs/**` or
 `mkdocs.yml` edit. `mkdocs build --strict` (what CI runs) writes the static
-site to `site/` (or `_site/` — CI passes `--site-dir _site` to match
-`upload-pages-artifact`'s expected path); either is gitignored-equivalent
-scratch output, not something to commit.
+site to `site/` (or `_site/` — CI passes `--site-dir _site`); either is
+gitignored-equivalent scratch output, not something to commit.
 
 `mkdocs serve` watches `docs_dir` and `mkdocs.yml` and nothing else by
 default, so `mkdocs.yml` adds `watch: [openwiki]` to pick up wiki edits too.
@@ -170,10 +230,13 @@ to `warn` is the change that would force it.
 
 | File | Purpose |
 |---|---|
-| [`../../mkdocs.yml`](../../mkdocs.yml) | Site config: theme, nav, repo/site URLs, hooks. |
+| [`../../mkdocs.yml`](../../mkdocs.yml) | Site config: theme, nav, repo/site URLs, hooks. `site_url` is the canonical host, and `ui/test/docs-link.test.js` holds the UI links to it. |
+| [`../../docs-site/infra/main.tf`](../../docs-site/infra/main.tf) | The bucket, OAC, CloudFront distribution + directory-index function, ACM cert and Route 53 alias. Standalone root, own state key. |
 | [`../../.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py) | Mounts `openwiki/` into the build, stamps its provenance banner, and repoints out-of-`docs_dir` links at GitHub. |
-| [`../../.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml) | Build + deploy workflow. The build always runs; the deploy is inert until steps 1–3 above are done. |
+| [`../../.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml) | Build + publish workflow. The build always runs; the publish no-ops until the terraform is applied. |
+| [`../../.github/workflows/infra-gate.yml`](../../.github/workflows/infra-gate.yml) | `terraform fmt` + `validate` over every root, including `docs-site/infra`. |
+| [`../../infra/scripts/setup-github-oidc.sh`](../../infra/scripts/setup-github-oidc.sh) | The CI role and its permissions, including the docs-site publish grants. |
 | [`../agent-wiki.md`](../agent-wiki.md) | Provenance note for the agent-generated section, and the section's index page. |
-| [`../../backend/tests/test_docs_site.py`](../../backend/tests/test_docs_site.py) | Drift guard: nav ↔ tree, the provenance label, the workflow's `paths:` filter and `--strict` flag, and the link rewriter's behaviour. |
-| [`../CONVENTIONS.md`](../CONVENTIONS.md) | Where a new doc goes — unchanged by this scaffold; the site just publishes what's already there. |
+| [`../../backend/tests/test_docs_site.py`](../../backend/tests/test_docs_site.py) | Drift guard: nav ↔ tree, the provenance label, the workflow's `paths:` filter and `--strict` flag, the link rewriter, and that the site is still served from our own infra. |
+| [`../CONVENTIONS.md`](../CONVENTIONS.md) | Where a new doc goes — the site just publishes what's already there. |
 | [`../../.github/workflows/docs-gate.yml`](../../.github/workflows/docs-gate.yml) | The blocking link/index checker this runbook defers to for `docs/**`'s real (in-repo) links. |
