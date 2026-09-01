@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from archimedes_cli.session import SESSION_COOKIE_NAME
+from archimedes_cli.session import SECURE_SESSION_COOKIE_NAME, SESSION_COOKIE_NAME
 from archimedes_mcp import client
 from archimedes_mcp.credentials import (
     KIND_API_KEY,
@@ -38,6 +38,19 @@ def test_session_cache_is_the_fallback(cached_session):
     assert credential is not None
     assert credential.kind == KIND_SESSION_COOKIE
     assert credential.auth_cookies() == {SESSION_COOKIE_NAME: cached_session}
+    assert credential.auth_headers() == {}
+
+
+def test_a_session_cached_against_production_uses_the_secure_prefixed_cookie(cached_secure_session):
+    """The P0 this fix closes, at the credential-resolution layer: a session cached from
+    a login against production (``__Secure-better-auth.session_token``) must resolve to a
+    usable credential, and the cookie it sends must be the SAME name it was cached
+    under — never silently rewritten to the bare name, which prod would not recognize."""
+    credential = resolve_credential()
+    assert credential is not None
+    assert credential.kind == KIND_SESSION_COOKIE
+    assert credential.auth_cookies() == {SECURE_SESSION_COOKIE_NAME: cached_secure_session}
+    assert SESSION_COOKIE_NAME not in credential.auth_cookies()
     assert credential.auth_headers() == {}
 
 
@@ -101,6 +114,15 @@ def test_api_key_call_sends_a_bearer_header_and_no_cookie(mock_api, api_key, cac
 def test_session_call_sends_a_cookie_and_no_authorization_header(mock_api, cached_session):
     request = _capture(mock_api, resolve_credential())
     assert SESSION_COOKIE_NAME in request.headers["Cookie"]
+    assert "authorization" not in {k.lower() for k in request.headers}
+
+
+def test_session_call_against_a_production_style_cache_sends_the_secure_cookie(mock_api, cached_secure_session):
+    """Wire-level version of the credential-resolution test above: a call made with a
+    production-cached credential must put ``__Secure-better-auth.session_token`` on the
+    request, not the bare name — this is what actually reaches ``archimedes-arc.com``."""
+    request = _capture(mock_api, resolve_credential())
+    assert f"{SECURE_SESSION_COOKIE_NAME}=" in request.headers["Cookie"]
     assert "authorization" not in {k.lower() for k in request.headers}
 
 

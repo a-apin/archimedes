@@ -64,7 +64,9 @@ AUTH_CREDENTIAL = "credential"
 
 CREDENTIAL_SOURCES = (
     "ARCHIMEDES_API_KEY  ->  Authorization: Bearer <key>",
-    "~/.config/archimedes/session.json  ->  the better-auth.session_token cookie `archimedes login` cached (mode 600)",
+    "~/.config/archimedes/session.json  ->  the session cookie `archimedes login` cached "
+    "(mode 600) -- __Secure-better-auth.session_token in production, "
+    "better-auth.session_token on local HTTP",
 )
 
 TOOLS: tuple[dict, ...] = (

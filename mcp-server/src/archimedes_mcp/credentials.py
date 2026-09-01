@@ -16,7 +16,11 @@ Two ways to authenticate as an account, in this order:
    ``archimedes_cli.session.load_session``: imported, not reimplemented. Copying that
    loader would mean two definitions of "is there a usable session", and the copy would be
    the one that drifts — the exact second-surface failure mode this whole server was
-   scoped to avoid.
+   scoped to avoid. That cookie is one of *two* names depending on which host issued it —
+   ``__Secure-better-auth.session_token`` in production, the bare
+   ``better-auth.session_token`` on local HTTP (``archimedes_cli.session`` picks between
+   them; see :func:`~archimedes_cli.session.pick_session_cookie`) — and this module sends
+   back exactly the name it was captured under, never a hardcoded one.
 
 **One credential goes on the wire, never two.** If both are present the API key wins here,
 and no ``Cookie`` header is sent at all. The server side pins the opposite precedence
@@ -34,7 +38,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from archimedes_cli.session import SESSION_COOKIE_NAME, load_session, session_path
+from archimedes_cli.session import SESSION_COOKIE_NAME, load_session, pick_session_cookie, session_path
 
 API_KEY_ENV = "ARCHIMEDES_API_KEY"
 API_URL_ENV = "ARCHIMEDES_API_URL"
@@ -57,6 +61,12 @@ class Credential:
     kind: str
     source: str
     _secret: str = field(repr=False)
+    cookie_name: str = SESSION_COOKIE_NAME
+    """Which of ``SESSION_COOKIE_NAMES`` this secret was actually captured under —
+    ``__Secure-better-auth.session_token`` for a session cached against production,
+    the bare name for one cached against local HTTP. Meaningless (and ignored) for an
+    API-key credential; defaults to the bare name only because a dataclass field needs
+    *some* default, never read in that branch."""
 
     def auth_headers(self) -> dict[str, str]:
         """Headers that carry this credential. Empty for a cookie credential."""
@@ -65,9 +75,10 @@ class Credential:
         return {}
 
     def auth_cookies(self) -> dict[str, str]:
-        """Cookies that carry this credential. Empty for an API-key credential."""
+        """Cookies that carry this credential, under the name it was captured as.
+        Empty for an API-key credential."""
         if self.kind == KIND_SESSION_COOKIE:
-            return {SESSION_COOKIE_NAME: self._secret}
+            return {self.cookie_name: self._secret}
         return {}
 
     def __repr__(self) -> str:  # pragma: no cover - exercised via str()/f-string in tests
@@ -93,12 +104,15 @@ def resolve_credential() -> Credential | None:
     session = load_session()
     if session is None:
         return None
-    token = session["cookies"].get(SESSION_COOKIE_NAME)
-    if not isinstance(token, str) or not token:
+    picked = pick_session_cookie(session["cookies"])
+    if picked is None:
         # A cache holding some other cookie is not a session this API can use. Same
-        # fail-quiet posture as `load_session` itself.
+        # fail-quiet posture as `load_session` itself. Checks BOTH the `__Secure-`
+        # prefixed name (a session cached against production) and the bare one (local
+        # HTTP) — see `archimedes_cli.session.pick_session_cookie`.
         return None
-    return Credential(kind=KIND_SESSION_COOKIE, source=str(session_path()), _secret=token)
+    cookie_name, token = picked
+    return Credential(kind=KIND_SESSION_COOKIE, source=str(session_path()), _secret=token, cookie_name=cookie_name)
 
 
 def resolve_api_url(credential_session: dict | None = None) -> str:

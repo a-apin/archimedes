@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -56,6 +57,29 @@ logger = logging.getLogger(__name__)
 
 # |replayed - ledgered| beyond this is a restatement, not float noise.
 _DRIFT_EPS = 1e-9
+
+#: Values that read as "off" for :func:`advance_enabled`. Same spelling as
+#: ``backtest_scheduler.refresh_enabled``'s, so an operator who has learned one
+#: of this family's kill switches has learned both.
+_FALSY = {"0", "false", "no", "off"}
+
+
+def advance_enabled() -> bool:
+    """Is the paper-advance loop armed? Default ON — unset changes nothing.
+
+    The operator kill switch for the daily advance tick, added for #1632. It
+    exists because the advance tick is the one scheduled job that can take the
+    whole web tier down rather than just failing: the replay reaches
+    ``market_data_provider``'s OHLCV cache write, and in production that write
+    is aborting the interpreter at the C level, killing the container. A
+    ``try/except`` cannot catch that, so fail-soft does not help here — the
+    only lever that works is not running the tick.
+
+    Read once per tick rather than once at boot, so the value that decides is
+    the one in force when the work would actually run.
+    """
+    return os.getenv("PAPER_ADVANCE_ENABLED", "true").strip().lower() not in _FALSY
+
 
 #: How a disagreement between a fresh replay and an already-written ledger row
 #: was attributed (#1449). Exactly one applies to each disagreeing row, and all
@@ -1050,7 +1074,6 @@ async def paper_advance_loop() -> None:
     daily — the ledger law makes extra runs harmless (idempotent appends).
     """
     import asyncio
-    import os
 
     from archimedes.db import get_session, init_db
 
@@ -1059,16 +1082,29 @@ async def paper_advance_loop() -> None:
     await asyncio.sleep(delay)
     while True:
         try:
-            init_db()
+            if not advance_enabled():
+                # Named, and a WARNING rather than an INFO, because the state
+                # this line describes is a product claim being suspended: no
+                # ledger advances while it prints. It also has to be greppable
+                # against the failure it mitigates — an operator reading these
+                # logs must be able to tell "the tick was switched off" from
+                # "the tick killed the container", which is exactly the
+                # ambiguity #1632's cold-fleet spiral created.
+                logger.warning(
+                    "paper advance: tick SKIPPED — PAPER_ADVANCE_ENABLED is off "
+                    "(temporary #1632 mitigation; ledgers do not advance until it is flipped back)"
+                )
+            else:
+                init_db()
 
-            def _run() -> dict:
-                with get_session() as session:
-                    summary = advance_all(session)
-                    session.commit()
-                    return summary
+                def _run() -> dict:
+                    with get_session() as session:
+                        summary = advance_all(session)
+                        session.commit()
+                        return summary
 
-            summary = await asyncio.to_thread(_run)
-            logger.info("paper advance: %s", summary)
+                summary = await asyncio.to_thread(_run)
+                logger.info("paper advance: %s", summary)
         except Exception as exc:
             logger.warning("paper advance: cycle failed (%s: %s) — will retry next tick", type(exc).__name__, exc)
         await asyncio.sleep(interval_s)
