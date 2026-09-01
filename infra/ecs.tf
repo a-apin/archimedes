@@ -615,6 +615,11 @@ resource "aws_ecs_task_definition" "backend" {
         # the admin-wallet publish bypass / marketplace publish respectively
         # until Dan supplies real values.
         { name = "PLATFORM_ADMIN_WALLETS", value = var.platform_admin_wallets },
+        # The account-keyed half of the admin gate (#1648). Empty is the safe
+        # default: PLATFORM_ADMIN_WALLETS above keeps granting admin on its own
+        # (as evidence), so an unset value changes nothing — it only forgoes the
+        # database-independent break-glass path.
+        { name = "PLATFORM_ADMIN_ACCOUNTS", value = var.platform_admin_accounts },
         { name = "ARCHIMEDES_TREASURY_WALLET", value = var.archimedes_treasury_wallet },
         # Arms the #1556 trace-visibility floor: ownerless trace rows are served
         # publicly ONLY for these house vaults; every other ownerless row goes

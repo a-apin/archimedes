@@ -1,34 +1,35 @@
-"""Tests for the SIWE + platform-admin-gated private metrics routes (issue #830).
+"""Tests for the platform-admin-gated private metrics routes (issue #830).
 
 The public metrics endpoints (/api/metrics, /funnel, /visitors) are PII-free and
-stay anonymous. The private cost/ops dashboard (/api/metrics/private/*) reuses the
-existing SIWE session gate (auth_siwe.require_verified_wallet) AND additionally
-requires ``PLATFORM_ADMIN_WALLETS`` membership (Insights-page fix — cost/ops data
-is operationally sensitive, not just PII, so "any authenticated wallet" was too
-wide a bar). Anonymous → 401; verified-but-non-admin → 403; verified admin → 200.
+stay anonymous. The private cost/ops dashboard (/api/metrics/private/*) requires
+a signed-in account that is a platform admin (cost/ops data is operationally
+sensitive, not just PII, so "any authenticated wallet" was too wide a bar).
+Anonymous → 401; signed-in non-admin → 403; admin → 200.
 
-Hermetic: the SIWE session cookie is built with the real ``_sign_session`` (the
-auth layer's own signer), exercising the production ``_verify_session`` gate
-rather than a mock — the same ``_siwe_cookies`` helper pattern as
+Hermetic: the session cookie is built with the real ``_sign_session`` (the auth
+layer's own signer), exercising the production ``_verify_session`` gate rather
+than a mock — the same ``_siwe_cookies`` helper pattern as
 ``test_user_routes.py``. The distinct-user count is mocked at the DB boundary so
-no live Postgres is touched. ``PLATFORM_ADMIN_WALLETS`` is set via monkeypatch,
-not read from a real ``.env``, so the admin allowlist is hermetic too.
+no live Postgres is touched, the account store is a per-test tmp SQLite, and
+both admin allowlist envs are set via monkeypatch rather than read from a real
+``.env``.
 
-**Round 4 review finding — the wallet-resolver shim gap.** Every 200/403 case
-above runs behind ``conftest.py``'s autouse ``_legacy_siwe_test_adapter``,
-which monkeypatches ``wallet_routes.get_linked_wallet_address`` to derive the
-wallet straight from the SIWE cookie — so session identity and linked wallet
-agree BY CONSTRUCTION in every test in this file, and the REAL production
-resolver (``get_current_user`` -> a DB-backed ``LinkedWallet`` lookup keyed on
-``user_id`` + ``chain_id``, with an ``X-Wallet-Address`` header override and an
-``is_primary`` fallback) has zero behavioral coverage — a regression there
-(a bad filter, a dropped ``is_primary`` check, a broken chain_id parse) would
-pass every test in this file while silently changing who the gate admits in
-production. The ``*_via_the_real_wallet_resolver`` tests below restore the
-production ``get_linked_wallet_address`` for their own scope and seed a real
-``AuthUser`` + ``LinkedWallet`` row into a tmp-sqlite DB (the
-``redirect_to_tmp_sqlite`` precedent, ``test_engagement_metrics.py`` /
-``tests/db_isolation.py``) so the DB lookup itself actually runs.
+**#1648 — the gate is keyed on the ACCOUNT now, and this file changed with it.**
+It used to depend on ``require_linked_wallet``, which resolves the caller's
+wallet from the ``X-Wallet-Address`` request header; ``conftest.py``'s autouse
+``_legacy_siwe_test_adapter`` monkeypatches ``get_linked_wallet_address`` to
+derive that wallet straight from the SIWE cookie, so session identity and
+"linked wallet" agreed BY CONSTRUCTION here and the header path had no coverage
+at all — which is how a bug that made admin visibility follow the browser's
+connected wallet lived behind a green suite. Two consequences for this file:
+the sessions it signs in as are now backed by REAL seeded ``AuthUser`` +
+``LinkedWallet`` rows (``_seed_account``, tmp-sqlite via
+``tests/db_isolation.py``), because those rows are what decides admin; and the
+two 403 flavours collapsed into one ("Admin access required."), since "has no
+linked wallet" is no longer a precondition that can fail on its own.
+The header-vs-account behavior itself is pinned in
+``backend/tests/test_platform_admin_gate.py``, which drives the real header
+against the production resolver.
 """
 
 from __future__ import annotations
@@ -38,9 +39,7 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
-from archimedes.api import wallet_routes
 from archimedes.api.auth_siwe import _COOKIE_NAME, _sign_session
-from archimedes.api.wallet_routes import get_linked_wallet_address as _real_get_linked_wallet_address
 from fastapi.testclient import TestClient
 
 from tests.db_isolation import redirect_to_tmp_sqlite
@@ -48,12 +47,23 @@ from tests.db_isolation import redirect_to_tmp_sqlite
 _ADMIN_WALLET = "0x1111111111111111111111111111111111111111"
 _NON_ADMIN_WALLET = "0x2222222222222222222222222222222222222222"
 # A THIRD wallet, used only as the SIWE-cookie session identity in the
-# real-resolver tests below — distinct from both wallets above so a passing
+# linked-wallet-set tests below — distinct from both wallets above so a passing
 # test can only be explained by the DB-backed LinkedWallet lookup actually
-# running (as opposed to the gate somehow keying off the session cookie's own
-# wallet, which is what every OTHER test in this file effectively does via
-# the autouse shim).
+# running (as opposed to the gate keying off the session cookie's own wallet).
 _SESSION_IDENTITY_WALLET = "0x3333333333333333333333333333333333333333"
+# A signed-in account with NO linked wallet at all (#1648): used to pin what
+# that account now gets, which is the ordinary admin 403 rather than the
+# separate "A verified linked wallet is required" 403 the pre-#1648 gate
+# raised as a precondition.
+_NO_WALLET_SESSION = "0x4444444444444444444444444444444444444444"
+# A SECOND allowlisted admin wallet. ``linked_wallets.normalized_identity`` is
+# UNIQUE per (chain_id, address), so one address cannot be linked to two
+# accounts — the tests below that link an admin wallet to a DIFFERENT account
+# than the one the `client` fixture already seeds need their own allowlisted
+# address rather than reusing _ADMIN_WALLET.
+_SECOND_ADMIN_WALLET = "0x5555555555555555555555555555555555555555"
+# ...and the same for a second NON-admin address, for the same uniqueness reason.
+_SECOND_NON_ADMIN_WALLET = "0x6666666666666666666666666666666666666666"
 
 
 def _siwe_cookies(wallet: str) -> dict[str, str]:
@@ -61,16 +71,28 @@ def _siwe_cookies(wallet: str) -> dict[str, str]:
     return {_COOKIE_NAME: _sign_session(wallet, time.time())}
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def tmp_db(tmp_path):
+    """Per-test tmp SQLite — AUTOUSE since #1648.
+
+    The admin gate is now keyed on the account and reads that account's
+    linked-wallet set from the database on every request, so every test in
+    this file needs a real, isolated account store rather than whatever
+    ``DATABASE_URL`` happens to point at. Tests that already declared
+    ``tmp_db`` explicitly keep the same single instance.
+    """
     yield from redirect_to_tmp_sqlite(tmp_path)
 
 
-def _seed_linked_wallet(*, session_wallet: str, linked_address: str, is_primary: bool = True) -> None:
-    """Seed the AuthUser + LinkedWallet rows the REAL get_linked_wallet_address
-    needs: an account matching the id the autouse shim's `legacy_session`
-    would derive from `session_wallet`'s SIWE cookie, with `linked_address`
-    as its (chain_id=5042002) linked wallet.
+def _seed_account(*, session_wallet: str, linked_address: str | None = None, is_primary: bool = True) -> None:
+    """Seed the canonical account (and optionally one linked wallet) behind a
+    SIWE test cookie.
+
+    The account id matches what the autouse shim's ``legacy_session``
+    (conftest.py) derives from ``session_wallet``'s cookie. Since #1648 the
+    admin gate resolves from THIS row set — the account's own linked wallets —
+    rather than from the cookie's wallet or a request header, so these rows
+    are what makes a session admin or not.
     """
     from archimedes.db import get_session
     from archimedes.models.account import AuthUser, LinkedWallet
@@ -88,25 +110,26 @@ def _seed_linked_wallet(*, session_wallet: str, linked_address: str, is_primary:
                 updated_at=now_dt,
             )
         )
-        session.add(
-            LinkedWallet(
-                user_id=user_id,
-                normalized_identity=f"5042002:{linked_address}",
-                address=linked_address,
-                display_address=linked_address,
-                chain_id=5042002,
-                provider="metamask",
-                is_primary=is_primary,
-                verified_at=now_dt,
-                created_at=now_dt,
-                updated_at=now_dt,
+        if linked_address is not None:
+            session.add(
+                LinkedWallet(
+                    user_id=user_id,
+                    normalized_identity=f"5042002:{linked_address}",
+                    address=linked_address,
+                    display_address=linked_address,
+                    chain_id=5042002,
+                    provider="metamask",
+                    is_primary=is_primary,
+                    verified_at=now_dt,
+                    created_at=now_dt,
+                    updated_at=now_dt,
+                )
             )
-        )
         session.commit()
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_db):
     """Test client over the real app, with the user-count boundary pinned to a known value.
 
     ``get_distinct_user_count`` is imported by-name into ``metrics_private_routes``, so we
@@ -117,11 +140,27 @@ def client(monkeypatch):
     ``services/user_stats.py``), so it is patched by ITS name there.
 
     ``PLATFORM_ADMIN_WALLETS`` is pinned to ``_ADMIN_WALLET`` so admin-gate tests
-    are hermetic (independent of whatever a real deploy's env sets).
+    are hermetic (independent of whatever a real deploy's env sets), and
+    ``PLATFORM_ADMIN_ACCOUNTS`` is cleared so the wallet-evidence path is the
+    one under test here (the account-allowlist path has its own coverage in
+    ``test_platform_admin_gate.py``).
+
+    Since #1648 the gate reads the ACCOUNT's linked-wallet set, so the two
+    accounts every test in this file signs in as are seeded for real: the
+    admin session's account genuinely has ``_ADMIN_WALLET`` linked, the
+    non-admin session's account genuinely has ``_NON_ADMIN_WALLET`` linked,
+    and ``_NO_WALLET_SESSION``'s account has none. Before #1648 the SIWE
+    cookie's own wallet WAS the answer (via conftest's shim), so no rows were
+    needed — which is precisely how the header-driven bug stayed invisible to
+    this file.
     """
     from archimedes.main import app
 
-    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", _ADMIN_WALLET)
+    monkeypatch.setenv("PLATFORM_ADMIN_WALLETS", f"{_ADMIN_WALLET} {_SECOND_ADMIN_WALLET}")
+    monkeypatch.delenv("PLATFORM_ADMIN_ACCOUNTS", raising=False)
+    _seed_account(session_wallet=_ADMIN_WALLET, linked_address=_ADMIN_WALLET)
+    _seed_account(session_wallet=_NON_ADMIN_WALLET, linked_address=_NON_ADMIN_WALLET)
+    _seed_account(session_wallet=_NO_WALLET_SESSION)
     with (
         patch("archimedes.api.metrics_private_routes.get_distinct_user_count", return_value=2),
         patch("archimedes.api.metrics_routes.get_distinct_user_count_or_none", return_value=2),
@@ -283,28 +322,23 @@ def test_whoami_403_for_non_admin_wallet(client):
     assert res.status_code == 403
 
 
-def test_whoami_403_for_signed_in_account_with_no_linked_wallet(client, monkeypatch):
-    """A valid session whose account has NO linked wallet (docs/api/admin-
-    private.md step 2) → 403 "A verified linked wallet is required" — a
-    DIFFERENT 403 than the admin-membership one above.
+def test_whoami_403_for_signed_in_account_with_no_linked_wallet(client):
+    """A valid session whose account has NO linked wallet → 403, with the SAME
+    "Admin access required." detail as any other non-admin.
 
-    This file's `client` fixture builds sessions through the autouse
-    `_legacy_siwe_test_adapter` (conftest.py), which monkeypatches
-    `wallet_routes.get_linked_wallet_address` to derive the wallet straight
-    from the SIWE cookie — so session and linked wallet agree BY
-    CONSTRUCTION in every other test here, and `require_linked_wallet`'s own
-    403 branch (the actual `LinkedWallet` DB lookup / X-Wallet-Address
-    header / is_primary fallback in production) was never exercised by any
-    test on this router. Re-overriding the shim here to return `None`
-    (mid-request the account clearly still exists — the cookie verifies —
-    it simply has no linked wallet) reaches that branch directly.
+    Changed by #1648, deliberately. The pre-#1648 gate raised a distinct
+    403 ("A verified linked wallet is required") from ``require_linked_wallet``
+    as a *precondition* — having a wallet at all had to succeed before admin
+    membership was even consulted. With the account as the key that
+    precondition no longer exists: an account listed in
+    ``PLATFORM_ADMIN_ACCOUNTS`` is an admin with no wallet at all
+    (``test_platform_admin_gate.py``), so "no linked wallet" is not by itself
+    a reason to deny — not being an admin is. Collapsing to one message also
+    discloses less about why a request was refused.
     """
-    from archimedes.api import wallet_routes
-
-    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", lambda request: None)
-    res = client.get("/api/metrics/private/whoami", cookies=_siwe_cookies(_ADMIN_WALLET))
+    res = client.get("/api/metrics/private/whoami", cookies=_siwe_cookies(_NO_WALLET_SESSION))
     assert res.status_code == 403
-    assert res.json()["detail"] == "A verified linked wallet is required"
+    assert res.json()["detail"] == "Admin access required."
 
 
 def test_whoami_200_with_valid_admin_siwe_session(client):
@@ -324,30 +358,27 @@ def test_whoami_admin_wallets_parsed_case_insensitively(client, monkeypatch):
     assert res.json()["admin"] is True
 
 
-# ── Real wallet resolver (round 4 fix — see the module docstring) ─────────
-# The tests above all run behind the autouse SIWE-cookie shim, so
-# `require_linked_wallet`'s actual DB-backed lookup has never executed. These
-# restore the PRODUCTION `get_linked_wallet_address` and seed a real
-# AuthUser + LinkedWallet row: the SIWE cookie only proves "there is a
-# session for legacy-test:<_SESSION_IDENTITY_WALLET>" — admin/non-admin
-# status is determined ENTIRELY by which address that account's LinkedWallet
-# row carries, not by anything in the cookie itself.
+# ── The account's linked-wallet set decides, not the session's own wallet ──
+# Introduced as the round-4 "real resolver" tests and kept, re-framed, after
+# #1648 moved the key onto the account: the SIWE cookie only proves "there is
+# a session for legacy-test:<_SESSION_IDENTITY_WALLET>", and that wallet is on
+# no allowlist. Admin/non-admin is decided ENTIRELY by which addresses that
+# ACCOUNT's LinkedWallet rows carry. (The `get_linked_wallet_address`
+# monkeypatch these tests used to install is gone: since #1648 the admin gate
+# does not call that helper at all, so restoring it here would have asserted
+# nothing. The header-vs-account coverage it stood in for now lives in
+# backend/tests/test_platform_admin_gate.py, which drives the real header.)
 
 
-def test_whoami_200_via_the_real_wallet_resolver_with_an_admin_linked_wallet(client, monkeypatch, tmp_db):
-    """The DB-backed resolver, not the SIWE cookie's own wallet, must decide
-    admin status: the session identity here is _SESSION_IDENTITY_WALLET (not
-    on the admin allowlist), but its LINKED wallet is _ADMIN_WALLET.
+def test_whoami_200_when_the_accounts_linked_wallet_is_an_admin_wallet(client):
+    """Session identity is _SESSION_IDENTITY_WALLET (not on the admin
+    allowlist); the account's LINKED wallet is _ADMIN_WALLET → 200.
 
-    Mutation-verified: monkeypatching `get_linked_wallet_address` to always
-    return None (simulating a broken lookup) makes this fail with `403 != 200`;
-    monkeypatching it to always return `_SESSION_IDENTITY_WALLET` (simulating
-    the resolver being silently bypassed in favor of the raw cookie wallet)
-    makes it fail with `403 != 200` too, since that wallet isn't on the admin
-    allowlist either — either mutation is caught.
+    Mutation-verified: making `resolve_platform_admin` key off the session
+    wallet instead of the account's linked set fails this with `403 != 200`,
+    since the session wallet is not on the allowlist.
     """
-    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", _real_get_linked_wallet_address)
-    _seed_linked_wallet(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_ADMIN_WALLET)
+    _seed_account(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_SECOND_ADMIN_WALLET)
 
     res = client.get("/api/metrics/private/whoami", cookies=_siwe_cookies(_SESSION_IDENTITY_WALLET))
     assert res.status_code == 200
@@ -356,23 +387,14 @@ def test_whoami_200_via_the_real_wallet_resolver_with_an_admin_linked_wallet(cli
     # The reported wallet is the LINKED admin wallet, never the session
     # cookie's own (non-admin) wallet — proof the DB lookup, not the cookie,
     # produced this answer.
-    assert body["wallet"] == _ADMIN_WALLET.lower()
+    assert body["wallet"] == _SECOND_ADMIN_WALLET
 
 
-def test_whoami_403_via_the_real_wallet_resolver_with_a_non_admin_linked_wallet(client, monkeypatch, tmp_db):
-    """Same real-resolver wiring, but the linked wallet is NOT on the admin
-    allowlist -> the admin-membership 403 (proving the resolver found a real
-    linked wallet — this must NOT be the linked-wallet-missing 403).
-
-    Mutation-verified: breaking the resolver wiring by monkeypatching
-    `get_linked_wallet_address` back to a function that always returns None
-    (simulating a broken DB lookup) makes this test fail with the WRONG 403
-    detail ("A verified linked wallet is required" instead of "Admin access
-    required."), and breaking it to always return _ADMIN_WALLET (simulating
-    the resolver being bypassed entirely) makes it fail with `200 != 403`.
-    """
-    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", _real_get_linked_wallet_address)
-    _seed_linked_wallet(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_NON_ADMIN_WALLET)
+def test_whoami_403_when_the_accounts_linked_wallet_is_not_an_admin_wallet(client):
+    """Same wiring, but the account's linked wallet is NOT on the allowlist →
+    403, proving the row lookup really ran and really found a non-admin
+    (as opposed to erroring out and denying for an unrelated reason)."""
+    _seed_account(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_SECOND_NON_ADMIN_WALLET)
 
     res = client.get("/api/metrics/private/whoami", cookies=_siwe_cookies(_SESSION_IDENTITY_WALLET))
     assert res.status_code == 403
@@ -411,16 +433,13 @@ def test_engagement_403_for_non_admin_wallet(client):
     assert res.status_code == 403
 
 
-def test_engagement_403_for_signed_in_account_with_no_linked_wallet(client, monkeypatch):
-    """Same gap as test_whoami_403_for_signed_in_account_with_no_linked_wallet
-    above, on the second new endpoint — the linked-wallet half of the gate
-    was mocked away for BOTH new routes, not just one."""
-    from archimedes.api import wallet_routes
-
-    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", lambda request: None)
-    res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_ADMIN_WALLET))
+def test_engagement_403_for_signed_in_account_with_no_linked_wallet(client):
+    """Same case as test_whoami_403_for_signed_in_account_with_no_linked_wallet
+    above, on the second endpoint — the gate is a router-level dependency, so
+    both routes must answer identically."""
+    res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_NO_WALLET_SESSION))
     assert res.status_code == 403
-    assert res.json()["detail"] == "A verified linked wallet is required"
+    assert res.json()["detail"] == "Admin access required."
 
 
 def test_engagement_admin_wallets_parsed_case_insensitively(client, monkeypatch):
@@ -501,19 +520,18 @@ def test_engagement_200_with_valid_admin_siwe_session(client):
     assert body["authenticated_wallet"] == _ADMIN_WALLET.lower()
 
 
-# ── Real wallet resolver (round 4 fix — see the module docstring) ─────────
-# /engagement's twin of the /whoami real-resolver tests above.
+# ── The account's linked-wallet set decides — /engagement's twin ──────────
+# Mirrors the /whoami pair above; see that block's note on the #1648 reframe.
 
 
-def test_engagement_200_via_the_real_wallet_resolver_with_an_admin_linked_wallet(client, monkeypatch, tmp_db):
-    """Mirrors test_whoami_200_via_the_real_wallet_resolver_with_an_admin_linked_wallet
+def test_engagement_200_when_the_accounts_linked_wallet_is_an_admin_wallet(client):
+    """Mirrors test_whoami_200_when_the_accounts_linked_wallet_is_an_admin_wallet
     on the /engagement route.
 
-    Mutation-verified: monkeypatching `get_linked_wallet_address` to always
-    return None makes this fail with `403 != 200`.
+    Mutation-verified: making `resolve_platform_admin` key off the session
+    wallet rather than the account's linked set fails this with `403 != 200`.
     """
-    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", _real_get_linked_wallet_address)
-    _seed_linked_wallet(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_ADMIN_WALLET)
+    _seed_account(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_SECOND_ADMIN_WALLET)
 
     fake_snapshot = {
         "accounts": {"total": 1, "new_7d": 0, "new_30d": 1},
@@ -528,20 +546,15 @@ def test_engagement_200_via_the_real_wallet_resolver_with_an_admin_linked_wallet
     with patch("archimedes.api.metrics_private_routes.get_engagement_snapshot", return_value=fake_snapshot):
         res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_SESSION_IDENTITY_WALLET))
     assert res.status_code == 200
-    assert res.json()["authenticated_wallet"] == _ADMIN_WALLET.lower()
+    assert res.json()["authenticated_wallet"] == _SECOND_ADMIN_WALLET
 
 
-def test_engagement_403_via_the_real_wallet_resolver_with_a_non_admin_linked_wallet(client, monkeypatch, tmp_db):
-    """Mirrors test_whoami_403_via_the_real_wallet_resolver_with_a_non_admin_linked_wallet
+def test_engagement_403_when_the_accounts_linked_wallet_is_not_an_admin_wallet(client):
+    """Mirrors test_whoami_403_when_the_accounts_linked_wallet_is_not_an_admin_wallet
     on the /engagement route: a real, DB-resolved linked wallet that simply
     isn't on the admin allowlist -> the admin-membership 403.
-
-    Mutation-verified: monkeypatching `get_linked_wallet_address` to always
-    return `_ADMIN_WALLET` (simulating the resolver being bypassed and the
-    gate trusting the header/cookie instead) makes this fail with `200 != 403`.
     """
-    monkeypatch.setattr(wallet_routes, "get_linked_wallet_address", _real_get_linked_wallet_address)
-    _seed_linked_wallet(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_NON_ADMIN_WALLET)
+    _seed_account(session_wallet=_SESSION_IDENTITY_WALLET, linked_address=_SECOND_NON_ADMIN_WALLET)
 
     res = client.get("/api/metrics/private/engagement", cookies=_siwe_cookies(_SESSION_IDENTITY_WALLET))
     assert res.status_code == 403

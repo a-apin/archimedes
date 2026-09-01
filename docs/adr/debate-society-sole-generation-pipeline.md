@@ -110,3 +110,37 @@ runs externally on the passport.
 - **Keep the flag for emergency rollback — rejected.** Rollback is a task-definition
   revision ([`ec2-to-ecs-fargate-cutover.md`](ec2-to-ecs-fargate-cutover.md)), not a runtime
   flag that changes what the product claims about its own output.
+
+## Addendum — 2026-08-31: the last bypass is gone
+
+*Added, not a rewrite. The decision above is unchanged; this records that the tree
+finally matches it.*
+
+The Phase-3 cutover deleted the routing tree and the Architect, but it left one
+generation path standing outside the society: **`POST /api/strategies/generate` →
+`_run_fusion_job`** in `api/strategies_routes.py`, with `GET
+/api/strategies/generate/{job_id}` as its poll partner. It was live, account-gated,
+LLM-spending, and gated only on `ARCHIMEDES_FUSION_ENABLED` — which is set to `true`
+in `infra/ecs.tf`, `docker-compose.yml` and `docker-compose.production.yml`, so it was
+enabled in every deployed environment. Its own docstring called it "a second live,
+SIWE-gated, LLM-spending generation endpoint". `docs/specs/multi-agent-debate-spec.md`
+§ Phase 3 had listed it for deletion; that deletion had not happened.
+
+**Removed 2026-08-31 by owner decision** (Dan Browne): the route, its poll partner,
+the `_run_fusion_job` background worker, the `default_fusion()` factory that existed
+only to serve it, and their tests. `StrategyFusion.propose` now has exactly one caller
+in the tree — `agents/debate_engine.py::_propose_pool` — which is what "fusion is a
+step inside the society" was always supposed to mean.
+
+**The ADR now has a test.** `backend/tests/test_sole_generation_route_guard.py` walks
+the live FastAPI route table and the package's import graph and fails if either a
+generation route reappears under `/api/strategies` or any module outside
+`agents/debate_engine.py` imports the fusion proposer. It was demonstrated failing
+against a restored route before it was committed.
+
+**Not removed: `ARCHIMEDES_FUSION_ENABLED`.** The flag is not the bypass's flag. It
+also guards `StrategyFusion.propose` itself (`agents/strategy_fusion.py`), which the
+society's proposer pool calls, and it is published on `/health` as `fusion_enabled`.
+Deleting it would make the society's proposers return inert sentinels — a live-path
+behaviour change, not a cleanup. Retiring it is a separate decision, and the
+"rollback is a task-definition revision" reasoning above applies to it too.

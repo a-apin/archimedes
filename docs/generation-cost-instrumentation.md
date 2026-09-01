@@ -32,7 +32,7 @@ still the flat price.
 | Piece | File |
 |---|---|
 | The meter — accumulation, guards, snapshot shape | [`backend/archimedes/services/cost_meter.py`](../backend/archimedes/services/cost_meter.py) |
-| Token capture at the provider boundary | [`backend/archimedes/services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) (every `complete()`) — plus an inert call in [`backend/archimedes/agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py), see "What is not measured" below |
+| Token capture at the provider boundary | [`backend/archimedes/services/llm_backend.py`](../backend/archimedes/services/llm_backend.py) (every `complete()`) — and nowhere else. The one inert call that used to sit in [`backend/archimedes/agents/portfolio_agent.py`](../backend/archimedes/agents/portfolio_agent.py) was deleted with its tool loop on 2026-08-31; see "What is not measured" below |
 | Stage timing + write tallies | [`backend/archimedes/agents/generation_pipeline.py`](../backend/archimedes/agents/generation_pipeline.py), [`backend/archimedes/agents/debate_engine.py`](../backend/archimedes/agents/debate_engine.py) |
 | Persistence onto the job (expires with `JOB_TTL`) | `JobStore.merge_result` in [`backend/archimedes/services/job_queue.py`](../backend/archimedes/services/job_queue.py) |
 | Durable persistence (`generation_costs`) | [`backend/archimedes/models/generation_cost.py`](../backend/archimedes/models/generation_cost.py) + migration `e2b7f4c81d93`, written from `run_generation`'s `finally` |
@@ -55,22 +55,22 @@ behaviour outside a job, but it has a consequence worth stating plainly:
 **instrumenting a code path does not by itself put that path in a job's
 snapshot.** `run_generation` is the only thing that binds a meter.
 
-One instrumented call is therefore **inert today**:
-`propose_portfolio_with_tools()` in `portfolio_agent.py` carries a
-`record_llm_call`, and its raw-SDK tool-use loop genuinely does bypass
-`LLMBackend.complete()` — but that method is not on the generation pipeline's
-call graph. It now has **no callers at all**: the pipeline's two runners
-(`_run_debate_leaderboard`, `_run_fixture_candidate`) both accept an `agent`
-argument for signature parity and ignore it, and the one route that used to call
-it — `GET /api/strategies/advisor` — has been deleted. So no generation reaches
-this loop, and the call cannot contribute to any job's cost snapshot.
+**Resolved 2026-08-31 — there is no longer an inert instrumented call.** One
+used to exist: `propose_portfolio_with_tools()` in `portfolio_agent.py` carried
+a `record_llm_call`, and its raw-SDK tool-use loop genuinely bypassed
+`LLMBackend.complete()` — but the method was not on the generation pipeline's
+call graph and had **no callers at all** (the pipeline's runners
+`_run_debate_leaderboard` / `_run_fixture_candidate` accept an `agent` argument
+for signature parity and ignore it; the one route that used to call it, `GET
+/api/strategies/advisor`, was already deleted). That whole tool loop — the
+method, its four tool implementations, and the `record_llm_call` inside it — was
+deleted rather than left as instrumentation nothing reaches. `portfolio_agent.py`
+survives for its other exports (`get_portfolio_agent`, `PortfolioAgent`,
+`propose_portfolio`), which `generation_pipeline.py` and the StockBench adapter
+import; none of them are instrumented, and none of them run during generation.
 
-The method is dead code queued for the follow-up deletion PR; it survives only
-because `portfolio_agent.py`'s other exports (`get_portfolio_agent`,
-`PortfolioAgent`) are still imported by `generation_pipeline.py` and the
-StockBench adapter. Treat its `record_llm_call` as something to delete with the
-method, not as coverage to preserve. It closes no gap today, and the snapshots
-in this document do not include anything from it.
+The consequence for this document is unchanged: every measured call in a job's
+snapshot goes through `LLMBackend.complete()` under a bound meter.
 
 ## Snapshot shape (`cost_v1`)
 

@@ -80,6 +80,7 @@ nav:
       - reference/file-tree.md
       - database-architecture.md
       - deployment.md
+      - local-vs-prod.md
       - architectural-principles.md
       - anti-features.md
 
@@ -132,11 +133,11 @@ nav:
   - API Reference:
       - api/README.md
       - api/auth-and-accounts.md
+      - api/api-keys.md
       - api/generation.md
       - api/strategies-and-rigor.md
       - api/vaults-and-chain.md
       - api/wallets.md
-      - api/chat.md
       - api/leaderboard-and-metrics.md
       - api/paper-trading.md
       - api/admin-private.md
@@ -160,6 +161,7 @@ nav:
       - runbooks/spec-1-walkthrough.md
       - runbooks/t3.2-contract-redeploy.md
       - runbooks/docs-site-setup.md
+      - runbooks/email-verification-validation.md
 
   - Decisions (ADRs):
       - adr/README.md

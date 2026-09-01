@@ -91,7 +91,17 @@ CLIENT_EMITTABLE_STAGES: frozenset[str] = frozenset({"landed"})
 # imported to keep this services-layer module independent of the api layer.
 # An agent_type outside this set is treated like an unknown stage: no-op on
 # write, not a bogus key.
-AGENT_TYPES: tuple[str, ...] = ("internal", "external", "human")
+#
+# ``keyed`` joined the set with the scoped API-key lane (#1653 decision D3): a
+# caller authenticated by ``Authorization: Bearer archim_…``. It is deliberately
+# NOT folded into ``external`` — ``external`` is a User-Agent *guess* about an
+# unauthenticated client, while ``keyed`` is a credential minted for machine use,
+# and merging them would put the only high-confidence agent signal we have back
+# into a bucket of heuristics. Because an unrecognised type silently no-ops on
+# write (see ``record``), forgetting this line would have made keyed traffic
+# vanish from the breakdown rather than fail loudly — which is why the classifier
+# module names this file as one of the four sites that move together.
+AGENT_TYPES: tuple[str, ...] = ("internal", "keyed", "external", "human")
 
 # Per-day buckets self-expire after this window (90 days of trend history).
 _DAY_TTL_SECONDS = 90 * 24 * 60 * 60

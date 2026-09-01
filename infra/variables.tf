@@ -74,9 +74,13 @@ variable "ecs_service_desired_count" {
 }
 
 variable "ecs_service_min_count" {
+  # 2, not 1 (owner decision 2026-08-31): a one-task fleet turns every deploy
+  # into a brief 502 window (rollout gap) and every backend crash into a
+  # user-facing outage — both bitten twice on 2026-08-31 (#1594, #1632).
+  # At 2, rollouts overlap and a single crash is invisible. ~$15-18/mo.
   description = "Application Auto Scaling floor for the archimedes-backend service."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "ecs_service_max_count" {
@@ -121,7 +125,13 @@ variable "github_oauth_enabled" {
 # ARCHIMEDES_TREASURY_WALLET default in `.env.example`.
 
 variable "platform_admin_wallets" {
-  description = "Space/comma-separated wallet addresses allowed to publish `is_example` strategies to the marketplace (backend/archimedes/models/strategy_generators.py:wallet_can_publish; issue #1037). Public addresses, not secrets."
+  description = "Space/comma-separated wallet addresses allowed to publish `is_example` strategies to the marketplace (backend/archimedes/models/strategy_generators.py:wallet_can_publish; issue #1037). Also EVIDENCE for the admin dashboard gate since #1648: an account is admin when any of its OWN linked wallets is listed. Public addresses, not secrets."
+  type        = string
+  default     = ""
+}
+
+variable "platform_admin_accounts" {
+  description = "Space/comma-separated canonical account identifiers (Better Auth `auth_users.id` values and/or emails) granted the admin cost/ops dashboard (backend/archimedes/services/platform_admin.py; issue #1648). The account-keyed allowlist: unlike `platform_admin_wallets` it survives a wallet unlink and needs no database read, so it is the break-glass during a datastore incident. Derive the value with backend/scripts/derive_platform_admin_accounts.py. Not secrets, but account-identifying — same `TF_VAR_` drift gotcha as the wallet list: re-pass it on every apply or it silently empties."
   type        = string
   default     = ""
 }
