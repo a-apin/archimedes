@@ -83,6 +83,8 @@ ignore = [
 "backend/tests/**" = ["ARG", "SLF"]
 "analytics-engine/tests/**" = ["ARG", "SLF"]
 "tests/**" = ["ARG", "SLF"]
+"cli/tests/**" = ["ARG", "SLF"]
+"mcp-server/tests/**" = ["ARG", "SLF"]
 "backend/archimedes/scripts/**" = ["ARG"]
 "backend/archimedes/evaluation/stockbench/__main__.py" = ["ARG"]
 # marketplace uses ContractLoader._contract (well-known codebase pattern) and
