@@ -33,7 +33,7 @@ import click
 import httpx
 
 from . import __version__, exits
-from .session import SESSION_COOKIE_NAME, load_session, save_session
+from .session import load_session, pick_session_cookie, save_session
 
 DEFAULT_API_URL = "https://archimedes-arc.com"
 
@@ -278,8 +278,8 @@ def login(api_url: str, as_json: bool) -> None:
             message=f"sign-in failed: HTTP {response.status_code}: {_response_detail(response)}",
         )
 
-    token = response.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
+    picked = pick_session_cookie(response.cookies)
+    if picked is None:
         _fail(
             "login",
             as_json=as_json,
@@ -287,11 +287,14 @@ def login(api_url: str, as_json: bool) -> None:
             error="no_session_cookie",
             message="sign-in succeeded but the server did not return a session cookie",
         )
+    cookie_name, token = picked
 
     # Confirm the cookie actually round-trips, and read back the canonical account email,
-    # before trusting it — mirrors scripts/agent_journey.py's step_auth.
+    # before trusting it — mirrors scripts/agent_journey.py's step_auth. Sent back under
+    # the SAME name it arrived as: a prod cookie is `__Secure-`-prefixed and a local one
+    # is bare, and only the name it was actually issued under will round-trip.
     try:
-        with _http_client(api_url, cookies={SESSION_COOKIE_NAME: token}) as client:
+        with _http_client(api_url, cookies={cookie_name: token}) as client:
             session_response = client.get("/api/auth/get-session")
         session_payload = session_response.json() if session_response.is_success else None
     except (httpx.HTTPError, ValueError):
@@ -311,7 +314,7 @@ def login(api_url: str, as_json: bool) -> None:
             message="signed in, but the session cookie did not round-trip on GET /api/auth/get-session",
         )
 
-    path = save_session(api_url=api_url, cookies={SESSION_COOKIE_NAME: token}, email=confirmed_email)
+    path = save_session(api_url=api_url, cookies={cookie_name: token}, email=confirmed_email)
 
     if as_json:
         click.echo(json.dumps({"ok": True, "email": confirmed_email}))
