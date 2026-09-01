@@ -14,7 +14,8 @@ Covers spec §9 Phase-1 tests:
   6. model threading (fix A3): FusionProposal.model reflects the user pick
   7. DSL conformance (fix A5): non-interpretable indicator stems dropped, no
      DSLError escapes
-  8. flag-OFF byte-identical (fix A2): _pick_pipeline never returns "debate" OFF
+  8. the retired ARCHIMEDES_DEBATE_ENABLED flag (fix A2, #880): setting it to
+     "false" cannot route _pick_pipeline off the society
   9. cited-paper union non-empty; transcript in fixed role order (R3 determinism)
 """
 
@@ -83,8 +84,13 @@ def corpus(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Every test starts with both flags explicitly cleared."""
-    monkeypatch.delenv("ARCHIMEDES_DEBATE_ENABLED", raising=False)
+    """Every test starts with the live flags explicitly cleared.
+
+    ``ARCHIMEDES_DEBATE_ENABLED`` used to be cleared here too. It was retired by
+    #880 and has had no reader since, so clearing it cleared nothing — removed
+    2026-08-31 (#834). ``test_pick_pipeline_is_debate_unconditionally`` now
+    *sets* it instead, which is the assertion the delenv only looked like.
+    """
     monkeypatch.delenv("ARCHIMEDES_FUSION_ENABLED", raising=False)
     monkeypatch.delenv("ARCHIMEDES_CORPUS_MANIFEST", raising=False)
     monkeypatch.delenv("DEBATE_POOL_MAX", raising=False)
@@ -494,15 +500,22 @@ async def test_propose_pool_dedupes_identical_specs_across_steers(monkeypatch, c
     assert len(hashes) == len(pool)
 
 
-# ── Test 8 — flag-OFF byte-identical (fix A2) ─────────────────────────────────
+# ── Test 8 — the retired flag cannot re-route the pipeline (fix A2) ───────────
 
 
 def test_pick_pipeline_is_debate_unconditionally(monkeypatch):
     """T1.1 Phase-3 cutover: the society IS the pipeline — no flag, no legacy
-    decision tree, and client mode overrides are accepted-but-ignored."""
+    decision tree, and client mode overrides are accepted-but-ignored.
+
+    The retired flag is *set to the value that used to disable the society*
+    rather than deleted. A ``delenv`` for a name nothing reads asserts nothing;
+    a ``setenv`` proves the retirement actually holds — someone who finds
+    ``ARCHIMEDES_DEBATE_ENABLED=false`` in an old runbook and exports it cannot
+    route generation off the debate society (#834, 2026-08-31).
+    """
     from archimedes.agents.generation_pipeline import _pick_pipeline
 
-    monkeypatch.delenv("ARCHIMEDES_DEBATE_ENABLED", raising=False)
+    monkeypatch.setenv("ARCHIMEDES_DEBATE_ENABLED", "false")
     for override in (None, "fusion", "architect", "agent", "debate"):
         name, reason = _pick_pipeline(mode_override=override)
         assert name == "debate", f"override {override!r} must not route off the society"
