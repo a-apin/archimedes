@@ -11,7 +11,7 @@
 > **Where things live:** [`docs/README.md`](docs/README.md) — the doc index (a doc not
 > listed there does not exist) · [`docs/user-stories.md`](docs/user-stories.md) — canonical
 > product spine · [`docs/architecture.md`](docs/architecture.md) — architecture map ·
-> [`docs/adr/`](docs/adr/README.md) — 19 decision records. Current status comes from
+> [`docs/adr/`](docs/adr/README.md) — the decision records. Current status comes from
 > the live system, not a doc: `/health`, `GET /api/config/contracts`, and the
 > deploy history. (The README's dated Status section was retired 2026-08-20.)
 
@@ -89,9 +89,9 @@ nominal lane.** Flag the cross-lane review need in the PR description instead.
 
 ## Setup
 
-[`README.md`](README.md) has the full walkthrough (conda env via
-[`environment.yml`](environment.yml), Node frontend, Foundry, docker compose). What is not
-obvious from the tree:
+[`SETUP.md`](SETUP.md) has the full walkthrough (conda env via
+[`environment.yml`](environment.yml), Node frontend, Foundry, docker compose, the test
+suite). What is not obvious from the tree:
 
 **Local stack (post-#1194):** `cp .env.example .env` (generate `BETTER_AUTH_SECRET`;
 LLM/RPC optional) then `docker compose up -d --build`. nginx publishes on rootless-safe
@@ -100,29 +100,40 @@ starting auth/backend. Full walkthrough: `SETUP.md`.
 
 **Resolve the toolchain explicitly. Do not trust a bare `pytest` / `ruff` / `node`.**
 `environment.yml` declares the whole toolchain — `python`, `pytest`, `ruff`, `nodejs`,
-`terraform`, `awscli` — but a bare command name gives you whatever PATH resolves first,
-and on a real machine that is frequently not the env. Measured on one maintainer's box,
-2026-08-30:
+`terraform`, `awscli` — but a bare command name gives you whatever PATH resolves first, and
+**which one that is, is a property of the box, not of the repo.** Re-measured 2026-08-31 on
+one maintainer's box with `command -v <cmd>` / `which -a <cmd>` and `<cmd> --version`:
 
-| command | resolved to | the env has |
+| command | resolves to | the env has |
 | --- | --- | --- |
-| `pytest` | `/Library/Frameworks/Python.framework/.../3.13/bin/pytest` — **Python 3.13.7**, fastapi 0.136.3 | Python 3.12.13 |
-| `ruff` | the same 3.13 framework install | its own copy |
-| `node` / `npm` | `/opt/homebrew/bin/node` (Homebrew) | **not installed** |
-| `terraform` | not installed at all; `tofu` (OpenTofu) is | **not installed** |
-| `python` | nothing — `command -v python` is empty | 3.12.13 |
+| `pytest` | the env's — `.../envs/archimedes/bin/pytest`, **pytest 9.0.3** on Python 3.12.13, fastapi 0.141.1 | same binary |
+| `ruff` | the env's — **ruff 0.15.13** | same binary |
+| `node` / `npm` | the env's — **node v26.2.0 / npm 11.13.0** (Homebrew ships no `node` here) | installed |
+| `terraform` | **Homebrew's `/opt/homebrew/bin/terraform` — Terraform v1.15.8**, which *shadows* the env's | v1.15.3 |
+| `python` | the env's — **3.12.13** (`python3` is Homebrew's, and is not the env) | 3.12.13 |
+| `tofu` | not installed | not declared |
 
-**The dangerous one is `pytest`.** It does not fail. It collects and runs the suite against
-a different interpreter and an unaligned package set, then reports a result you will
-believe. That is the same "works on my machine" defect the `environment.yml` /
-`backend/requirements.txt` alignment guard exists to catch, arriving through PATH instead
-of through version floors.
+Two things changed since the 2026-08-30 measurement, and both are worth knowing: the
+Python 3.13 framework install that used to win `pytest` is **gone** from this box, and
+**`terraform` is now installed** (it was previously absent, with OpenTofu `tofu` standing
+in — `tofu` is now absent instead). Do not carry either old fact forward.
+
+**The structural rule survives every re-measurement:** `/opt/homebrew/bin` precedes the env
+on this box's PATH, so any tool Homebrew *also* provides wins — today that is `terraform`
+and `python3`. The resolution can flip in either direction on any box, at any time, without
+touching this repo.
+
+**The dangerous one is `pytest`.** It does not fail when it resolves wrong. It collects and
+runs the suite against a different interpreter and an unaligned package set, then reports a
+result you will believe. That is the same "works on my machine" defect the
+`environment.yml` / `backend/requirements.txt` alignment guard exists to catch, arriving
+through PATH instead of through version floors.
 
 `nodejs` / `terraform` / `awscli` were added to `environment.yml` on 2026-05-24 and
 2026-06-24. An env created before then and only ever pip-updated will not have them.
-`conda env update -f environment.yml` is how you would get them, and it will also shadow
-your Homebrew `node` and install HashiCorp `terraform` beside your OpenTofu. Worth knowing
-before you run it; to pick up a pip-block change only, install those specs directly.
+`conda env update -f environment.yml` is how you would get them, and it will shadow — or be
+shadowed by — whatever Homebrew already provides. Worth knowing before you run it; to pick
+up a pip-block change only, install those specs directly.
 
 Check rather than assume, then use absolute paths:
 
@@ -296,68 +307,19 @@ index maintenance to the same `save_trace`. Both green alone; merged, the double
 non-awaitable `srem` failed 5 tests on `main` and poisoned every open PR's merge-ref until
 the fix-forward (#1565) landed.
 
-### Testing conventions (codified 2026-05-27)
+### Testing conventions
 
-Hard-won during the post-hackathon test-coverage push and the env-flaky-test
-sweep. **CI green ≠ local green** is itself a bug; tests must pass identically
-in both environments. Read this before writing any new test.
+Full rules — hermetic gate command, the forbidden `asyncio.get_event_loop()` pattern, the
+subprocess-env recipe, boundary-mock precedents, coverage targets, no-skip-marks — moved to
+[`docs/testing-conventions.md`](docs/testing-conventions.md) (2026-08-31). **Read it before
+writing any new test.** The rule that stays here because agents get it wrong by default:
 
-- **Tests must be hermetic.** No `.env` dependence, no live Redis / Postgres /
-  Anthropic / Arc RPC. CI runs without `.env` or those services; tests that pass
-  in CI but fail locally (or vice versa) are real bugs that need fixing, not
-  flaky tests to be skip-marked. The hermetic gate: `env -i HOME=$HOME PATH=$PATH
-  PYTHONPATH=backend python -m pytest backend/tests/test_<module>.py -q` must
-  end with `N passed, 0 failed`.
-- **`asyncio.get_event_loop().run_until_complete(...)` is forbidden.** Python
-  3.12 removed implicit loop creation in non-running contexts and raises
-  `RuntimeError`. Use `asyncio.run(coro)` for sync tests calling an async
-  function, or `async def` plus the automatic `@pytest.mark.asyncio` (asyncio_mode
-  is `auto` in `pytest.ini`) for async tests. The CI gate: `grep -r
-  "asyncio.get_event_loop" backend/tests/` must return nothing.
-- **Subprocess tests must use `_clean_subprocess_env()` + `_DOTENV_NEUTRALIZE`.**
-  Reference pattern in [`backend/tests/test_security_hardening.py`](backend/tests/test_security_hardening.py).
-  Inheriting `os.environ` leaks the developer's `.env` (which sets
-  `DATABASE_URL=postgresql://...@postgres:5432/...`, a hostname only reachable
-  inside docker compose) into the subprocess, causing `psycopg2.OperationalError`
-  on bare-metal local. The parent pytest process can also leak `.env` vars via
-  earlier test imports that trigger `load_dotenv` — `_DOTENV_NEUTRALIZE` plus an
-  explicit `env=` whitelist on `subprocess.run` are both needed.
-- **Mock at boundaries, not internals.** Wrong: mocking dict operations or
-  internal helpers. Right: mocking the HTTP client, the DB session, the Redis
-  client, the chain client, the Circle signer. Real precedents to copy:
-    - `AgentStateStore` mock for Redis-down scenarios — see
-      [`backend/tests/test_api_routes.py`](backend/tests/test_api_routes.py)
-      `TestAgentRoutes::test_agent_status_redis_down_defaults` (uses
-      `patch.object(AgentStateStore, ..., AsyncMock(side_effect=ConnectionError))`).
-    - `chain_client` + `chain_executor` mocking — see
-      [`backend/tests/test_api_routes.py`](backend/tests/test_api_routes.py)
-      `client` fixture (line 36).
-    - SIWE signed-cookie test helper — see
-      [`backend/tests/test_user_routes.py`](backend/tests/test_user_routes.py)
-      `_siwe_cookies(wallet)` for testing PII-gated endpoints with a real signed
-      session (not header spoofing).
-    - tmp-sqlite DB fixture — see
-      [`backend/tests/test_api_routes.py`](backend/tests/test_api_routes.py)
-      `_use_tmp_db` (monkeypatch.setenv DATABASE_URL to a tmp sqlite).
-    - `httpx.ASGITransport` for endpoint tests — see
-      [`backend/tests/test_risk_routes.py`](backend/tests/test_risk_routes.py).
-- **Test the production code path, not the easy one.** When a function accepts
-  multiple input types (e.g. `_confirm_receipt` takes both `str` and `bytes`
-  HexBytes), the test matrix must cover *every* type the production code path
-  emits. The raw-key signer in `chain/executor.py` emits `HexBytes`; tests that
-  only exercise the `str` branch leave the production path uncovered. Issue
-  [#408](https://github.com/a-apin/archimedes/issues/408) was filed to backfill
-  this specific gap.
-- **Coverage targets and gates.** Per-module ≥85% line coverage is the standard
-  for new test work. Measure with `pytest --cov=archimedes.<module> --cov-report=term-missing
-  backend/tests/test_<module>.py`. The repo-level `--cov-fail-under=60` gate is
-  conditioned on `t2o2` being the PR author and is therefore **dormant** — nothing
-  enforces repo-level coverage today. See § Spec-driven execution.
-- **No skip-marks on flaky tests.** If a test is flaky, the cause is almost
-  always a missing mock at a boundary or hidden environmental state. Fix the
-  flakiness, don't `@pytest.mark.skip`. Skip-marks should be rare and load-bearing
-  (e.g., "Requires chain_client.settings module-level init mocking" — a known
-  architectural limitation, not a flaky test).
+- **Tests must be hermetic, and `CI green ≠ local green` is itself a bug.** No `.env`
+  dependence, no live Redis / Postgres / Anthropic / Arc RPC. A test that passes in CI but
+  fails locally (or the reverse) is a real defect to fix, never a flaky test to skip-mark.
+- The repo-level `--cov-fail-under=60` gate is conditioned on `t2o2` being the PR author and
+  is therefore **dormant** — nothing enforces repo-level coverage today (see § Spec-driven
+  execution).
 
 ### Linting, formatting, dependencies
 
@@ -421,85 +383,31 @@ feature work even when the diff looks small.
 ## Working with AI agents on this repo
 
 Most of this team works through AI agents. Read this before dispatching agents or feeding
-work to the issue pipeline. Two recurring non-repo-specific traps — character limits (`wc
--m`, not `wc -c`) and zsh quoting — are in
+work to the issue pipeline. The mechanics live in
+[`docs/agent-operations.md`](docs/agent-operations.md); two recurring non-repo-specific
+traps — character limits (`wc -m`, not `wc -c`) and zsh quoting — are in
 [`docs/agent-gotchas.md`](docs/agent-gotchas.md).
 
 ### Spec-driven execution (highest-leverage workflow)
 
-> **Who executes, as of 2026-08-03.** The autonomous agent account `t2o2` (Chuan Bai's
-> system) is **not an active resource.** Chuan stepped back on 2026-06-24 and no work is
-> being dispatched to `t2o2`. Do not assign issues to it, do not plan around it, and do
-> not infer availability from older documents. The five `*-t2o2-issue.md` specs it
-> executed were removed by this series; they survive only as references inside
-> `docs/archive/`, and a reference is not a live capability. Historical references to it are preserved as record, not as instruction.
->
-> **The discipline below still applies in full** — it was always about spec quality, not
-> about which executor consumes the spec. Today the executor is a Claude Code session run
-> by a human teammate, working an issue on a branch and opening a PR.
+Mechanics moved to [`docs/agent-operations.md`](docs/agent-operations.md) § Spec-driven
+execution (2026-08-31): the acceptance/anti-goal/precedent checklist, the **pre-close
+verification gate**, and the verify-your-own-audit-claims rule. Issue skeleton:
+[`docs/prompts/agentic-issue-skeleton.md`](docs/prompts/agentic-issue-skeleton.md). Three
+things stay here because a session acts on them without looking anything up:
 
-An agentic coding system is wired to this repo: it reads issues and writes code against
-them. **A well-specified issue is executable work** — often the highest-value thing a human
-+ hosted Claude can produce is a judge-grade issue spec, not hand-written code. Humans plan
-and spec; the system executes; humans review the PR. Vague issues produce vague code — spec
-quality is the throughput lever. Skeleton:
-[`docs/prompts/agentic-issue-skeleton.md`](docs/prompts/agentic-issue-skeleton.md).
-
-**Operational mechanics (hard-won 2026-05-18 — the spec is only half the job):**
-
-- **Trigger = a human picking it up.** There is no dispatch bot today. An issue is
-  executed when a teammate opens a session against it, so an unassigned judge-grade
-  spec sits idle until someone claims it. Assign the issue to the human who is doing
-  it, so two people don't start the same work. The `APIN - <Area> - <Title>` prefix is
-  a naming convention, not a trigger, and never was.
-- **A claimed issue is authorized. Do not close on lane grounds.** If a session has
-  taken an issue, execute it — regardless of which teammate's
-  nominal lane it touches. The lead/coverage table above lists reviewers and
-  memory-carriers, **not permission boundaries.** Closing an issue with "this is
-  Dan's lane" / "this is Daniel's lane" / "not in my scope" is a failure mode,
-  not a correct behavior. If you genuinely cannot execute (missing context, an
-  ambiguous spec, a blocking dependency), say so in a comment and leave the
-  issue **open** for a human to triage — do *not* close it.
-- **Acceptance must be machine-checkable.** Give the exact command *and* its
-  exact expected output (`pytest → 0 failed`, `coverage ≥ 80%`), never prose like
-  "make it robust." The system optimizes to the literal criteria.
-- **Pin the environment.** The system's env has Docker/Redis/DB; a judge's
-  cold clone does not. If it must pass clean, say "clean clone, no docker, no
-  env vars" explicitly — it won't infer the constraint.
-- **Anti-goals are load-bearing.** State what *not* to touch ("don't weaken
-  thresholds, don't edit `pytest.ini`, don't add e2e deps") to bound blast radius.
-- **Cite a precedent.** Point at an existing good pattern to copy (a fixture, a
-  sibling test file) — it reuses the right shape instead of inventing one.
-- **Verify independently — "closed" ≠ "fixed".** Sessions sometimes close an
-  issue without resolving it. Re-check against the acceptance command on a cold
-  clone before trusting completion; reopen with evidence if unmet.
-- **Pre-close verification gate (added 2026-05-24).** Before closing *any* issue,
-  the executing session MUST:
-  1. Run every acceptance-criteria command listed in the issue and verify the
-     exact expected output matches.
-  2. For every anti-goal / "DO NOT" directive (e.g. "DO NOT keep `setMode` in
-     `Generate.jsx`"), run an explicit `grep` or equivalent check proving the
-     forbidden pattern is absent. If the grep finds a match → the issue is not
-     done.
-  3. If any acceptance check or anti-goal check fails, do **not** close the
-     issue. Instead, comment with the failing evidence and leave the issue
-     **open**.
-  This gate exists because three issues (#166, #167, #168) were closed with
-  commits that touched unrelated files or made cosmetic edits that passed a
-  naive heuristic without doing the structural work. Pattern-match on commit
-  messages is not verification — running the actual commands is.
-- **Verify your own audit claims before acting on them (added 2026-05-27).**
-  When an agent (including yourself, earlier in the session) flags a finding
-  like "X is in git history" or "Y is a vulnerable dependency," verify it with
-  the literal command before recommending or applying the remediation. The
-  session example: an audit message flagged `infra/terraform.tfstate` as
-  committed-to-git CRITICAL; subsequent verification with `gh api
-  search/code -f q="tfstate repo:..."` and `git rev-list --all --objects`
-  confirmed it was never tracked — a false alarm. Acting on unverified audit
-  claims wastes work and erodes trust in the agent's findings. The rule is
-  symmetric: do not over-trust audit output from your past self, and surface
-  the verification command alongside any audit claim you make so the next
-  reader can re-run it cheaply.
+- **A well-specified issue is executable work.** Humans plan and spec; the session executes;
+  humans review the PR. Vague issues produce vague code — spec quality is the throughput
+  lever, and acceptance criteria must be machine-checkable (the exact command *and* its
+  exact expected output), never prose like "make it robust."
+- **A claimed issue is authorized. Do not close on lane grounds.** Execute it regardless of
+  whose nominal lane it touches. If you genuinely cannot (missing context, ambiguous spec,
+  blocking dependency), comment with the reason and leave the issue **open** for a human to
+  triage — do *not* close it.
+- **`t2o2` is not an active resource** (as of 2026-08-03; Chuan Bai stepped back
+  2026-06-24). Do not assign issues to it, do not plan around it, and do not infer
+  availability from older documents. This is what makes the coverage gate in the CI table
+  dormant. Today's executor is a Claude Code session run by a human teammate.
 
 ### Git safety — every contributor and their agents
 
@@ -543,72 +451,31 @@ Non-negotiable, and load-bearing because the judges read this repo like operator
 
 ### Parallel agent fan-out discipline
 
-Hard-won (2026-05-16); ignore at your peril:
+Full discipline — worktree isolation, the as-you-go worktree/branch cleanup that one session
+paid for with 14 stale dirs and ~24 branches, and structured subagent response formats — is
+in [`docs/agent-operations.md`](docs/agent-operations.md) § Parallel agent fan-out
+(2026-08-31). The two rules that are cheap to state and expensive to skip:
 
-- **Probe with ONE canary agent before any fan-out.** If the canary is blocked at
-  a step, the whole fan-out will be too — you pay the fan-out tax for zero
-  parallelism.
-- **The canary must match the fan-out's execution mode.** A foreground canary
-  does *not* validate a background fan-out — they run under different sandboxes.
-- **Background subagents are filesystem-sandboxed here** (no writes; cannot exec
-  interpreters outside the project dir). Use **foreground** agents for
-  implementation fan-out, or a scoped `permissions.allow` in
-  `.claude/settings.json`.
-- Parallel agents get **isolated git worktrees**, base-SHA-pinned to a recorded
-  commit; do not commit to the base branch between dispatches.
-- **Clean up worktrees + branches AS YOU GO, not just at session end (added
-  2026-06-25).** Parallel worktree-isolated agents accumulate fast — one session
-  left **14 stale `.claude/worktrees/agent-*` dirs + ~24 branches**. Discipline:
-  (1) when an agent finishes, remove its worktree (`git worktree remove --force
-  <path>` — **never a locked / still-running one**) + its local
-  `worktree-agent-*` branch, then `git worktree prune`; (2) when a PR merges,
-  delete its branch (`gh pr merge --delete-branch`, or `git push origin --delete
-  <branch>` + `git branch -D`); (3) keep branches for **open PRs** and
-  **in-flight agents**. Turn on the repo's "auto-delete head branches on merge"
-  to halve the remote side. Always verify before bulk-deleting: cross-check
-  `git worktree list` + `gh pr list --state open` so you never drop a running
-  agent's or an open PR's branch.
-- **Structure subagent responses to preserve parent context (added 2026-05-27).**
-  When dispatching review-style subagents (PR review, audit, multi-file scan),
-  specify both a structured response format (`Verdict / What it does / Concerns
-  / Recommendation` per item) and a per-item word cap. Three subagents
-  reviewing 8 PRs in parallel returned ~3000 words of structured per-PR
-  verdicts I could synthesize without re-reading any diff — the structure is
-  what made the synthesis cheap. Unstructured "review these PRs and tell me
-  what you think" produces long prose that the parent has to re-read and
-  re-organize, defeating the context-preservation reason for fan-out.
+- **Probe with ONE canary agent before any fan-out.** If the canary is blocked at a step,
+  the whole fan-out will be too — you pay the fan-out tax for zero parallelism.
+- **The canary must match the fan-out's execution mode.** A foreground canary does *not*
+  validate a background fan-out; they run under different sandboxes. **Background subagents
+  are filesystem-sandboxed here** — use foreground agents for implementation fan-out.
 
-### Agent-as-proxy authorization (added 2026-05-27)
+### Agent-as-proxy authorization
 
-Teams have lanes (see "Lead + coverage" table) and humans have AI agents that
-operate on their behalf. When a teammate is unresponsive for an extended
-window (>24h) and work in their lane is blocked, their agent **is authorized
-to act as proxy for backend code reviews and merges in that lane**, with two
-exceptions:
-
-- **Solidity contract changes still require the human owner's explicit consent.**
-  Contracts hold live funds; the owner's contract-specific judgment is
-  load-bearing. An agent can review and recommend, but **Dan (the contract owner,
-  who deploys them himself) must approve the merge** — and where possible **Bogdan
-  (`mnemonik-dev`) provides the two-eyes contract review**. (Updated 2026-06-24:
-  contract approval routes to Dan, not Chuan, after the ownership change. Updated
-  2026-08: Bogdan is not currently active — Dan is the sole required approver;
-  two-eyes review resumes when a second contract reviewer is available.)
-- **Architecture decisions and infrastructure cost commitments** (new AWS
-  services, recurring spend, multi-day migrations) still warrant **Dan's** ack
-  (he owns the AWS account). Operational fixes within an already-approved
-  architecture are fine to proxy.
-
-This unblocks work without compromising the high-stakes review surfaces.
-Document each proxy-merge action in the PR description with a one-line note
-("Reviewed by <agent> on Dan's behalf — Dan offline since <timestamp>")
-so the human can audit on return. If the human disagrees on return, revert and
-re-review — the proxy is a stop-gap, not a delegation.
+When a teammate is unresponsive >24h and work in their lane is blocked, their agent is
+authorized to proxy backend code reviews and merges in that lane. Conditions, the audit-note
+convention, and the revert-on-disagreement rule:
+[`docs/agent-operations.md`](docs/agent-operations.md) § Agent-as-proxy (2026-08-31). **The
+two exceptions never proxy:** Solidity contract changes need **Dan's** explicit approval as
+contract owner, and architecture decisions or infrastructure cost commitments (new AWS
+services, recurring spend, multi-day migrations) need **Dan's** ack — he owns the account.
+Operational fixes inside an already-approved architecture are fine to proxy.
 
 ## Architectural decisions — index, not argument
 
-**Decisions live in [`docs/adr/`](docs/adr/README.md) (18 records) and the ADR is
-authoritative** — status, date, owner, alternatives, consequences. Do not relitigate an
+**Decisions live in [`docs/adr/`](docs/adr/README.md) and the ADR is authoritative** — status, date, owner, alternatives, consequences. Do not relitigate an
 `Accepted` ADR in a spec, a comment, or a PR description; open a superseding ADR instead.
 
 - **Product shape** — [two-tier marketplace](docs/adr/two-tier-marketplace.md) · [non-custodial vault, owner ≠ agent](docs/adr/non-custodial-vault-owner-agent.md) · [Arc settlement](docs/adr/arc-settlement-chain.md)

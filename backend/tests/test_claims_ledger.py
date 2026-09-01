@@ -59,8 +59,14 @@ ALLOWED_STATUSES = frozenset({"TRUE", "CHANGED", "RETRACTED", "OVER-CLAIMED", "P
 # That is what lets the ledger keep writing a bare `agent.json` or `live_rigor_gate.py` as
 # shorthand for a path it already gave in full, without those shorthands being read as
 # citations to files at the repo root that do not exist.
+# `conf` and `tf` joined the list on 2026-08-31 with the Security-page rows. That page's
+# claims are enforced in `nginx/nginx.conf` (the CSP, HSTS, framing and rate-limit zones)
+# and pinned in `infra/ecs.tf` (the money switches), so without those two extensions its
+# most load-bearing evidence would have been backticked prose the guard silently skipped —
+# a row reading as cited while nothing resolved it. Both require a directory component
+# like every other citation, so a bare `nginx.conf` shorthand is still not a citation.
 _CITATION_RE = re.compile(
-    r"`((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.(?:py|jsx|js|md|json|txt|sol|html|xml|yml|yaml|toml|sh|css)"
+    r"`((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.(?:py|jsx|js|md|json|txt|sol|html|xml|yml|yaml|toml|sh|css|conf|tf)"
     r"|(?:README|CLAUDE|SETUP|AGENTS)\.md)"
     r"(?::(\d+)(?:-\d+)?)?`"
 )
@@ -96,6 +102,23 @@ _SYMBOL_PINS: tuple[tuple[str, str], ...] = (
     ("ui/src/routes.js", "PUBLIC_PATHS"),
     ("ui/src/featureFlags.js", "ROADMAP_SURFACES_ENABLED"),
     ("cli/src/archimedes_cli/exits.py", "INCOMPLETE = 4"),
+    # Security-page rows (2026-08-31). Every one of these is a symbol a Security-page
+    # sentence is *about* — the cookie flags the page enumerates, the headers it lists, the
+    # rate-limit zone it distinguishes, the paywall functions it describes. A rename here
+    # leaves the page asserting enforcement that no longer has that name.
+    ("auth/auth.js", "useSecureCookies: production"),
+    ("auth/auth.js", "sameSite: 'lax'"),
+    ("nginx/nginx.conf", "zone=api_write:10m rate=20r/m"),
+    ("nginx/nginx.conf", 'add_header X-Frame-Options "DENY" always;'),
+    ("nginx/nginx.conf", 'Permissions-Policy "geolocation=(), microphone=(), camera=()"'),
+    ("backend/archimedes/api/account_auth.py", '"cookie": request.headers.get("cookie", "")'),
+    ("backend/archimedes/api/auth_guard.py", "hmac.compare_digest"),
+    ("backend/archimedes/services/generation_payment.py", "def settles_real_value"),
+    ("backend/archimedes/services/generation_payment.py", "async def enforce_generation_payment"),
+    ("backend/archimedes/services/generation_payment.py", "payer_mismatch"),
+    ("infra/ecs.tf", '{ name = "GENERATION_PAYMENT_REQUIRED", value = "true" }'),
+    ("infra/ecs.tf", '{ name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" }'),
+    ("ui/test/roadmap-copy.test.js", "EXECUTION_CLAIM_PATTERN"),
 )
 
 # The ledger records that board-level FDR MOVED to the leaderboard (#1564/#1580), so the
@@ -106,10 +129,18 @@ _ABSENCE_PIN = ("backend/archimedes/api/selection_bias_routes.py", "class BoardL
 
 # The sentences the ledger's OVER-CLAIMED rows say are still live. See the module
 # docstring: fixing one of these SHOULD break this test.
+#
+# The two agent-surface entries retired themselves in #1650, exactly as designed:
+# scrubbing the sentence turned this test red, which is what forced the ledger rows
+# from OVER-CLAIMED to CHANGED in the same change. They are not replaced by
+# "must stay absent" pins here — that property belongs to the surfaces' own guard
+# (``ui/test/roadmap-copy.test.js``, which requires roadmap tense on every vault
+# sentence in ``ui/public/``), not to a ledger-citation test.
 _OPEN_OVERCLAIMS: tuple[tuple[str, str], ...] = (
-    ("README.md", "non-custodial vault on the Arc testnet"),
-    ("ui/public/llms.txt", "executed in non-custodial USDC"),
-    ("ui/public/.well-known/agent.json", "executed in a non-custodial USDC vault"),
+    # The README's over-claim was FIXED by the 2026-08-31 README refresh (future
+    # tense) and the two agent surfaces retired themselves in #1650 (see the note
+    # above), so all three pins are gone and their ledger rows moved OVER-CLAIMED
+    # → CHANGED. The remaining two surfaces below still carry the claim.
     ("ui/index.html", "records the whole decision on Arc public testnet"),
     ("docs/user-stories.md", "into your non-custodial vault on Arc"),
 )
