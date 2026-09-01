@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 import { _resetAdminProbeCache } from './adminProbe.js'
+import { _resetInsightsAdminMemo } from './insightsAdminMemo.js'
 import { getSession, signOut as endSession } from './auth-client'
 
 const AuthContext = createContext(null)
@@ -30,6 +31,13 @@ export function AuthProvider({ children }) {
     // so it has to be cleared explicitly here rather than expiring on its
     // own short TTL.
     _resetAdminProbeCache()
+    // Same reason, for the per-session memo of the last answer (#1648): it is
+    // keyed on the account id, so it CANNOT be read by a different account
+    // signing in next — but an admin signing out and back in should still get
+    // a fresh determination rather than seeing the previous session's grant
+    // painted before the server has re-confirmed it. Defence in depth, not the
+    // load-bearing isolation (that is the key — insightsAdminMemo.js).
+    _resetInsightsAdminMemo()
   }, [])
 
   const value = useMemo(() => ({
