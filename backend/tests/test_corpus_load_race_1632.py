@@ -21,7 +21,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
 from archimedes.agents import strategy_fusion
 
 
@@ -65,11 +64,10 @@ class TestHealthProbeDoesNotLoadTheCorpus:
     # this one in the same process. Precedent: test_health_always_answers.py's
     # _get_health, which exists for exactly this reason.
     async def test_health_reports_the_count_and_never_calls_load_corpus(self, monkeypatch):
-        from httpx import ASGITransport, AsyncClient
-
         import archimedes.services.corpus_service as corpus_service
         from archimedes.main import app
         from archimedes.services.health_cache import health_probe_cache
+        from httpx import ASGITransport, AsyncClient
 
         def _forbidden(*_a, **_k):  # pragma: no cover - the guard IS the failure
             raise AssertionError(
