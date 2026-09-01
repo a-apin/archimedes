@@ -660,28 +660,67 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
         // rules stay as defense-in-depth regardless: this rule (3 signups /
         // 10 min per Better Auth's rate key), nginx's /api/auth/ limit_req
         // zone, and — decisively — the per-IP DAILY generation cap
-        //
-        // CAVEAT (#1691, found by the 2026-08-31 pre-flip audit): "per Better
-        // Auth's rate key" is not per-caller in production today. The key is
-        // `${ip}|${path}` (@better-auth/core/dist/utils/ip.mjs:225), and
-        // getIp trusts a forwarded header only when it carries exactly ONE
-        // value (:189 `if (forwardedIps.length !== 1) return null`) unless
-        // advanced.ipAddress.trustedProxies is configured — which nothing
-        // below does. Behind CloudFront -> ALB -> nginx every hop appends
-        // (nginx/nginx.conf:179), so no IP resolves and the limiter falls
-        // back to one shared `no-trusted-ip|<path>` bucket, logging a
-        // warning that says so. These rules therefore bound TOTAL rate, not
-        // per-abuser rate. Layers 2 and 3 above are unaffected. Pinned in
-        // both directions by auth/test/email-flows.test.js; do not "fix" it
-        // by trusting the leftmost XFF token, which is client-controlled and
-        // strictly worse than a shared bucket.
         // (services/generation_quota.py): a fresh account does not raise its
         // address's generation allowance, so disposable accounts gain
         // nothing at the endpoint that actually spends money.
+        //
+        // WHAT "Better Auth's rate key" RESOLVES TO (#1691, fixed here). The
+        // key is `${ip}|${path}` (@better-auth/core/dist/utils/ip.mjs:225).
+        // Until #1691 no ip resolved in production: getIp trusts a forwarded
+        // header only when it carries exactly ONE value (ip.mjs:189 `if
+        // (forwardedIps.length !== 1) return null`), and behind
+        // CloudFront -> ALB -> nginx every hop appends to X-Forwarded-For, so
+        // the limiter fell back to a single shared `no-trusted-ip|<path>`
+        // bucket for the entire internet. advanced.ipAddress.ipAddressHeaders
+        // below now points the resolver at the single-valued, nginx-SET
+        // X-Client-IP header instead — the same trusted value layers 2 and 3
+        // key on. These rules are per-rate-key, and the rate key is now that
+        // header; see the ipAddress block for exactly whose address it is.
+        // Pinned in both directions by auth/test/email-flows.test.js; do not
+        // "fix" it further by trusting the leftmost XFF token, which is
+        // client-controlled and strictly worse than a shared bucket.
         '/sign-up/email': { window: 600, max: 3 },
+        // Pinned, not inherited — the same argument session.freshAge rests on.
+        // These two are the mail-sending endpoints, so they are the pair the
+        // EMAIL_VERIFICATION_ENFORCED flip puts under load and the pair SES
+        // production access is judged on. The values match the library's own
+        // default for this path set (better-auth/dist/api/rate-limiter/
+        // index.mjs:378-382, window 60 / max 3), so this changes no behaviour;
+        // it makes the bound readable here and stops a library upgrade from
+        // moving a security-relevant number silently.
+        '/request-password-reset': { window: 60, max: 3 },
+        '/send-verification-email': { window: 60, max: 3 },
       },
     },
     advanced: {
+      // Where the rate limiter gets its client IP (#1691). Better Auth's getIp
+      // walks these header names in order (@better-auth/core/dist/utils/ip.mjs
+      // :203) and trusts a value only if it is single-valued; the DEFAULT list
+      // is ['x-forwarded-for'], which is multi-hop behind CloudFront -> ALB ->
+      // nginx and so resolved to null on every production request, collapsing
+      // every rate-limit bucket into one global `no-trusted-ip|<path>`.
+      //
+      // x-client-ip is set — not appended — by nginx from its realip-resolved
+      // $remote_addr (nginx/nginx.conf, the server-level proxy header block),
+      // so a caller cannot supply it: whatever the client sends under that name
+      // is overwritten before the request reaches this process. It is the same
+      // value the FastAPI limiter and the daily generation cap already key on
+      // via X-Real-IP. Behind CloudFront it identifies the CloudFront EDGE, not
+      // the viewer (nginx trusts only the ALB CIDR) — so buckets are per-edge:
+      // unspoofable, no longer global, coarser than one caller. Say that, don't
+      // round it up to "per user".
+      //
+      // Deliberately NOT trustedProxies: that would re-admit X-Forwarded-For
+      // and require carrying CloudFront's published edge ranges in this file,
+      // where a stale list degrades silently back to the shared bucket. And
+      // deliberately not a fallback to 'x-forwarded-for' after this one — a
+      // single-valued XFF reaching this process is exactly the shape a
+      // direct-to-container caller can forge. No header, no key: the limiter
+      // falls back to its shared bucket, which fails safe (over-limiting), not
+      // open.
+      ipAddress: {
+        ipAddressHeaders: ['x-client-ip'],
+      },
       useSecureCookies: production,
       defaultCookieAttributes: {
         httpOnly: true,

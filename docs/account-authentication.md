@@ -101,14 +101,23 @@ should expect:
 
 Independently of enforcement, disposable accounts are bounded by three layers:
 
-1. Better Auth's production rate limiter: `/sign-up/email` at 3 per 10
-   minutes (`auth/auth.js` `rateLimit.customRules`). **Caveat — this layer does not
-   currently work as described in production** ([#1691](https://github.com/a-apin/archimedes/issues/1691)):
-   the limiter keys every bucket on the client IP, and behind CloudFront → ALB → nginx no
-   client IP resolves (Better Auth trusts a forwarded header only when it carries exactly
-   one value, and each hop appends one), so the bucket is shared by every caller rather
-   than held per address. It bounds total rate, not per-abuser rate. Layers 2 and 3 are
-   unaffected and do key per address.
+1. Better Auth's production rate limiter: `/sign-up/email` at 3 per 10 minutes, and
+   `/request-password-reset` + `/send-verification-email` at 3 per minute — all three
+   pinned in `auth/auth.js` `rateLimit.customRules`. **What the bucket is keyed on**
+   ([#1691](https://github.com/a-apin/archimedes/issues/1691), fixed): every bucket key is
+   `${ip}|${path}`, and Better Auth trusts a forwarded header only when it carries exactly
+   one value. Behind CloudFront → ALB → nginx each hop appends one, so until #1691 *no*
+   client IP resolved and the entire internet shared one bucket per path — three password
+   resets from anywhere exhausted the endpoint for everybody. nginx now **sets**
+   `X-Client-IP` from its realip-resolved `$remote_addr` and `advanced.ipAddress.
+   ipAddressHeaders` points the resolver at that one header, which is the same trusted
+   value layers 2 and 3 key on. Because `proxy_set_header` overwrites, a client-supplied
+   `X-Client-IP` cannot reach the auth service. **Stated exactly: nginx trusts only the ALB
+   CIDR, so behind CloudFront this address is the CloudFront *edge* that relayed the
+   request, not the viewer** — buckets are per-edge (unspoofable, no longer global, coarser
+   than one caller). Sharpening that further means trusting CloudFront's published edge
+   ranges, which is deliberately not done: that list changes and a stale one degrades
+   silently.
 2. nginx's `/api/auth/` `limit_req` zone.
 3. Decisively: the **per-IP daily generation cap**
    (`backend/archimedes/services/generation_quota.py`). Generation is the
