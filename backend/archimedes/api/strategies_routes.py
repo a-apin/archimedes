@@ -39,10 +39,7 @@ from archimedes.api.selection_bias_routes import (
 )
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
-from archimedes.services.live_rigor_gate import (
-    RigorGateVerdict,
-    verdicts_for_strategies,
-)
+from archimedes.services.live_rigor_gate import RigorGateVerdict
 from archimedes.services.rigor_evaluator import RigorGateResult
 
 logger = logging.getLogger(__name__)
@@ -107,8 +104,12 @@ def _to_strategy_response(
     from archimedes.services.return_source_classifier import classify_strategy
 
     if verdict is None:
-        verdict = _live_verdict_for_one(s)
-        rigor_result = _live_rigor_result_for_one(s)
+        # ONE cohort gate run, not two (#1645). Both the badge and the numeric
+        # fields are derived from the same memoized RigorGateResult — see
+        # `_live_verdict_and_result_for_one`. This mirrors what `list_strategies`
+        # has done since #868; the single-strategy path was the last caller
+        # still paying for a second, uncached full-library gate run.
+        verdict, rigor_result = _live_verdict_and_result_for_one(s)
 
     bt = strategy_provider().get_backtest_result(s.id)
     # has_real: a BacktestResultRecord (persisted daily-returns row) exists.
@@ -255,24 +256,67 @@ def _to_strategy_response(
     )
 
 
+def _live_verdict_and_result_for_one(s: Strategy) -> tuple[RigorGateVerdict, RigorGateResult | None]:
+    """Badge + numbers for a single strategy from ONE cohort gate run (#1645).
+
+    **Why this exists (perf).** ``_to_strategy_response`` used to call
+    ``_live_verdict_for_one`` (→ ``verdicts_for_strategies``) *and*
+    ``_live_rigor_result_for_one`` (→ ``_live_rigor_results_for_strategies``).
+    Both grade the FULL library, so one ``GET /api/strategies/{id}`` ran the
+    whole cohort gate **twice** — measured 68 ``run_rigor_gate`` calls against a
+    34-strategy library. Worse, only the second path is memoized in
+    ``services.rigor_cache``: ``verdicts_for_strategies`` has no cache at any
+    layer, so a warm cache still cost a full cohort recompute (34 calls) on
+    every request, forever. Measured on prod 2026-08-31, anonymous:
+    ``GET /api/strategies/{id}`` returned ``X-Response-Time-Ms: 28144.0`` /
+    ``25072.2`` / ``28554.9`` on three consecutive calls — ~2x the ~13s the
+    list route costs for the same cohort, and flat across repeats because the
+    uncached half can never warm up.
+
+    Deriving the badge from the already-computed ``RigorGateResult`` is exactly
+    what ``list_strategies`` has done since #868 (see ``_verdict_from_result``);
+    this makes the detail path use the same single computation.
+
+    **Why this is safe (correctness).** It is the same gate, not a cheaper one.
+    ``RigorGateVerdict.from_result`` is the identical reduction
+    ``verdict_from_returns`` applies, and it is applied to a result produced by
+    ``run_rigor_gate`` over the FULL library cohort (``_library_cohort_including``
+    — the #902/#1173 invariant is unchanged). Every non-graded case still
+    fail-closes to ``pending``: a strategy with <10 persisted returns is absent
+    from the batch dict, a DB/cohort failure degrades the batch to ``{}``, and
+    ``_verdict_from_result(None)`` is ``pending``.
+
+    It also *removes* a real divergence. ``verdicts_for_strategies`` builds cohort
+    PBO/avg-correlation from every series with ≥10 observations, while
+    ``_live_rigor_results_for_strategies`` first excludes zero-variance series
+    (#868) — both files carry a ``TODO(A7)`` naming that split. The detail route
+    was serving a badge from the first cohort filter next to numbers from the
+    second; now both come from one run, so the detail badge cannot disagree with
+    the detail numbers or with the list badge.
+    """
+    result = _live_rigor_result_for_one(s)
+    return _verdict_from_result(result), result
+
+
 def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
     """Live rigor-gate verdict for a single strategy (#821).
 
-    Used by the single-strategy fetch path (``get_strategy``). Delegates to
-    ``verdicts_for_strategies`` over the FULL library so the verdict is computed
-    with the same cohort PBO + avg correlation context the list badge uses,
-    keeping the detail view consistent with the list. ``num_trials`` is
-    self-contained (1 per strategy, decouple #2) — it does NOT come from the
-    library size; only PBO/avg_correlation are cohort-derived. No real returns
-    → ``pending``, never a fixture value. Never raises: any failure degrades to
-    ``pending`` (fail-closed badge).
+    Grades over the FULL library so the verdict carries the same cohort PBO +
+    avg correlation context the list badge uses, keeping the detail view
+    consistent with the list. ``num_trials`` is self-contained (1 per strategy,
+    decouple #2) — it does NOT come from the library size; only
+    PBO/avg_correlation are cohort-derived. No real returns → ``pending``,
+    never a fixture value. Never raises: any failure degrades to ``pending``
+    (fail-closed badge).
+
+    Since #1645 this is the badge half of ``_live_verdict_and_result_for_one``
+    rather than a second, uncached gate run through ``verdicts_for_strategies``
+    — see that function's docstring for the measurement and the correctness
+    argument. Callers that also need the numbers should call the pair directly;
+    calling both this and ``_live_rigor_result_for_one`` would repeat the cache
+    lookup for no benefit.
     """
-    try:
-        cohort = _library_cohort_including(s)
-        return verdicts_for_strategies(cohort).get(s.id, RigorGateVerdict.pending())
-    except Exception as exc:
-        logger.warning("live verdict failed for %s (badge → pending): %s", s.id, exc)
-        return RigorGateVerdict.pending()
+    return _live_verdict_and_result_for_one(s)[0]
 
 
 def _library_cohort_including(s: Strategy) -> list[Strategy]:

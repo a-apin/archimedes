@@ -562,6 +562,20 @@ resource "aws_ecs_task_definition" "backend" {
         # Not secrets. Both layers must pass; <= 0 disables a layer.
         { name = "GENERATION_DAILY_CAP_PER_USER", value = "100" },
         { name = "GENERATION_DAILY_CAP_PER_IP", value = "200" },
+        # Admission control (#1668) — the same config-drift failure the caps
+        # above were plumbed to avoid, found again by grep: all three are read
+        # from the environment by shipped code (generate_routes.py's
+        # `_max_concurrent_generations()` / `_max_queued_generations()` and
+        # debate_engine.py's `_pool_max()`) and none of them were in this file,
+        # so prod ran on the os.getenv() fallbacks by accident. Wired from
+        # variables.tf, whose defaults are byte-identical to those fallbacks —
+        # plumbing only, no behaviour change on apply. Retuning any of them is
+        # a separate, separately-reviewed change (#1668 anti-goal).
+        # backend/tests/test_admission_knobs_drift.py reads both sides and
+        # fails if they ever diverge, in either direction.
+        { name = "GENERATION_MAX_CONCURRENT", value = var.generation_max_concurrent },
+        { name = "GENERATION_MAX_QUEUE", value = var.generation_max_queue },
+        { name = "DEBATE_POOL_MAX", value = var.debate_pool_max },
         # Hard ceiling on one generation run. Read at
         # backend/archimedes/api/generate_routes.py:162, whose code default is
         # 600 s — and this name was NEVER in this task definition, so prod ran
@@ -638,6 +652,11 @@ resource "aws_ecs_task_definition" "backend" {
         # the admin-wallet publish bypass / marketplace publish respectively
         # until Dan supplies real values.
         { name = "PLATFORM_ADMIN_WALLETS", value = var.platform_admin_wallets },
+        # The account-keyed half of the admin gate (#1648). Empty is the safe
+        # default: PLATFORM_ADMIN_WALLETS above keeps granting admin on its own
+        # (as evidence), so an unset value changes nothing — it only forgoes the
+        # database-independent break-glass path.
+        { name = "PLATFORM_ADMIN_ACCOUNTS", value = var.platform_admin_accounts },
         { name = "ARCHIMEDES_TREASURY_WALLET", value = var.archimedes_treasury_wallet },
         # Arms the #1556 trace-visibility floor: ownerless trace rows are served
         # publicly ONLY for these house vaults; every other ownerless row goes
