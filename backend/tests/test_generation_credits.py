@@ -67,6 +67,22 @@ def _use_tmp_db(tmp_path):
     yield from redirect_to_tmp_sqlite(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _paid_tier_only(monkeypatch):
+    """Switch the #1643 free allowance OFF for this whole file.
+
+    Every assertion here is about what happens once money moves, which #1643
+    leaves untouched from generation #4 onward. Under the default allowance of
+    3 the first three calls in each test would be served free and no credit
+    would ever be claimed — the tests would not fail loudly so much as stop
+    measuring the ledger they name. ``FREE_GENERATIONS_PER_ACCOUNT=0`` is the
+    documented switch that restores the pre-#1643 gate exactly. The free path
+    has its own file: ``test_free_generation_gate.py``, which includes the
+    paid-tier-after-exhaustion case under the real default allowance.
+    """
+    monkeypatch.setenv("FREE_GENERATIONS_PER_ACCOUNT", "0")
+
+
 @dataclass
 class _FakePaymentInfo:
     """Mirrors circlekit.x402.PaymentInfo exactly; ``amount`` is raw base units."""

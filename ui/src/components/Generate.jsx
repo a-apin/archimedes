@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GenerationStream from "./GenerationStream";
 import GenerationStatus from "./GenerationStatus";
 import ModelCostPanel from "./ModelCostPanel";
+import FreeGenerationBanner from "./FreeGenerationBanner";
 import { EXAMPLE_BRIEFS } from "../data/exampleBriefs";
 import { ASSET_GROUPS, SUPPORTED_ASSETS } from "../data/assetUniverse";
 import { apiGet, apiPostWithMeta } from "../api";
@@ -725,6 +726,11 @@ export default function Generate({ onNavigate, onStageChange }) {
 					winner to the rigor gate.
 				</p>
 			</header>
+
+			{/* Free-generation allowance (#1643) — one isolated component, one
+			    mount point. Renders nothing when there is no honest number to
+			    show (signed out, request failed, backend reported null). */}
+			<FreeGenerationBanner />
 
 			<div className="generate-workbench">
 				{/* ── 1. BRIEF INPUT + SUBMIT ── */}

@@ -5,7 +5,11 @@ Backs the conversion-funnel instrument. We have a zero-conversion problem
 visitors drop. This records the distinct visitors that reach each stage of the
 journey:
 
-    landed → wallet_connected → generation_started → vault_deployed
+    landed → generation_started → free_generation_used → wallet_gate_shown
+           → wallet_connected → vault_deployed
+
+(the two middle stages, and this order, arrived with the free path — #1643;
+see ``STAGES`` below for why the order itself had to change)
 
 using Redis HyperLogLog (``PFADD`` / ``PFCOUNT``) so the counts are *distinct
 visitors* without retaining any raw identifier — privacy-friendly (no tracking
@@ -52,10 +56,28 @@ _PREFIX = "archimedes:funnel"
 
 # Ordered funnel stages. Order is load-bearing: ratios are computed against the
 # first stage (``landed``) and against the immediately preceding stage.
+#
+# **The order changed with the free path (#1643), because the journey did.**
+# Until 2026-08-31 a wallet was required before the FIRST generation, so
+# ``wallet_connected`` genuinely preceded ``generation_started`` (the post-#851
+# order). Now the first three generations need only an account, so a visitor
+# generates first and meets the wallet gate afterwards. Leaving the old order
+# in place would have published a ``step_conversion`` computed against a stage
+# that no longer precedes its successor — a number that reads as a conversion
+# rate and measures nothing.
+#
+#   landed              — the SPA's JS beacon fired
+#   generation_started  — a generation actually queued (free or paid)
+#   free_generation_used— …and it was spent from the account's free allowance
+#   wallet_gate_shown   — the allowance ran out; 409 wallet_link_required
+#   wallet_connected    — a wallet was linked after seeing that gate
+#   vault_deployed      — roadmap (ROADMAP_SURFACES_ENABLED), still tracked
 STAGES: tuple[str, ...] = (
     "landed",
-    "wallet_connected",
     "generation_started",
+    "free_generation_used",
+    "wallet_gate_shown",
+    "wallet_connected",
     "vault_deployed",
 )
 
