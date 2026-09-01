@@ -332,6 +332,34 @@ def get_paper_count() -> int:
         return session.query(func.count(PaperRecord.arxiv_id)).scalar() or 0
 
 
+def count_corpus_papers(*, embargo_days: int = 30) -> int:
+    """ORM-free count of the papers ``load_corpus`` would load — for /health.
+
+    Mirrors ``apply_outcome_embargo``'s rule in SQL: published strictly before
+    today − ``embargo_days``, empty ``published`` excluded (the Python filter
+    also drops *unparseable* dates, which SQL cannot check — ISO strings from
+    seeding make that delta zero in practice; if it ever drifts, the honest
+    direction is this count reading slightly high, never a fabricated low).
+
+    Exists because the /health corpus probe used to call ``load_corpus`` — a
+    full 18k-row ORM materialization per uncached check. On a cold task the
+    probe blows its budget, is abandoned-but-running, and the next checks pile
+    more loads into the executor until two race in SQLAlchemy session teardown
+    and abort the interpreter (#1632, prod rev 214). A scalar COUNT holds no
+    ORM state to race and returns in milliseconds.
+    """
+    from datetime import date, timedelta
+
+    cutoff = (date.today() - timedelta(days=embargo_days)).isoformat()
+    with get_session() as session:
+        return (
+            session.query(func.count(PaperRecord.arxiv_id))
+            .filter(PaperRecord.published != "", PaperRecord.published < cutoff)
+            .scalar()
+            or 0
+        )
+
+
 def get_corpus_meta() -> dict | None:
     """Return the singleton corpus_meta row as a dict, or None."""
     with get_session() as session:
