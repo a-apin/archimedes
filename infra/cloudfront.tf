@@ -7,6 +7,9 @@
 #   - Static assets (/assets/*, /static/*, *.js, *.css) cached 1h at the edge.
 #   - /health, /health/*, /api/* and /events/* NEVER cached (liveness probes +
 #     dynamic responses + SSE pass-through).
+#   - Session-dependent paths (/app, /app/*, /sign-in*) NEVER cached — their
+#     responses depend on the session cookie, and the edge keys without it
+#     (2026-09-01 sign-in outage, issue #1768).
 #   - Generated 5xx error responses NEVER cached (custom_error_response with
 #     error_caching_min_ttl = 0) — see the block near the bottom of this file.
 #   - HTML ("/") cached 60s, respecting origin Cache-Control.
@@ -372,6 +375,109 @@ resource "aws_cloudfront_distribution" "main" {
     origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
     compress                   = true
+  }
+
+  # /app, /app/* and /sign-in* — session-dependent. NEVER cached (#1768).
+  #
+  # 2026-09-01 sign-in outage ("I can't sign into the production site. It
+  # thrashes endlessly"). nginx's `auth_request` gate on `^~ /app` answers an
+  # anonymous visitor with `302 /sign-in?next=/app/generate`. That response
+  # matched no ordered behaviour, so it fell through to
+  # `default_cache_behavior` and the `html` policy — `default_ttl = 60`,
+  # `cookie_behavior = "none"`. Keyed WITHOUT the session cookie, CloudFront
+  # replayed the anonymous redirect to the next request that carried one:
+  #
+  #   GET /app/generate                            -> 302  x-cache: Miss
+  #   GET /app/generate                            -> 302  x-cache: Hit
+  #   GET /app/generate  (Cookie: __Secure-...=…)  -> 302  x-cache: Hit   # the bug
+  #
+  # After sign-in the SPA saw a valid session and jumped to `next`, CloudFront
+  # answered with the cached anonymous 302, the sign-in page loaded, saw the
+  # session, and jumped again: 165 `GET /api/auth/get-session` calls in 45
+  # minutes for one user, while the backend saw no failing request at all.
+  #
+  # PR #1767 fixed it AT THE ORIGIN — `Cache-Control: private, no-store` on the
+  # gated `/app` locations and on the `@sign_in` redirect, honoured because the
+  # `html` policy has `min_ttl = 0`. That is necessary but NOT sufficient, and
+  # the gap is the whole reason these three behaviours exist:
+  #
+  #   - It is opt-IN, per response, in a different file. Every session-
+  #     dependent response has to remember to say `no-store`; the guard on it
+  #     (backend/tests/test_nginx_gated_responses_uncached.py) enumerates the
+  #     locations that gate on `auth_request /_auth_session`, so it catches a
+  #     deleted header but cannot see a gated response produced anywhere else.
+  #     This is opt-OUT, per path: with CachingDisabled the edge has nothing to
+  #     replay even when the origin forgets to say so.
+  #   - The `html` policy is unchanged and stays right for what it covers. These
+  #     paths simply stop matching it, which is the same shape as the /health
+  #     behaviours above (#1520) — the fix is "do not match the caching policy",
+  #     not "make the caching policy weaker".
+  #
+  # `all_viewer` forwards cookies, headers and the query string to the origin,
+  # so `auth_request` still sees the session cookie and `?next=` still reaches
+  # the SPA. The response headers policy is the same one the default behaviour
+  # uses: these are the same HTML pages, and HSTS / frame-options must not
+  # silently drop off the gated half of the site. `allowed_methods` mirrors the
+  # default behaviour's list too, so the ONLY thing that changes for these paths
+  # is caching — not which verbs the edge forwards. `compress = false` matches
+  # the other CachingDisabled behaviours and gives up nothing: nginx sets
+  # `gzip off` on the `/app` and `/` locations that serve these responses.
+  #
+  # Ordered AHEAD of `*.js` / `*.css`, not after them. Those patterns match any
+  # path ending in `.js` / `.css` — `/app/x.js` included — and bind it to
+  # `static_assets`: 1h at the edge with `cookie_behavior = "none"`, the same
+  # defect with a longer TTL. Nothing is served under `/app/*.js` today (the
+  # SPA's bundles live under `/assets/`), which is precisely why the ordering
+  # has to be right before someone puts one there.
+  #
+  # Two patterns for /app, not one: CloudFront's `/app/*` does not match the
+  # bare `/app` — the trailing `/` is literal — the same reason `/health` and
+  # `/health/*` are both declared above. `/sign-in*` is prophylactic and honest
+  # about it: today `/sign-in` is the identical anonymous SPA shell for every
+  # viewer, so caching it harms nothing. It is the other end of the redirect
+  # loop, and one nginx edit away (bounce a signed-in visitor off the sign-in
+  # page) from being session-dependent.
+  #
+  # Residual, named rather than papered over: nginx's `^~ /app` is a prefix
+  # match, so `/appfoo` is gated too and still resolves to the default
+  # behaviour here. A single `/app*` pattern would cover it, at the cost of
+  # swallowing any future top-level path that starts with "app" (`/apply`,
+  # `/app-store`). What is left uncovered is an anonymous 302 for a path the
+  # router does not have.
+  ordered_cache_behavior {
+    path_pattern               = "/app/*"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = false
+  }
+
+  ordered_cache_behavior {
+    path_pattern               = "/app"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = false
+  }
+
+  ordered_cache_behavior {
+    path_pattern               = "/sign-in*"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = false
   }
 
   # *.js — top-level JS files. Cached 1h at the edge.
