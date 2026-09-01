@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import GenerationUnavailable from './GenerationUnavailable'
 import RejectedCandidates from './RejectedCandidates'
 import { apiPost } from '../api'
 
@@ -105,12 +106,16 @@ function summarizeEvent(name, data) {
   }
 }
 
-export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected, onNavigate, hideReset = false }) {
+export default function GenerationStream({ jobId, onDone, onReset, onPipelineSelected, onNavigate, onBroaden, onSurprise, hideReset = false }) {
   const [events, setEvents] = useState([])
   const [terminal, setTerminal] = useState(null)  // 'done' | 'error' | null
   const [strategyId, setStrategyId] = useState(null)
   const [servedModel, setServedModel] = useState(null)  // provenance: model that actually ran
   const [errorMsg, setErrorMsg] = useState('')
+  // Full `error` payload, kept so the terminal card can render the honest
+  // outcome (steer, measured candidate count, corpus-derived ways forward)
+  // instead of only the one-line message.
+  const [errorData, setErrorData] = useState(null)
   const [showRejected, setShowRejected] = useState(false)
   const [draftedCandidates, setDraftedCandidates] = useState([])  // {candidate_id, strategy_name, regime, strategy_id}
   const [failedRegimes, setFailedRegimes] = useState([])  // {regime, message}
@@ -132,6 +137,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
     setStrategyId(null)
     setServedModel(null)
     setErrorMsg('')
+    setErrorData(null)
     setCancelling(false)
     setCancelError('')
 
@@ -183,6 +189,7 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
         setTerminal('error')
         terminalRef.current = 'error'
         setErrorMsg(data?.message || 'Generation failed')
+        setErrorData(data || null)
         es.close()
       }
     }
@@ -312,6 +319,15 @@ export default function GenerationStream({ jobId, onDone, onReset, onPipelineSel
         <div className="negative caption" style={{ marginTop: -6, marginBottom: 12 }}>
           {cancelError}
         </div>
+      )}
+
+      {/* A run that stopped before synthesis is a RESULT, not a dead end: the
+          card names the steer, the count lexical retrieval actually returned,
+          and the two ways forward. Renders only when the server sent the
+          structured payload; any other error keeps the one-line treatment
+          above. */}
+      {terminal === 'error' && errorData?.reason_code && (
+        <GenerationUnavailable data={errorData} onBroaden={onBroaden} onSurprise={onSurprise} />
       )}
 
       {/* role="log" is the right role for an append-only feed: it keeps
