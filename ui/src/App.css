@@ -9543,7 +9543,6 @@ body:has(.public-site) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-<<<<<<< HEAD
    Strategy Passport redesign — issue #1646
    ═══════════════════════════════════════════════════════════════════════════
 
@@ -9785,7 +9784,10 @@ body:has(.public-site) {
 
 	.passport-papers__table tbody th.passport-papers__title {
 		min-width: 9rem;
-=======
+	}
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    #1642 — Generate page: mobile-first layout + Surprise Me
    ══════════════════════════════════════════════════════════════════════════
    Appended as one component-scoped block at the END of this file by
@@ -9941,6 +9943,5 @@ body:has(.public-site) {
 	.generate-context-rail {
 		position: sticky;
 		top: 88px;
->>>>>>> origin/main
 	}
 }
