@@ -154,6 +154,7 @@ export default function AuthenticatedApp({
 					<Generate
 						onNavigate={navigateToPage}
 						onStageChange={setJourneyStage}
+						user={user}
 					/>
 				);
 			case "library":

@@ -483,6 +483,10 @@ class TraceDetailResponse(TraceResponse):
     hashed set — they are only knowable after the trade, and the committed
     bytes are immutable (#903). They are surfaced here as provenance, never as
     part of the hash preimage.
+
+    ``ipfs_cid`` is the registry ``storagePointer`` if one exists. The field
+    name is leftover from an unused pin design. Live reveals write an empty
+    pointer (#1526); a non-empty value is historical or copied from chain.
     """
 
     market_context: dict = {}

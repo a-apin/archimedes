@@ -481,7 +481,7 @@ Operational fixes inside an already-approved architecture are fine to proxy.
 - **Product shape** — [two-tier marketplace](docs/adr/two-tier-marketplace.md) · [non-custodial vault, owner ≠ agent](docs/adr/non-custodial-vault-owner-agent.md) · [Arc settlement](docs/adr/arc-settlement-chain.md)
 - **Rigor gate** — [unified gate](docs/adr/rigor-gate-unification.md) · [`num_trials` self-containment](docs/adr/num-trials-self-containment.md) · [backtrader](docs/adr/backtrader-backtest-engine.md) · [selection-bias spec](docs/specs/selection-bias-corrections-spec.md)
 - **Generation** — [debate society is the sole pipeline](docs/adr/debate-society-sole-generation-pipeline.md) (supersedes fusion/architect routing) · [K=1 + external rigor gate](docs/adr/k1-generation-external-rigor-gate.md) · [Bedrock](docs/adr/glm-to-bedrock-llm-migration.md)
-- **Provenance** — [passport](docs/specs/strategy-passport-spec.md) · [commit-reveal](docs/specs/commit-reveal-trace-spec.md) · [Xia protocols](docs/specs/xia-2026-protocols.md)
+- **Provenance** — [passport](docs/specs/strategy-passport-spec.md) · [commit-reveal](docs/specs/commit-reveal-trace-spec.md) · [Xia protocols](docs/specs/xia-2026-protocols.md) · [IPFS pinning is not live](docs/adr/ipfs-pinning-not-live.md)
 - **Infra** — [Fargate cutover](docs/adr/ec2-to-ecs-fargate-cutover.md) · [Aurora + Alembic](docs/adr/aurora-postgres-alembic-datastore.md) · [build-on-deploy](docs/adr/build-on-deploy-main-only.md) · [AWS account migration](docs/adr/aws-account-migration.md)
 - **Interfaces, principles, risks** — [frozen interfaces](docs/specs/component-interfaces-spec.md) · [principles](docs/architectural-principles.md) · [risk matrix](docs/architecture.md)
 

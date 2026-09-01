@@ -5,7 +5,9 @@ import test from "node:test";
 import {
 	ACCOUNT_USAGE_ENDPOINT,
 	LOCK_EMAIL_UNVERIFIED,
+	VERIFICATION_REQUESTED_MESSAGE,
 	deriveFreeGenerationView,
+	deriveWalletGateView,
 } from "../src/freeGenerations.js";
 
 // Free-generation allowance banner (#1643).
@@ -259,8 +261,19 @@ test("Generate.jsx mounts the banner exactly once, and imports it as its own com
 	// feature's footprint there is one import + one element, and this test is
 	// what keeps it that way.
 	assert.match(generate, /import FreeGenerationBanner from "\.\/FreeGenerationBanner"/);
-	const mounts = generate.match(/<FreeGenerationBanner\s*\/>/g) || [];
+	const mounts = generate.match(/<FreeGenerationBanner\b[^>]*\/>/g) || [];
 	assert.equal(mounts.length, 1, `expected exactly one mount, found ${mounts.length}`);
+	assert.match(mounts[0], /email=\{user\?\.email\}/);
+});
+
+test("AuthenticatedApp threads the signed-in user into Generate so resend has an address", () => {
+	const authenticatedApp = readFileSync(
+		new URL("../src/AuthenticatedApp.jsx", import.meta.url),
+		"utf8",
+	);
+	const genMount = authenticatedApp.match(/<Generate\b[\s\S]*?\/>/);
+	assert.ok(genMount, "Generate mount missing from AuthenticatedApp");
+	assert.match(genMount[0], /user=\{user\}/);
 });
 
 test("Insights.jsx labels the two new funnel stages instead of showing raw keys", () => {
@@ -280,4 +293,118 @@ test("Insights.jsx labels the two new funnel stages instead of showing raw keys"
 		[...positions].sort((a, b) => a - b),
 		"CORE_FUNNEL_LABELS keys must follow the backend STAGES order",
 	);
+});
+
+// ── 409 wallet-gate panel: human copy, not the agent/curl paragraph (#1658 leftover)
+
+const AGENT_UNLOCK_409 = {
+	status: 409,
+	detail: {
+		reason: "wallet_link_required",
+		free_generations_locked_reason: LOCK_EMAIL_UNVERIFIED,
+		message:
+			"Two ways to generate. (1) Verify your email to unlock 3 free generations on this account — no wallet and no payment needed. We emailed a verification link when you signed up; POST /api/auth/send-verification-email re-sends it. (2) Or link a wallet now (POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC (the faucet currently requires a human), and pay per run. See GET /api/generate/quote for the price.",
+	},
+};
+
+const AGENT_EXHAUSTED_409 = {
+	status: 409,
+	detail: {
+		reason: "wallet_link_required",
+		free_generations_locked_reason: null,
+		message:
+			"Your free generations are used up. Generation now requires a linked, funded wallet. Link a wallet to your account (POST /api/wallets/challenge → /api/wallets/verify), fund it with testnet USDC (the faucet currently requires a human), then retry. See GET /api/generate/quote for the price.",
+	},
+};
+
+test("a 409 with email_unverified tells a human to verify, and never dumps POST /api/ paths", () => {
+	const view = deriveWalletGateView(AGENT_UNLOCK_409);
+	assert.equal(view.kind, "email_unverified");
+	assert.equal(view.offerResend, true);
+	assert.match(view.title, /Verify your email/i);
+	assert.match(view.message, /no wallet and no payment needed/i);
+	assert.doesNotMatch(view.title + view.message, /POST \/api\//);
+	assert.doesNotMatch(view.message, /wallets\/challenge/);
+	assert.doesNotMatch(view.message, /send-verification-email/);
+});
+
+test("a 409 with no lock (exhausted free tier) tells a human to link a wallet, not to verify", () => {
+	const view = deriveWalletGateView(AGENT_EXHAUSTED_409);
+	assert.equal(view.kind, "exhausted");
+	assert.equal(view.offerResend, false);
+	assert.match(view.title, /Wallet link required/i);
+	assert.match(view.message, /Link a wallet/i);
+	assert.doesNotMatch(view.message, /Verify your email/i);
+	assert.doesNotMatch(view.title + view.message, /POST \/api\//);
+});
+
+test("an unknown lock reason still offers the wallet path, never a fabricated verify instruction", () => {
+	const view = deriveWalletGateView({
+		status: 409,
+		detail: {
+			reason: "wallet_link_required",
+			free_generations_locked_reason: "region_blocked",
+			message: "POST /api/wallets/challenge",
+		},
+	});
+	assert.equal(view.kind, "exhausted");
+	assert.equal(view.offerResend, false);
+	assert.doesNotMatch(view.message, /Verify your email/i);
+	assert.doesNotMatch(view.message, /POST \/api\//);
+});
+
+test("deriveWalletGateView returns null for anything that is not the wallet-link 409", () => {
+	assert.equal(deriveWalletGateView(null), null);
+	assert.equal(deriveWalletGateView({ status: 402, detail: { reason: "payment_required" } }), null);
+	assert.equal(deriveWalletGateView({ status: 409, detail: { reason: "some_other_conflict" } }), null);
+	assert.equal(deriveWalletGateView({ status: 409 }), null);
+});
+
+test("Generate.jsx paints the 409 panel from deriveWalletGateView, not paymentErrorMessage", () => {
+	assert.match(generate, /deriveWalletGateView\(/);
+	assert.match(generate, /walletGateView\?\.title/);
+	assert.match(generate, /walletGateView\?\.message/);
+	assert.match(generate, /walletGateView\?\.offerResend/);
+	// The 409 branch used to interpolate paymentMessage, which is the agent
+	// paragraph. That interpolation must not survive in the wallet-gate panel.
+	const gateStart = generate.indexOf("PAYMENT_STATUS.WALLET_LINK_REQUIRED ?");
+	assert.ok(gateStart !== -1, "409 panel branch missing");
+	const gateEnd = generate.indexOf("PAYMENT_STATUS.DRY_RUN", gateStart);
+	const gateSlice = generate.slice(gateStart, gateEnd);
+	assert.doesNotMatch(gateSlice, /\{paymentMessage\}/);
+	assert.doesNotMatch(gateSlice, /paymentErrorMessage/);
+	assert.doesNotMatch(gateSlice, /POST \/api\//);
+});
+
+test("the locked banner mounts a resend control, gated on the locked state", () => {
+	assert.match(banner, /import ResendVerificationControl from "\.\/ResendVerificationControl"/);
+	assert.match(banner, /view\.state === ["']locked["'] && <ResendVerificationControl email=\{email\} \/>/);
+});
+
+test("resend success copy is honest — requested, not confirmed delivered — and matches Account Settings", () => {
+	const accountSettings = readFileSync(
+		new URL("../src/components/AccountSettings.jsx", import.meta.url),
+		"utf8",
+	);
+	const settingsMsg = accountSettings.match(
+		/const VERIFICATION_REQUESTED_MESSAGE = "([^"]+)"/,
+	);
+	assert.ok(settingsMsg, "AccountSettings honesty constant missing");
+	assert.equal(VERIFICATION_REQUESTED_MESSAGE, settingsMsg[1]);
+	assert.match(VERIFICATION_REQUESTED_MESSAGE, /requested/i);
+	assert.match(VERIFICATION_REQUESTED_MESSAGE, /(isn't|is not|not) confirmed/i);
+	assert.doesNotMatch(VERIFICATION_REQUESTED_MESSAGE, /email (was )?sent successfully/i);
+});
+
+test("ResendVerificationControl POSTs via the shared auth-client and renders nothing without an email", () => {
+	const control = readFileSync(
+		new URL("../src/components/ResendVerificationControl.jsx", import.meta.url),
+		"utf8",
+	);
+	assert.match(control, /resendVerificationEmail/);
+	assert.match(control, /from ["']\.\.\/auth-client["']/);
+	assert.match(control, /if \(!email\) return null/);
+	assert.match(control, /VERIFICATION_REQUESTED_MESSAGE/);
+	assert.doesNotMatch(control, /email (was )?sent successfully/i);
+	assert.doesNotMatch(control, /email has been sent/i);
 });

@@ -18,13 +18,13 @@ from datetime import UTC, datetime
 
 from sqlalchemy.exc import IntegrityError
 
-from archimedes.chain.agent_runner import compute_trades as runner_compute_trades
 from archimedes.chain.circle_signer import circle_signer
 from archimedes.chain.client import chain_client
 from archimedes.chain.executor import chain_executor
 from archimedes.chain.oracle_updater import OracleUpdater
 from archimedes.chain.v_check import VCheck
 from archimedes.db import get_session
+from archimedes.execution.core import compute_trades as runner_compute_trades
 from archimedes.interfaces.math import IRegimeDetector
 from archimedes.marketplace import payments, spend_cap
 from archimedes.marketplace.config import payments_halted
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # Drift threshold: NOT redefined here. The marketplace used to carry its own
 # `_DRIFT_THRESHOLD = 0.15` beside its copy of the diff loop — two constants
 # that had to be kept equal by hand. The single one now lives with the single
-# implementation, in agent_runner (#1719).
+# implementation, `execution.core.DRIFT_THRESHOLD` (#1719, #1410).
 _USDC_FLOOR = float(os.getenv("AGENT_USDC_FLOOR", "0.20"))
 FLAT_FEE_PER_ACTION = int(os.getenv("FLAT_FEE_PER_ACTION", "100"))  # raw 6-dec USDC
 CHARGE_BATCH_SIZE = int(os.getenv("CHARGE_BATCH_SIZE", "10"))  # concurrent Circle signing calls per batch
@@ -106,7 +106,7 @@ def compute_trades(
     (#1719).
 
     It is no longer a copy. The diff loop, the drift threshold and the #1080
-    skip all live in :func:`archimedes.chain.agent_runner.compute_trades`; this
+    skip all live in :func:`archimedes.execution.core.compute_trades`; this
     function only adapts the marketplace's calling convention to it:
 
     * in — a ``symbol -> weight`` dict plus a separate ``symbol -> address``

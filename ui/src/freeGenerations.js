@@ -130,3 +130,58 @@ export function deriveFreeGenerationView(usage) {
 				"No wallet needed until they run out.",
 	};
 }
+
+/**
+ * Honest copy after a resend click. Better Auth's send-verification-email
+ * returns `{status:true}` once the send is QUEUED, and the auth sidecar's
+ * mailer fail-softs (SES sandbox), so delivery is not a fact this UI can
+ * claim. Must stay in lockstep with AccountSettings.jsx's
+ * `VERIFICATION_REQUESTED_MESSAGE` — ui/test/free-generation-banner.test.js
+ * pins the two strings equal.
+ */
+export const VERIFICATION_REQUESTED_MESSAGE =
+	"Verification email requested — delivery isn't confirmed and may take a few minutes.";
+
+/**
+ * Turn a `409 wallet_link_required` /start error into what the Generate page
+ * shows a human.
+ *
+ * Two different dead ends share that status code (#1658). The backend
+ * `detail.message` names `POST /api/...` paths for agents; the interactive
+ * Generate page must not dump those (the same rule Generate.jsx already
+ * applies to 402 copy). `free_generations_locked_reason` is the discriminator
+ * the backend added for this; the UI was still rendering every 409 as
+ * "Wallet link required" plus the agent paragraph.
+ *
+ * Returns null when `err` is not that 409 — callers fall through to the
+ * generic start-error banner.
+ *
+ * @param {object|null|undefined} err — thrown by apiPostWithMeta
+ * @returns {{kind: string, title: string, message: string, offerResend: boolean}|null}
+ */
+export function deriveWalletGateView(err) {
+	if (!err || err.status !== 409 || err.detail?.reason !== "wallet_link_required") {
+		return null;
+	}
+
+	const locked = err.detail?.free_generations_locked_reason;
+	if (locked === LOCK_EMAIL_UNVERIFIED) {
+		return {
+			kind: "email_unverified",
+			title: "Verify your email to generate for free",
+			message:
+				"Verify your email to unlock free generations on this account — no wallet and no payment needed. Check your inbox for the link we sent when you signed up, or resend it below. You can also link a wallet and pay per run.",
+			offerResend: true,
+		};
+	}
+
+	// Exhausted, unknown lock, or a pre-D1 409 with no discriminator — the
+	// wallet path is the honest next step, never "verify your email".
+	return {
+		kind: "exhausted",
+		title: "Wallet link required",
+		message:
+			"Your free generations are used up. Link a wallet to keep generating — see the price below.",
+		offerResend: false,
+	};
+}

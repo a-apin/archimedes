@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { apiGet } from "../api";
 import { ACCOUNT_USAGE_ENDPOINT, deriveFreeGenerationView } from "../freeGenerations";
+import ResendVerificationControl from "./ResendVerificationControl";
 
 // Free-generation allowance banner + remaining-count chip (#1643).
 //
@@ -25,7 +26,7 @@ import { ACCOUNT_USAGE_ENDPOINT, deriveFreeGenerationView } from "../freeGenerat
 // free_generations_remaining: null because the ledger was unreadable, or the
 // free path is switched off (allowance <= 0). deriveFreeGenerationView in
 // ../freeGenerations.js owns that decision and is unit-tested directly.
-export default function FreeGenerationBanner() {
+export default function FreeGenerationBanner({ email }) {
 	const [view, setView] = useState(null);
 
 	useEffect(() => {
@@ -58,7 +59,10 @@ export default function FreeGenerationBanner() {
 			// without re-deriving the rule it is checking.
 			data-state={view.state}
 		>
-			<span>{view.message}</span>
+			<div>
+				<span>{view.message}</span>
+				{view.state === "locked" && <ResendVerificationControl email={email} />}
+			</div>
 			<span
 				className="caption"
 				style={{ flexShrink: 0, whiteSpace: "nowrap", color: "var(--text-3)" }}

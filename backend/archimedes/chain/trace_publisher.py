@@ -446,8 +446,10 @@ class TracePublisher:
         Calls ``ReasoningTraceRegistry.reveal(traceId, storagePointer, fullTraceContent)``.
         ``fullTraceContent`` MUST be the exact canonical bytes whose keccak256 equals the
         committed hash; we derive them from ``trace.canonical_json()`` (the same source the
-        commit hash was computed from). ``storage_pointer`` is the IPFS CID (or any URL) so
-        verifiers can fetch the off-chain public provenance.
+        commit hash was computed from). ``storage_pointer`` is an optional off-chain
+        locator recorded for convenience; the hash verification is what binds the
+        reveal. Live reveals pass the empty string — we do not pin traces
+        (``docs/adr/ipfs-pinning-not-live.md``).
 
         Returns (reveal_tx_hash, reveal_block) — None on failure or pre-v1.5 registry.
         """

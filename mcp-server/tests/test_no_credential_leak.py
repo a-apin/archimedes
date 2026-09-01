@@ -83,6 +83,15 @@ def test_session_token_never_appears_in_anything_the_caller_sees(name, status, m
 
 
 @pytest.mark.parametrize("name", contract.TOOL_NAMES)
+def test_a_secure_prefixed_session_token_never_appears_either(name, mock_api, caplog, cached_secure_session):
+    """Same guarantee, for a session cached against production (the ``__Secure-``-prefixed
+    cookie). Not the full status matrix above — that redaction is already proven
+    status-independent; this pins that it is also cookie-name-independent, on the one
+    status (200) most likely to echo request state back into a result."""
+    assert cached_secure_session not in _drive(name, RESPONSES["200"], mock_api, caplog)
+
+
+@pytest.mark.parametrize("name", contract.TOOL_NAMES)
 def test_no_credential_leaks_through_a_transport_error(name, mock_api, caplog, api_key):
     assert api_key not in _drive(name, _transport_error, mock_api, caplog)
 

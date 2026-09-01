@@ -1165,6 +1165,41 @@ def _read_cached_ohlcv(
     )
 
 
+#: Rows per flush in the OHLCV cache write (#1632 mitigation).
+#:
+#: A full multi-year OHLCV frame is thousands of rows, and the ORM turns the
+#: whole pending set into ONE ``executemany`` at commit — which is the exact
+#: frame at the top of #1632's abort traceback (psycopg2 ``do_executemany``).
+#: Flushing every N rows bounds that batch. Deliberately a constant and not an
+#: env knob: a number nobody can tune is a number nobody has to reason about
+#: during an incident, and it should be deleted with the rest of this
+#: mitigation rather than inherited as config.
+_OHLCV_WRITE_CHUNK_ROWS = 500
+
+#: Serializes the OHLCV cache write+commit across threads in this process.
+#:
+#: **MITIGATION, NOT A FIX — and the distinction is the point.**
+#:
+#: *Proven:* the faulthandler traceback posted on #1632 shows a backend
+#: container dying with ``Fatal Python error: Aborted`` inside psycopg2's
+#: ``do_executemany``, on this module's OHLCV cache-write commit, reached from
+#: ``paper_trading.replay_spec_with_decisions`` via ``fetch_real_panel``. That
+#: is a C-level abort: no Python ``except`` arm can catch it, which is why the
+#: existing fail-soft arms below did not contain it and the container died.
+#:
+#: *Not proven:* the mechanism. An abort inside libpq is consistent with one
+#: connection being used from two threads at once, but we have NOT shown that
+#: is what happens here, and this lock does not prove it either. It removes
+#: in-process write concurrency as a variable so the fleet stops cycling while
+#: the real cause is found. If the aborts continue with this held, the
+#: concurrency hypothesis is wrong — which is itself a useful result.
+#:
+#: Scoped to the write path only: the vendor fetch happens above it, so a
+#: network call never holds this lock. Delete both this and the chunking above
+#: once #1632 has a proven cause.
+_OHLCV_CACHE_WRITE_LOCK = threading.Lock()
+
+
 def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> None:
     """Upsert a full OHLCV frame (indexed by date, columns
     Open/High/Low/Close/Volume — ``fetch_ohlcv``'s output shape) into
@@ -1207,6 +1242,7 @@ def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> 
         .filter(AssetDailyBar.symbol == ticker, AssetDailyBar.trade_date.in_(dates))
         .all()
     }
+    pending = 0
     for trade_date, open_f, high_f, low_f, close_f, volume_f in to_write:
         row = existing.get(trade_date)
         if row is not None:
@@ -1231,6 +1267,20 @@ def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> 
                     fetched_at=now,
                 )
             )
+        pending += 1
+        if pending >= _OHLCV_WRITE_CHUNK_ROWS:
+            # FLUSH, never commit. The caller owns the transaction, so this
+            # changes only the SIZE of the batch psycopg2 executes, not the
+            # all-or-nothing semantics: a failure in any chunk — here or at the
+            # caller's commit — still rolls the whole cache write back and
+            # still lands in the caller's existing IntegrityError /
+            # SQLAlchemyError arms unchanged. Committing here instead would
+            # leave a half-written range behind on failure, and a partially
+            # cached window reads as a coverage hit on the next call.
+            session.flush()
+            pending = 0
+    # The final partial chunk is left to the caller's commit — flushing it here
+    # would only duplicate that work.
 
 
 class CachingMarketDataProvider(MarketDataProvider):
@@ -1336,19 +1386,27 @@ class CachingMarketDataProvider(MarketDataProvider):
             return fetched
 
         session = self._session_factory()
-        try:
-            _write_cached_ohlcv(session, ticker, fetched, self._source_name)
-            session.commit()
-        except IntegrityError:
-            # Same benign concurrent-writer race as get_daily_close_batch's
-            # prime — the loser rolls back; the fetch is still served.
-            session.rollback()
-            logger.info("asset_daily_bars OHLCV prime lost a concurrent-writer race (benign); next read is warm")
-        except SQLAlchemyError:
-            session.rollback()
-            logger.warning("asset_daily_bars OHLCV cache write failed (fetch still served)", exc_info=True)
-        finally:
-            session.close()
+        # #1632 mitigation — see _OHLCV_CACHE_WRITE_LOCK for what is proven and
+        # what is only hypothesised. The lock is entered AFTER the vendor fetch
+        # above, so it never spans a network call; it covers the write, the
+        # commit, and the rollback arms, because a rollback is DB work too. It
+        # adds no exception handling of its own: every arm below is byte-for-
+        # byte the one that was already here, so a write failure fails exactly
+        # as it did before.
+        with _OHLCV_CACHE_WRITE_LOCK:
+            try:
+                _write_cached_ohlcv(session, ticker, fetched, self._source_name)
+                session.commit()
+            except IntegrityError:
+                # Same benign concurrent-writer race as get_daily_close_batch's
+                # prime — the loser rolls back; the fetch is still served.
+                session.rollback()
+                logger.info("asset_daily_bars OHLCV prime lost a concurrent-writer race (benign); next read is warm")
+            except SQLAlchemyError:
+                session.rollback()
+                logger.warning("asset_daily_bars OHLCV cache write failed (fetch still served)", exc_info=True)
+            finally:
+                session.close()
 
         return fetched
 

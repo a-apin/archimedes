@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import archimedes.marketplace.service as mkt
 from archimedes.chain.agent_runner import _DRIFT_THRESHOLD
-from archimedes.chain.agent_runner import compute_trades as runner_compute_trades
+from archimedes.execution.core import compute_trades as runner_compute_trades
 from archimedes.marketplace.service import compute_trades
 from archimedes.models.portfolio import Portfolio, PortfolioHolding, TradeDirection
 

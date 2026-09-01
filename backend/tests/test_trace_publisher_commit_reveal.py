@@ -419,17 +419,17 @@ class TestReveal:
 
             trace = _make_trace()
             trace.compute_hash()
-            cid = "ipfs://bafytest"
+            pointer = ""  # live path is hash-only (#1526); the ABI still forwards whatever we pass
 
             reveal_tx, block = asyncio.run(
-                TracePublisher(loader=supported_loader).reveal(42, trace, storage_pointer=cid)
+                TracePublisher(loader=supported_loader).reveal(42, trace, storage_pointer=pointer)
             )
 
             assert (reveal_tx, block) == ("0xREVEAL", 100)
             _, kwargs = mock_signer.execute_contract.call_args
             assert kwargs["abi_function"] == "reveal(uint256,string,bytes)"
             assert kwargs["abi_params"][0] == "42"
-            assert kwargs["abi_params"][1] == cid  # the IPFS CID is the storage pointer
+            assert kwargs["abi_params"][1] == pointer
 
     def test_reveal_returns_none_without_trace_id(self, supported_loader):
         with (
