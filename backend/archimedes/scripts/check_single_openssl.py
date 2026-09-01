@@ -65,8 +65,11 @@ INCIDENT = (
     "Two OpenSSL builds are mapped into one process. This is the #1632 crash class: "
     "prod died with a bare `Fatal Python error: Aborted` (a raw C abort(), no traceback, "
     "no glibc/terminate/SSL message) inside psycopg2 do_executemany on the OHLCV cache "
-    "commit, ~10 min after boot. It was caused by psycopg2-binary vendoring its own "
-    "libssl/libcrypto alongside the interpreter's. Whatever dependency just reintroduced a "
+    "commit, ~10 min after boot. The image at the time shipped psycopg2-binary, whose "
+    "wheel vendors its own libssl/libcrypto (including an OpenSSL 1.1.1k) alongside the "
+    "interpreter's — the leading but UNPROVEN hypothesis for that abort (#1729's A/B "
+    "reproduced the co-residency, not the crash). Proven or not, one process must load "
+    "one OpenSSL. Whatever dependency just reintroduced a "
     "second OpenSSL: use the source-built distribution, or a wheel that links the system "
     "OpenSSL. See backend/requirements-base.txt."
 )

@@ -356,8 +356,11 @@ jobs:
         # Aborted` — a raw C abort(), no Python traceback, no glibc/terminate/SSL
         # message — inside psycopg2 do_executemany on the OHLCV cache-write
         # commit. psycopg2-binary vendors its own libssl/libcrypto next to the
-        # interpreter's, and two OpenSSL builds in one address space produce
-        # exactly that signature. requirements-base.txt now installs source-built
+        # interpreter's, and two OpenSSL builds in one address space CAN produce
+        # that signature — the leading but unproven hypothesis for #1632 (the
+        # #1729 A/B reproduced the co-residency, not the abort; do NOT read a
+        # green run here as license to re-enable PAPER_ADVANCE_ENABLED).
+        # requirements-base.txt now installs source-built
         # psycopg2; this step imports ssl + psycopg2 + aiohttp inside the image
         # and fails the build if /proc/self/maps names two distinct OpenSSLs.
         #

@@ -55,6 +55,7 @@ BROKEN_MAPS = """\
 7f2a11300000-7f2a11330000 r--p 00000000 08:01 4212 /deps/psycopg2_binary.libs/libssl-9f2c1b0e.so.3
 7f2a11330000-7f2a113d0000 r-xp 00030000 08:01 4212 /deps/psycopg2_binary.libs/libssl-9f2c1b0e.so.3
 7f2a11400000-7f2a11640000 r--p 00000000 08:01 4213 /deps/psycopg2_binary.libs/libcrypto-3b7d21a4.so.3
+7f2a11700000-7f2a11890000 r--p 00000000 08:01 4214 /deps/psycopg2_binary.libs/libcrypto-6aa7cfbd.so.1.1.1k
 7f2a12000000-7f2a12010000 r--p 00000000 08:01 3301 /usr/local/lib/python3.12/lib-dynload/_ssl.cpython-312-x86_64-linux-gnu.so
 7f2a12100000-7f2a12130000 r--p 00000000 08:01 2044 /usr/lib/x86_64-linux-gnu/libssl.so.3
 7f2a12130000-7f2a121d0000 r-xp 00030000 08:01 2044 /usr/lib/x86_64-linux-gnu/libssl.so.3
@@ -93,9 +94,14 @@ class TestParser:
         libcrypto = [path for path in found if "libcrypto" in path]
 
         assert len(libssl) == 2, f"expected the vendored + system libssl, got {libssl}"
-        assert len(libcrypto) == 2, f"expected the vendored + system libcrypto, got {libcrypto}"
+        # Three, not two: the incident wheel vendored BOTH an OpenSSL 3 libcrypto
+        # and a 1.1.1k FIPS one (#1729 measured exactly this trio in the image) —
+        # 1.1.1 and 3.x export the same symbols across an incompatible ABI, so
+        # the fixture must carry the mixed-major shape the guard has to flag.
+        assert len(libcrypto) == 3, f"expected two vendored + one system libcrypto, got {libcrypto}"
         assert "/deps/psycopg2_binary.libs/libssl-9f2c1b0e.so.3" in libssl
         assert "/usr/lib/x86_64-linux-gnu/libssl.so.3" in libssl
+        assert "/deps/psycopg2_binary.libs/libcrypto-6aa7cfbd.so.1.1.1k" in libcrypto
 
     def test_the_fixed_image_is_accepted(self) -> None:
         found = parse_openssl_mappings(FIXED_MAPS)
