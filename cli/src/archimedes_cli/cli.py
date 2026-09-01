@@ -8,6 +8,12 @@ subcommand did any work. 0.1.0 fills in three of them against the hosted API —
 ``backtest`` and ``verify --local`` still exit ``NOT_IMPLEMENTED``: both need the local
 execution engine, which is not published yet.
 
+0.2.0 adds ``generate`` — brief in, rigor-gated strategy out, entirely from a terminal
+(``POST /api/generate/start`` → SSE progress → the strategy's passport URL). It carries
+no private key and signs nothing: at the paywall it prints the x402 requirements the
+server sent and a browser URL to pay. See the block comment above the command for the
+two constraints that shaped it.
+
 ``--json`` on every command, including every error path, and a stable exit code for a
 failing gate are what make the tool usable from a CI job — see ``exits.py``.
 """
@@ -19,6 +25,9 @@ import io
 import json
 import os
 import sys
+import time
+import urllib.parse
+from collections.abc import Iterator
 
 import click
 import httpx
@@ -63,18 +72,36 @@ def _resolve_api_url(explicit: str | None, session: dict | None) -> str:
     return explicit or (session or {}).get("api_url") or DEFAULT_API_URL
 
 
-def _http_client(api_url: str, *, cookies: dict[str, str] | None = None) -> httpx.Client:
+def _http_client(
+    api_url: str,
+    *,
+    cookies: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 10.0,
+) -> httpx.Client:
     """The one place an ``httpx.Client`` gets constructed.
 
     Keeping construction behind a single function is what lets tests mock HTTP at the
     boundary: they monkeypatch this factory to return a client wired to an
     ``httpx.MockTransport`` instead of a real socket, rather than patching internals of
     each command.
+
+    ``headers`` carries the ``Authorization: Bearer`` header when ``ARCHIMEDES_API_KEY``
+    is set (0.2.0); ``timeout`` is a parameter rather than a constant because the SSE
+    progress stream deliberately sits idle between server heartbeats for far longer than
+    a request/response call ever should.
     """
     # follow_redirects=False, deliberately: the API never redirects, and a
     # compromised/misconfigured endpoint must not be able to bounce a request
-    # carrying credentials (login body, session cookie) to another host.
-    return httpx.Client(base_url=api_url, cookies=cookies, timeout=10.0, follow_redirects=False)
+    # carrying credentials (login body, session cookie, bearer token) to
+    # another host.
+    return httpx.Client(
+        base_url=api_url,
+        cookies=cookies,
+        headers=headers,
+        timeout=timeout,
+        follow_redirects=False,
+    )
 
 
 def _unavailable(command: str, *, as_json: bool, lands_in: str = "unscheduled") -> None:
@@ -110,14 +137,32 @@ def _unavailable(command: str, *, as_json: bool, lands_in: str = "unscheduled") 
     sys.exit(exits.NOT_IMPLEMENTED)
 
 
-def _fail(command: str, *, as_json: bool, exit_code: int, error: str, message: str) -> None:
+def _fail(
+    command: str,
+    *,
+    as_json: bool,
+    exit_code: int,
+    error: str,
+    message: str,
+    extra: dict | None = None,
+    lines: list[str] | None = None,
+) -> None:
     """Report a command-produced failure (bad input, no session, a rejected request)
-    and exit. Same ``--json``-on-every-path contract as :func:`_unavailable`."""
+    and exit. Same ``--json``-on-every-path contract as :func:`_unavailable`.
+
+    ``extra`` merges machine-readable detail into the JSON object (the paywall's x402
+    requirements, the price quote, the URLs to act on) and ``lines`` are extra
+    human-readable lines printed under ``message``. Both default to nothing, so every
+    0.1.0 call site behaves byte-identically.
+    """
     if as_json:
         payload = {"ok": False, "command": command, "error": error, "message": message}
+        payload.update(extra or {})
         click.echo(json.dumps(payload))
     else:
         click.echo(message, err=True)
+        for line in lines or []:
+            click.echo(line, err=True)
     sys.exit(exit_code)
 
 
@@ -540,6 +585,647 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     # own code so a CI job cannot read "too few bars" as "strategy rejected".
     _verdict = _verify_verdict(body)
     sys.exit(exits.OK if _verdict == "pass" else exits.GATE_FAILED if _verdict == "fail" else exits.INCOMPLETE)
+
+
+# ── generate ──────────────────────────────────────────────────────────────
+#
+# 0.2.0's headline command, and the first one that reaches the product's actual
+# spine (brief → rigor-gated strategy) from a terminal. Two constraints shaped
+# every decision below.
+#
+# 1. NO KEY CUSTODY. The 402 the paywall raises carries a full set of x402
+#    payment requirements, and it would be perfectly possible to sign them here.
+#    This CLI never will. It prints what the server asked for and hands the user
+#    a browser. There is no signing code, no private key, no wallet dependency
+#    in this package to lose control of.
+#
+# 2. WRITE AGAINST RESPONSE CODES, NOT AGAINST A POLICY. Who generates for free
+#    is being actively redecided (PR #1658's per-account allowance; the owner's
+#    D1 decision moving the unlock to a verified email). This command therefore
+#    knows nothing about allowances. It asks, and it renders whatever refusal
+#    comes back — 402 vs 409 vs 422 — using the server's own reason string. That
+#    is what keeps it correct whichever policy lands first.
+
+API_KEY_ENV = "ARCHIMEDES_API_KEY"
+"""Env var holding a non-interactive API key, sent as ``Authorization: Bearer``.
+
+The key-issuing lane is being built in parallel; nothing here depends on it
+existing. When the variable is unset (today's normal case) the header is simply
+not sent and the cached session cookie authenticates exactly as in 0.1.0.
+"""
+
+RISK_APPETITES = ("fixed_income", "conservative", "moderate", "aggressive", "hyper_risky")
+"""Mirrors ``GenerateBrief.risk_appetite``'s Literal in the backend schema. A
+value outside this set is a 422 from the server; catching it in click turns that
+round trip into an instant, clearer error."""
+
+# A single SSE connection is capped at 300s server-side (_STREAM_TIMEOUT_SECONDS
+# in generate_routes.py) and heartbeat comments arrive about every 15s. The read
+# timeout has to sit comfortably above the heartbeat cadence and below nothing in
+# particular — when the stream ends for any reason, polling takes over.
+_STREAM_READ_TIMEOUT = 90.0
+_POLL_INTERVAL_SECONDS = 3.0
+
+# Terminal job states, from JobSummary.state. "stalled" is a read-time derived
+# state (#1355) meaning the server saw no heartbeat from the run for over five
+# minutes — it is terminal for our purposes because nothing more is coming.
+_TERMINAL_JOB_STATES = {"done", "error", "cancelled", "stalled"}
+_TERMINAL_SSE_EVENTS = {"done", "error"}
+
+
+def _api_key_headers() -> dict[str, str]:
+    """``Authorization: Bearer`` from the environment, or nothing at all."""
+    key = os.environ.get(API_KEY_ENV, "").strip()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _app_url(api_url: str, path: str) -> str:
+    return f"{api_url.rstrip('/')}{path}"
+
+
+def _passport_url(api_url: str, strategy_id: str) -> str:
+    """Where the strategy passport for ``strategy_id`` is readable in a browser.
+
+    Matches ``ui/src/routes.js``'s deep route ``/app/strategy/<id>``, which is
+    deliberately reachable without a session, so this link works for whoever the
+    user forwards it to.
+    """
+    return _app_url(api_url, f"/app/strategy/{urllib.parse.quote(strategy_id, safe='')}")
+
+
+def _detail(response: httpx.Response):
+    """The API's ``detail`` field — a dict for this router's own refusals, a list
+    for FastAPI request-validation errors, a string for some others, ``None`` if
+    the body was not JSON. Callers must handle all four rather than assuming."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body.get("detail") if isinstance(body, dict) else None
+
+
+def _detail_message(response: httpx.Response) -> str:
+    """The server's own human-readable sentence, never one this CLI invented.
+
+    Load-bearing for the refusal paths: the free-generation policy is in motion,
+    so the server is the only thing that knows why it said no. Falls back to
+    :func:`_response_detail`'s best-effort rendering.
+    """
+    detail = _detail(response)
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        if isinstance(message, str) and message:
+            return message
+    return _response_detail(response)
+
+
+def _payment_requirements(response: httpx.Response) -> dict[str, str]:
+    """The x402 requirement headers the paywall attached, verbatim.
+
+    ``generation_payment._quote_402`` builds these with the same circlekit
+    middleware the settle path uses, so they are what a payer actually has to
+    sign. Passed through untouched and unparsed — the CLI is a courier here, not
+    a participant.
+    """
+    return {name: value for name, value in response.headers.items() if name.lower().startswith("payment")}
+
+
+def _mentions_email_verification(detail, message: str) -> bool:
+    """Does the server's refusal name email verification as the unlock?
+
+    Deliberately a check on what the SERVER said, not on what this CLI believes
+    the policy to be. #1658 and the owner's D1 decision are still in flight; if
+    the deployed server gates the free tier on a verified email it says so, and
+    only then does the CLI lead with verification.
+    """
+    haystack = message.lower()
+    if isinstance(detail, dict):
+        haystack += " " + str(detail.get("reason", "")).lower()
+    return "email" in haystack and ("verif" in haystack or "confirm" in haystack)
+
+
+def _iter_sse(lines) -> Iterator[dict]:
+    """Parse an SSE byte stream into ``{"id", "event", "data"}`` dicts.
+
+    Hand-rolled on purpose. This package's two-dependency footprint (click +
+    httpx) is a documented property, and the subset of the SSE grammar the
+    Generate stream actually emits is small enough to read in one screen:
+    ``id:`` / ``event:`` / ``data:`` fields, a blank line terminating a frame,
+    and ``:``-prefixed comment lines — which is what the server's keep-alive
+    heartbeats are (#891), so ignoring them is not an optimisation, it is
+    required for the stream to survive a long compute step.
+    """
+    event_name: str | None = None
+    event_id: str | None = None
+    data_lines: list[str] = []
+    for raw in lines:
+        line = raw.rstrip("\r")
+        if not line:
+            if data_lines:
+                yield {"id": event_id, "event": event_name or "message", "data": "\n".join(data_lines)}
+            event_name, event_id, data_lines = None, None, []
+            continue
+        if line.startswith(":"):
+            continue  # comment / heartbeat
+        field, _, value = line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if field == "event":
+            event_name = value
+        elif field == "data":
+            data_lines.append(value)
+        elif field == "id":
+            event_id = value
+    if data_lines:  # a stream cut off mid-frame yields nothing for the partial frame
+        yield {"id": event_id, "event": event_name or "message", "data": "\n".join(data_lines)}
+
+
+def _progress_line(event: str, data: dict) -> str:
+    """One compact human-readable line for one pipeline event."""
+    parts: list[str] = []
+    message = data.get("message")
+    if isinstance(message, str) and message:
+        parts.append(message)
+    for key in ("stage", "candidate_id", "strategy_name", "position", "served_model", "code"):
+        value = data.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}={value}")
+    return f"  {event:<20} {' '.join(parts)}".rstrip()
+
+
+def _stream_progress(client: httpx.Client, job_id: str, *, deadline: float, on_event) -> dict | None:
+    """Tail the SSE stream, calling ``on_event(name, data)`` per frame.
+
+    Returns the terminal event's data, or ``None`` if the stream ended without
+    one — which is an ordinary outcome, not an error: the server caps a single
+    connection at five minutes, and any proxy in between may cut it sooner. The
+    caller falls back to polling in exactly the same way for all of those cases,
+    so no distinction is drawn between them here.
+    """
+    try:
+        with client.stream("GET", f"/api/generate/stream/{job_id}") as response:
+            if response.status_code != 200:
+                return None
+            for frame in _iter_sse(response.iter_lines()):
+                try:
+                    data = json.loads(frame["data"])
+                except ValueError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                name = frame["event"]
+                on_event(name, data)
+                if name in _TERMINAL_SSE_EVENTS:
+                    return {"event": name, **data}
+                if time.monotonic() > deadline:
+                    return None
+    except httpx.HTTPError:
+        # A dropped stream is a transport fact, not a verdict about the job.
+        # Polling is authoritative and answers the same question.
+        return None
+    return None
+
+
+def _poll_until_terminal(client: httpx.Client, job_id: str, *, deadline: float) -> tuple[dict | None, str]:
+    """Poll ``GET /api/generate/jobs/{job_id}`` until terminal or out of time.
+
+    This is the documented fallback surface (#1292) and it is also the final
+    authority in the happy path: whatever the stream said, the job record is
+    what the server actually believes.
+
+    Returns ``(summary, why)`` where ``why`` is ``"terminal"``, ``"timeout"``, or
+    ``"auth"``. The caller needs to tell those apart to stay honest: a session
+    that expires mid-run stops the polling in about a second, and reporting that
+    as "stopped waiting after 900s" would be a false statement about what the
+    command actually did.
+    """
+    summary: dict | None = None
+    while True:
+        try:
+            response = client.get(f"/api/generate/jobs/{job_id}")
+        except httpx.HTTPError:
+            response = None
+        if response is not None and response.is_success:
+            body = response.json()
+            if isinstance(body, dict):
+                summary = body
+                if body.get("state") in _TERMINAL_JOB_STATES:
+                    return summary, "terminal"
+        elif response is not None and response.status_code in (401, 403):
+            return summary, "auth"
+        if time.monotonic() > deadline:
+            return summary, "timeout"
+        time.sleep(_POLL_INTERVAL_SECONDS)
+
+
+def _handle_generate_refusal(response: httpx.Response, *, api_url: str, as_json: bool, quote: dict | None) -> None:
+    """Turn a non-202 from ``POST /api/generate/start`` into a `_fail`. Never returns.
+
+    Every branch renders the SERVER's reason and the SERVER's message. Nothing
+    here encodes what the free tier currently is, because that is changing
+    underneath this command (#1658, owner decision D1) and a CLI that guessed
+    would start lying the day the other policy shipped.
+    """
+    detail = _detail(response)
+    reason = detail.get("reason") if isinstance(detail, dict) else None
+    message = _detail_message(response)
+    status = response.status_code
+
+    if status == 422:
+        # The brief was refused BEFORE the paywall. That ordering is not an
+        # assumption: `cheap_brief_reject` runs ahead of the `payment_required()`
+        # block in generate_routes.start_generation, and FastAPI's own request
+        # validation runs ahead of the handler entirely. Those are the two shapes
+        # asserted below — a dict whose reason is `brief_invalid`, and the list
+        # FastAPI emits. For any OTHER 422 shape the no-charge sentence is
+        # omitted rather than guessed at: an unverified claim about money is
+        # exactly the kind this repo does not make.
+        pre_payment = reason == "brief_invalid" or isinstance(detail, list)
+        hint = detail.get("hint") if isinstance(detail, dict) else None
+        lines = []
+        if hint:
+            lines.append(f"  hint: {hint}")
+        if pre_payment:
+            lines.append("  Nothing was charged and no credit was spent — the brief is rejected before the paywall.")
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.USAGE,
+            error="brief_rejected",
+            message=f"the brief was rejected: {message}",
+            extra={"reason": reason, "hint": hint, "charged": False if pre_payment else None},
+            lines=lines,
+        )
+
+    if status == 402:
+        requirements = _payment_requirements(response)
+        body_quote = detail.get("quote") if isinstance(detail, dict) else None
+        pay_url = _app_url(api_url, "/app/generate")
+        account_url = _app_url(api_url, "/app/account")
+        # A premium-model entitlement refusal is also a 402 but carries a plain
+        # string detail and no quote. Calling it "the paywall" and pointing at a
+        # payment page would be wrong — it is not payable, it is a model choice.
+        if not requirements and body_quote is None:
+            _fail(
+                "generate",
+                as_json=as_json,
+                exit_code=exits.PAYMENT_REQUIRED,
+                error="model_entitlement_required",
+                message=f"the server refused this request with 402: {message}",
+                extra={"reason": reason},
+                lines=[
+                    "  This 402 carries no payment requirements — it is a model entitlement refusal.",
+                    "  Omit --model to use the default free-tier model.",
+                ],
+            )
+        lines = ["", "  Payment requirements, exactly as the server sent them:"]
+        lines += [f"    {name}: {value}" for name, value in requirements.items()] or ["    (none in the headers)"]
+        if isinstance(body_quote, dict):
+            price = body_quote.get("price")
+            asset = body_quote.get("asset", "")
+            if price:
+                lines.append(f"    price: {price} {asset}".rstrip())
+            if body_quote.get("dry_run"):
+                lines.append("    dry_run: true — the server reports no real value moves on this host")
+        lines += [
+            "",
+            f"  Pay in a browser: {pay_url}",
+            f"  Free tier / account state: {account_url}",
+            "",
+            "  Then re-run this command — or verify your email for the free tier, if your account is eligible.",
+            "  This CLI holds no keys and will not sign a payment.",
+        ]
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.PAYMENT_REQUIRED,
+            error="payment_required",
+            message=f"payment is required before this generation runs: {message}",
+            extra={
+                "reason": reason,
+                "payment_requirements": requirements,
+                "quote": body_quote if isinstance(body_quote, dict) else quote,
+                "pay_url": pay_url,
+                "account_url": account_url,
+                "signing_attempted": False,
+            },
+            lines=lines,
+        )
+
+    if status == 409:
+        account_url = _app_url(api_url, "/app/account")
+        # Both unlocks are always named; which one leads is decided by the
+        # server's own reason. Order matters because the first line is the one a
+        # hurried reader acts on, and telling someone to connect a wallet when
+        # their actual blocker is an unverified email sends them down a path
+        # that cannot succeed.
+        email_unlock = f"  Verify your email address: {account_url}"
+        wallet_unlock = f"  Connect a wallet in the browser: {_app_url(api_url, '/app/generate')}"
+        if _mentions_email_verification(detail, message):
+            unlocks = [email_unlock, wallet_unlock]
+        else:
+            unlocks = [wallet_unlock, email_unlock]
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.ACCOUNT_ACTION_REQUIRED,
+            error=reason or "account_action_required",
+            message=f"this account cannot generate yet: {message}",
+            extra={"reason": reason, "account_url": account_url},
+            lines=["", "  Two things can unlock this — the server's message above says which applies:", *unlocks],
+        )
+
+    # 401 / 429 / 5xx and anything else keep 0.1.0's shared handling.
+    _handle_api_error("generate", as_json=as_json, response=response)
+
+
+def _read_brief_text(brief: str | None, brief_file: str | None) -> str | None:
+    """The brief, from an argument or a file (``-`` is stdin). ``None`` if neither."""
+    if brief_file:
+        if brief_file == "-":
+            return click.get_text_stream("stdin").read()
+        with open(brief_file, encoding="utf-8") as handle:
+            return handle.read()
+    return brief
+
+
+@main.command()
+@click.argument("brief", required=False)
+@click.option(
+    "--brief-file",
+    type=click.Path(exists=True, dir_okay=False, allow_dash=True),
+    metavar="PATH",
+    help="Read the brief from a file, or '-' for stdin, instead of the BRIEF argument.",
+)
+@click.option(
+    "--risk-appetite",
+    type=click.Choice(RISK_APPETITES),
+    default="moderate",
+    show_default=True,
+    help="Risk appetite the generated strategy targets.",
+)
+@click.option("--name", metavar="NAME", help="Optional name for the winning strategy (<= 80 characters).")
+@click.option(
+    "--n-candidates",
+    type=int,
+    default=1,
+    show_default=True,
+    metavar="N",
+    help="How many candidates the pipeline considers internally (>= 1; the server caps it).",
+)
+@click.option("--model", metavar="ID", help="Optional LLM model id. Omit for the account's default free-tier model.")
+@click.option(
+    "--no-stream",
+    is_flag=True,
+    help="Skip the SSE progress stream and poll the job endpoint instead.",
+)
+@click.option(
+    "--timeout",
+    "timeout_seconds",
+    type=float,
+    default=900.0,
+    show_default=True,
+    metavar="SECONDS",
+    help="How long to wait for the job. On expiry the job keeps running server-side and exit is 8.",
+)
+@_api_url_session_option
+@_json_option
+# One parameter per field of the server's brief schema plus the operational flags —
+# the width is the API's, not an accident.
+def generate(
+    brief: str | None,
+    brief_file: str | None,
+    risk_appetite: str,
+    name: str | None,
+    n_candidates: int,
+    model: str | None,
+    no_stream: bool,
+    timeout_seconds: float,
+    api_url: str | None,
+    as_json: bool,
+) -> None:
+    """Generate a rigor-gated strategy from a research brief.
+
+    BRIEF is the free-text request ("momentum on liquid US equities, monthly rebalance"),
+    or use ``--brief-file`` to read it from a file or ``-`` for stdin.
+
+    Quotes the price, starts the job (``POST /api/generate/start``), tails its progress
+    over Server-Sent Events, and prints the resulting strategy id and passport URL.
+    If the stream drops — the server caps a single connection at five minutes, and
+    proxies cut them sooner — it falls back to polling ``GET /api/generate/jobs/{id}``,
+    which is the authoritative source for the final state either way.
+
+    \b
+    THIS COMMAND HOLDS NO KEYS AND SIGNS NOTHING. When the server answers 402 it prints
+    the x402 payment requirements the server sent plus a browser URL to pay, and exits 5.
+    Pay there, then re-run. If your account's unlock is a verified email rather than a
+    payment, the server says so and the message names verification.
+
+    \b
+    Authentication is the cached session from ``archimedes login``. Setting
+    ARCHIMEDES_API_KEY additionally sends it as an Authorization: Bearer header.
+
+    \b
+    Exit codes: 0 done · 2 bad input or no session · 5 payment required · 6 account
+    action required (verify email / connect wallet) · 7 the job failed · 8 still running
+    when the wait budget ran out.
+    """
+    if brief and brief_file:
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.USAGE,
+            error="ambiguous_brief",
+            message="pass either a BRIEF argument or --brief-file, not both",
+        )
+
+    text = (_read_brief_text(brief, brief_file) or "").strip()
+    if not text:
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.USAGE,
+            error="empty_brief",
+            message="no brief text: pass a BRIEF argument or --brief-file PATH",
+        )
+
+    if n_candidates < 1:
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.USAGE,
+            error="invalid_n_candidates",
+            message="--n-candidates must be >= 1",
+        )
+
+    session = load_session()
+    headers = _api_key_headers()
+    if session is None and not headers:
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.AUTH,
+            error="no_session",
+            message=f"not logged in. Run `archimedes login` first, or set {API_KEY_ENV}.",
+        )
+
+    api_url = _resolve_api_url(api_url, session)
+    cookies = (session or {}).get("cookies")
+
+    # The quote is informational: it tells the user what this will cost before
+    # anything starts. A quote we could not fetch is reported as absent and the
+    # generation still proceeds — the authoritative price rides inside the 402
+    # itself, so nothing downstream depends on this call succeeding.
+    quote: dict | None = None
+    try:
+        with _http_client(api_url, cookies=cookies, headers=headers) as client:
+            quote_response = client.get("/api/generate/quote")
+        if quote_response.is_success:
+            body = quote_response.json()
+            quote = body if isinstance(body, dict) else None
+    except (httpx.HTTPError, ValueError):
+        quote = None
+
+    if not as_json:
+        if quote is None:
+            click.echo("Price quote unavailable — proceeding; the server's own 402 carries the authoritative price.")
+        elif quote.get("payment_required"):
+            suffix = " (dry run — the server reports no real value moves)" if quote.get("dry_run") else ""
+            click.echo(f"Price: {quote.get('price')} {quote.get('asset', '')}{suffix}".rstrip())
+        else:
+            click.echo("This host reports payment_required=false for generation.")
+
+    payload = {
+        "brief": {"intent": text, "risk_appetite": risk_appetite},
+        "n_candidates": n_candidates,
+    }
+    if name:
+        payload["brief"]["name"] = name
+    if model:
+        payload["model"] = model
+
+    try:
+        with _http_client(api_url, cookies=cookies, headers=headers) as client:
+            start = client.post("/api/generate/start", json=payload)
+    except httpx.HTTPError as exc:
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.USAGE,
+            error="network_error",
+            message=f"could not reach {api_url}: {exc}",
+        )
+
+    if start.status_code != 202:
+        _handle_generate_refusal(start, api_url=api_url, as_json=as_json, quote=quote)
+
+    started = start.json()
+    job_id = started.get("job_id")
+    if not job_id:
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.USAGE,
+            error="no_job_id",
+            message="the server accepted the request but returned no job id",
+        )
+
+    if not as_json:
+        click.echo(f"Job {job_id} accepted.")
+
+    events: list[dict] = []
+
+    def _record(event_name: str, data: dict) -> None:
+        events.append({"event": event_name, "data": data})
+        if not as_json:
+            click.echo(_progress_line(event_name, data))
+
+    deadline = time.monotonic() + timeout_seconds
+    terminal_event: dict | None = None
+    if not no_stream:
+        with _http_client(api_url, cookies=cookies, headers=headers, timeout=_STREAM_READ_TIMEOUT) as client:
+            terminal_event = _stream_progress(client, job_id, deadline=deadline, on_event=_record)
+
+    # The job record is the authority, always — including after a clean stream.
+    with _http_client(api_url, cookies=cookies, headers=headers) as client:
+        summary, why_stopped = _poll_until_terminal(client, job_id, deadline=deadline)
+
+    if why_stopped == "auth":
+        # The session expired while the job was running. Say that, rather than
+        # letting it fall through to the wait-budget message below, which would
+        # report a timeout that did not happen. The job is unaffected.
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.AUTH,
+            error="session_expired",
+            message=(
+                f"session expired or was revoked while job {job_id} was running. "
+                "Run `archimedes login` again — the job itself is unaffected."
+            ),
+            extra={"job_id": job_id, "events": events},
+        )
+
+    state = (summary or {}).get("state")
+    strategy_id = (summary or {}).get("best_strategy_id") or (terminal_event or {}).get("strategy_id")
+    passport_url = _passport_url(api_url, strategy_id) if strategy_id else None
+
+    if state == "done":
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "command": "generate",
+                        "job_id": job_id,
+                        "state": state,
+                        "strategy_id": strategy_id,
+                        "passport_url": passport_url,
+                        "events": events,
+                    }
+                )
+            )
+        elif strategy_id:
+            click.echo(f"Done. strategy_id={strategy_id}")
+            click.echo(f"Passport: {passport_url}")
+        else:
+            # `done` with no id is what the server reported; say that, do not
+            # invent a strategy reference that does not exist.
+            click.echo("Done, but the server reported no strategy id for this job.")
+            click.echo(f"Inspect it with GET /api/generate/jobs/{job_id}/candidates")
+        sys.exit(exits.OK)
+
+    if state in _TERMINAL_JOB_STATES:
+        message = (terminal_event or {}).get("message") or f"the generation ended in state {state!r}"
+        code = (terminal_event or {}).get("code")
+        lines = []
+        # The credit-restore fact is the server's to assert. `_release_credit_if_undelivered`
+        # does restore a credit on a non-`done` terminal state, but nothing in the
+        # SSE frame or the job summary says so, and printing it anyway would be a
+        # guarantee this CLI cannot see. Point at the ledger instead of claiming.
+        if (quote or {}).get("payment_required"):
+            lines.append(f"  Your generation-credit ledger: GET {_app_url(api_url, '/api/generate/credits')}")
+        _fail(
+            "generate",
+            as_json=as_json,
+            exit_code=exits.JOB_FAILED,
+            error="job_failed",
+            message=f"generation {job_id} did not complete: {message}",
+            extra={"job_id": job_id, "state": state, "code": code, "events": events},
+            lines=lines,
+        )
+
+    _fail(
+        "generate",
+        as_json=as_json,
+        exit_code=exits.STILL_RUNNING,
+        error="still_running",
+        message=(
+            f"stopped waiting after {timeout_seconds:g}s. Job {job_id} is still "
+            f"{state or 'in an unread state'} on the server — it was not cancelled."
+        ),
+        extra={"job_id": job_id, "state": state, "events": events},
+        lines=[f"  Check on it: archimedes generate is not needed — GET /api/generate/jobs/{job_id}"],
+    )
 
 
 @main.command()
