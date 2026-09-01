@@ -61,8 +61,9 @@ logger = logging.getLogger(__name__)
 _DRIFT_EPS = 1e-9
 
 #: Values that read as "off" for :func:`advance_enabled`. Same spelling as
-#: ``backtest_scheduler.refresh_enabled``'s, so an operator who has learned one
-#: of this family's kill switches has learned both.
+#: every other kill switch in the tree (``sweep_enabled``,
+#: ``real_data_enabled``, ...), so an operator who has learned one of this
+#: family's switches has learned them all.
 _FALSY = {"0", "false", "no", "off"}
 
 
@@ -1078,9 +1079,14 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
 async def paper_advance_loop() -> None:
     """Long-lived task: advance every active ledger once per interval.
 
-    Same fail-soft contract as backtest_refresh_loop: a bad cycle logs and
-    retries next tick; it must never take the app down. Interval defaults to
-    daily — the ledger law makes extra runs harmless (idempotent appends).
+    Fail-soft by contract: a bad cycle logs and retries next tick; it must
+    never take the app down. Interval defaults to daily — the ledger law makes
+    extra runs harmless (idempotent appends).
+
+    This is the ONLY forward-looking clock in the product, and that is on
+    purpose: performance after publication is the ledger's job. Backtests do
+    not have a clock at all (#1760,
+    ``docs/adr/backtests-are-frozen-evidence.md``).
 
     Run this only in a dedicated interpreter (``python -m
     archimedes.services.paper_trading``). The web process must not schedule
