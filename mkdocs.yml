@@ -94,7 +94,6 @@ nav:
       - agent-api.md
       - specs/agent-native-onboarding-spec.md
       - asset-universe.md
-      - demo-script-lepton.md
 
   - Quant and rigor:
       - quant/README.md
