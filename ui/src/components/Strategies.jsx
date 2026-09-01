@@ -197,12 +197,12 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   // #1358: a strategy with ZERO statistics computed must render as honestly
   // unknown, never as a failed rigor gate. rigor_gate_status is the
   // four-state badge curated/generated StrategyResponse rows carry
-  // ("pass"|"fail"|"pending"|"degenerate"); coerceGenerated's own rows don't
-  // set it at all but already encode the same "no verdict yet" case as
-  // passes_rigor_gate === null (see Strategies.jsx's coerceGenerated) — both
-  // checked so the same pending treatment applies on the Examples and
-  // Generated tabs alike. Checked BEFORE the true/false badge below so a
-  // pending row can never fall through to the "does not pass" X.
+  // ("pass"|"fail"|"pending"|"degenerate"); coerceGenerated sets it explicitly
+  // from the server's live verdict (#1747) and encodes the same "no verdict
+  // yet" case as passes_rigor_gate === null — both checked so the same pending
+  // treatment applies on the Examples and Generated tabs alike. Checked BEFORE
+  // the true/false badge below so a pending row can never fall through to the
+  // "does not pass" X.
   const isPending = s.rigor_gate_status === 'pending' || s.passes_rigor_gate == null
   // #1358 round-3: "degenerate" is the fourth state, and it belongs in the same
   // NEUTRAL bucket as pending — never the red "does not pass" X, because
@@ -781,7 +781,15 @@ function coerceGenerated(row) {
     paper_claimed_sharpe: null,
     backtest_start: null,
     backtest_end: null,
-    is_backtest_placeholder: true,
+    // A row the LIVE gate graded (pass|fail) is not a pre-backtest hypothesis:
+    // it has a persisted return series, which is the only thing the gate can
+    // grade. Left hardcoded `true`, metricDomain.absenceReason (:298-305) would
+    // title that row's empty CAGR / max-drawdown cells "PENDING — no backtest
+    // has run on this strategy yet" on the SAME row whose pill says the gate
+    // ran and failed. Before #1747 that pill was structurally unreachable here,
+    // so the self-contradiction could not occur; it is newly reachable.
+    // `pending` and `degenerate` stay `true` — for those the sentence is right.
+    is_backtest_placeholder: !(row.rigor_gate_status === 'pass' || row.rigor_gate_status === 'fail'),
     // The rigor badge. A LITERAL boolean from the server or nothing: `null` is
     // the honest "no verdict", and the four-state below says which non-verdict
     // it was. Anything looser — Boolean(...) over a missing field, or a fall

@@ -27,6 +27,7 @@ import {
 	statusLabel,
 	statusTag,
 } from "../src/libraryStatus.js";
+import { absenceReason } from "../src/metricDomain.js";
 
 const strategies = readFileSync(
 	new URL("../src/components/Strategies.jsx", import.meta.url),
@@ -138,13 +139,18 @@ test("the rigor numbers no longer come from rigor_verdict either", () => {
 		"verdict?.dsr_p_value",
 	]) {
 		// `verdict?.dsr != null` (the hasRealMetrics probe, which decides a label
-		// relabel and never a metric) is the one permitted read.
-		const idx = strategies.indexOf(dead);
-		const permitted = idx !== -1 && strategies.slice(idx).startsWith("verdict?.dsr != null");
-		assert.ok(
-			idx === -1 || permitted,
-			`Strategies.jsx renders ${dead} — the fusion verdict's numbers beside a live-gate pill`,
-		);
+		// relabel and never a metric) is the one permitted read. EVERY occurrence
+		// is scanned, not just the first: `indexOf` alone made this loop vacuous
+		// for the one field that actually regresses, because the permitted probe
+		// sits ABOVE the return object — a re-sourced `deflated_sharpe_ratio:
+		// verdict?.dsr ?? null` further down would hide behind it.
+		let idx = -1;
+		while ((idx = strategies.indexOf(dead, idx + 1)) !== -1) {
+			assert.ok(
+				strategies.slice(idx).startsWith("verdict?.dsr != null"),
+				`Strategies.jsx renders ${dead} — the fusion verdict's numbers beside a live-gate pill`,
+			);
+		}
 	}
 });
 
@@ -171,5 +177,69 @@ test("both the desktop pill and the mobile lib-card call the shared helpers", ()
 		strategies.includes("from '../libraryStatus.js'"),
 		"Strategies.jsx must import the helpers rather than re-declaring them privately — " +
 			"module-private is how they went untested through #1747",
+	);
+});
+
+// ── The empty cells beside a graded pill ───────────────────────────────────
+
+test("a graded row's empty cells do not claim that no backtest has run", () => {
+	// coerceGenerated hardcoded `is_backtest_placeholder: true`, which
+	// absenceReason turns into "PENDING — no backtest has run on this strategy
+	// yet". On a row whose pill now says the gate RAN and failed, that is a
+	// same-row self-contradiction — and it is newly reachable, because before
+	// #1747 the "gate failed" pill could not appear on this tab at all.
+	const failRow = {
+		rigor_gate_status: "fail",
+		passes_rigor_gate: false,
+		is_backtest_placeholder: false,
+	};
+	assert.equal(absenceReason(failRow).state, "not_measured");
+	assert.ok(
+		!absenceReason(failRow).title.includes("no backtest has run"),
+		"a row the gate graded had a persisted return series to grade — " +
+			"its empty CAGR / drawdown cells are unmeasured, not pre-backtest",
+	);
+
+	const passRow = {
+		rigor_gate_status: "pass",
+		passes_rigor_gate: true,
+		is_backtest_placeholder: false,
+	};
+	assert.equal(absenceReason(passRow).state, "not_measured");
+
+	// The two states that ARE pre-backtest keep the pending sentence.
+	assert.equal(
+		absenceReason({
+			rigor_gate_status: "pending",
+			passes_rigor_gate: null,
+			is_backtest_placeholder: true,
+		}).state,
+		"pending",
+	);
+	assert.equal(
+		absenceReason({
+			rigor_gate_status: "degenerate",
+			passes_rigor_gate: false,
+			is_backtest_placeholder: true,
+		}).state,
+		"degenerate",
+	);
+});
+
+test("coerceGenerated derives is_backtest_placeholder from the gate verdict", () => {
+	// The executed check above only proves absenceReason behaves once the flag
+	// is right; this pins the flag Strategies.jsx actually sets, which
+	// `node --test` cannot import (.jsx).
+	assert.ok(
+		strategies.includes(
+			"is_backtest_placeholder: !(row.rigor_gate_status === 'pass' || row.rigor_gate_status === 'fail')",
+		),
+		"coerceGenerated is back to a hardcoded is_backtest_placeholder — a graded row's " +
+			"empty cells would again be titled 'no backtest has run on this strategy yet'",
+	);
+	assert.equal(
+		strategies.indexOf("is_backtest_placeholder: true"),
+		-1,
+		"the hardcoded literal is back on a row the live gate may have graded",
 	);
 });

@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC
+from typing import TYPE_CHECKING
 
 import numpy as np
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -41,6 +42,12 @@ from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.live_rigor_gate import RigorGateVerdict
 from archimedes.services.rigor_evaluator import RigorGateResult
+
+if TYPE_CHECKING:
+    # Annotation only: `_live_generated_rigor` hands its caller the backtest row
+    # the gate graded. The runtime import stays inside that function, where the
+    # rest of the persisted-context reads already live.
+    from archimedes.models.backtest_store import BacktestResultRecord
 
 logger = logging.getLogger(__name__)
 
@@ -864,7 +871,7 @@ async def list_generated_strategies(
                 }
             verdicts = _live_generated_rigor(session, [i for i in page_ids if i in passports])
             for d in page:
-                verdict, rigor_result = verdicts.get(d["id"], (None, None))
+                verdict, rigor_result, graded_backtest = verdicts.get(d["id"], (None, None, None))
                 gate_status = verdict.status if verdict is not None else "pending"
                 d["rigor_gate_status"] = gate_status
                 # COUPLED to the four-state, never a separate stored boolean:
@@ -883,12 +890,17 @@ async def list_generated_strategies(
                 d["dsr_p_value"] = rigor_result.dsr_p_value if (graded and rigor_result) else None
                 d["pbo_score"] = rigor_result.pbo_score if (graded and rigor_result) else None
                 d["out_of_sample_sharpe"] = rigor_result.oos_sharpe if (graded and rigor_result) else None
-                # Display Sharpe is a descriptive backtest stat, not a gate
-                # output, so it comes from the passport row the gate re-graded —
-                # but it is still withheld unless that grading happened, so the
-                # headline number and the badge describe the same event.
-                passport = passports.get(d["id"])
-                d["sharpe_ratio"] = passport.sharpe_ratio if (graded and passport is not None) else None
+                # Display Sharpe is a descriptive backtest stat rather than a
+                # gate output, so it comes from the SAME `backtest_results` row
+                # the gate read its returns from — never from the denormalised
+                # `strategy_passports.sharpe_ratio`, which has no foreign key to
+                # backtest_results and routinely describes an older run (~155
+                # backtest rows per strategy; scripts/archive_backtest_results.py).
+                # Serving that column here printed a Sharpe of 1.4 beside a DSR
+                # computed from a series whose Sharpe was 0.031. Withheld unless
+                # the grading happened, so the headline number, the four rigor
+                # numbers and the badge all describe one event.
+                d["sharpe_ratio"] = graded_backtest.sharpe_ratio if (graded and graded_backtest is not None) else None
             # Citation truth: ``StrategyRecord.to_dict()`` returns source_papers
             # exactly as stored — arxiv_id, no title — so the Library card had no
             # real paper title to print and printed the generated strategy's own
@@ -1363,10 +1375,23 @@ def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, boo
 
 def _live_generated_rigor(
     session, strategy_ids: list[str]
-) -> dict[str, tuple[RigorGateVerdict, RigorGateResult | None]]:
-    """LIVE four-state gate verdicts (+ the result each was reduced from) for a
-    page of GENERATED strategy ids — one ``run_rigor_gate`` per row, over that
-    row's OWN persisted returns and its OWN persisted grading context.
+) -> dict[str, tuple[RigorGateVerdict, RigorGateResult | None, BacktestResultRecord | None]]:
+    """LIVE four-state gate verdicts for a page of GENERATED strategy ids — one
+    ``run_rigor_gate`` per row, over that row's OWN persisted returns and its
+    OWN persisted grading context.
+
+    Each entry is ``(verdict, result, backtest_row)``. The third element is the
+    ``BacktestResultRecord`` the gate actually read its returns from — returned
+    rather than looked up again by the caller because the display Sharpe has to
+    describe THAT run and no other. ``latest_backtests_by_strategy`` and
+    ``get_all_daily_returns`` rank with the identical window
+    (``created_at DESC, id DESC``, backtest_repository.py), so the row handed
+    back here is the same physical row whose ``artifact_json`` produced
+    ``daily``. It is not ``strategy_passports.sharpe_ratio``: that column is a
+    denormalised snapshot with no foreign key to ``backtest_results`` (see
+    ``scripts/archive_backtest_results.py``, ~155 backtest rows per strategy),
+    so serving it beside these numbers prints a Sharpe from one run next to a
+    DSR from another.
 
     This is the batched form of ``selection_bias_routes._generated_strategy_rigor``
     (:676), and it is deliberately a re-use of that function's data path rather
@@ -1434,13 +1459,13 @@ def _live_generated_rigor(
         _rollback_quietly(session)
         return {}
 
-    graded: dict[str, tuple[RigorGateVerdict, RigorGateResult | None]] = {}
+    graded: dict[str, tuple[RigorGateVerdict, RigorGateResult | None, BacktestResultRecord | None]] = {}
     for sid in strategy_ids:
         daily = returns_by_id.get(sid) or []
         if len(daily) < _MIN_RETURNS_FOR_GATE:
             # Genuinely pre-backtest: the gate cannot run, so the badge is
             # "unknown". Never a boolean, and never the stored one.
-            graded[sid] = (RigorGateVerdict.pending(), None)
+            graded[sid] = (RigorGateVerdict.pending(), None, latest_by_id.get(sid))
             continue
         latest = latest_by_id.get(sid)
         num_trials, _num_trials_scope = _num_trials_for_generated_row(
@@ -1474,9 +1499,9 @@ def _live_generated_rigor(
             )
         except Exception as exc:  # pragma: no cover — defensive; gate-level failure
             logger.warning("generated badge: live gate failed for %s (→ pending): %s", sid, exc)
-            graded[sid] = (RigorGateVerdict.pending(), None)
+            graded[sid] = (RigorGateVerdict.pending(), None, latest)
             continue
-        graded[sid] = (RigorGateVerdict.from_result(result), result)
+        graded[sid] = (RigorGateVerdict.from_result(result), result, latest)
     return graded
 
 

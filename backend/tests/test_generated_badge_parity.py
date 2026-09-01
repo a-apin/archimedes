@@ -30,7 +30,10 @@ What is pinned here:
   5. A genuinely passing series is still served ``pass`` / True: the fix must
      not have "fixed" the badge by never being green.
   6. The rigor NUMBERS come from the same gate run as the badge, and are absent
-     unless that run reached a pass/fail verdict.
+     unless that run reached a pass/fail verdict. The display Sharpe comes from
+     the same ``backtest_results`` row that run read its returns from — not from
+     ``strategy_passports.sharpe_ratio``, a denormalised snapshot with no
+     foreign key to ``backtest_results`` that routinely describes an older run.
   7. Page cost is constant in the number of rows — the passport read and the
      persisted-context reads are batched, never per row.
 
@@ -158,15 +161,30 @@ def _mk_passport(sid: str, *, passes_rigor_gate: bool = False, sharpe_ratio: flo
         session.commit()
 
 
-def _mk_backtest(sid: str, *, returns: list[float] | None, pbo: float | None = 0.05):
-    """Persist the row the live gate reads its returns and context from."""
+def _mk_backtest(
+    sid: str,
+    *,
+    returns: list[float] | None,
+    pbo: float | None = 0.05,
+    sharpe_ratio: float = 0.031,
+    content_hash: str | None = None,
+):
+    """Persist the row the live gate reads its returns and context from.
+
+    ``sharpe_ratio`` defaults to a value DISTINCT from every
+    ``strategy_passports.sharpe_ratio`` this file seeds (0.4 / 0.9 / 1.4 / 1.8),
+    so an assertion about the served display Sharpe can tell the two columns
+    apart. They are not the same number in prod either: the passport column is a
+    denormalised snapshot with no FK to ``backtest_results``.
+    """
     from archimedes.models.backtest_store import BacktestResultRecord
 
     with db.get_session() as session:
         session.add(
             BacktestResultRecord(
                 strategy_id=sid,
-                content_hash=f"bt_{sid}",
+                content_hash=content_hash or f"bt_{sid}",
+                sharpe_ratio=sharpe_ratio,
                 artifact_json=(
                     json.dumps({"results": [{"metrics": {"daily_returns": returns}}]}) if returns is not None else None
                 ),
@@ -357,7 +375,9 @@ async def test_rigor_numbers_come_from_the_live_run_not_the_stored_passport():
     assert g["deflated_sharpe_ratio"] != 0.87
     assert g["dsr_p_value"] != 0.99
     assert g["pbo_score"] == 0.05, "criterion-4 PBO is the persisted per-row value the deploy gate uses"
-    assert g["sharpe_ratio"] == 0.4, "display Sharpe is the graded passport's own number"
+    assert g["sharpe_ratio"] == 0.031, (
+        "display Sharpe is the GRADED backtest row's own number, not the passport snapshot (0.4)"
+    )
 
     u = rows[ungraded]
     assert u["rigor_gate_status"] == "pending"
@@ -369,6 +389,41 @@ async def test_rigor_numbers_come_from_the_live_run_not_the_stored_passport():
         "sharpe_ratio",
     ):
         assert u[field] is None, f"{field} must be absent on a row no gate graded"
+
+
+# ── 6b. The display Sharpe describes the run the gate graded ───────────────
+
+
+async def test_display_sharpe_is_the_graded_backtest_rows_own_number():
+    """The headline Sharpe must come from the SAME ``backtest_results`` row the
+    gate read its returns from — not ``strategy_passports.sharpe_ratio``.
+
+    That column is a denormalised snapshot with no foreign key to
+    ``backtest_results`` (``scripts/archive_backtest_results.py``: ~155 backtest
+    rows per strategy), so serving it prints a Sharpe from one run beside a DSR
+    computed from another. Seeded here as two backtest rows for one strategy: an
+    older PASSING series at Sharpe 9.9 and a newer FAILING one at 0.031, with a
+    passport snapshot of 1.4. Exactly one of those three numbers describes the
+    series the gate graded.
+    """
+    sid = "gen1747sharpevin"
+    _mk_strategy(sid, status="live", rigor_verdict={"passing": True})
+    _mk_passport(sid, passes_rigor_gate=True, sharpe_ratio=1.4)
+    # Older row first: same window (`created_at DESC, id DESC`) in
+    # get_all_daily_returns and latest_backtests_by_strategy, so the row
+    # inserted SECOND is the one both readers resolve to.
+    _mk_backtest(sid, returns=_passing_returns(), sharpe_ratio=9.9, content_hash=f"bt_{sid}_old")
+    _mk_backtest(sid, returns=_failing_returns(), sharpe_ratio=0.031, content_hash=f"bt_{sid}_new")
+
+    row = await _row(sid)
+    # The gate graded the NEWER series, so the badge is the newer verdict...
+    assert row["rigor_gate_status"] == "fail"
+    # ...and the Sharpe beside it is that same row's, not the passport's 1.4 and
+    # not the superseded run's 9.9.
+    assert row["sharpe_ratio"] == 0.031, (
+        f"served sharpe_ratio={row['sharpe_ratio']!r} — the display Sharpe and the rigor "
+        "numbers are describing two different backtest runs"
+    )
 
 
 # ── 7. Page cost is constant in the number of rows ─────────────────────────
