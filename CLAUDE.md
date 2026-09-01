@@ -17,8 +17,14 @@
 
 ## Project
 
-**Archimedes** — "Linus for quantitative finance": a single-user agent that turns q-fin
-research literature into investable, rigor-gated strategies. **Executing and monitoring
+**Archimedes** — an agentic strategy generation and validation system ("portfolio
+strategy, under scrutiny"): a single-user agent that turns q-fin research literature into
+rigor-gated strategies behind an honest validation layer, then runs the survivors as
+paper deployments. **No product analogies on public surfaces** — "X-for-quant-finance"
+comparison branding (the retired Linus analogy and anything shaped like it) is banned
+(Dan, 2026-09-01) in the README, docs, UI, and manifests; competitive comps live in the
+private docs repo only. Guarded by
+[`backend/tests/test_public_branding_guard.py`](backend/tests/test_public_branding_guard.py). **Executing and monitoring
 them in non-custodial vaults on Arc with USDC settlement is roadmap, not shipped product —
 write it in the future tense.** The `Vault`/`VaultFactory` contracts are real and deployed
 ([ADR](docs/adr/non-custodial-vault-owner-agent.md)), but the deploy-a-vault journey is
