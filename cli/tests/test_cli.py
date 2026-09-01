@@ -24,7 +24,7 @@ import pytest
 from archimedes_cli import __version__
 from archimedes_cli.cli import main
 from archimedes_cli.exits import AUTH, GATE_FAILED, INCOMPLETE, NOT_IMPLEMENTED, OK, USAGE
-from archimedes_cli.session import SESSION_COOKIE_NAME, save_session, session_path
+from archimedes_cli.session import SECURE_SESSION_COOKIE_NAME, SESSION_COOKIE_NAME, save_session, session_path
 from click.testing import CliRunner
 
 # ── Fixtures & test-only helpers ────────────────────────────────────────
@@ -196,12 +196,12 @@ _VERIFY_NOT_EVALUABLE_BODY = {
 }
 
 
-def _login_ok_route(*, cookie: str = "tok123", email: str = "dan@example.com"):
+def _login_ok_route(*, cookie: str = "tok123", email: str = "dan@example.com", cookie_name: str = SESSION_COOKIE_NAME):
     return {
         ("POST", "/api/auth/sign-in/email"): httpx.Response(
             200,
             json={"redirect": False},
-            headers=[("set-cookie", f"{SESSION_COOKIE_NAME}={cookie}; Path=/; HttpOnly")],
+            headers=[("set-cookie", f"{cookie_name}={cookie}; Path=/; HttpOnly")],
         ),
         ("GET", "/api/auth/get-session"): httpx.Response(
             200,
@@ -310,6 +310,88 @@ class TestLogin:
         cached = json.loads(session_path().read_text())
         assert cached["email"] == "dan@example.com"
         assert cached["cookies"][SESSION_COOKIE_NAME] == "tok123"
+
+    def test_login_accepts_the_secure_prefixed_cookie_production_actually_sets(self, runner, monkeypatch):
+        """The P0 this fix closes: production sets `__Secure-better-auth.session_token`
+        (Better Auth's `useSecureCookies: production`, `auth/auth.js`), never the bare
+        name. A client that only recognized the bare name would report
+        `no_session_cookie` on every real login against archimedes-arc.com."""
+        monkeypatch.setenv("ARCHIMEDES_EMAIL", "dan@example.com")
+        monkeypatch.setenv("ARCHIMEDES_PASSWORD", "correct horse battery staple")
+        _install_transport(
+            monkeypatch,
+            _route(_login_ok_route(cookie="tok-secure", cookie_name=SECURE_SESSION_COOKIE_NAME)),
+        )
+
+        result = runner.invoke(main, ["login", "--json"])
+
+        assert result.exit_code == OK
+        assert json.loads(result.stdout) == {"ok": True, "email": "dan@example.com"}
+
+        cached = json.loads(session_path().read_text())
+        assert cached["cookies"] == {SECURE_SESSION_COOKIE_NAME: "tok-secure"}
+        assert SESSION_COOKIE_NAME not in cached["cookies"]
+
+    def test_login_round_trips_the_secure_cookie_under_its_own_name_not_the_bare_one(self, runner, monkeypatch):
+        """Adversarial: proves the round-trip GET /api/auth/get-session is sent the cookie
+        under the NAME IT WAS ISSUED AS, not a hardcoded bare name. A build that hardcoded
+        `SESSION_COOKIE_NAME` for the round trip would send no recognizable cookie here,
+        get-session would report nobody signed in, and login would wrongly fail
+        `session_not_confirmed` even though sign-in issued a good `__Secure-` cookie."""
+        monkeypatch.setenv("ARCHIMEDES_EMAIL", "dan@example.com")
+        monkeypatch.setenv("ARCHIMEDES_PASSWORD", "whatever")
+
+        def get_session(request: httpx.Request) -> httpx.Response:
+            jar = dict(
+                pair.strip().split("=", 1) for pair in request.headers.get("cookie", "").split(";") if "=" in pair
+            )
+            if jar.get(SECURE_SESSION_COOKIE_NAME) != "tok-secure":
+                return httpx.Response(200, json={"user": None, "session": None})
+            return httpx.Response(
+                200, json={"user": {"id": "u1", "email": "dan@example.com", "name": "Dan"}, "session": {"id": "s1"}}
+            )
+
+        _install_transport(
+            monkeypatch,
+            _route(
+                {
+                    ("POST", "/api/auth/sign-in/email"): httpx.Response(
+                        200,
+                        json={"redirect": False},
+                        headers=[("set-cookie", f"{SECURE_SESSION_COOKIE_NAME}=tok-secure; Path=/; Secure; HttpOnly")],
+                    ),
+                    ("GET", "/api/auth/get-session"): get_session,
+                }
+            ),
+        )
+
+        result = runner.invoke(main, ["login", "--json"])
+        assert result.exit_code == OK
+        assert json.loads(result.stdout) == {"ok": True, "email": "dan@example.com"}
+        assert json.loads(session_path().read_text())["cookies"] == {SECURE_SESSION_COOKIE_NAME: "tok-secure"}
+
+    def test_adversarial_an_unrelated_cookie_is_not_mistaken_for_the_session(self, runner, monkeypatch):
+        """A Set-Cookie for something that is neither recognized name (a CSRF token, a
+        load-balancer affinity cookie) must not be picked up as the session — this is
+        the input that should fail `pick_session_cookie` and it must fail closed."""
+        monkeypatch.setenv("ARCHIMEDES_EMAIL", "dan@example.com")
+        monkeypatch.setenv("ARCHIMEDES_PASSWORD", "whatever")
+        _install_transport(
+            monkeypatch,
+            _route(
+                {
+                    ("POST", "/api/auth/sign-in/email"): httpx.Response(
+                        200,
+                        json={"redirect": False},
+                        headers=[("set-cookie", "csrf_token=irrelevant; Path=/")],
+                    ),
+                }
+            ),
+        )
+        result = runner.invoke(main, ["login", "--json"])
+        assert result.exit_code == AUTH
+        assert json.loads(result.stdout)["error"] == "no_session_cookie"
+        assert not session_path().exists()
 
     def test_session_file_is_written_mode_600(self, runner, monkeypatch):
         monkeypatch.setenv("ARCHIMEDES_EMAIL", "dan@example.com")
@@ -452,6 +534,27 @@ class TestMeter:
         result = runner.invoke(main, ["meter", "--json"])
         assert result.exit_code == OK
         assert f"{SESSION_COOKIE_NAME}=tok-xyz" in seen["cookie"]
+
+    def test_sends_a_secure_prefixed_cached_cookie_under_its_own_name(self, runner, monkeypatch):
+        """A session cached from a production login (`__Secure-`-prefixed) must reach the
+        wire under that same name — nothing downstream of `load_session` may special-case
+        or rewrite the bare name, because rewriting it is exactly what would make prod
+        reject the request."""
+        save_session(
+            api_url="https://archimedes-arc.com",
+            cookies={SECURE_SESSION_COOKIE_NAME: "tok-secure-xyz"},
+            email="dan@example.com",
+        )
+        seen = {}
+
+        def handler(request):
+            seen["cookie"] = request.headers.get("cookie", "")
+            return httpx.Response(200, json=_USAGE_BODY)
+
+        _install_transport(monkeypatch, handler)
+        result = runner.invoke(main, ["meter", "--json"])
+        assert result.exit_code == OK
+        assert f"{SECURE_SESSION_COOKIE_NAME}=tok-secure-xyz" in seen["cookie"]
 
     def test_human_table_renders_caps_and_price(self, runner, monkeypatch):
         _seed_session()

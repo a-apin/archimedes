@@ -128,17 +128,34 @@ test("social auth controls do not wait for provider discovery", () => {
 	assert.match(authPage, /<GitHubMark \/>/);
 });
 
-test("Generate uses brief-first workbench with context rail", () => {
+test("Generate uses a mobile-first brief-first workbench with context rail", () => {
 	assert.match(generate, /className="generate-page"/);
 	assert.match(generate, /className="app-page-heading generate-page__heading"/);
 	assert.match(generate, /className="generate-workbench"/);
 	assert.match(generate, /className="card generate-brief"/);
 	assert.match(generate, /className="generate-context-rail"/);
 	assert.match(generate, /className="generate-register"/);
+
+	// #1642 inverted the layout. The BASE rule — the one with no media query
+	// around it — is now the phone layout: one column. Pinning the base as
+	// single-column is what makes "mobile-first" a mechanical property rather
+	// than a claim in a comment; a desktop grid restored here would fail.
+	assert.match(css, /\.generate-workbench\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+
+	// The two-column brief+rail grid and the sticky rail are the enhancement,
+	// and they live behind min-width — never behind a max-width collapse.
+	const desktopTier = css.match(
+		/@media \(min-width: 900px\)\s*\{([\s\S]*?)\n\}/,
+	);
+	assert.ok(desktopTier, "no min-width:900px tier found");
 	assert.match(
-		css,
+		desktopTier[1],
 		/\.generate-workbench\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.35fr\) minmax\(280px,\s*0\.65fr\);/s,
 	);
+	assert.match(desktopTier[1], /\.generate-context-rail\s*\{[^}]*position:\s*sticky;/s);
+
+	// The retired always-visible examples list and its styles are gone.
+	assert.doesNotMatch(css, /\.generate-example\s*[,{]/);
 });
 
 test("Strategy Passport separates evidence from user authority", () => {
@@ -154,6 +171,14 @@ test("Strategy Passport separates evidence from user authority", () => {
 	);
 	assert.match(css, /\.passport-authority\s*\{[^}]*position:\s*sticky;/s);
 	assert.match(css, /\.passport-rigor\s*\{[^}]*--text-4:\s*#566a61;/s);
+	// #1646 rehomed the evidence column's source-paper cards onto one table
+	// and added the DSL panel, so the class pins above no longer describe the
+	// whole evidence column. The pins for the new markup live in
+	// passport-dsl.test.js beside the behaviour tests for the code block —
+	// this case keeps owning the page's SKELETON (workspace / authority /
+	// evidence split), which is unchanged.
+	assert.match(passport, /className="passport-sources passport-dense fade-up/);
+	assert.match(css, /\.passport-dense \.passport-panel\s*\{[^}]*padding:\s*16px 18px;/s);
 });
 
 test("Portfolio uses ledger metrics and split audit workspace", () => {
@@ -187,10 +212,25 @@ test("app motion and core workspaces respect narrow or reduced-motion contexts",
 		css,
 		/@media \(prefers-reduced-motion: reduce\)[^{]*\{[\s\S]*?\.app-site \.fade-up,[\s\S]*?animation:\s*none !important;/s,
 	);
+	// Passport and Portfolio still collapse at max-width: 900px. Generate no
+	// longer appears in this tier — #1642 made single-column its base state,
+	// so there is nothing left here for it to un-collapse (see the
+	// mobile-first test above, which pins the base + the min-width tier).
 	assert.match(
 		css,
-		/@media \(max-width: 900px\)[^{]*\{[\s\S]*?\.generate-workbench,[\s\S]*?\.passport-workspace,[\s\S]*?\.portfolio-workspace\s*\{[^}]*grid-template-columns:\s*1fr;/s,
+		/@media \(max-width: 900px\)[^{]*\{[\s\S]*?\.passport-workspace,[\s\S]*?\.portfolio-workspace\s*\{[^}]*grid-template-columns:\s*1fr;/s,
 	);
+	// Bounded to each max-width block's own body: an unbounded `[\s\S]*?`
+	// would happily span from any earlier media query to the base
+	// `.generate-workbench` rule and "find" a violation that is not there.
+	// Top-level blocks in this file close with a `}` in column 0.
+	for (const block of css.matchAll(/@media \(max-width: \d+px\)\s*\{([\s\S]*?)\n\}/g)) {
+		assert.doesNotMatch(
+			block[1],
+			/\.generate-workbench\s*[,{]/,
+			"Generate's workbench must not be laid out from a max-width tier (#1642)",
+		);
+	}
 });
 
 const generationStream = readFileSync(
@@ -242,16 +282,19 @@ test("leaderboard renders every field it sorts by, and no constant forward colum
 	assert.match(leaderboard, /fixed at generation time/);
 	const block = leaderboard.match(/const SORT_OPTIONS = \[([\s\S]*?)\]/)[1];
 	for (const [, id] of block.matchAll(/id: '([a-z_]+)'/g)) {
-		// A RENDER site is fmt(...)/fmtPct(...)-wrapped output — a bare e.<id>
-		// also matches null-CHECKS inside a render gate, which is exactly the
-		// defect this test exists to reject (a field sorted but never shown).
+		// A RENDER site is a value handed to a formatter — a bare e.<id> also
+		// matches null-CHECKS inside a render gate, which is exactly the defect
+		// this test exists to reject (a field sorted but never shown). Since
+		// #1651 the formatter is <MetricValue metric="…" value={e.<id>} />
+		// rather than the file's own fmt()/fmtPct(); both shapes count as a
+		// render, neither of them matches a bare null-check.
 		assert.match(
 			leaderboard,
-			new RegExp(`fmt(?:Pct)?\\(\\s*e\\.${id}\\b`),
-			`sort option ${id} has no fmt-rendered value`,
+			new RegExp(`(?:fmt(?:Pct)?\\(\\s*e\\.${id}\\b|value=\\{e\\.${id}\\})`),
+			`sort option ${id} has no rendered value`,
 		);
 	}
-	assert.match(leaderboard, /fmt\(\s*e\.out_of_sample_sharpe\b/);
+	assert.match(leaderboard, /value=\{e\.out_of_sample_sharpe\}/);
 	assert.doesNotMatch(leaderboard, /SB pending/);
 	assert.doesNotMatch(leaderboard, /P&L pending/);
 });

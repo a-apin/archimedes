@@ -12,11 +12,10 @@ from fastapi import APIRouter, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider as _provider
 from archimedes.api.limiter import limiter
+from archimedes.services.dsl_lookahead_audit import verdict_from_persisted_row
 from archimedes.services.rigor_evaluator import (
-    DEFAULT_BOARD_FDR_LEVEL,
     assert_self_contained_cohort_correlation,
     compute_average_pairwise_correlation,
-    compute_board_level_fdr,
     compute_library_pbo,
     compute_library_pbo_rf_convention,
     compute_pbo,
@@ -104,33 +103,15 @@ class LibraryPbo(BaseModel):
     rf_convention: str = "MISSING"
 
 
-class BoardLevelFdr(BaseModel):
-    """Board-level Benjamini-Hochberg FDR correction across the whole leaderboard
-    cohort (#1185).
-
-    Disclosing board-level selection bias ("the best of N strategies is a
-    stronger claim than one strategy graded on its own merits") is not the same
-    as CORRECTING for it — this is the correction. Distinct axis from
-    ``num_trials`` (#1075's PER-STRATEGY, self-contained multiple-testing
-    convention, unaffected by this): this is the multiple-testing correction
-    across the SIMULTANEOUS "true Sharpe > 0" claims made by every strategy
-    currently on the board.
-
-    ADVISORY — see ``compute_board_level_fdr``'s docstring for the full
-    scope-decision rationale: this does NOT gate ``passes_all`` at any
-    strictness level. ``value is None`` (fail-closed / store-absent shape) is
-    intentionally NOT a state this model carries — an empty cohort just yields
-    ``n_tested=0, n_significant=0``, which is honest (nothing to correct) rather
-    than fabricated.
-    """
-
-    # Sourced from DEFAULT_BOARD_FDR_LEVEL (rigor_evaluator) as a schema default
-    # ONLY — the value actually reported by any real response is passed
-    # explicitly at construction (see evaluate_rigor_gate below) so this field
-    # can never silently diverge from the α compute_board_level_fdr ran at.
-    fdr_level: float = DEFAULT_BOARD_FDR_LEVEL
-    n_tested: int = 0  # cohort size m: strategies with a finite dsr_p_value
-    n_significant: int = 0  # count of board_fdr_significant == True after correction
+# Board-level BH-FDR used to live here, as a `BoardLevelFdr` top-level key plus
+# three `board_fdr_*` fields on every StrategyRigorResult below. It MOVED to
+# `GET /api/leaderboard` (#1564) — see api/leaderboard_schemas.BoardLevelFdr.
+# Owner decision (Dan, 2026-08-31): the strategy passport carries only
+# information about the strategy itself; the leaderboard is the one
+# cross-strategy surface, and `board_fdr_significant` is relational by
+# construction (it flips when unrelated strategies join or leave the cohort).
+# `TestBoardFdrStaysOffThePerStrategyGate` in test_selection_bias_routes.py
+# fails if any `board_fdr*` key reappears on these models.
 
 
 class StrategyRigorResult(BaseModel):
@@ -140,6 +121,35 @@ class StrategyRigorResult(BaseModel):
     not a per-strategy metric; it is included here only so the passport endpoint
     (which renders from this per-strategy result) can surface it. It is
     display-only and never affects ``passes_all`` or ``pbo_score`` (#546).
+
+    **#1564 item 3, the explicit call: ``library_pbo`` STAYS on this
+    per-strategy result; it does NOT follow ``board_fdr_*`` to the
+    leaderboard.** It was flagged as the same impurity class, and it isn't —
+    three checked reasons:
+
+    1. It is not a RELATIONAL VERDICT. ``board_fdr_significant`` is a different
+       answer for each strategy and flips when unrelated strategies join or
+       leave the cohort — the library-coupled verdict Decision #3 of
+       ``docs/adr/num-trials-self-containment.md`` rejects. ``library_pbo`` is
+       byte-identical on every row of a given selection set, so no strategy's
+       passport can say a different thing about that strategy because of
+       another strategy. That is the property the owner decision is about.
+    2. It is the SCOPE DISCLOSURE for a number this same response already
+       shows. On the curated path ``pbo_score`` comes from
+       ``compute_pbo(valid_returns)``, which by construction assigns ONE
+       library-wide CSCV value to every strategy (pinned by
+       ``analytics-engine/scripts/compute_library_pbo.py``'s own
+       ``assert all(v == library_pbo ...)``, and stated in ``POST
+       /api/selection-bias/pbo``'s docstring: "all strategies get the same
+       score"). Deleting ``library_pbo`` would remove the label while leaving
+       the labelled number — strictly less honest, and it would purify nothing.
+    3. Its ``source``/``data_vintage``/``rf_convention`` fields are the
+       provenance for that same PBO figure. They are only meaningful next to
+       it.
+
+    So the passport surfaces no cross-strategy VERDICT, which is what the
+    decision asked for. ``test_library_pbo_is_a_constant_not_a_verdict`` pins
+    reason 1 and reason 2 as executable claims rather than prose.
     """
 
     strategy_id: str
@@ -170,30 +180,14 @@ class StrategyRigorResult(BaseModel):
     # got far enough to compute a num_trials at all — never silently implies a
     # trustworthy value.
     num_trials_scope: str = "unspecified"
-    # Board-level BH-FDR correction (#1185) — see BoardLevelFdr / compute_board_level_fdr
-    # for the scope decision. ADVISORY: never affects passes_all. `None` is
-    # overloaded (code review, 2026-08-20): for a CURATED strategy — whether
-    # returned from GET /gate (the batch/board route) or GET /gate/{id} (which
-    # delegates to the same evaluate_rigor_gate() for curated ids, see
-    # evaluate_strategy_rigor below) — None means "this strategy had no finite
-    # dsr_p_value to correct" (mirrors dsr_p_value's own None/MISSING
-    # convention above), because it went through the real board-level cohort
-    # correction. For a GENERATED strategy served by GET /gate/{id}'s
-    # `_generated_strategy_rigor` fallback, this is ALWAYS None, even when
-    # dsr_p_value IS finite — board-level FDR is inherently cohort-scoped, and
-    # a single generated strategy has no cohort to correct across, so that
-    # path never calls compute_board_level_fdr at all. A consumer cannot
-    # distinguish "not significant / real cohort" from "excluded, no
-    # dsr_p_value" from "generated, no cohort at all" from this field alone —
-    # check which code path produced the payload.
-    board_fdr_significant: bool | None = None
-    board_fdr_adjusted_p: float | None = None
-    # board_fdr_confidence (1 - board_fdr_adjusted_p, same read-direction as
-    # dsr_p_value) — computed by compute_board_level_fdr but previously never
-    # wired past it (dead field, #1185 code review 2026-08-20). Surfaced here
-    # rather than dropped: it is the more honest number to show alongside
-    # dsr_p_value, since both now read "large = confident" the same way.
-    board_fdr_confidence: float | None = None
+    # NOTE (#1564): no `board_fdr_*` field belongs on this model. Board-level
+    # BH-FDR is a cohort-relational verdict and now rides
+    # `GET /api/leaderboard` only. The `None` this model used to serve was
+    # triply overloaded here anyway — "no dsr_p_value to correct" (curated),
+    # "generated, no cohort at all" (`_generated_strategy_rigor` never called
+    # the correction), and "not significant" were indistinguishable to a
+    # consumer. On the leaderboard, where a row is a cohort member by
+    # construction, `None` has exactly one meaning.
     # True for a strategy with fewer than 10 persisted daily returns — the gate
     # genuinely could not run (#1358). ``passes_all`` is False for these rows
     # too (an all-MISSING gate never passes), but collapsing "never evaluated"
@@ -235,8 +229,6 @@ class RigorGateResponse(BaseModel):
     # The strictness level the ``passing``/``failing`` counts + each
     # ``passes_all`` were evaluated at (1 = strictest/badge … 5 = loosest).
     strictness_level: int = 1
-    # Board-level BH-FDR correction across this response's cohort (#1185).
-    board_level_fdr: BoardLevelFdr = BoardLevelFdr()
 
 
 class StrictnessLevelInfo(BaseModel):
@@ -376,7 +368,19 @@ async def evaluate_rigor_gate(
     # hit changes no served or stored value; it just skips a redundant write. The
     # moment underlying returns change, the cache key changes and the write-back
     # resumes on the next (now-live) call.
-    from archimedes.services.rigor_cache import cohort_key, get_or_compute
+    # #1518: this memo is now TWO layers — the in-process dict, and a shared
+    # Redis-backed store underneath it. In-process alone did not amortise across
+    # the fleet, it multiplied by it: with N Fargate tasks behind the ALB, each
+    # holds its own copy and round-robin routing means a request can land on a
+    # task that has not computed this cohort yet and pays the whole ~21s
+    # recompute (measured on prod: 21.9s → 0.68s → 20.9s within a minute, which a
+    # 600s TTL cannot produce). `model_list_codec(StrategyRigorResult)` is what
+    # lets the value cross the process boundary — JSON via pydantic, so a cache
+    # HIT decodes to a value indistinguishable from what a MISS computed,
+    # four-state verdict vocabulary (`passes_all` / `pending` / `degenerate`)
+    # included. Both invalidation triggers survive the move: the key below still
+    # carries `cohort_key`, and `rigor_cache.clear()` now bumps a shared epoch.
+    from archimedes.services.rigor_cache import cohort_key, get_or_compute, model_list_codec
 
     code_versions = {s.id: getattr(s, "strategy_code_hash", None) for s in strategies}
     cache_key = f"selection_bias_gate:strictness={strictness}:" + cohort_key(
@@ -547,7 +551,12 @@ async def evaluate_rigor_gate(
     # strategies_routes.py's `_live_rigor_results_for_strategies` (same failure
     # class: an empty result must never get "sticky" for the TTL) and costs
     # nothing when `_compute()` returns its normal non-empty list.
-    results = get_or_compute(cache_key, _compute, cache_if=bool)
+    results = get_or_compute(
+        cache_key,
+        _compute,
+        cache_if=bool,
+        shared_codec=model_list_codec(StrategyRigorResult),
+    )
 
     # Copilot review (PR #1040): on a rigor_cache HIT, `results` are memoized
     # StrategyRigorResult objects whose `library_pbo` reflects whatever was
@@ -561,31 +570,10 @@ async def evaluate_rigor_gate(
     # per-strategy always agree, on both cache hits and misses.
     results = [r.model_copy(update={"library_pbo": library_pbo}) for r in results]
 
-    # Board-level BH-FDR correction (#1185) — computed fresh over THIS response's
-    # served cohort, same reconciliation pattern as library_pbo above and for the
-    # same reason: on a rigor_cache HIT, recomputing here (cheap — pure numpy over
-    # <= a few hundred p-values) guarantees the correction always matches the
-    # exact strategy set actually being returned, never a stale cache-write-time
-    # cohort. ADVISORY only — see BoardLevelFdr / compute_board_level_fdr for the
-    # explicit scope decision; this never changes passes_all.
-    board_fdr = compute_board_level_fdr(
-        {r.strategy_id: r.dsr_p_value for r in results}, fdr_level=DEFAULT_BOARD_FDR_LEVEL
-    )
-    results = [
-        r.model_copy(
-            update={
-                "board_fdr_significant": board_fdr.get(r.strategy_id, {}).get("board_fdr_significant"),
-                "board_fdr_adjusted_p": board_fdr.get(r.strategy_id, {}).get("board_fdr_adjusted_p"),
-                "board_fdr_confidence": board_fdr.get(r.strategy_id, {}).get("board_fdr_confidence"),
-            }
-        )
-        for r in results
-    ]
-    board_level_fdr = BoardLevelFdr(
-        fdr_level=DEFAULT_BOARD_FDR_LEVEL,
-        n_tested=len(board_fdr),
-        n_significant=sum(1 for v in board_fdr.values() if v["board_fdr_significant"]),
-    )
+    # The board-level BH-FDR reconciliation that used to sit here (#1185) moved
+    # to services/leaderboard.build_leaderboard (#1564). Nothing replaced it:
+    # this route grades each strategy on its own evidence and says nothing about
+    # where that strategy sits relative to the field.
 
     # ``pending`` rows never have ``passes_all=True`` (an all-MISSING gate can't
     # pass), so ``passing`` is unaffected by carving pending out of ``failing``.
@@ -599,7 +587,6 @@ async def evaluate_rigor_gate(
         pending=pending,
         library_pbo=library_pbo,
         strictness_level=strictness,
-        board_level_fdr=board_level_fdr,
     )
 
 
@@ -811,7 +798,18 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
             latest.num_trials_in_selection if latest else None,
         )
         persisted_pbo = latest.pbo_score if latest else None
-        persisted_look_ahead = bool(latest.look_ahead_audit_passed) if latest else False
+        # The stored boolean is not read on its own: `look_ahead_audit_source`
+        # says what produced it, and two provenances mean it is NOT an audit pass
+        # — a DSL audit that reached no verdict, and the retired "self_attested"
+        # rows whose boolean was the generating model's own look_ahead_safe
+        # declaration. Both come back False with a `pending` status, so the
+        # detail line says NOT_RUN instead of accusing the strategy of a leak,
+        # and neither can deploy on a claim nothing measured. See
+        # dsl_lookahead_audit.verdict_from_persisted_row.
+        persisted_look_ahead, persisted_la_status, persisted_la_reason = verdict_from_persisted_row(
+            latest.look_ahead_audit_passed if latest else False,
+            latest.look_ahead_audit_source if latest else None,
+        )
 
     gate_result = run_rigor_gate(
         strategy_id=strategy_id,
@@ -819,6 +817,8 @@ def _generated_strategy_rigor(strategy_id: str, request: Request, strictness: in
         num_trials=num_trials,
         library_pbo=persisted_pbo,
         look_ahead_audit_passed=persisted_look_ahead,
+        look_ahead_status=persisted_la_status,
+        look_ahead_not_run_reason=persisted_la_reason,
         in_sample_sharpe=None,
         average_correlation=0.0,
         strictness_level=strictness,

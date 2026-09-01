@@ -40,26 +40,29 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from archimedes.services.corpus_categories import QFIN_CATEGORIES
+
 logger = logging.getLogger(__name__)
 
 # ── Corpus definition ───────────────────────────────────────────
 
-# Core q-fin taxonomy: portfolio management, trading microstructure,
-# statistical finance, risk management, computational finance,
-# mathematical finance, pricing of securities.
-QFIN_CATEGORIES: tuple[str, ...] = (
-    "q-fin.PM",
-    "q-fin.TR",
-    "q-fin.ST",
-    "q-fin.RM",
-    "q-fin.CP",
-    "q-fin.MF",
-    "q-fin.PR",
-)
+# The core q-fin taxonomy is imported, never redeclared: before #1635 this
+# module carried its own 7-category tuple (no `q-fin.GN`) while
+# `scripts/bulk_ingest_arxiv.py` carried a different 9-category list — and the
+# script's list is what actually produced the manifest. `corpus_categories`
+# is now the single source of truth for both.
 
 # q-fin-adjacent: a lot of the bleeding-edge ML-for-markets work is
 # cross-listed here rather than under a q-fin primary. We still want it,
 # but only when it is co-tagged q-fin (see _is_qfin_relevant).
+#
+# These matter *here* only because `_default_search` issues one query per
+# category. They are deliberately NOT part of the bulk-harvest OR-query
+# (#1635): arXiv's `cat:` matches any tag on a paper, not just the primary, so
+# {cross-list ∧ q-fin} ⊆ {q-fin} — a co-tag-filtered cross-list query is a
+# subset of what the q-fin query already returns and adds zero recall. The only
+# way it would add anything is by dropping the co-tag filter, which is the
+# generic-ML leak we refuse.
 QFIN_CROSS_CATEGORIES: tuple[str, ...] = (
     "cs.LG",
     "stat.ML",

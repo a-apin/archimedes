@@ -129,8 +129,9 @@ illusion.
 
 **What detects it.** `compute_average_pairwise_correlation(...)` computes the mean
 off-diagonal correlation across a set of return series, and it feeds the DSR's
-**effective-N** correction (`N_eff = N / (1 + (N−1)·ρ̄)`): if the "trials" are
-highly correlated, the deflation correctly counts them as *fewer independent tests*.
+correlated-trials correction, which scales the expected best-of-N null Sharpe by
+`√(1−ρ̄)` (#1559): if the "trials" are highly correlated, the deflation correctly
+prices them as fewer distinct chances to get lucky.
 On the construction side, `correlation_pairs(...)` lists the top correlation pairs,
 and the Ledoit–Wolf shrinkage (`ledoit_wolf_shrinkage(...)`) keeps a
 near-singular correlation matrix from blowing up the optimizer.

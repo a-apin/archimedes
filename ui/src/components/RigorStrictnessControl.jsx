@@ -32,14 +32,10 @@ const LEVEL_COLOR = {
   5: 'var(--negative, #ef4444)',
 }
 
-// Static label map so callers without the fetched ladder (e.g. the passport's
-// deploy copy) still render names, not "Level 3".
-const STATIC_LABELS = { 1: 'Conservative', 2: 'Balanced', 3: 'Moderate', 4: 'Aggressive', 5: 'Speculative' }
-
-export function levelLabel(ladder, level) {
-  const found = (ladder?.levels || []).find((l) => l.level === level)
-  return found?.label || STATIC_LABELS[level] || `Level ${level}`
-}
+// `levelLabel` now lives in ../rigorLevels.js (#1645) so a caller that only
+// needs the LABEL does not have to import the module that defines the control.
+// Re-exported here so existing importers (StrategyPassport.jsx) are unchanged.
+export { levelLabel } from '../rigorLevels'
 
 export default function RigorStrictnessControl({ level, onChange }) {
   const [ladder, setLadder] = useState(FALLBACK_LADDER)

@@ -197,7 +197,7 @@ Use:
 
 - "Generate a strategy"
 - "Rigor gate failed: out-of-sample Sharpe was below 0"
-- "Arc public testnet. No real funds"
+- "Arc public testnet. No mainnet money. Generation fee is real testnet USDC."
 
 Avoid:
 

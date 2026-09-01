@@ -32,10 +32,12 @@ const CORE_CONTRACT_FIELDS = [
 //   OOS   — _rigor_helpers.compute_oos_sharpe:567-574, "a single chronological
 //           hold-out, NOT a rolling walk-forward re-estimation ... no purge/embargo
 //           gap at the train/test boundary." train_fraction defaults to 0.70.
-//   LEAK  — strategy_dsl.py:192-193 rejects look_ahead_safe=false at validation;
-//           generation_pipeline.py:1892 persists look_ahead_audit_source=
-//           "self_attested"; rigor_evaluator.look_ahead_audit (the real AST pass)
-//           runs only against cited library source.
+//   LEAK  — dsl_lookahead_audit.py proves every bar-indexed read in the
+//           interpreter is offset <= 0 (AST pass, #1566) and walks the
+//           validated spec against that audited surface; the generator's own
+//           safety claim is retired and ignored if present
+//           (strategy_dsl.LEGACY_IGNORED_FIELDS, #1599) — the verdict is
+//           derived, never self-attested.
 const RIGOR_CRITERIA = [
 	{
 		code: "DSR",
@@ -177,12 +179,12 @@ const FAQS = [
 	{
 		question: "Does Archimedes trade for me?",
 		answer:
-			"No. Today Archimedes generates, gates, and records strategies, and can run them against paper trading. It does not execute with capital, and it never takes the other side of a trade.",
+			"No. Today Archimedes generates, gates, and records strategies. Paper trading, when used, is simulated: paper_daily_returns is the graded track record the rigor gate sees, not on-chain execution proof. It never takes the other side of a trade.",
 	},
 	{
 		question: "Is this running with real money?",
 		answer:
-			"No. Archimedes currently runs on Arc public testnet with faucet USDC. It is a research prototype, not a production investment product.",
+			"No mainnet money. Archimedes runs on Arc public testnet. Generation settles real testnet USDC — read GET /api/generate/quote (prod answers dry_run: false). Faucet USDC is not mainnet cash. It is a research prototype, not a production investment product.",
 	},
 ];
 
@@ -704,3 +706,64 @@ function AuthorityBoundary() {
 	);
 }
 
+function PublicFooter() {
+	return (
+		<footer className="public-footer">
+			<div className="public-shell public-footer__grid">
+				<div className="public-footer__brand">
+					<strong>Archimedes</strong>
+					<p>Research-grounded strategy generation on Arc public testnet.</p>
+				</div>
+				<nav aria-label="Product links">
+					<strong>Product</strong>
+					<a href="/app/generate">Generate</a>
+					<a href="/app/explore">Explore</a>
+					<a href="/security">Security</a>
+					<a href="/architecture">Architecture</a>
+				</nav>
+				<nav aria-label="Resource links">
+					<strong>Resources</strong>
+					{/* docs.archimedes-arc.com — our own S3 + CloudFront, not GitHub
+					    Pages (#1634). The trailing slash is load-bearing: the docs
+					    site uses mkdocs directory URLs, and the CloudFront function
+					    in docs-site/infra/main.tf 301s the slashless form. Guarded by
+					    ui/test/docs-link.test.js. */}
+					<a
+						href="https://docs.archimedes-arc.com/"
+						target="_blank"
+						rel="noreferrer"
+					>
+						Docs
+					</a>
+					<a href="/llms.txt">Agent API</a>
+					<a href="/.well-known/agent.json">Agent manifest</a>
+					<a
+						href="https://github.com/a-apin/archimedes"
+						target="_blank"
+						rel="noreferrer"
+					>
+						GitHub
+					</a>
+				</nav>
+				<nav aria-label="Project links">
+					<strong>Project</strong>
+					<a
+						href="https://github.com/a-apin/archimedes/blob/main/LICENSE"
+						target="_blank"
+						rel="noreferrer"
+					>
+						Unlicense
+					</a>
+					<a href="https://faucet.circle.com/" target="_blank" rel="noreferrer">
+						Arc faucet
+					</a>
+					<span>No privacy or terms page published</span>
+				</nav>
+			</div>
+			<div className="public-shell public-footer__base">
+				<span>Research prototype. No mainnet money. Generation fee is real testnet USDC.</span>
+				<span>Past performance does not guarantee future results.</span>
+			</div>
+		</footer>
+	);
+}

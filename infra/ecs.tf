@@ -555,6 +555,44 @@ resource "aws_ecs_task_definition" "backend" {
         # PAYMENTS_DRY_RUN.
         { name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" },
         { name = "PAPER_TRADING", value = "true" },
+        # ------------------------------------------------------------------
+        # TEMPORARY #1632 MITIGATION — THIS MUST GO BACK TO "true".
+        #
+        # The paper-advance tick is killing web-tier tasks. The faulthandler
+        # traceback on #1632 shows the container dying with "Fatal Python
+        # error: Aborted" inside psycopg2 do_executemany, on the OHLCV cache
+        # write in services/market_data_provider.py, reached from the replay
+        # (paper_trading.replay_spec_with_decisions -> fetch_real_panel). It is
+        # a C-level abort, so the loop's fail-soft except arm cannot catch it:
+        # the task dies rather than logging. First tick lands at
+        # PAPER_ADVANCE_STARTUP_DELAY_S (240s) after boot, so every replacement
+        # task dies ~4 minutes in — a cold-fleet spiral, which is why this is
+        # set from the deploy path and not left to a code default. Proven on
+        # task-def :211 (#1725 image, fc884113): deploy.yml cloned last-good,
+        # PAPER_ADVANCE_ENABLED was absent, the old code default ON started
+        # the tick, /health 502'd at 240s. The code default is now also
+        # false; this pin and the CI rewrite remain so a future default-flip
+        # cannot tick through a cloned task-def.
+        #
+        # THIS FILE IS NOT THE PATH THAT SHIPS. deploy.yml clones the
+        # currently registered task definition and retags images; it does
+        # not apply terraform. The load-bearing pin is
+        # .github/scripts/ecs_rewrite_task_def.py, invoked from deploy.yml.
+        # Keep this line false as well so a future terraform apply cannot
+        # undo the CI pin. terraform apply is still required for other
+        # ecs.tf drift; this flag must not depend on it.
+        #
+        # The cost of this line, stated plainly: paper ledgers DO NOT ADVANCE
+        # while it is "false". Track records freeze. That is a real product
+        # claim suspended to keep the API up, not a free win.
+        #
+        # Flip back to "true" is this file AND the deploy.yml rewrite pin,
+        # after #1632 has a proven cause and a fix. Removing only this line
+        # is overwritten by the next GitHub deploy. Reader: advance_enabled()
+        # in services/paper_trading.py; row in
+        # docs/operations/feature-flag-fliplist.md.
+        # ------------------------------------------------------------------
+        { name = "PAPER_ADVANCE_ENABLED", value = "false" },
         # Daily generation caps (services/generation_quota.py, #1194 rev a).
         # Plumbed here EXPLICITLY: a cap that silently falls back to its
         # code default because it was never added to the task definition is a
@@ -562,6 +600,43 @@ resource "aws_ecs_task_definition" "backend" {
         # Not secrets. Both layers must pass; <= 0 disables a layer.
         { name = "GENERATION_DAILY_CAP_PER_USER", value = "100" },
         { name = "GENERATION_DAILY_CAP_PER_IP", value = "200" },
+        # Admission control (#1668) — the same config-drift failure the caps
+        # above were plumbed to avoid, found again by grep: all three are read
+        # from the environment by shipped code (generate_routes.py's
+        # `_max_concurrent_generations()` / `_max_queued_generations()` and
+        # debate_engine.py's `_pool_max()`) and none of them were in this file,
+        # so prod ran on the os.getenv() fallbacks by accident. Wired from
+        # variables.tf, whose defaults are byte-identical to those fallbacks —
+        # plumbing only, no behaviour change on apply. Retuning any of them is
+        # a separate, separately-reviewed change (#1668 anti-goal).
+        # backend/tests/test_admission_knobs_drift.py reads both sides and
+        # fails if they ever diverge, in either direction.
+        { name = "GENERATION_MAX_CONCURRENT", value = var.generation_max_concurrent },
+        { name = "GENERATION_MAX_QUEUE", value = var.generation_max_queue },
+        { name = "DEBATE_POOL_MAX", value = var.debate_pool_max },
+        # Hard ceiling on one generation run. Read at
+        # backend/archimedes/api/generate_routes.py:162, whose code default is
+        # 600 s — and this name was NEVER in this task definition, so prod ran
+        # that 600 s default by accident rather than by decision. Flagged by
+        # the 2026-08-31 Javi re-grade, which reported a prod generation hang
+        # of roughly 420 s: a ceiling looser than the hang it exists to bound
+        # is not a ceiling. (The ~420 s figure is the re-grade's; it is not
+        # reproduced anywhere in this repo — carried here as attribution.)
+        #
+        # 300 s is the deliberate tightening. Headroom is ample: a single
+        # generation averages ~48 s (measured 2026-08-20, cited in the
+        # admission-control note in generate_routes.py), so this is ~6x the
+        # measured run. Past it, `_run_with_cleanup`'s `asyncio.wait_for`
+        # ends the job `error` with an honest "generation exceeded the
+        # 300-second limit", restores the payer's credit via
+        # `_release_credit_if_undelivered`, and frees the generation-gate slot.
+        #
+        # Keep this a bare positive number. `_generation_timeout_seconds()`
+        # is deliberately fail-soft — "300s", "5m", "0" or "-1" all fall back
+        # to 600 silently — so a mistyped value reinstates exactly the drift
+        # this line removes. Guarded by
+        # backend/tests/test_ecs_generation_timeout.py.
+        { name = "GENERATION_TIMEOUT_SECONDS", value = "300" },
         # Generation payment gate (flip-list #834): flag stays "false" until
         # Dan flips it deliberately — and GENERATION_PAYMENT_RECIPIENT (the
         # platform wallet that receives x402 settlements) MUST be set first;
@@ -615,6 +690,11 @@ resource "aws_ecs_task_definition" "backend" {
         # the admin-wallet publish bypass / marketplace publish respectively
         # until Dan supplies real values.
         { name = "PLATFORM_ADMIN_WALLETS", value = var.platform_admin_wallets },
+        # The account-keyed half of the admin gate (#1648). Empty is the safe
+        # default: PLATFORM_ADMIN_WALLETS above keeps granting admin on its own
+        # (as evidence), so an unset value changes nothing — it only forgoes the
+        # database-independent break-glass path.
+        { name = "PLATFORM_ADMIN_ACCOUNTS", value = var.platform_admin_accounts },
         { name = "ARCHIMEDES_TREASURY_WALLET", value = var.archimedes_treasury_wallet },
         # Arms the #1556 trace-visibility floor: ownerless trace rows are served
         # publicly ONLY for these house vaults; every other ownerless row goes
@@ -766,6 +846,66 @@ resource "aws_ecs_task_definition" "backend" {
       portMappings = [
         { containerPort = 8080, protocol = "tcp" } # the ALB target — matches archimedes-backend-tg's traffic-port health check
       ]
+
+      # Issue #1309 — nginx is the ONE container actually registered as the
+      # ALB target (the `load_balancer` block below points at it, not at
+      # backend/auth), yet until this healthCheck it was the ONLY essential
+      # container in this task WITHOUT one. Per AWS's documented deployment
+      # semantics (ECS service-definition-parameters "For services that do
+      # use a load balancer"), the rolling-deployment scheduler computes a
+      # task's healthStatus from whichever essential containers declare a
+      # Docker healthCheck — a container with none simply doesn't
+      # participate. With nginx silent, ECS's task-level healthStatus was
+      # driven ENTIRELY by backend + auth, and could read HEALTHY as soon as
+      # those two containers' checks pass — regardless of whether nginx
+      # itself (started only after `dependsOn` is satisfied, then still
+      # needs envsubst-render + `nginx -t` + listen) is actually up yet.
+      # `dependsOn: HEALTHY` below governs container START ORDER only; it
+      # does not make nginx count toward the service's deployment
+      # healthStatus. Adding this check closes that real gap as generic
+      # deployment-health hygiene.
+      #
+      # NOT a fix for the observed incident (correction, adversarial review
+      # 2026-08-20 — the original comment/PR framed this as closing the
+      # mode-1 gap; the timeline below shows it cannot have): the old target
+      # deregistered 9s after the new task started — long before backend's
+      # own 30s startPeriod could produce a first passing check for ANY
+      # container, let alone before this nginx check's own startPeriod=15
+      # (itself gated behind backend+auth reaching HEALTHY, so its earliest
+      # possible verdict lands closer to T+45s) could produce a verdict, let
+      # alone before the ALB's healthy_threshold=2 × interval=30s could mark
+      # the new target healthy. The T+9s deregistration was not gated on
+      # container health at all, so this healthCheck cannot have caused or
+      # prevented it — it ships as forward-looking hygiene per AWS's
+      # documented semantics above, not as an explanation of the incident.
+      # The live candidates for the T+9s timeline are unexamined from this
+      # environment (no AWS credentials) — see the PR body: (a) drift
+      # between the live service's applied `deploymentConfiguration` and
+      # this file (not in the service's `lifecycle.ignore_changes`, so a
+      # Terraform change here only takes effect on the next manual `apply`),
+      # and (b) the old task already being unhealthy/OOM-killed (mode 2,
+      # #1328/#1329/#1337) at 23:59:13 rather than drained by the deployment.
+      #
+      # Checks a container-LOCAL endpoint (nginx.conf's `/nginx-health`),
+      # NOT the ALB's proxied `/health`: proxying to backend on every poll
+      # would round-trip into FastAPI's `/health` handler (Arc RPC + DB +
+      # Redis work, backend/archimedes/main.py) — the same endpoint named as
+      # the OOM crash-loop cause (mode 2, #1328/#1329/#1337) — adding real
+      # load for no extra signal, since backend's own container healthCheck
+      # (above) and the ALB's target-group check (alb.tf) already poll that
+      # path independently at their own cadence. `/nginx-health` confirms
+      # nginx is listening with a validly-rendered config at zero backend
+      # cost; it does not prove nginx can reach backend/auth — that's what
+      # the proxied /health and the ALB's own check are for. wget mirrors
+      # the "auth" container's healthCheck pattern above (both images ship
+      # BusyBox wget; no curl/python dependency to add).
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/nginx-health || exit 1"]
+        interval    = 10
+        timeout     = 5
+        retries     = 3
+        startPeriod = 15
+      }
 
       dependsOn = [
         { containerName = "backend", condition = "HEALTHY" },

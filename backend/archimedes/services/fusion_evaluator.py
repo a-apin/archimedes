@@ -6,8 +6,9 @@ Orchestrates the full pipeline for fusion-generated strategies:
 3. Run a backtest
 4. Apply the rigor gate (DSR, PBO, OOS Sharpe, look-ahead audit — the last of
    which is a REAL structural audit of the spec against the verified interpreter
-   surface plus a broker cheat-on-close/open check, not the LLM's self-declared
-   ``look_ahead_safe`` boolean; see ``dsl_lookahead_audit``)
+   surface plus a broker cheat-on-close/open check. The ``look_ahead_safe``
+   boolean the LLM used to declare about its own output is gone from the DSL
+   entirely; see ``dsl_lookahead_audit``)
 5. Persist the result in the strategy library
 """
 
@@ -25,6 +26,7 @@ from archimedes.services._fusion_helpers import (
     _annualized_sortino,
     _compute_monthly_returns,
     _csv_data_feed,
+    _DecisionJournalAnalyzer,
     _EquityCurveAnalyzer,
     _max_drawdown,
     _synthetic_data,
@@ -32,8 +34,8 @@ from archimedes.services._fusion_helpers import (
     equity_curve_to_daily_returns,
 )
 from archimedes.services.dsl_lookahead_audit import (
-    PASSED_DECLARED_ONLY,
-    RENDER_NOT_CHECKED,
+    PENDING,
+    DslLookAheadAudit,
     audit_dsl_strategy,
     broker_cheat_check_passed,
 )
@@ -103,14 +105,30 @@ class BacktestMetrics:
     # remove the limitation is deliberately out of scope.
     backtest_engine: str = ENGINE_SINGLE_FEED
     portfolio_construction: str = CONSTRUCTION_SINGLE_ASSET
+    # Dated record of the orders this run actually placed, captured by an
+    # observer-only analyzer (#1575). ``None`` — not ``[]`` — when the caller
+    # did not ask for it, so "the journal was off" stays distinguishable from
+    # "the strategy never traded". Paper trading is the only consumer; every
+    # other caller leaves it off and gets byte-identical metrics.
+    decision_journal: list[dict] | None = None
     # Broker execution-timing check for the cerebro that produced these numbers:
     # cheat-on-close / cheat-on-open must be OFF or the broker fills orders on
     # the same bar that generated the signal. Set by every runner in this module
     # from the real cerebro (dsl_lookahead_audit.broker_cheat_check_passed).
     # ``None`` means NO check was performed — the honest state for metrics built
-    # by hand — and it deliberately blocks a ``passed_structural`` look-ahead
-    # verdict rather than being assumed clean.
+    # by hand — and it deliberately holds the look-ahead verdict at ``pending``
+    # rather than letting the broker half be assumed clean.
     broker_cheat_check_passed: bool | None = None
+
+
+#: The look-ahead verdict a :class:`RigorVerdict` carries when nobody consulted
+#: the audit at all — a hand-built verdict, a test double, a metrics-only path.
+#: The field defaults below are read off THIS object rather than hardcoded, so a
+#: verdict nobody audited says the same thing as one the audit declined to grade.
+_UNCONSULTED_AUDIT = DslLookAheadAudit(
+    status=PENDING,
+    reasons=("no look-ahead audit was consulted when this verdict was built",),
+)
 
 
 @dataclass(frozen=True)
@@ -122,12 +140,15 @@ class RigorVerdict:
     dsr_p_value: float | None
     pbo_score: float | None
     oos_sharpe: float | None
-    # DERIVED, never declared: True iff `look_ahead_audit == "passed_structural"`
-    # — i.e. the spec was proven to sit inside the audited DSL surface AND the
-    # broker execution-timing check ran and passed. It used to be a hardcoded
-    # ``True`` mirroring the LLM's own `look_ahead_safe` flag; that is now
-    # recorded as `look_ahead_declared` and has no vote. This bool exists only
-    # because it participates in the `passing` computation below.
+    # DERIVED, never declared: True iff `look_ahead_status == "pass"` — i.e. the
+    # spec was proven to sit inside the audited DSL surface AND the broker
+    # execution-timing check ran and passed. It used to be a hardcoded ``True``
+    # mirroring the LLM's own `look_ahead_safe` flag; that flag is now REMOVED
+    # from the DSL, so there is nothing left to mirror. A bool cannot express
+    # "not yet checked" — it reads False for `pending` and `degenerate` exactly
+    # as it does for `fail` — so read `look_ahead_status` before rendering any
+    # claim from this field. It exists because it participates in the `passing`
+    # computation below and because `run_rigor_gate` takes a bool.
     look_ahead_clean: bool
     num_trials: int
     # In-sample (training-slice) Sharpe, surfaced so the OOS/IS cliff that the
@@ -139,31 +160,22 @@ class RigorVerdict:
     data_source: str = "synthetic"
     admissible: bool = False
     # ── Look-ahead audit (the honest surfaced field) ──────────────────
-    # Three-state, from dsl_lookahead_audit: "passed_structural" |
-    # "passed_declared_only" | "failed". This — not the LLM's boolean — is what
-    # gets persisted, gated on, and shown. "passed_declared_only" is a NON-pass
-    # for the LEAK criterion: it means the structural audit could not be
-    # completed and the only support for the claim is the generator's own
-    # say-so.
-    look_ahead_audit: str = PASSED_DECLARED_ONLY
-    # How a SURFACE should show it: "passed" | "not_checked" | "failed". A
-    # separate axis from the gating one on purpose — `passed_declared_only`
-    # blocks the gate but renders "not_checked", because no audit found a leak;
-    # none finished. Rendering it as "failed" would accuse the strategy of
-    # something nothing observed. See dsl_lookahead_audit's "Deployability is
-    # fail-closed; rendering is honest".
-    look_ahead_render_state: str = RENDER_NOT_CHECKED
-    # The LLM's self-declared `look_ahead_safe` flag, kept as a record of what
-    # the generator CLAIMED. Demoted: it has no vote in `look_ahead_clean`,
-    # `passing`, or the gate. ``None`` when no spec was available.
-    look_ahead_declared: bool | None = None
+    # The four-state audit result from dsl_lookahead_audit: "pass" | "fail" |
+    # "pending" | "degenerate". This — not a boolean, and certainly not anything
+    # the generator declared — is what gets persisted, gated on, and shown.
+    # "pending" (nothing was audited) and "degenerate" (the audit could not
+    # decide) are NON-passes for the LEAK criterion and must never be rendered
+    # as "FAIL". Defaults to "pending": a verdict built without consulting the
+    # audit makes no look-ahead claim at all.
+    look_ahead_status: str = PENDING
     # Why the audit landed where it did — the specific out-of-surface construct,
-    # the interpreter violation, or the missing check. Empty on a clean pass.
-    look_ahead_reasons: tuple[str, ...] = ()
-    # Honest user-facing sentence derived from `look_ahead_audit`.
-    look_ahead_label: str = (
-        "NOT AUDITED (LLM self-declared look_ahead_safe only — does not pass the gate): structural audit not completed"
-    )
+    # the interpreter violation, or the check that was never performed. Empty
+    # string on a clean pass.
+    look_ahead_reason: str = _UNCONSULTED_AUDIT.reason
+    # Honest user-facing sentence for the state above, rendered verbatim by the
+    # passport. Built by DslLookAheadAudit.label so the API, the passport and the
+    # audit module cannot drift apart.
+    look_ahead_label: str = _UNCONSULTED_AUDIT.label
 
 
 @dataclass(frozen=True)
@@ -204,6 +216,28 @@ DEFAULT_SLIPPAGE_BPS = 5
 # analytics_engine.costs.cost_model_fingerprint (no per-symbol overrides here).
 DEFAULT_COST_MODEL_ID = f"cm1:d{_DEFAULT_TX_BPS:g}:s{DEFAULT_SLIPPAGE_BPS:g}"
 
+# Hand-bumped when this engine's REPLAY BEHAVIOR changes for a reason the cost
+# fingerprint above cannot see: interpreter semantics, indicator warmup, sleeve
+# capitalization, order timing. Bump it in the same commit as the behavior
+# change.
+#
+# It is manual on purpose, and the failure direction of a MISSED bump is the
+# safe one: a genuine engine change that nobody stamped looks like a data
+# restatement — loud and wrong — rather than being quietly absolved. A derived
+# alternative (hashing this module's source) would churn on every comment edit
+# and re-grade every open paper deployment for a typo fix, which is the
+# opposite failure and the worse one.
+_GRADING_SEMANTICS_REV = 1
+
+#: The version of the GRADED path, stamped on every paper ledger row this
+#: engine writes (#1449). ``paper_trading`` has no independent opinion on cost
+#: model by design, so a change HERE re-grades every open deployment's replayed
+#: history at once; the version string is what lets that re-grade be recognised
+#: as ours and annotated, instead of being reported to users as their strategy
+#: restating its own past. Note the cost half moves BY ITSELF: #1379 wiring the
+#: slippage leg took it from ``cm1:d10:s0`` to ``cm1:d10:s5`` with no edit here.
+GRADING_ENGINE_VERSION = f"{ENGINE_SINGLE_FEED}.r{_GRADING_SEMANTICS_REV}/{DEFAULT_COST_MODEL_ID}"
+
 # The only price-data provenance that is NOT admissible for Tier-1 rigor
 # certification. Everything else (real CSV, an explicitly provided feed) is
 # trusted to be real market data — the caller owns that contract.
@@ -235,6 +269,16 @@ def is_admissible_source(data_source: str) -> bool:
     return data_source != _SYNTHETIC_SOURCE
 
 
+def _strategy_kwargs(universe_slots: int | None) -> dict[str, Any]:
+    """Per-run overrides for ``cerebro.addstrategy``.
+
+    Only forwards ``universe_slots`` when a caller explicitly set it, so the
+    strategy's own default (``len(spec.asset_universe)``) stays authoritative
+    for every existing call site.
+    """
+    return {} if universe_slots is None else {"universe_slots": int(universe_slots)}
+
+
 def run_dsl_backtest(
     spec: StrategySpec,
     *,
@@ -245,6 +289,8 @@ def run_dsl_backtest(
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    universe_slots: int | None = None,
+    decision_journal: bool = False,
 ) -> BacktestMetrics:
     """Run a backtest for a DSL-interpreted strategy.
 
@@ -255,12 +301,23 @@ def run_dsl_backtest(
     builds a ``GenericCSVData`` feed from the CSV. If all are None, generates a
     deterministic synthetic price series. The equity curve is captured
     **bar-by-bar** via a backtrader analyzer.
+
+    ``universe_slots`` overrides the per-slot weight the ``equal_weight`` /
+    ``inverse_vol`` sizing branches target (see ``interpret_spec``'s docstring).
+    Leave it None when this run owns the whole account — the strategy then
+    defaults to ``len(spec.asset_universe)`` slots. Pass ``1`` from a caller
+    that has already partitioned the cash per ticker, or the split is applied
+    twice and the sleeve sizes at 1/N².
+    ``decision_journal`` binds one extra OBSERVER-ONLY analyzer and populates
+    ``BacktestMetrics.decision_journal`` with the dated orders the run placed
+    (#1575). It must not move any graded number; that claim is a test
+    (``test_decision_journal.py::test_journal_is_a_no_op``), not a comment.
     """
     import backtrader as bt
 
     strategy_cls = interpret_spec(spec)
     cerebro = bt.Cerebro(stdstats=False)
-    cerebro.addstrategy(strategy_cls)
+    cerebro.addstrategy(strategy_cls, **_strategy_kwargs(universe_slots))
 
     data_source = _data_source_label(data_feed, data_csv_path, data_feed_factory, data_source_label)
     if data_source == _SYNTHETIC_SOURCE:
@@ -287,6 +344,8 @@ def run_dsl_backtest(
     # (see commit log for the equity-curve correctness fix).
     cerebro.addanalyzer(_EquityCurveAnalyzer, _name="equity_curve")
     cerebro.addanalyzer(_TradeStatsAnalyzer, _name="trade_stats")
+    if decision_journal:
+        cerebro.addanalyzer(_DecisionJournalAnalyzer, _name="decision_journal")
 
     # Broker-level look-ahead leg, charged on the REAL cerebro this run used —
     # on BOTH sides of run(), and ANDed.
@@ -310,6 +369,7 @@ def run_dsl_backtest(
     equity_curve: list[float]
     bar_start: date | None = None
     bar_end: date | None = None
+    journal: list[dict] | None = None
     if strat is not None:
         ec = strat.analyzers.equity_curve.get_analysis()
         equity_curve = list(ec.get("values", [])) or [initial_cash]
@@ -319,8 +379,14 @@ def run_dsl_backtest(
         # variant path, a fabricated 2004-01-02) window.
         bar_start = ec.get("first_bar_date")
         bar_end = ec.get("last_bar_date")
+        if decision_journal:
+            journal = list(strat.analyzers.decision_journal.get_analysis().get("events", []))
     else:
         equity_curve = [initial_cash]
+        # No strategy came back, so nothing was observed. Leaving the journal
+        # None (rather than []) keeps "the run produced nothing" distinct from
+        # "the strategy decided nothing" — the paper writer fails closed on the
+        # former and would silently publish zero traces for the latter.
 
     monthly_returns = _compute_monthly_returns(equity_curve)
 
@@ -351,6 +417,7 @@ def run_dsl_backtest(
     )
 
     return BacktestMetrics(
+        decision_journal=journal,
         sharpe_ratio=round(sharpe, 4),
         sortino_ratio=round(sortino, 4),
         max_drawdown=round(max_dd, 4),
@@ -381,6 +448,7 @@ def run_dsl_backtest_variants(
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    universe_slots: int | None = None,
 ) -> dict[str, BacktestMetrics]:
     """Run backtests for each cartesian-product point in the parameter grid.
 
@@ -404,6 +472,7 @@ def run_dsl_backtest_variants(
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            universe_slots=universe_slots,
         )
         return {"base": metrics}
 
@@ -433,6 +502,7 @@ def run_dsl_backtest_variants(
             initial_cash=initial_cash,
             tx_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            universe_slots=universe_slots,
         )
         results[variant_id] = variant_metrics
 
@@ -449,13 +519,14 @@ def _run_variant_backtest(
     initial_cash: float = _DEFAULT_CASH,
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
+    universe_slots: int | None = None,
 ) -> BacktestMetrics:
     """Run a single variant backtest given an already-interpreted strategy class."""
     import backtrader as bt
 
     data_source = _data_source_label(data_feed, data_csv_path, data_feed_factory, data_source_label)
     cerebro = bt.Cerebro(stdstats=False)
-    cerebro.addstrategy(strategy_cls)
+    cerebro.addstrategy(strategy_cls, **_strategy_kwargs(universe_slots))
 
     if data_feed is None and data_feed_factory is not None:
         data_feed = data_feed_factory()
@@ -656,7 +727,12 @@ def run_dsl_backtest_portfolio(
     tx_cost_bps: int = _DEFAULT_TX_BPS,
     slippage_bps: int = DEFAULT_SLIPPAGE_BPS,
 ) -> BacktestMetrics:
-    """Backtest a DSL spec per asset over real feeds and aggregate the sleeves."""
+    """Backtest a DSL spec per asset over real feeds and aggregate the sleeves.
+
+    ``universe_slots=1``: the equal split across the universe is done HERE, by
+    ``sleeve_cash``. Each sleeve owns its own share outright, so the strategy
+    must not divide by N a second time (see ``interpret_spec``'s seam note).
+    """
     per_asset: dict[str, BacktestMetrics] = {}
     sleeve_cash = initial_cash / max(1, len(feed_factories))
     for sym, factory in feed_factories.items():
@@ -667,6 +743,7 @@ def run_dsl_backtest_portfolio(
             initial_cash=sleeve_cash,
             tx_cost_bps=tx_cost_bps,
             slippage_bps=slippage_bps,
+            universe_slots=1,
         )
     return _aggregate_portfolio_metrics(
         per_asset, label=label, backtest_start=backtest_start, backtest_end=backtest_end
@@ -718,6 +795,9 @@ def run_dsl_backtest_portfolio_variants(
                 initial_cash=sleeve_cash,
                 tx_cost_bps=tx_cost_bps,
                 slippage_bps=slippage_bps,
+                # Cash is already split N ways by sleeve_cash — same seam as
+                # run_dsl_backtest_portfolio.
+                universe_slots=1,
             )
             for sym, factory in feed_factories.items()
         }
@@ -752,13 +832,14 @@ def apply_rigor_gate(
 ) -> RigorVerdict:
     """Apply rigor gate to fusion backtest metrics.
 
-    ``spec`` is the validated :class:`StrategySpec` these metrics came from. It
-    is what makes the look-ahead leg REAL: ``dsl_lookahead_audit`` proves the
-    spec sits inside a DSL surface whose interpreter provably reads only bar
-    ``t`` and earlier. Omitting it is honest but expensive — with no spec there
-    is nothing to verify, the verdict degrades to ``passed_declared_only``, and
-    the LEAK criterion does NOT pass. Callers on the live path
-    (``evaluate_fusion_spec``) always pass it.
+    ``spec`` is the validated :class:`StrategySpec` these metrics came from, and
+    it is the ONLY input to the look-ahead leg: the verdict is derived by
+    ``dsl_lookahead_audit``, which proves the spec sits inside a DSL surface
+    whose interpreter provably reads only bar ``t`` and earlier — never read off
+    a field the generating model wrote (there is no longer such a field to read).
+    Omitting it is honest but expensive: with no spec there is nothing to verify,
+    the verdict is ``pending``, and the LEAK criterion does NOT pass. Callers on
+    the live path (``evaluate_fusion_spec``) always pass it.
 
     PBO is set to ``None`` (not 0.0) when there are fewer than 2 variant
     backtests. The Bailey/Borwein/López de Prado/Zhu CSCV PBO algorithm
@@ -832,27 +913,32 @@ def apply_rigor_gate(
             first_key = next(iter(pbo_map))
             pbo_score = pbo_map[first_key]
 
-    # Look-ahead: a REAL audit, not the generator's self-declaration.
+    # Look-ahead: a REAL audit, DERIVED from the validated spec — never declared
+    # by it.
     #
     # This used to be `look_ahead_clean = True`, hardcoded, because
-    # validate_strategy_spec rejects `look_ahead_safe=False` — i.e. the gate's
-    # look-ahead leg was the LLM grading its own homework. It now comes from
-    # dsl_lookahead_audit, which (1) proves by AST that the DSL interpreter
-    # reads only bar t and earlier, (2) proves this spec uses nothing outside
-    # that audited surface, and (3) folds in the broker cheat-on-close/open
-    # check charged on the cerebro that produced these metrics.
+    # validate_strategy_spec rejected `look_ahead_safe=False` — i.e. the gate's
+    # look-ahead leg was the LLM grading its own homework, and a spec was
+    # admitted on its own assertion of innocence. That field no longer exists.
+    # The verdict now comes from dsl_lookahead_audit, which (1) proves by AST
+    # that the DSL interpreter reads only bar t and earlier, (2) proves this spec
+    # uses nothing outside that audited surface, and (3) folds in the broker
+    # cheat-on-close/open check charged on the cerebro that produced these
+    # metrics.
     #
-    # `passed_declared_only` — the structural audit could not be completed — is
-    # deliberately NOT a pass: `.passed` is True only for `passed_structural`.
+    # `pending` (nothing was audited) and `degenerate` (the audit could not
+    # decide) are deliberately NOT passes: `.passed` is True only for `pass`.
     la_audit = audit_dsl_strategy(spec, broker_cheat_check=metrics.broker_cheat_check_passed)
     look_ahead_clean = la_audit.passed
+    look_ahead_status = la_audit.status
     look_ahead_label = la_audit.label
+    look_ahead_reason = la_audit.reason
     if not look_ahead_clean:
         logger.info(
             "look-ahead audit for %s: %s — %s",
             spec.name if spec is not None else "<no spec>",
             la_audit.status,
-            "; ".join(la_audit.reasons) or "no reason recorded",
+            la_audit.reason or "no reason recorded",
         )
 
     # DSR gate: Tier-1 fusion certification is a BADGE decision, so it uses the
@@ -891,7 +977,19 @@ def apply_rigor_gate(
     # (rigor_evaluator.py), where pbo_score is None fails the overall gate
     # rather than vacuously passing it.
     pbo_pass = pbo_score is not None and math.isfinite(pbo_score) and pbo_score < _badge.pbo_max
-    passing = dsr_pass and oos_pass and look_ahead_clean and pbo_pass
+
+    # The look-ahead leg is FAIL-CLOSED: only a computed `pass` clears it, so
+    # `pending` and `degenerate` block admission exactly as hard as `fail`. An
+    # audit that did not reach a verdict is not evidence, and this gate decides
+    # whether a strategy may reach live funds.
+    #
+    # This term must stay identical to what the DSL path hands
+    # `run_rigor_gate(look_ahead_audit_passed=...)` downstream
+    # (generation_pipeline._persist_real_returns), or the same strategy passes
+    # one gate and fails the other. Both read `la_audit.passed`; the test that
+    # pins them together is
+    # test_dsl_lookahead_audit.TestTheTwoGatesAgree.
+    passing = dsr_pass and oos_pass and pbo_pass and look_ahead_clean
 
     # Provenance gate: a strategy is only admissible for Tier-1 if it passes
     # the statistics AND those statistics were computed on real market data.
@@ -913,11 +1011,9 @@ def apply_rigor_gate(
         oos_sharpe=oos_sharpe,
         in_sample_sharpe=in_sample_sharpe,
         look_ahead_clean=look_ahead_clean,
-        look_ahead_audit=la_audit.status,
-        look_ahead_render_state=la_audit.render_state,
-        look_ahead_declared=la_audit.declared_intent,
-        look_ahead_reasons=la_audit.reasons,
+        look_ahead_status=look_ahead_status,
         look_ahead_label=look_ahead_label,
+        look_ahead_reason=look_ahead_reason,
         num_trials=effective_trials,
         data_source=source,
         admissible=admissible,
@@ -1014,18 +1110,20 @@ def evaluate_fusion_spec(
         metrics,
         num_trials=num_trials,
         variants_metrics=variants_metrics,
-        # The validated spec IS the audit subject — without it the look-ahead
-        # leg degrades to the generator's self-declaration and cannot pass.
+        # The validated spec IS the audit subject, and threading it here is what
+        # makes the LEAK criterion a derived result on the live path. Without it
+        # the look-ahead leg is `pending` and cannot pass — there is no field on
+        # the spec the model filled in about itself to fall back on.
         spec=spec,
     )
 
     logger.info(
-        "fusion eval: %s — sharpe=%.3f rigor.passing=%s pbo=%s look_ahead_audit=%s",
+        "fusion eval: %s — sharpe=%.3f rigor.passing=%s pbo=%s look_ahead=%s",
         spec.name,
         metrics.sharpe_ratio,
         rigor.passing,
         rigor.pbo_score,
-        rigor.look_ahead_audit,
+        rigor.look_ahead_status,
     )
 
     return FusionEvalResult(spec=spec, backtest=metrics, rigor=rigor)

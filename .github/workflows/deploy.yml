@@ -67,13 +67,17 @@
 # infra/ecr.tf — not part of this PR); build-and-push fails with a clear
 # `::error::` if a repo doesn't exist yet rather than a bare AWS API error.
 #
-# Box-side prerequisite (NOT applied by this PR — tracked in #1039 chunk 2):
-# the EC2 instance role (`archimedes-backend-role`) needs
+# HISTORICAL (superseded by the ECS Fargate cutover; corrected 2026-08-31,
+# #1044). This paragraph described a box-side `docker compose pull` deploy:
+# the EC2 instance role (`archimedes-backend-role`) needing
 # ecr:GetAuthorizationToken + ecr:BatchGetImage + ecr:GetDownloadUrl +
-# ecr:BatchCheckLayerAvailability on repository/archimedes*, and the box needs
-# `awscli` installed, so `docker compose pull` can authenticate to ECR. The
-# deploy step fails closed with an explicit error if either is missing — see
-# docs/deployment.md § "Production deploy flow".
+# ecr:BatchCheckLayerAvailability on repository/archimedes*, plus `awscli` on
+# the box. THAT PATH NO LONGER EXISTS. This workflow deploys by registering
+# ECS task definitions with explicit image URIs (see the `deploy-ecs` job) and
+# never invokes compose; `deploy-runners.yml` uses raw `docker pull`/`docker
+# tag` over SSM for the residual oracle/agent box. Nothing in CI or production
+# reads `docker-compose.yml`'s `image:` keys — it is a local-development file,
+# and #1044 made its refs registry-less so it stays that way.
 #
 # Required GitHub Variables (or hardcoded below):
 #   AWS_ROLE_ARN — arn:aws:iam::037613907429:role/archimedes-github-deploy
@@ -207,10 +211,12 @@ jobs:
         # Env-parity fix (PR #1041 correctness pass, 2026-07-07): this is NOT
         # just a boot/smoke validation image — the SAME `:ci`-tagged image
         # built here is tagged + pushed to ECR verbatim below ("Tag + push
-        # nginx image"; no separate rebuild happens for the push), and BOTH
-        # live deploy targets (the EC2 box's `docker compose pull`, #1039 P1,
-        # and the Fargate `deploy-ecs` job) serve whatever landed in ECR —
-        # never a locally-rebuilt image. Leaving VITE_* build-args at the
+        # nginx image"; no separate rebuild happens for the push), and the
+        # live deploy target (the Fargate `deploy-ecs` job below) serves
+        # whatever landed in ECR — never a locally-rebuilt image. (The second
+        # target this comment used to name, the EC2 box's `docker compose
+        # pull`, was retired by the Fargate cutover; corrected 2026-08-31,
+        # #1044.) Leaving VITE_* build-args at the
         # Dockerfile's empty defaults (the prior state of this step) means
         # the shipped JS bundle has no Circle client key baked in and the
         # wallet / passkey / Circle SDK UI breaks on every real deploy, not
@@ -621,6 +627,12 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # Needed by the task-def rewrite script below. This job historically
+      # cloned the live task definition with jq inline and never touched the
+      # tree; pinning PAPER_ADVANCE_ENABLED cannot live only in that jq
+      # comment — it has to be the same function the unit tests run.
+      - uses: actions/checkout@v7
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c  # v6.2.3
         with:
@@ -660,12 +672,19 @@ jobs:
 
           # Fetch the CURRENTLY REGISTERED task definition for this family —
           # not `aws_ecs_task_definition.backend`'s Terraform-authored JSON —
-          # so every other field (cpu/memory/roles/secrets/log config/env)
-          # carries forward unchanged; only three application images below
-          # are freshly pushed. Matches the same "reuse infra Terraform
-          # already applied" spirit as the migrate job's static network
-          # config (B2) — this job never re-derives infra config CI has no
-          # business owning.
+          # so cpu/memory/roles/secrets/log config carry forward. Images are
+          # retagged to this commit. PAPER_ADVANCE_ENABLED is pinned false
+          # HERE, not only in infra/ecs.tf: this job never terraform-applies,
+          # so an ecs.tf pin is not live until someone applies. Last-good
+          # 011b6bfc predates #1725, so cloning it without this pin leaves
+          # the code default ON and the tick still kills the web container
+          # (~240s after boot, #1632). Proven on task-def :211: the #1725
+          # image deployed, the clone had no PAPER_ADVANCE_ENABLED, the old
+          # code default ON started the tick, /health 502'd at 240s. The
+          # code default is now also false; this pin remains so a future
+          # default-flip cannot tick through a cloned task-def. terraform
+          # apply is still required for other ecs.tf drift; this flag must
+          # not depend on it.
           aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" \
             --query 'taskDefinition' > current-task-def.json
 
@@ -674,17 +693,11 @@ jobs:
             exit 1
           }
 
-          jq --arg backend_image "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}" \
-             --arg nginx_image "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}" \
-             --arg auth_image "$ECR_REGISTRY/$AUTH_ECR_REPO:${{ github.sha }}" '
-            .containerDefinitions = (.containerDefinitions | map(
-              if .name == "backend" then .image = $backend_image
-              elif .name == "nginx" then .image = $nginx_image
-              elif .name == "auth" then .image = $auth_image
-              else . end
-            )) |
-            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
-          ' current-task-def.json > new-task-def.json
+          python3 .github/scripts/ecs_rewrite_task_def.py \
+            --backend-image "$ECR_REGISTRY/$BACKEND_ECR_REPO:${{ github.sha }}" \
+            --nginx-image "$ECR_REGISTRY/$NGINX_ECR_REPO:${{ github.sha }}" \
+            --auth-image "$ECR_REGISTRY/$AUTH_ECR_REPO:${{ github.sha }}" \
+            current-task-def.json > new-task-def.json
 
           NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://new-task-def.json \
             --query 'taskDefinition.taskDefinitionArn' --output text)

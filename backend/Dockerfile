@@ -12,7 +12,10 @@ RUN apt-get update \
 
 # Build context is the REPO ROOT (not ./backend) as of issue #1039 — see the
 # runtime COPYs below for why. Paths are therefore repo-relative.
-COPY backend/requirements.txt .
+# requirements.txt is an `-r` include of the shared base plus the CPU-only torch
+# block (issue #1522), so BOTH files must land here or pip fails at build time
+# with "Could not open requirements file". Keep them in one COPY.
+COPY backend/requirements.txt backend/requirements-base.txt ./
 RUN pip install --no-cache-dir --target=/deps -r requirements.txt
 
 # Stage 2: runtime — python:3.12-slim without build tools, running as nonroot.

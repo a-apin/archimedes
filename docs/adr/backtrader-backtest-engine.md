@@ -314,13 +314,27 @@ is. [`services/dsl_lookahead_audit.py`](../../backend/archimedes/services/dsl_lo
 replaced that declaration with a structural proof — an AST audit of the DSL
 interpreter showing every bar-indexed read is at offset ≤ 0, a walk of the
 validated spec showing it uses nothing outside that audited surface, and the
-broker cheat-on-close/open check charged on the real `cerebro` — so a DSL row
-that clears it records `"dsl_structural_audit"`. `"self_attested"` survives for
-rows where the structural audit could not be completed or failed, and in *those*
-rows the boolean beside the label is `False`. A reader is no longer shown a
-self-attested `True`. The three-source distinction the amendment relied on is
-therefore now four: `broker_config_only` (execution-timing only, never fails),
-`ast_audit` (source-level audit of cited curated code), `dsl_structural_audit`
-(the closed-DSL proof), `self_attested` (no completed audit, boolean `False`).
+broker cheat-on-close/open check charged on the real `cerebro`. The DSL path now
+records which of two things happened, on the axis a provenance column is about —
+did an audit conclude:
+
+- `dsl_structural_audit` — the audit reached a verdict about the strategy,
+  `pass` **or** `fail`. A failure's provenance is the audit just as much as a
+  pass's is.
+- `dsl_audit_not_run` — the audit reached no verdict (`pending`/`degenerate`).
+  The boolean beside this label is `False` because nothing was proven, not
+  because a leak was found.
+
+`"self_attested"` is **retired**: the field it named — the LLM's own
+`look_ahead_safe` declaration — was deleted from the DSL, so nothing is attested
+and no path writes the value again. It is also no longer honoured on *read*: a
+pre-existing row carrying it has a boolean that was a claim rather than a
+measurement, so `dsl_lookahead_audit.verdict_from_persisted_row` grades such a
+row `pending` — non-deployable, rendered "NOT_RUN", never a `PASS`. The
+three-source distinction the amendment relied on is therefore now five values,
+one of them historical: `broker_config_only` (execution-timing only, never
+fails), `ast_audit` (source-level audit of cited curated code),
+`dsl_structural_audit` (the closed-DSL proof concluded), `dsl_audit_not_run`
+(it did not), and the retired `self_attested` on legacy rows only.
 Per-engine row counts are a live-DB question (`GROUP BY source_pipeline,
 backtest_engine`); no number is stated here by design.

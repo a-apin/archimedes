@@ -43,6 +43,14 @@ Explore history modal, any interval) pass straight through, uncached, on
 purpose: a stale daily close must never masquerade as a live push/guardrail
 reading. Background refresh is deliberately NOT built here (#1218 anti-goal:
 seam, not migration) — the cache primes itself on the first miss.
+
+**The cache is PER-VENDOR.** Both readers filter ``asset_daily_bars`` on the
+``source`` column as well as the symbol, so rows written by one provider are
+invisible to another. Without that filter, flipping ``MARKET_DATA_PROVIDER``
+on a system with a warm cache serves the OLD vendor's bars for cached symbols
+and the NEW vendor's for uncached ones — inside a single backtest panel, with
+no error and no log line. See ``_read_cached_ohlcv``'s docstring and
+``docs/adr/market-data-sourcing.md``. Cost: a provider flip starts cold.
 """
 
 from __future__ import annotations
@@ -51,6 +59,8 @@ import logging
 import math
 import os
 import re
+import threading
+import time
 from abc import ABC, abstractmethod
 from datetime import UTC, date, datetime, timedelta
 
@@ -365,7 +375,7 @@ class TiingoProviderError(RuntimeError):
 
 
 class TiingoAPIKeyMissingError(TiingoProviderError):
-    """``TIINGO_API_KEY`` is unset/blank. Raised at ``TiingoProvider``
+    """``TIINGO_API_TOKEN`` is unset/blank. Raised at ``TiingoProvider``
     construction — ``get_provider()`` builds a fresh instance on every call
     (no long-lived singleton in this seam), so this fires on the very next
     call site that routes through the seam with ``MARKET_DATA_PROVIDER=tiingo``:
@@ -388,6 +398,33 @@ class TiingoUnsupportedSymbolError(TiingoProviderError, ValueError):
     any existing ``except ValueError`` call site (matches
     ``YFinanceProvider``'s / ``fetch_ohlcv``'s existing
     raise-on-unfetchable-symbol contract)."""
+
+
+class TiingoRateLimitError(TiingoProviderError):
+    """Tiingo answered HTTP 429 — the account's request quota is exhausted.
+
+    A SEPARATE type from the generic ``TiingoProviderError`` because the two
+    demand opposite handling and, before this class existed, got the same
+    one. ``get_daily_close_batch`` catches ``TiingoProviderError`` and SKIPS
+    the offending symbol so a single bad ticker cannot fail a 280-symbol
+    universe sweep — correct for "this symbol has no data", and exactly
+    wrong for a quota exhaustion, which is not about the symbol at all.
+    Laundered through that path, a rate limit hit mid-sweep would (a) drop
+    every remaining symbol from the batch while the caller saw a
+    successful-looking partial result, and (b) keep firing requests at a
+    vendor that has already said stop. Quota state is per-account and
+    affects every ticker, so this propagates out of the batch like
+    ``TiingoAPIKeyMissingError`` does, and says so in the message.
+
+    ``retry_after_s`` carries the vendor's own ``Retry-After`` header when
+    it sent one (``None`` when it did not) — surfaced rather than guessed,
+    because our pacing default is a politeness floor we chose, not a
+    published quota we can verify from inside this process.
+    """
+
+    def __init__(self, message: str, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
 
 class TiingoEmptyResponseError(TiingoProviderError, ValueError):
@@ -461,22 +498,152 @@ def _classify_tiingo_ticker(ticker: str) -> str:
     return "equity"
 
 
+#: Canonical credential env var, first; the name the provider shipped with,
+#: second. Tiingo's own docs and its ``Authorization: Token <...>`` header
+#: call the credential a *token*, so ``TIINGO_API_TOKEN`` is what the ADR,
+#: ``.env.example`` and the prod SSM parameter name all use. ``TIINGO_API_KEY``
+#: stays readable because it is the name already merged on ``main`` and
+#: already in developers' local ``.env`` files; dropping it outright would
+#: turn a working local setup into a ``TiingoAPIKeyMissingError`` with no
+#: hint as to why. Order matters: the canonical name WINS when both are set,
+#: so the migration direction is unambiguous.
+_TIINGO_TOKEN_ENV_VARS: tuple[str, ...] = ("TIINGO_API_TOKEN", "TIINGO_API_KEY")
+
+
 def _tiingo_api_key() -> str:
-    """Read ``TIINGO_API_KEY`` fresh from the environment — never cached on a
-    ``TiingoProvider`` instance, so a rotated value takes effect on the next
+    """Read the Tiingo API token fresh from the environment — never cached on
+    a ``TiingoProvider`` instance, so a rotated value takes effect on the next
     call as soon as the process's environment carries it. Raises loud
     (``TiingoAPIKeyMissingError``) rather than proceeding with an
     unauthenticated request Tiingo would reject anyway; the message never
-    includes the key (there is none to include)."""
-    key = os.getenv("TIINGO_API_KEY", "").strip()
-    if not key:
-        raise TiingoAPIKeyMissingError(
-            "TIINGO_API_KEY is not set. Required whenever MARKET_DATA_PROVIDER=tiingo "
-            "(see .env.example). NOT wired into infra/ecs.tf's task-definition secrets yet — "
-            "seeding /archimedes/prod/TIINGO_API_KEY and adding the ecs.tf entry are cutover "
-            "follow-ups, deliberately not in this PR."
+    includes the token (there is none to include).
+
+    Reads ``TIINGO_API_TOKEN`` first, then the legacy ``TIINGO_API_KEY`` — see
+    ``_TIINGO_TOKEN_ENV_VARS``.
+    """
+    for name in _TIINGO_TOKEN_ENV_VARS:
+        token = os.getenv(name, "").strip()
+        if token:
+            if name != _TIINGO_TOKEN_ENV_VARS[0]:
+                logger.warning(
+                    "Tiingo credential read from the legacy %s env var — rename it to %s "
+                    "(the canonical name; see .env.example and docs/adr/market-data-sourcing.md)",
+                    name,
+                    _TIINGO_TOKEN_ENV_VARS[0],
+                )
+            return token
+    raise TiingoAPIKeyMissingError(
+        "TIINGO_API_TOKEN is not set (legacy alias TIINGO_API_KEY also empty). Required "
+        "whenever MARKET_DATA_PROVIDER=tiingo (see .env.example). NOT wired into "
+        "infra/ecs.tf's task-definition secrets yet — seeding "
+        "/archimedes/prod/TIINGO_API_TOKEN and adding the ecs.tf entry are cutover "
+        "follow-ups, deliberately not in this PR."
+    )
+
+
+# ─── Free-tier politeness: request pacing ───────────────────────────────
+#
+# Tiingo's free tier is metered per hour and per day. This module does NOT
+# hardcode those ceilings: they are account- and plan-dependent, they change,
+# and a number copied into source here would read as verified when it is not.
+# What it does instead is (a) never fire two requests closer together than a
+# floor we choose, and (b) surface the vendor's own 429 verbatim as the
+# authority on when we have actually crossed a line (TiingoRateLimitError).
+#
+# The floor is a politeness default, not a quota model. It is applied at the
+# single HTTP boundary (``TiingoProvider._request``), so every family
+# (equity/crypto/FX) and both public methods pace through one place.
+_TIINGO_DEFAULT_MIN_REQUEST_INTERVAL_S = 1.1
+
+
+def _tiingo_min_request_interval_s() -> float:
+    """Seconds to hold between consecutive Tiingo HTTP requests.
+
+    ``TIINGO_MIN_REQUEST_INTERVAL_S`` overrides; ``0`` disables pacing.
+    Defaults to 0 under ``TESTING`` so the hermetic suite (which mocks the
+    transport and never touches Tiingo) does not sleep — the pacer itself is
+    still tested directly, with an injected clock, so switching it off here
+    hides nothing. Same ``TESTING`` kill-switch convention as
+    ``fusion_market_data.real_data_enabled``.
+    """
+    default = 0.0 if os.getenv("TESTING") else _TIINGO_DEFAULT_MIN_REQUEST_INTERVAL_S
+    raw = os.getenv("TIINGO_MIN_REQUEST_INTERVAL_S")
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        logger.warning(
+            "invalid TIINGO_MIN_REQUEST_INTERVAL_S=%r (not a number) — falling back to %s",
+            raw,
+            default,
         )
-    return key
+        return default
+    if value < 0:
+        logger.warning("negative TIINGO_MIN_REQUEST_INTERVAL_S=%r — falling back to %s", raw, default)
+        return default
+    return value
+
+
+class _RequestPacer:
+    """Thread-safe minimum-interval throttle over a shared clock.
+
+    Deliberately process-wide (one module-level instance below) rather than
+    per-``TiingoProvider``: ``get_provider()`` constructs a FRESH provider on
+    every call, so per-instance state would reset on each one and pace
+    nothing at all. Concurrent callers serialize on the lock across the
+    sleep, which is the point — two threads that each waited independently
+    would still fire simultaneously.
+
+    ``clock``/``sleep`` are injectable so the pacing behaviour is testable
+    without real time passing (mock at the boundary, not the internals).
+    """
+
+    def __init__(self, clock=time.monotonic, sleep=time.sleep) -> None:
+        self._clock = clock
+        self._sleep = sleep
+        self._lock = threading.Lock()
+        self._last_request_at: float | None = None
+
+    def wait(self, min_interval_s: float) -> float:
+        """Block until at least ``min_interval_s`` has elapsed since the
+        previous call. Returns the number of seconds actually slept (0.0 when
+        no wait was needed) so callers/tests can observe the pacing."""
+        with self._lock:
+            now = self._clock()
+            slept = 0.0
+            if min_interval_s > 0 and self._last_request_at is not None:
+                remaining = min_interval_s - (now - self._last_request_at)
+                if remaining > 0:
+                    self._sleep(remaining)
+                    slept = remaining
+                    now = self._clock()
+            self._last_request_at = now
+            return slept
+
+
+#: Process-wide pacer for the Tiingo HTTP boundary — see ``_RequestPacer``.
+_tiingo_pacer = _RequestPacer()
+
+
+def _parse_retry_after(raw: str | None) -> float | None:
+    """Parse a ``Retry-After`` header into seconds, or ``None``.
+
+    Only the delta-seconds form is honoured. RFC 9110 also permits an
+    HTTP-date, but returning ``None`` for a shape we did not parse is the
+    honest answer — ``TiingoRateLimitError.retry_after_s`` is documented as
+    "the vendor's own value when it sent one", and inventing a number from a
+    header we failed to read would make it a guess wearing the vendor's
+    name. A non-numeric or negative value is likewise ``None``, never 0
+    (which would read as "retry immediately").
+    """
+    if raw is None or not raw.strip():
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
 
 
 def _tiingo_rows_to_ohlcv(
@@ -565,19 +732,27 @@ class TiingoProvider(MarketDataProvider):
     single raw field set directly — there is nothing to get wrong there.
     """
 
-    def __init__(self, client: httpx.Client | None = None) -> None:
+    def __init__(self, client: httpx.Client | None = None, pacer: _RequestPacer | None = None) -> None:
         # Presence-check (not value-cache) at construction — see
         # TiingoAPIKeyMissingError's docstring for why this is the closest
         # thing this seam has to a "startup" gate. The key itself is
         # re-read fresh (never reused from here) by every _request() call.
         _tiingo_api_key()
         self._client = client
+        # Defaults to the PROCESS-WIDE pacer, not a per-instance one:
+        # get_provider() builds a fresh TiingoProvider on every call, so
+        # per-instance pacing state would reset each time and pace nothing.
+        # Injectable for tests (fake clock, no real sleeping).
+        self._pacer = pacer if pacer is not None else _tiingo_pacer
 
     # ─── HTTP boundary ───────────────────────────────────────────────
 
     def _request(self, path: str, params: dict[str, str]) -> object:
         key = _tiingo_api_key()  # re-read fresh — never cached on self
         headers = {"Authorization": f"Token {key}"}  # header, never a query param: never lands in a logged URL
+        # Politeness floor, applied at the ONE HTTP boundary so every endpoint
+        # family and both public methods pace through the same place.
+        self._pacer.wait(_tiingo_min_request_interval_s())
         client = self._client
         owns_client = client is None
         if owns_client:
@@ -587,7 +762,17 @@ class TiingoProvider(MarketDataProvider):
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as exc:
-            raise TiingoProviderError(f"Tiingo API returned HTTP {exc.response.status_code} for {path}") from exc
+            status = exc.response.status_code
+            if status == 429:
+                retry_after = _parse_retry_after(exc.response.headers.get("Retry-After"))
+                suffix = f" Vendor asked us to retry after {retry_after:g}s." if retry_after is not None else ""
+                raise TiingoRateLimitError(
+                    f"Tiingo API rate limit hit (HTTP 429) for {path} — the account's request "
+                    f"quota is exhausted, which is an account-wide condition, not a per-symbol "
+                    f"data gap.{suffix}",
+                    retry_after_s=retry_after,
+                ) from exc
+            raise TiingoProviderError(f"Tiingo API returned HTTP {status} for {path}") from exc
         except httpx.RequestError as exc:
             raise TiingoProviderError(f"Tiingo API request failed for {path}: {type(exc).__name__}") from exc
         finally:
@@ -667,12 +852,19 @@ class TiingoProvider(MarketDataProvider):
         contract (inherited from the ABC, unchanged by this PR) is per-item
         skip.
 
-        A missing API key is the one exception that DOES propagate out of
-        the batch immediately rather than being skipped per-ticker: it is a
-        configuration problem affecting every ticker, not a per-symbol data
-        issue, and skipping it per-item would silently degrade
-        ``MARKET_DATA_PROVIDER=tiingo`` with no key into "every symbol
-        empty" instead of a loud startup-shaped failure.
+        Two conditions DO propagate out of the batch immediately rather than
+        being skipped per-ticker, because neither is a per-symbol data issue
+        and both affect every remaining ticker equally:
+
+        - a missing API token — a configuration problem; skipping it
+          per-item would silently degrade ``MARKET_DATA_PROVIDER=tiingo``
+          with no token into "every symbol empty" instead of a loud,
+          startup-shaped failure;
+        - an HTTP 429 rate limit (``TiingoRateLimitError``) — an account-wide
+          quota exhaustion. Skipping it per-item would drop every remaining
+          symbol from a universe sweep while handing the caller a
+          successful-looking partial result, AND keep firing requests at a
+          vendor that already said stop.
         """
         if not tickers:
             return {}
@@ -684,8 +876,12 @@ class TiingoProvider(MarketDataProvider):
         for key, ticker in tickers.items():
             try:
                 frame = self._fetch_ohlcv_for_ticker(ticker, start, end)
-            except TiingoAPIKeyMissingError:
-                raise  # configuration problem, not a per-symbol issue — loud, no partial batch
+            except (TiingoAPIKeyMissingError, TiingoRateLimitError):
+                # Account-wide conditions, not per-symbol data gaps — loud, no
+                # partial batch. MUST stay ABOVE the generic handler below:
+                # both subclass TiingoProviderError, so ordering is what makes
+                # this a propagate rather than a skip.
+                raise
             except TiingoProviderError as exc:
                 logger.error("TiingoProvider: skipping %s (%s) in batch — %s", key, ticker, exc)
                 continue
@@ -798,15 +994,23 @@ def _default_session_factory():
     return get_session()
 
 
-def _read_cached_series(session, ticker: str, start_date: date, ttl: timedelta) -> pd.Series | None:
-    """Return a cached close-price ``Series`` for ``ticker`` if the cache both
-    covers back to (approximately) ``start_date`` and was written within
-    ``ttl``. ``None`` on a coverage or freshness miss (caller re-fetches)."""
+def _read_cached_series(session, ticker: str, start_date: date, ttl: timedelta, source: str) -> pd.Series | None:
+    """Return a cached close-price ``Series`` for ``ticker`` if the cache was
+    written by ``source``, covers back to (approximately) ``start_date``, and
+    was written within ``ttl``. ``None`` on a source, coverage or freshness
+    miss (caller re-fetches).
+
+    See ``_read_cached_ohlcv`` for why the ``source`` filter is load-bearing.
+    """
     from archimedes.models.asset_daily_bars import AssetDailyBar
 
     rows = (
         session.query(AssetDailyBar)
-        .filter(AssetDailyBar.symbol == ticker, AssetDailyBar.trade_date >= start_date)
+        .filter(
+            AssetDailyBar.symbol == ticker,
+            AssetDailyBar.source == source,
+            AssetDailyBar.trade_date >= start_date,
+        )
         .order_by(AssetDailyBar.trade_date)
         .all()
     )
@@ -873,18 +1077,42 @@ def _write_cached_series(session, ticker: str, series: pd.Series, source: str) -
             )
 
 
-def _read_cached_ohlcv(session, ticker: str, start_date: date, end_date: date, ttl: timedelta) -> pd.DataFrame | None:
-    """Return a cached OHLCV ``DataFrame`` for ``ticker`` if the cache covers
-    back to (approximately) ``start_date``, holds through ``end_date``, every
-    row carries a full bar (not a close-only row written by
-    ``get_daily_close_batch``'s writer), and was written within ``ttl``.
-    ``None`` on any miss (caller re-fetches the whole range)."""
+def _read_cached_ohlcv(
+    session, ticker: str, start_date: date, end_date: date, ttl: timedelta, source: str
+) -> pd.DataFrame | None:
+    """Return a cached OHLCV ``DataFrame`` for ``ticker`` if the cache was
+    written by ``source``, covers back to (approximately) ``start_date``,
+    holds through ``end_date``, every row carries a full bar (not a
+    close-only row written by ``get_daily_close_batch``'s writer), and was
+    written within ``ttl``. ``None`` on any miss (caller re-fetches the whole
+    range).
+
+    **The ``source`` filter is the anti-source-mixing guard (#1218).** Rows
+    in ``asset_daily_bars`` record which vendor wrote them, and
+    ``_write_cached_ohlcv`` has always stamped that column — but the read
+    used to ignore it, matching on ``symbol`` alone. On a system whose cache
+    is already full of ``source='yfinance'`` rows (i.e. production), flipping
+    ``MARKET_DATA_PROVIDER=tiingo`` would therefore serve **yfinance** bars
+    for every warm symbol and **Tiingo** bars for every cold one — inside a
+    single backtest panel, with no error and no log line. The two vendors do
+    not agree bar-for-bar (different adjustment pipelines, different
+    corporate-action timing), so that is a silently mixed-source panel
+    graded as if it came from one vendor: exactly the failure the seam
+    exists to prevent, and one that no amount of correctness in
+    ``TiingoProvider`` itself could catch.
+
+    Filtering on ``source`` makes a provider flip a cold cache rather than a
+    corrupt one. Cost: the first run after a flip re-fetches every symbol.
+    That is the intended price — a cache miss is cheap and visible, a
+    mixed-source backtest is neither.
+    """
     from archimedes.models.asset_daily_bars import AssetDailyBar
 
     rows = (
         session.query(AssetDailyBar)
         .filter(
             AssetDailyBar.symbol == ticker,
+            AssetDailyBar.source == source,
             AssetDailyBar.trade_date >= start_date,
             AssetDailyBar.trade_date <= end_date,
         )
@@ -937,6 +1165,41 @@ def _read_cached_ohlcv(session, ticker: str, start_date: date, end_date: date, t
     )
 
 
+#: Rows per flush in the OHLCV cache write (#1632 mitigation).
+#:
+#: A full multi-year OHLCV frame is thousands of rows, and the ORM turns the
+#: whole pending set into ONE ``executemany`` at commit — which is the exact
+#: frame at the top of #1632's abort traceback (psycopg2 ``do_executemany``).
+#: Flushing every N rows bounds that batch. Deliberately a constant and not an
+#: env knob: a number nobody can tune is a number nobody has to reason about
+#: during an incident, and it should be deleted with the rest of this
+#: mitigation rather than inherited as config.
+_OHLCV_WRITE_CHUNK_ROWS = 500
+
+#: Serializes the OHLCV cache write+commit across threads in this process.
+#:
+#: **MITIGATION, NOT A FIX — and the distinction is the point.**
+#:
+#: *Proven:* the faulthandler traceback posted on #1632 shows a backend
+#: container dying with ``Fatal Python error: Aborted`` inside psycopg2's
+#: ``do_executemany``, on this module's OHLCV cache-write commit, reached from
+#: ``paper_trading.replay_spec_with_decisions`` via ``fetch_real_panel``. That
+#: is a C-level abort: no Python ``except`` arm can catch it, which is why the
+#: existing fail-soft arms below did not contain it and the container died.
+#:
+#: *Not proven:* the mechanism. An abort inside libpq is consistent with one
+#: connection being used from two threads at once, but we have NOT shown that
+#: is what happens here, and this lock does not prove it either. It removes
+#: in-process write concurrency as a variable so the fleet stops cycling while
+#: the real cause is found. If the aborts continue with this held, the
+#: concurrency hypothesis is wrong — which is itself a useful result.
+#:
+#: Scoped to the write path only: the vendor fetch happens above it, so a
+#: network call never holds this lock. Delete both this and the chunking above
+#: once #1632 has a proven cause.
+_OHLCV_CACHE_WRITE_LOCK = threading.Lock()
+
+
 def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> None:
     """Upsert a full OHLCV frame (indexed by date, columns
     Open/High/Low/Close/Volume — ``fetch_ohlcv``'s output shape) into
@@ -979,6 +1242,7 @@ def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> 
         .filter(AssetDailyBar.symbol == ticker, AssetDailyBar.trade_date.in_(dates))
         .all()
     }
+    pending = 0
     for trade_date, open_f, high_f, low_f, close_f, volume_f in to_write:
         row = existing.get(trade_date)
         if row is not None:
@@ -1003,6 +1267,20 @@ def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> 
                     fetched_at=now,
                 )
             )
+        pending += 1
+        if pending >= _OHLCV_WRITE_CHUNK_ROWS:
+            # FLUSH, never commit. The caller owns the transaction, so this
+            # changes only the SIZE of the batch psycopg2 executes, not the
+            # all-or-nothing semantics: a failure in any chunk — here or at the
+            # caller's commit — still rolls the whole cache write back and
+            # still lands in the caller's existing IntegrityError /
+            # SQLAlchemyError arms unchanged. Committing here instead would
+            # leave a half-written range behind on failure, and a partially
+            # cached window reads as a coverage hit on the next call.
+            session.flush()
+            pending = 0
+    # The final partial chunk is left to the caller's commit — flushing it here
+    # would only duplicate that work.
 
 
 class CachingMarketDataProvider(MarketDataProvider):
@@ -1026,7 +1304,7 @@ class CachingMarketDataProvider(MarketDataProvider):
         session = self._session_factory()
         try:
             for key, ticker in tickers.items():
-                series = _read_cached_series(session, ticker, start_date, self._ttl)
+                series = _read_cached_series(session, ticker, start_date, self._ttl, self._source_name)
                 if series is not None:
                     result[key] = series
                 else:
@@ -1097,7 +1375,7 @@ class CachingMarketDataProvider(MarketDataProvider):
 
         session = self._session_factory()
         try:
-            cached = _read_cached_ohlcv(session, ticker, start_date, end_date, self._ttl)
+            cached = _read_cached_ohlcv(session, ticker, start_date, end_date, self._ttl, self._source_name)
         finally:
             session.close()
         if cached is not None:
@@ -1108,19 +1386,27 @@ class CachingMarketDataProvider(MarketDataProvider):
             return fetched
 
         session = self._session_factory()
-        try:
-            _write_cached_ohlcv(session, ticker, fetched, self._source_name)
-            session.commit()
-        except IntegrityError:
-            # Same benign concurrent-writer race as get_daily_close_batch's
-            # prime — the loser rolls back; the fetch is still served.
-            session.rollback()
-            logger.info("asset_daily_bars OHLCV prime lost a concurrent-writer race (benign); next read is warm")
-        except SQLAlchemyError:
-            session.rollback()
-            logger.warning("asset_daily_bars OHLCV cache write failed (fetch still served)", exc_info=True)
-        finally:
-            session.close()
+        # #1632 mitigation — see _OHLCV_CACHE_WRITE_LOCK for what is proven and
+        # what is only hypothesised. The lock is entered AFTER the vendor fetch
+        # above, so it never spans a network call; it covers the write, the
+        # commit, and the rollback arms, because a rollback is DB work too. It
+        # adds no exception handling of its own: every arm below is byte-for-
+        # byte the one that was already here, so a write failure fails exactly
+        # as it did before.
+        with _OHLCV_CACHE_WRITE_LOCK:
+            try:
+                _write_cached_ohlcv(session, ticker, fetched, self._source_name)
+                session.commit()
+            except IntegrityError:
+                # Same benign concurrent-writer race as get_daily_close_batch's
+                # prime — the loser rolls back; the fetch is still served.
+                session.rollback()
+                logger.info("asset_daily_bars OHLCV prime lost a concurrent-writer race (benign); next read is warm")
+            except SQLAlchemyError:
+                session.rollback()
+                logger.warning("asset_daily_bars OHLCV cache write failed (fetch still served)", exc_info=True)
+            finally:
+                session.close()
 
         return fetched
 

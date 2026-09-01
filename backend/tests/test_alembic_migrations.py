@@ -756,38 +756,42 @@ def _seed_phase1_fixture(db_path: Path) -> None:
                 updated_at=now,
             )
         )
-        # Core inserts, not ORM adds, for the one table later migrations keep
-        # growing: the ORM's executemany pads the INSERT with every mapped
-        # nullable column, and this fixture's schema is pinned at phase1's
-        # down_revision — a column the model gains in a LATER revision (first
-        # bitten by e41c7a9b2d63's position_cache_json) gets named against a
-        # table that predates it. Core emits only the columns listed here,
-        # all of which exist at the pinned revision.
-        pd_common = {
-            "spec_json": "{}",
-            "deployed_at": date(2026, 1, 1),
-            "status": "active",
-            "created_at": now,
-        }
-        session.execute(
-            sa.insert(PaperDeployment.__table__),
-            [
-                {
-                    "id": "pd-healthy",
-                    "strategy_id": _REAL_STRATEGY,
-                    "owner_wallet": _REAL_WALLET,
-                    "owner_user_id": "user-1",
-                    **pd_common,
-                },
-                {
-                    "id": "pd-orphan",
-                    "strategy_id": _ORPHAN_STRATEGY,
-                    "owner_wallet": _ORPHAN_WALLET,
-                    "owner_user_id": "user-1",
-                    **pd_common,
-                },
-            ],
-        )
+        # paper_deployments goes in through the table AS IT EXISTS AT THIS
+        # REVISION, not through every column today's ORM model carries. A
+        # column added by a LATER migration (#1575's anchor_traces /
+        # trace_gap_at / trace_drift_at) is absent from the pre-migration
+        # schema, and a plain ORM insert would name it and fail with "no such
+        # column" — a failure about the fixture, not about the migration under
+        # test. The values still come from the model's own construction, so
+        # nullability/defaults keep tracking the model.
+        paper_table = sa.Table("paper_deployments", sa.MetaData(), autoload_with=engine)
+        available = set(paper_table.c.keys())
+        for deployment in (
+            PaperDeployment(
+                id="pd-healthy",
+                strategy_id=_REAL_STRATEGY,
+                owner_wallet=_REAL_WALLET,
+                owner_user_id="user-1",
+                spec_json="{}",
+                deployed_at=date(2026, 1, 1),
+                status="active",
+                created_at=now,
+            ),
+            PaperDeployment(
+                id="pd-orphan",
+                strategy_id=_ORPHAN_STRATEGY,
+                owner_wallet=_ORPHAN_WALLET,
+                owner_user_id="user-1",
+                spec_json="{}",
+                deployed_at=date(2026, 1, 1),
+                status="active",
+                created_at=now,
+            ),
+        ):
+            values = {
+                name: getattr(deployment, name) for name in available if getattr(deployment, name, None) is not None
+            }
+            session.execute(paper_table.insert().values(**values))
         session.commit()
     engine.dispose()
 
@@ -1642,3 +1646,84 @@ def test_alembic_paper_marks_matches_a_fresh_create_all_schema(tmp_path):
         assert _columns(create_all_db, table) == _columns(alembic_db, table), (
             f"{table} columns differ between create_all() and alembic upgrade head"
         )
+
+
+def test_alembic_grading_engine_version_columns_added_and_removed(tmp_path):
+    """#1449: ``paper_daily_returns.engine_version`` and
+    ``paper_deployments.engine_regrade_at`` land on upgrade, are gone on
+    downgrade, and come back on re-upgrade.
+
+    Two things this asserts beyond the up/down/idempotent contract:
+
+      * the LEDGER ROWS survive the round trip. This revision adds columns to
+        an append-only, user-facing track record; a downgrade that took rows
+        with it would be the one failure this table exists to prevent.
+      * ``engine_version`` comes back NULL for a pre-existing row rather than
+        carrying a default. The migration deliberately backfills nothing —
+        stamping historical rows with today's engine string would invent the
+        provenance needed to make a drift comparison come out clean.
+
+    Same derived-target discipline as the tests above: the downgrade target is
+    this revision's OWN ``down_revision``, never a hardcoded hash.
+    """
+    db_path = tmp_path / "engine_version.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _cols(table: str) -> set[str]:
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    def _sql(statement: str, *params):
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(statement, params)
+            con.commit()
+            return cur.fetchall()
+        finally:
+            con.close()
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("a7f2c93b1d64").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "engine_version" in _cols("paper_daily_returns")
+    assert "engine_regrade_at" in _cols("paper_deployments")
+
+    # A ledger row written by a build that never recorded its engine version —
+    # the population the "no backfill" decision is about.
+    _sql(
+        "INSERT INTO paper_daily_returns (deployment_id, date, daily_return, appended_at) VALUES (?, ?, ?, ?)",
+        "dep-1449",
+        "2026-08-04",
+        -0.02,
+        "2026-08-05 00:00:00",
+    )
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "engine_version" not in _cols("paper_daily_returns")
+    assert "engine_regrade_at" not in _cols("paper_deployments")
+    assert _sql("SELECT daily_return FROM paper_daily_returns WHERE deployment_id = ?", "dep-1449") == [(-0.02,)]
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "engine_version" in _cols("paper_daily_returns")
+    assert "engine_regrade_at" in _cols("paper_deployments")
+    # NULL, not a default: "unrecorded" stays distinguishable from any real
+    # version string.
+    assert _sql("SELECT daily_return, engine_version FROM paper_daily_returns WHERE deployment_id = ?", "dep-1449") == [
+        (-0.02, None)
+    ]
+
+    reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade_again.returncode == 0, reupgrade_again.stderr

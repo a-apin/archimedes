@@ -452,6 +452,35 @@ test("metadata and sitemap describe canonical anonymous public routes", () => {
 	);
 });
 
+test("share cards do not claim generation is recorded on-chain", () => {
+	assert.doesNotMatch(html, /records the whole decision on Arc/);
+	assert.doesNotMatch(html, /check the reasoning trace on-chain/);
+	assert.doesNotMatch(html, /on-chain reasoning provenance/);
+	assert.match(html, /Generation is not anchored on-chain/);
+});
+
+test("public announcement and landing footer do not say unqualified No real funds", () => {
+	assert.doesNotMatch(publicLayout, /No real funds/);
+	assert.doesNotMatch(landing, /No real funds/);
+	assert.match(publicLayout, /No mainnet money/);
+	assert.match(landing, /Generation fee is real testnet USDC/);
+});
+
+test("landing FAQ does not name the unmerged paper_agent_trades table as a visitor path", () => {
+	assert.doesNotMatch(landing, /paper_agent_trades/);
+	assert.match(landing, /paper_daily_returns is the graded track record/);
+});
+
+test("architecture page does not quote a curated pass count, including zero", () => {
+	assert.doesNotMatch(architecture, /Not one paper-derived/);
+	assert.doesNotMatch(architecture, /clears our bar/);
+	assert.match(architecture, /will never quote a count/);
+	assert.doesNotMatch(
+		architecture,
+		/admitted only through a statistical rigor gate before anything can run live/,
+	);
+});
+
 test("security page is a canonical public destination", () => {
 	assert.match(app, /import Security from ["']\.\/components\/Security["']/);
 	assert.match(app, /security:\s*["']Security · Archimedes["']/);
@@ -565,9 +594,9 @@ test("protocols panel describes V_check by the checks it performs", () => {
 	// v_check.py does arithmetic on a weights dict (sum == 10000 bps, max
 	// concentration, and an optional cost-benefit floor no live caller
 	// supplies). It never reads chain state or LLM output, so it cannot be a
-	// chain-vs-narrative consistency gate. The "chain state outranks the
-	// narrative" half is true (agent_runner reads vault state from chain)
-	// and must survive; only the V_check attribution is retracted.
+	// chain-vs-narrative consistency gate. Hierarchy of Truth's chain-holdings
+	// half is the vault-rebalance path, which is not live — the copy must say
+	// so rather than describing it as shipped.
 	//
 	// Anchored to the Hierarchy of Truth entry specifically, not the whole
 	// 1200-line file: a bare `assert.match(architecture, /concentration/)`
@@ -583,8 +612,14 @@ test("protocols panel describes V_check by the checks it performs", () => {
 		what,
 		/V_check fails any rebalance where they disagree/,
 	);
-	assert.match(what, /Chain state outranks the LLM's narrative/);
+    assert.match(
+		what,
+		/When vault execution ships/,
+		"Hierarchy of Truth must not describe the rebalance loop as a live path",
+	);
+	assert.match(what, /will outrank the LLM's narrative/);
 	assert.match(what, /concentration/);
+	assert.match(what, /not live/);
 });
 
 test("honesty ledger gives every row an explicit LedgerStatus verdict", () => {

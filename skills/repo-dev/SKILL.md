@@ -57,7 +57,7 @@ useful when you don't have the docker-compose stack up.
 ### Hermetic-test discipline (codified 2026-05-27) — read before writing any new test
 
 "CI green ≠ local green" is itself treated as a bug here. The rules
-(`CLAUDE.md`:229-291, "Testing conventions"):
+(`docs/testing-conventions.md`, extracted from `CLAUDE.md` on 2026-08-31):
 
 - **No `.env` dependence, no live Redis/Postgres/Anthropic/Arc RPC.** A test
   that only passes with `.env` loaded, or only fails without it, is a real bug

@@ -17,6 +17,13 @@ the part that must never regress silently:
   6. THE MARKS LOOP READS, NEVER WRITES: the daily advance stamps a position
      cache and that is the only channel to the intraday loop, so marks cannot
      change what the strategy does (intraday design §4.0/§4.1).
+  7. A RE-GRADE IS NOT A RESTATEMENT (#1449): every appended row records the
+     grading engine that produced it, and a disagreement is reported as the
+     data's fault ONLY when the engine did not move. A grading-side change
+     (#1379's slippage floor) lands on engine_regrade_at, and a row with no
+     recorded version is called unattributable rather than blamed on either
+     side. The quiet answers are guarded — an unreadable current version
+     fails closed to loud.
 """
 
 from __future__ import annotations
@@ -71,7 +78,7 @@ def test_advance_appends_only_from_the_deploy_date():
     with _session() as s:
         dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
         out = advance_deployment(s, dep, replay=_replay_v1)
-        assert out == {"appended": 3, "drift": 0}
+        assert (out["appended"], out["drift"]) == (3, 0)
         dates = [r.date for r in s.query(PaperDailyReturn).order_by(PaperDailyReturn.date)]
         assert dates == [date(2026, 8, 1), date(2026, 8, 4), date(2026, 8, 5)]
         assert date(2026, 7, 30) not in dates  # law 4
@@ -81,14 +88,16 @@ def test_second_advance_is_idempotent_and_new_days_append():
     with _session() as s:
         dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
         advance_deployment(s, dep, replay=_replay_v1)
-        assert advance_deployment(s, dep, replay=_replay_v1) == {"appended": 0, "drift": 0}  # law 1
+        second = advance_deployment(s, dep, replay=_replay_v1)
+        assert (second["appended"], second["drift"]) == (0, 0)  # law 1
 
         def replay_v2(spec_dict, deployed_at):
             out = _replay_v1(spec_dict, deployed_at)
             out[date(2026, 8, 6)] = 0.003  # the next trading day arrives
             return out
 
-        assert advance_deployment(s, dep, replay=replay_v2) == {"appended": 1, "drift": 0}
+        third = advance_deployment(s, dep, replay=replay_v2)
+        assert (third["appended"], third["drift"]) == (1, 0)
         assert s.query(PaperDailyReturn).count() == 4
 
 
@@ -112,6 +121,12 @@ def test_restatement_is_surfaced_never_repaired(caplog):
         assert row.daily_return == pytest.approx(-0.02)  # original stands
         assert dep.drift_detected_at is not None
         assert any("NOT rewritten" in r.message for r in caplog.records)
+        # Law 7's other half: the engine did NOT move between the two replays
+        # (both rows carry the same version), so this stays attributed to the
+        # data and must not be excused as a re-grade.
+        assert out["drift_engine"] == 0
+        assert out["drift_unversioned"] == 0
+        assert dep.engine_regrade_at is None
 
 
 def test_spec_snapshot_survives_strategy_mutation():
@@ -142,17 +157,20 @@ def test_advance_all_isolates_failures():
         calls = {}
 
         def selective(spec_dict, deployed_at):
+            """The settle path's own seam (#1575): ONE replay produces both the
+            dated returns and the decision journal, so a trace and the ledger
+            row it explains can never come from two different runs."""
             if spec_dict["entry"] == _SPEC["entry"]:
                 calls["good"] = True
-                return _replay_v1(spec_dict, deployed_at)
+                return _replay_v1(spec_dict, deployed_at), {}
             raise paper_trading.PaperReplayError("boom")
 
-        original = paper_trading.replay_spec
-        paper_trading.replay_spec = selective
+        original = paper_trading.replay_spec_with_decisions
+        paper_trading.replay_spec_with_decisions = selective
         try:
             out = advance_all(s)
         finally:
-            paper_trading.replay_spec = original
+            paper_trading.replay_spec_with_decisions = original
         assert out["deployments"] == 2
         assert out["ok"] == 1 and out["failed"] == 1
         assert calls.get("good") is True
@@ -227,7 +245,12 @@ def test_a_plain_dict_replay_stamps_no_cache_and_still_appends():
     with _session() as s:
         dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
         out = advance_deployment(s, dep, replay=_replay_v1)
-        assert out == {"appended": 3, "drift": 0}
+        # Subset, not exact-dict: #1575's trace pipeline extends the settle
+        # result with its own accounting keys, which ride alongside and are
+        # pinned by test_paper_trace_pipeline, not here. This test's guard is
+        # the append count and the absent cache stamp.
+        assert out["appended"] == 3
+        assert out["drift"] == 0
         assert dep.position_cache_json is None
 
 
@@ -278,3 +301,173 @@ def test_the_summary_carries_the_latest_mark_and_none_means_none():
         assert summary["latest_mark"]["prices"] == {"SPY": 512.34}
         # The settled figure is unmoved by the presence of a mark.
         assert summary["total_return"] == pytest.approx((1.01 * 0.98 * 1.005) - 1.0)
+
+
+# ── Law 7: a re-grade is not a restatement (#1449) ─────────────────────
+
+
+def _restated(spec_dict, deployed_at):
+    """`_replay_v1` with one historical date coming back different.
+
+    The ONE input every test below shares, so the only thing that varies
+    between them is the engine-version provenance of the row it disagrees with
+    — which is exactly the discrimination under test.
+    """
+    out = _replay_v1(spec_dict, deployed_at)
+    out[date(2026, 8, 4)] = -0.5
+    return out
+
+
+def test_every_appended_row_records_the_engine_that_graded_it():
+    """The stamp is what makes the classification possible at all. It comes from
+    the GRADED path (fusion_evaluator.GRADING_ENGINE_VERSION), not a literal
+    re-typed here — a second copy could drift from the behavior it describes."""
+    from archimedes.services.fusion_evaluator import GRADING_ENGINE_VERSION
+
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        advance_deployment(s, dep, replay=_replay_v1)
+        rows = s.query(PaperDailyReturn).filter_by(deployment_id=dep.id).all()
+        assert rows
+        assert {row.engine_version for row in rows} == {GRADING_ENGINE_VERSION}
+        summary = deployment_summary(s, dep)
+        assert summary["ledger_engine_versions"] == [GRADING_ENGINE_VERSION]
+        assert summary["unversioned_rows"] == 0
+        assert summary["engine_regrade_at"] is None
+
+
+def test_an_engine_version_change_is_a_regrade_not_the_users_history_restating(monkeypatch, caplog):
+    """#1449's whole point. Rows graded under engine v1; the engine moves (this
+    is #1379 wiring the slippage floor); the replay now disagrees. That must NOT
+    stamp drift_detected_at — the user's track record did not restate itself,
+    we changed how it is graded."""
+    from archimedes.services import paper_trading
+
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        monkeypatch.setattr(paper_trading, "grading_engine_version", lambda: "dsl-fusion.r1/cm1:d10:s0")
+        advance_deployment(s, dep, replay=_replay_v1)
+        assert dep.drift_detected_at is None
+
+        # The cost model moves. Same data, same spec, different graded numbers.
+        monkeypatch.setattr(paper_trading, "grading_engine_version", lambda: "dsl-fusion.r1/cm1:d10:s5")
+        with caplog.at_level("WARNING"):
+            out = advance_deployment(s, dep, replay=_restated)
+
+        assert out["drift_engine"] == 1
+        assert out["drift"] == 0  # NOT reported as a data restatement
+        assert out["drift_unversioned"] == 0
+        assert dep.drift_detected_at is None
+        assert dep.engine_regrade_at is not None
+        # Surfaced, never suppressed: the ledger still stands, and the log says
+        # which of the two sentences this is.
+        assert s.query(PaperDailyReturn).filter_by(date=date(2026, 8, 4)).one().daily_return == pytest.approx(-0.02)
+        assert any("RE-GRADE, not a restatement" in r.message for r in caplog.records)
+        assert not any("drift_detected_at so the discrepancy" in r.message for r in caplog.records)
+
+
+def test_a_row_written_before_versioning_is_called_unattributable_not_restated(caplog):
+    """The migration backfills nothing, so pre-#1449 rows carry no version. A
+    disagreement with one of those cannot be blamed on the data OR on us — it
+    gets its own bucket and its own honest log line, and the count is on the
+    payload rather than implied."""
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        advance_deployment(s, dep, replay=_replay_v1)
+        # Exactly what the migration leaves behind for history written before
+        # the column existed.
+        for row in s.query(PaperDailyReturn).filter_by(deployment_id=dep.id):
+            row.engine_version = None
+        s.flush()
+
+        with caplog.at_level("WARNING"):
+            out = advance_deployment(s, dep, replay=_restated)
+
+        assert out["drift_unversioned"] == 1
+        assert out["drift"] == 0
+        assert out["drift_engine"] == 0
+        assert dep.drift_detected_at is None
+        assert dep.engine_regrade_at is not None
+        assert any("cannot be attributed either way" in r.message for r in caplog.records)
+        summary = deployment_summary(s, dep)
+        assert summary["unversioned_rows"] == 3
+        assert summary["engine_regrade_at"] is not None
+
+
+def test_an_unreadable_engine_version_fails_closed_to_loud_data_drift(monkeypatch, caplog):
+    """THE GUARD. Every quiet answer is reached by finding a DIFFERENCE between
+    two version strings, so a blank current version would make every row look
+    re-graded and switch off the loud path fleet-wide — a config-shaped way to
+    silence the one alarm this ledger owes its users.
+
+    The adversarial input is a version string that is present but worthless
+    (whitespace): presence alone must not buy absolution."""
+    from archimedes.services import paper_trading
+
+    with _session() as s:
+        dep = create_deployment(s, strategy_id="s1", spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+        monkeypatch.setattr(paper_trading, "grading_engine_version", lambda: "dsl-fusion.r1/cm1:d10:s0")
+        advance_deployment(s, dep, replay=_replay_v1)
+
+        monkeypatch.setattr(paper_trading, "grading_engine_version", lambda: "   ")
+        with caplog.at_level("WARNING"):
+            out = advance_deployment(s, dep, replay=_restated)
+
+        # A genuine engine change, but with an unreadable version we refuse to
+        # claim it: loud, not quiet.
+        assert out["drift"] == 1
+        assert out["drift_engine"] == 0
+        assert out["drift_unversioned"] == 0
+        assert dep.drift_detected_at is not None
+        assert dep.engine_regrade_at is None
+        assert any("NOT rewritten" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("row_version", "current_version", "expected"),
+    [
+        ("e1", "e1", "data"),  # engine held still → the data moved
+        ("e1", "e2", "engine"),  # we moved
+        (None, "e1", "unversioned"),  # written before the column existed
+        ("", "e1", "unversioned"),  # a stored blank is still "unrecorded"
+        ("e1", None, "data"),  # guard: unreadable current → fail closed
+        ("e1", "", "data"),
+        ("e1", "  \t ", "data"),
+        (None, None, "data"),  # both unreadable → still the loud answer
+    ],
+)
+def test_classify_drift_truth_table(row_version, current_version, expected):
+    from archimedes.services.paper_trading import classify_drift
+
+    assert classify_drift(row_version, current_version) == expected
+
+
+def test_advance_all_reports_the_fleet_regrade_as_ours_not_as_n_data_problems(monkeypatch):
+    """A grading-side change is a FLEET event: it re-grades every open
+    deployment on the same pass. The cycle line has to let an operator read that
+    as one incident of OURS, not as N independent data problems of the users'.
+
+    Patches the settle-path seam ``replay_spec_with_decisions`` — the one
+    ``advance_all`` actually reaches — rather than ``replay_spec``, which is
+    only used when a caller injects a replay."""
+    from archimedes.services import paper_trading
+
+    monkeypatch.setattr(paper_trading, "grading_engine_version", lambda: "dsl-fusion.r1/cm1:d10:s0")
+    with _session() as s:
+        for name in ("a", "b"):
+            dep = create_deployment(s, strategy_id=name, spec_dict=_SPEC, owner_wallet="0xAB", deployed_at=_DEPLOY)
+            advance_deployment(s, dep, replay=_replay_v1)
+        s.flush()
+
+        monkeypatch.setattr(paper_trading, "grading_engine_version", lambda: "dsl-fusion.r1/cm1:d10:s5")
+        monkeypatch.setattr(
+            paper_trading,
+            "replay_spec_with_decisions",
+            lambda spec_dict, deployed_at: (_restated(spec_dict, deployed_at), {}),
+        )
+        summary = advance_all(s)
+
+        assert summary["ok"] == 2 and summary["failed"] == 0
+        assert summary["drift_engine"] == 2
+        assert summary["drift"] == 0
+        assert summary["drift_unversioned"] == 0

@@ -1,9 +1,15 @@
-# Archimedes docs site — mkdocs-material config for issue #1381 (option B:
-# GitHub Pages). Builds the existing docs/ tree as-is; no content was moved
-# or rewritten to make this file. See docs/runbooks/docs-site-setup.md for
-# the two manual steps (Pages source + DNS) this needs to go live, and
-# .github/workflows/docs-site.yml for the deploy job — inert until those
-# steps are done.
+# Archimedes docs site — mkdocs-material config. Builds the existing docs/ tree
+# plus the agent-generated openwiki/ tree as-is; no content was moved or
+# rewritten to make this file (#1381).
+#
+# The built site is served from our own S3 + CloudFront at the site_url below
+# (docs-site/infra/main.tf, issue #1634 — not GitHub Pages). See
+# docs/runbooks/docs-site-setup.md for the apply/publish/rollback procedure and
+# .github/workflows/docs-site.yml for the jobs: the build runs on every
+# docs-path push and PR, the publish runs on pushes to main.
+#
+# site_url is the canonical host and is not free to drift: ui/test/docs-link.test.js
+# asserts the product's Docs links point at the same host.
 
 site_name: Archimedes
 site_url: https://docs.archimedes-arc.com
@@ -43,19 +49,33 @@ markdown_extensions:
   - fenced_code
   - admonition
 
-# `mkdocs build` here deliberately means non-strict (no `--strict`), in this
-# file and in .github/workflows/docs-site.yml. mkdocs's own (default)
-# validation settings already do the useful thing: WARNING-level output for
-# every link/nav target it can't resolve, without failing the build.
-# `--strict` was evaluated and rejected — see
-# docs/runbooks/docs-site-setup.md § "mkdocs --strict findings" for the full
-# count and categorization of the ~300 warnings it produces (in short: docs
-# in this repo correctly link out of docs_dir to source files and to
-# ../CLAUDE.md etc. per the repo's own "every claim is a link to a file"
-# convention — those links are outside mkdocs's docs_dir and can't resolve
-# in the built site, but they're not broken, they're doing their job on
-# GitHub, which is where this repo's own docs-gate.yml link checker
-# already validates them). Re-run that check if the count changes a lot.
+# Build hooks — see the module docstring for the full reasoning.
+#   1. mounts the agent-generated openwiki/ tree (it lives outside docs_dir,
+#      so mkdocs cannot see it on its own);
+#   2. rewrites, at build time only, the relative links that point out of
+#      docs_dir (../CLAUDE.md, backend/..., contracts/...) to GitHub blob
+#      URLs. Those links are correct on GitHub and are already gated there by
+#      docs-gate.yml's docs_links.py; they simply cannot resolve inside a site
+#      rooted at docs/. Committed markdown is never modified.
+hooks:
+  - .github/scripts/mkdocs_hooks.py
+
+# `mkdocs serve` watches docs_dir and this file and nothing else, so an edit
+# under openwiki/ would not live-reload without this. (The hook itself is
+# loaded once per process — mkdocs lru_caches it — so editing that file still
+# needs a restart, not just a rebuild.)
+watch:
+  - openwiki
+
+# `mkdocs build --strict` is now the build command (here and in
+# .github/workflows/docs-site.yml), and it is clean. It was previously
+# rejected because ~300 WARNINGs were produced by correct out-of-docs_dir
+# links; the hook above removes that entire class by repointing them at
+# GitHub instead of at nothing, so the remaining WARNING budget is zero and
+# --strict is a real gate: a link into docs/ or openwiki/ that names a file
+# which does not exist now fails the build. The hook deliberately does NOT
+# rewrite that case — see docs/runbooks/docs-site-setup.md
+# § "mkdocs --strict is the gate".
 
 nav:
   - Home: README.md
@@ -65,12 +85,14 @@ nav:
       - reference/file-tree.md
       - database-architecture.md
       - deployment.md
+      - local-vs-prod.md
       - architectural-principles.md
       - anti-features.md
 
   - Product:
       - user-stories.md
       - agent-api.md
+      - specs/agent-native-onboarding-spec.md
       - asset-universe.md
       - demo-script-lepton.md
 
@@ -110,19 +132,18 @@ nav:
       - bedrock-model-cost-comparison.md
       - cost-estimates/generate-llm-costs.md
 
-  # API Reference — content lands via branch dbrowneup/api-reference-docs
-  # (docs/api/*.md), which may merge before or after this docs-site branch.
-  # These entries are correct either way: mkdocs validation is set to warn
-  # (not fail) on a nav target that doesn't exist yet, and once that branch
-  # merges the pages populate with no further change here.
+  # API Reference — the hand-curated reference that landed with the
+  # bidirectional route drift test (PR #1397,
+  # backend/tests/test_api_docs_drift.py). Wired here as-is; nothing in this
+  # section is generated or hand-written by the site build.
   - API Reference:
       - api/README.md
       - api/auth-and-accounts.md
+      - api/api-keys.md
       - api/generation.md
       - api/strategies-and-rigor.md
       - api/vaults-and-chain.md
       - api/wallets.md
-      - api/chat.md
       - api/leaderboard-and-metrics.md
       - api/paper-trading.md
       - api/admin-private.md
@@ -146,6 +167,7 @@ nav:
       - runbooks/spec-1-walkthrough.md
       - runbooks/t3.2-contract-redeploy.md
       - runbooks/docs-site-setup.md
+      - runbooks/email-verification-validation.md
 
   - Decisions (ADRs):
       - adr/README.md
@@ -194,6 +216,40 @@ nav:
       - handovers/third-wave-handover.md
       - handovers/fourth-wave-handover.md
       - handovers/phase8-9-landing-and-fusion-spec.md
+
+  # Agent-generated wiki — the openwiki/ tree (#1597), which lives OUTSIDE
+  # docs_dir and is mounted into the build by .github/scripts/mkdocs_hooks.py.
+  # Kept as its own top-level section, never mixed into the hand-written
+  # sections above, because the provenance is the point: every page here was
+  # written by an agent from docs/quant/ and published without line-by-line
+  # human review. agent-wiki.md is the section index and carries that note;
+  # the hook stamps the same warning on each page.
+  #
+  # These entries are listed by hand on purpose. Generating them would mean a
+  # regenerated wiki publishes new agent-written pages with no person in the
+  # loop; instead backend/tests/test_docs_site.py fails when an
+  # openwiki/**.md has no entry here, so admitting a new page is a deliberate
+  # act. Add the row in the same PR that adds the page.
+  - Agent-generated wiki:
+      - agent-wiki.md
+      - openwiki/quickstart.md
+      - openwiki/index.md
+      - openwiki/INSTRUCTIONS.md
+      - Rigor:
+          - openwiki/rigor/index.md
+          - openwiki/rigor/admission-gate.md
+          - openwiki/rigor/reading-a-backtest.md
+          - openwiki/rigor/selection-bias-controls.md
+          - openwiki/rigor/documented-conflicts.md
+      - Strategy library:
+          - openwiki/library/index.md
+          - openwiki/library/strategy-shelf.md
+      - Portfolio:
+          - openwiki/portfolio/index.md
+          - openwiki/portfolio/construction-and-sizing.md
+      - Findings:
+          - openwiki/findings/index.md
+          - openwiki/findings/measured-results.md
 
   - Research and prompts:
       - research/README.md

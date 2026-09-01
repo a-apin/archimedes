@@ -103,11 +103,17 @@ test("Strategies.jsx's Examples panel is gated on !loadError so it never renders
 });
 
 test("Strategies.jsx's generated panel has the same loading guard Examples/Published already have", () => {
-	// Examples/Published: `{loading && <div className="caption mb-4">Loading…</div>}`
-	// then a separate `{!loading && (...)}` block. Generated now uses a
-	// ternary with the identical loading branch inside the same activeTab
-	// block, so this must appear a third time (once per tab).
-	const loadingGuardCount = (strategies.match(/<div className="caption mb-4">Loading…<\/div>/g) || []).length;
+	// Examples/Published: `{loading && <StrategyListSkeleton />}` then a separate
+	// `{!loading && (...)}` block. Generated uses a ternary with the identical
+	// loading branch inside the same activeTab block, so this must appear a
+	// third time (once per tab).
+	//
+	// #1645 replaced the `<div className="caption mb-4">Loading…</div>` this
+	// used to count with a real skeleton. The INVARIANT is unchanged and is
+	// what this test is for — every tab has a loading guard, none paints its
+	// empty state while the fetch is still in flight — so the count moved to
+	// the new construct rather than the test being deleted.
+	const loadingGuardCount = (strategies.match(/<StrategyListSkeleton \/>/g) || []).length;
 	assert.equal(loadingGuardCount, 3, "expected one loading guard each for generated, examples, and published");
 });
 
