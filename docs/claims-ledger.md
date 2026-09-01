@@ -161,6 +161,13 @@ unset, so the boundary holds under both answers.
 | "Not one paper-derived alpha strategy clears our bar" (curated pass count of zero) | `CHANGED` | Removed. The page now says the pass count is unestablished and will never quote a count: `ui/src/components/Architecture.jsx` rigor honesty note. `CLAUDE.md` forbids quoting a curated pass count, including zero. |
 | Xia Hierarchy of Truth — "the rebalance loop reads holdings from chain … before the trade is committed" | `CHANGED` | Was written as a live path. Copy now future-tenses the chain-holdings half and says the path is not live: `ui/src/components/Architecture.jsx:928`. Guarded by `ui/test/public-visuals.test.js`. |
 | Honesty-ledger rows read from `/health` rather than being asserted | `TRUE` | `ui/src/components/Architecture.jsx:1090` renders "live value unavailable" on a health error instead of substituting a value; the corpus panel's contract is documented at `:838`. |
+| "the full trace is published (IPFS-pointed)" | `RETRACTED` | #1526. Reveal copy now says the trace is published off-chain and "we do not pin traces to IPFS" (`ui/src/components/Architecture.jsx:788`). Guarded by `ui/test/ipfs-pinning-copy.test.js`. Live `storagePointer` is empty ([`docs/adr/ipfs-pinning-not-live.md`](adr/ipfs-pinning-not-live.md)). |
+
+## `ui/src/components/AccountSettings.jsx`
+
+| Claim | Status | What backs it |
+|---|---|---|
+| "Anything already published to a blockchain or pinned to IPFS stays there" | `RETRACTED` | #1526. Deletion copy now says chain writes stay; it does not claim an IPFS pin (`ui/src/components/AccountSettings.jsx:844`). Guarded by `ui/test/ipfs-pinning-copy.test.js`. |
 
 ## `docs/user-stories.md`
 

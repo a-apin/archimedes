@@ -785,9 +785,10 @@ function ProvenanceSection() {
 						3. Reveal
 					</div>
 					<div className="caption" style={{ color: "var(--text-3)" }}>
-						After settlement, the full trace is published (IPFS-pointed) and the
+						After settlement, the full trace is published off-chain and the
 						contract itself re-hashes the content to verify it matches the
-						commitment.
+						commitment. The on-chain keccak256 is the integrity anchor; we
+						do not pin traces to IPFS.
 					</div>
 				</div>
 			</div>

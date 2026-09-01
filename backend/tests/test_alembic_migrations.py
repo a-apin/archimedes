@@ -1727,3 +1727,105 @@ def test_alembic_grading_engine_version_columns_added_and_removed(tmp_path):
 
     reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
     assert reupgrade_again.returncode == 0, reupgrade_again.stderr
+
+
+def test_alembic_paper_agent_trades_table_added_and_removed(tmp_path):
+    """#1410: ``paper_agent_trades`` lands on upgrade, is gone on downgrade,
+    and comes back on re-upgrade — and the ORM's view of it matches alembic's.
+
+    Three things this asserts beyond the up/down/idempotent contract:
+
+      * the unique constraint really exists on the migrated table. It is
+        declared INSIDE ``create_table`` rather than as a follow-up
+        ``op.create_unique_constraint`` because SQLite has no ALTER for
+        constraints; the first draft of the revision used the follow-up form
+        and every ``alembic upgrade head`` test in this file failed. Asserting
+        the constraint (not just the table) is what keeps that from coming back.
+      * the LEDGER TABLES survive the round trip. This revision is additive and
+        must not be able to take ``paper_daily_returns`` with it on downgrade —
+        that ledger is a user-facing track record.
+      * ``create_all()`` and ``alembic upgrade head`` agree on the columns. A
+        column present on one path and absent on the other means the hermetic
+        tests and production are running different schemas.
+
+    Same derived-target discipline as the tests above: the downgrade target is
+    this revision's OWN ``down_revision``, never a hardcoded hash.
+    """
+    db_path = tmp_path / "paper_agent_trades.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _sql(statement: str, *params):
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(statement, params)
+            con.commit()
+            return cur.fetchall()
+        finally:
+            con.close()
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("c5e81a4f7b32").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "paper_agent_trades" in _table_names(db_path)
+    ddl = _sql("SELECT sql FROM sqlite_master WHERE name = ?", "paper_agent_trades")[0][0]
+    assert "uq_paper_agent_trades_dep_tick_symbol" in ddl
+    assert "tick_id VARCHAR(32) NOT NULL" in ddl, "a trade must not be writable without its tick"
+
+    # A ledger row the additive revision must not disturb in either direction.
+    _sql(
+        "INSERT INTO paper_daily_returns (deployment_id, date, daily_return, appended_at) VALUES (?, ?, ?, ?)",
+        "dep-1410",
+        "2026-08-21",
+        0.011,
+        "2026-08-22 00:00:00",
+    )
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "paper_agent_trades" not in _table_names(db_path)
+    assert _sql("SELECT daily_return FROM paper_daily_returns WHERE deployment_id = ?", "dep-1410") == [(0.011,)]
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "paper_agent_trades" in _table_names(db_path)
+    assert _sql("SELECT daily_return FROM paper_daily_returns WHERE deployment_id = ?", "dep-1410") == [(0.011,)]
+
+    # ─── create_all() vs alembic: same columns, or the hermetic tests and
+    # production are running different schemas.
+    create_all_db = tmp_path / "create_all_paper_agent_trades.db"
+    build = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        "from archimedes.models.paper_store import PaperAgentTrade, PaperDeployment\n"
+        "from archimedes.models.strategy_store import StrategyRecord\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", build],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    def _columns(path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    assert _columns(create_all_db, "paper_agent_trades") == _columns(db_path, "paper_agent_trades")
