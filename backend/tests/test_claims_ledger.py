@@ -106,10 +106,15 @@ _ABSENCE_PIN = ("backend/archimedes/api/selection_bias_routes.py", "class BoardL
 
 # The sentences the ledger's OVER-CLAIMED rows say are still live. See the module
 # docstring: fixing one of these SHOULD break this test.
+#
+# The two agent-surface entries retired themselves in #1650, exactly as designed:
+# scrubbing the sentence turned this test red, which is what forced the ledger rows
+# from OVER-CLAIMED to CHANGED in the same change. They are not replaced by
+# "must stay absent" pins here — that property belongs to the surfaces' own guard
+# (``ui/test/roadmap-copy.test.js``, which requires roadmap tense on every vault
+# sentence in ``ui/public/``), not to a ledger-citation test.
 _OPEN_OVERCLAIMS: tuple[tuple[str, str], ...] = (
     ("README.md", "non-custodial vault on the Arc testnet"),
-    ("ui/public/llms.txt", "executed in non-custodial USDC"),
-    ("ui/public/.well-known/agent.json", "executed in a non-custodial USDC vault"),
     ("ui/index.html", "records the whole decision on Arc public testnet"),
     ("docs/user-stories.md", "into your non-custodial vault on Arc"),
 )
