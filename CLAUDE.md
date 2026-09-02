@@ -8,7 +8,7 @@
 > inventory — is deliberately *not* here: a stale copy is worse than none, because agents
 > act on `CLAUDE.md` without verifying.
 >
-> **Where things live:** [`docs/README.md`](docs/README.md) — the doc index (a doc not
+> **Where things live:** [`docs/doc-index.md`](docs/doc-index.md) — the doc register (a doc not
 > listed there does not exist) · [`docs/user-stories.md`](docs/user-stories.md) — canonical
 > product spine · [`docs/architecture.md`](docs/architecture.md) — architecture map ·
 > [`docs/adr/`](docs/adr/README.md) — the decision records. Current status comes from
@@ -514,7 +514,7 @@ Full rules: [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md). Before you write a doc
   point-in-time artifacts. **Front matter:** `status` / `owner` / `updated` /
   `superseded-by`. ADRs add `Supersedes` / `Superseded-by` — set both ends of the chain in
   one commit; never delete or silently rewrite an ADR.
-- **Add a row to [`docs/README.md`](docs/README.md) in the same commit** — a doc not in the
+- **Add a row to [`docs/doc-index.md`](docs/doc-index.md) in the same commit** — a doc not in the
   index does not exist.
 - **60-day rule:** a `current` doc older than 60 days is presumed stale — re-verify, demote,
   or archive. Anything that decays faster belongs in the live source, not a doc.

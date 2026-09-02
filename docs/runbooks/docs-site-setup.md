@@ -128,7 +128,7 @@ equivalent — for the first apply, for a rollback, or when Actions is down:
 
 ```bash
 # from the repo root
-pip install mkdocs-material==9.7.7          # pin matches docs-site.yml
+pip install -r docs/requirements.txt        # the same file docs-site.yml installs
 mkdocs build --strict --site-dir _site
 
 BUCKET="$(terraform -chdir=docs-site/infra output -raw bucket)"
@@ -170,9 +170,16 @@ here cannot move anything in the product stack.
 ## Local preview
 
 ```bash
-pip install mkdocs-material==9.7.7   # pin matches docs-site.yml; see its comment
+pip install -r docs/requirements.txt   # mkdocs-material, the git-date plugin, pymdown-extensions
 mkdocs serve
 ```
+
+`docs/requirements.txt` is the single pin: the build job installs that file, and
+so should you. The `git-revision-date-localized` plugin in it reads each page's
+last commit for the footer date, so a page you have created but not committed
+yet has no date to read — `mkdocs build --strict` will say so. Commit the file
+(or `git add` it) and rebuild; the workflow checks out with `fetch-depth: 0` for
+the same reason.
 
 Serves at `http://127.0.0.1:8000` with live reload on any `docs/**` or
 `mkdocs.yml` edit. `mkdocs build --strict` (what CI runs) writes the static

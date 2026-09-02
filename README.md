@@ -157,7 +157,8 @@ Full reference: [`cli/README.md`](cli/README.md) and
 
 ## Documentation
 
-[`docs/README.md`](docs/README.md) is the index — **a doc not listed there does not exist.**
+[`docs/doc-index.md`](docs/doc-index.md) is the register — **a doc not listed there does not
+exist.** The same tree is published, curated, at <https://docs.archimedes-arc.com>.
 The entry points:
 
 | If you want to… | Read |
@@ -175,7 +176,7 @@ The entry points:
 | Load a grounded agent skill (every claim file:line cited) | [`skills/README.md`](skills/README.md) |
 | Understand Arc / Circle integration | [`docs/arc-integration.md`](docs/arc-integration.md) |
 | Operate the live stack | [`docs/runbooks/operations.md`](docs/runbooks/operations.md) |
-| Browse every design + planning doc | [`docs/README.md`](docs/README.md) |
+| Browse every design + planning doc | [`docs/doc-index.md`](docs/doc-index.md) |
 | Add a doc without misfiling it | [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) |
 | Write a test the way this repo wants | [`docs/testing-conventions.md`](docs/testing-conventions.md) |
 | Know who owns what | [`docs/team.md`](docs/team.md) |

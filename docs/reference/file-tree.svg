@@ -113,6 +113,6 @@
 <rect x="46" y="906" width="3" height="136" rx="1.5" fill="#10B981" opacity="0.55"/>
 <rect x="46" y="1050" width="3" height="40" rx="1.5" fill="#F59E0B" opacity="0.55"/>
 <rect x="46" y="1098" width="3" height="112" rx="1.5" fill="#A78BFA" opacity="0.55"/>
-<text x="48" y="1286" fill="#71717A" font-size="9.5">Submodules (reference only): context-arc (Circle/Arc docs) · KnowledgeBase (KB-pipeline reference) · Linus. Full map: ARCHITECTURE-MAP.md.</text>
+<text x="48" y="1286" fill="#71717A" font-size="9.5">submodules/ (reference only, not product code): context-arc (Circle/Arc docs) · KnowledgeBase (KB-pipeline reference) · Linus (orchestration priors). Full map: docs/architecture.md.</text>
 <text x="1112" y="1286" text-anchor="end" fill="#52525B" font-size="9.5">verified against main · 2026-07-14</text>
 </svg>

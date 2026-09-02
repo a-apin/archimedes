@@ -1,8 +1,15 @@
-# `docs/` — Documentation Index
+# Doc register
+
+> **status:** current
+> **owner:** Dan Browne
+> **updated:** 2026-09-02
+> **superseded-by:** —
+
+Every document in `docs/`, with its status, its owner and the date someone last
+checked it against the running system. This is the *register*, not the front door —
+the front door is [Archimedes documentation](index.md).
 
 **A doc not listed here does not exist.** If you wrote something and it is not in this table, either add a row or delete the file. If a row is wrong, fix the row in the same commit as the doc.
-
-Last rebuilt **2026-07-28**.
 
 `last-verified` is the date someone last checked the doc against the running system — not the date it was last edited. `—` means nobody has verified it since it was written; treat those claims as unproven.
 
@@ -12,12 +19,21 @@ Everything under [`archive/`](archive/) is historical by definition and is index
 |---|---|---|---|---|
 | [`archive/deployment-runbook.md`](archive/deployment-runbook.md) | archived | Dan Browne | 2026-07-28 | EC2-era manual / break-glass AWS deploy runbook. **Do not execute** — it routes to an instance detached from the ALB target group. Kept for its incident history and diagrams. The Fargate-era replacement is unwritten; the gap is named in [`runbooks/README.md`](runbooks/README.md). |
 
+`archive/` is **not published to the docs site** (`exclude_docs` in `mkdocs.yml`); the
+link above resolves on GitHub, and on the site it is rewritten to the GitHub tree by
+`.github/scripts/mkdocs_hooks.py`. The rest of this register links pages that are on
+the site unless their row says otherwise.
 
 Repo root: [`../README.md`](../README.md) · [`../SETUP.md`](../SETUP.md) · [`../CLAUDE.md`](../CLAUDE.md) · [`../AGENTS.md`](../AGENTS.md)
 
-Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **Önder Akkaya** — portfolio math and the rigor gate. **Bogdan Sivochkin** (`mnemonik-dev`) — preferred reviewer for contract changes.
-
 ---
+
+## The docs site itself
+
+| Doc | Status | Owner | Last verified | What it is |
+|---|---|---|---|---|
+| [`index.md`](index.md) | current | Dan Browne | 2026-09-02 | The public front door of `docs.archimedes-arc.com`: the identity line, the three reader doors, what ships today with the endpoint printed beside each number, what the product does **not** do, and the two honesty artifacts. Every number on it is a live read, printed with the date it was read — the docs build stays hermetic. |
+| [`doc-index.md`](doc-index.md) | current | Dan Browne | 2026-09-02 | This register. Enforced by `.github/scripts/docs_index.py`, which fails the docs gate when a `docs/**/*.md` file is listed neither here nor in a sub-index this file links to. |
 
 ## Architecture — start here
 
@@ -54,8 +70,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 |---|---|---|---|---|
 | [`user-stories.md`](user-stories.md) | current | Dan Browne | 2026-08-31 | The locked product spine. Canonical statement of what the product is. Re-verified against `/api/health` 2026-08-31; the Day-9 body carries dated inline corrections (fusion-preview surface, "GLM-backed", library size, KG demo claim) and reads vault execution in the present tense, which is roadmap (#1469). |
 | [`agent-api.md`](agent-api.md) | current | Dan Browne | — | Driving the full journey programmatically; the agent-native surface. |
-| [`agent-quickstart.md`](agent-quickstart.md) | current | Dan Browne | 2026-08-31 | Zero to paper-traded for an external agent: eleven steps, exact response shapes, and an error table (401/402/409/422/429). Includes the live x402 paywall — production charges $2.00 USDC per generation, so steps 6a–6b link a wallet and pay. Narrower than `agent-api.md` on purpose: no vault, no capital deployed. Route strings and worked commands are drift-guarded by `backend/tests/test_agent_quickstart_drift.py`. |
-| [`specs/agent-native-onboarding-spec.md`](specs/agent-native-onboarding-spec.md) | draft | Dan Browne | 2026-08-31 | How a CLI / agent-skill / (possible) MCP caller creates an account, links a wallet, and pays — the **deltas** from `agent-quickstart.md`, not a second copy of it. Records the six deltas that make the agent path different, the classifier rule that makes logged-in agents unmeasurable as agents, the reconciliation with the 3-free-generation gate ([#1643](https://github.com/aprin-labs/archimedes/issues/1643)), and six owner decisions D1–D6 — **all closed 2026-08-31/09-01** (recorded as PR comments on #1653); doc updates to `current` when the decision rows are folded in. || [`claims-ledger.md`](claims-ledger.md) | current | Dan Browne | 2026-08-31 | Every public claim — Landing, `/security`, `README.md`, `agent-quickstart.md`, `Architecture.jsx`, `index.html` meta, `llms.txt`, `agent.json`, `user-stories.md` — with a per-claim verdict (`TRUE` / `CHANGED` / `RETRACTED` / `OVER-CLAIMED` / `PENDING ADR MERGE`) and the file:line that backs it. Records what #1469's rebrand retracted, the open over-claims the scrub did not reach, and the market-data position. Citations are enforced by `backend/tests/test_claims_ledger.py`. |
+| [`specs/agent-native-onboarding-spec.md`](specs/agent-native-onboarding-spec.md) | draft | Dan Browne | 2026-08-31 | How a CLI / agent-skill / (possible) MCP caller creates an account, links a wallet, and pays — the **deltas** from `agent-quickstart.md`, not a second copy of it. Records the six deltas that make the agent path different, the classifier rule that makes logged-in agents unmeasurable as agents, the reconciliation with the 3-free-generation gate ([#1643](https://github.com/aprin-labs/archimedes/issues/1643)), and six owner decisions D1–D6 — **all closed 2026-08-31/09-01** (recorded as PR comments on #1653); doc updates to `current` when the decision rows are folded in. |
 | [`agent-quickstart.md`](agent-quickstart.md) | current | Dan Browne | 2026-08-31 | Zero to paper-traded for an external agent: eleven steps, exact response shapes, and an error table (401/402/409/422/429). Includes the live x402 paywall — production charges $2.00 USDC per generation, so steps 6a–6b link a wallet and pay. Narrower than `agent-api.md` on purpose: no vault, no capital deployed. Route strings and worked commands are drift-guarded by `backend/tests/test_agent_quickstart_drift.py`. Carries the MCP-client section (2026-08-31) pointing at `../mcp-server/README.md`. |
 | [`claims-ledger.md`](claims-ledger.md) | current | Dan Browne | 2026-08-31 | Every public claim — Landing, `/security`, `README.md`, `agent-quickstart.md`, `Architecture.jsx`, `index.html` meta, `llms.txt`, `agent.json`, `user-stories.md` — with a per-claim verdict (`TRUE` / `CHANGED` / `RETRACTED` / `OVER-CLAIMED` / `PENDING ADR MERGE`) and the file:line that backs it. Records what #1469's rebrand retracted, the open over-claims the scrub did not reach, and the market-data position. Citations are enforced by `backend/tests/test_claims_ledger.py`. |
 | [`../mcp-server/README.md`](../mcp-server/README.md) | current | Dan Browne | 2026-08-31 | The MCP server — nine tools over the public HTTP API, for agents that call tools instead of `curl`. Lives outside `docs/` because it is a distribution's own README (as `cli/README.md` is) and ships in its sdist; indexed here because it is an agent-facing product surface and this index is where those are found. Deliberately thin: no business logic, no DB/Redis, no wallet key, and every route it calls is pinned to the live app — resolution **and** each tool's credential label — by `backend/tests/test_mcp_contract_drift.py`. Ships decision **D2** of the agent-native onboarding spec ([PR #1653](https://github.com/aprin-labs/archimedes/pull/1653) — that doc is not on `main` yet, so this row links the PR rather than a path that does not resolve here). |

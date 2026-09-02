@@ -36,6 +36,15 @@ exist is left exactly as written, so mkdocs still warns and `--strict` still
 fails the build. Only targets outside the site's own source trees become
 GitHub URLs. See `test_docs_site.py::test_broken_in_site_link_is_left_for_strict_to_catch`.
 
+`on_page_context` — **fix the edit pencil on the mounted wiki pages.** `edit_uri`
+in `mkdocs.yml` is `edit/main/docs/`, which is right for every page that really
+does live under `docs/`. The openwiki pages do not: they are mounted from
+the repository root, so mkdocs built them an edit URL of
+`…/edit/main/docs/openwiki/…` and all 14 pencils returned GitHub's 404. The fix
+lives here rather than in the config because the alternative — `edit_uri: ""`
+plus a computed URL for every page — moves every working link onto new code for
+the sake of the 14 broken ones.
+
 Importability: mkdocs is imported lazily inside `on_files` so this module can be
 imported by the drift test in the backend unit suite, which does not install
 mkdocs. Everything else here is stdlib plus `docs_links.py`'s regexes, reused
@@ -70,6 +79,9 @@ PROVENANCE_PAGE = "agent-wiki.md"
 
 _BLOB_BASE = "https://github.com/aprin-labs/archimedes/blob/main"
 _TREE_BASE = "https://github.com/aprin-labs/archimedes/tree/main"
+#: Base for `on_page_context`'s edit-pencil fix. Mirrors `edit_uri` in mkdocs.yml
+#: minus its `docs/` prefix, which is exactly what is wrong for these pages.
+_EDIT_BASE = "https://github.com/aprin-labs/archimedes/edit/main"
 
 #: Stamped on every openwiki page by `add_provenance_banner`. A reader arriving from
 #: a search engine lands on a leaf page, not on the section index, so the label has to
@@ -219,6 +231,32 @@ def rewrite_links(markdown: str, page_repo_uri: str, page_site_uri: str, known: 
     return out
 
 
+def published_uris(files: Any) -> set[str]:
+    """The source URIs the built site actually serves.
+
+    `files` still carries the pages `exclude_docs` removed — mkdocs *marks* a
+    file's inclusion level rather than dropping it — so a plain
+    `{f.src_uri for f in files}` counts an excluded page as "on the site". Every
+    link INTO one would then be left as a relative link, which resolves nowhere
+    once the page is gone: mkdocs reports that at INFO, so `--strict` stays green
+    while the published site grows dead links.
+
+    Filtering here is what lets a page be unpublished without a tree-wide link
+    scrub. A link to an excluded page falls through `rewrite_target`'s step 3 and
+    becomes the GitHub blob URL for the file, which is where the content now is.
+
+    `inclusion` is mkdocs >= 1.6 (`InclusionLevel`); the getattr keeps this module
+    importable, and the build honest-by-default, on anything older.
+    """
+    out: set[str] = set()
+    for f in files:
+        inclusion = getattr(f, "inclusion", None)
+        if inclusion is not None and not inclusion.is_included():
+            continue
+        out.add(f.src_uri)
+    return out
+
+
 def add_provenance_banner(markdown: str, page_site_uri: str) -> str:
     """Insert the agent-generated banner just below an openwiki page's first heading."""
     index_link = posixpath.relpath(PROVENANCE_PAGE, posixpath.dirname(page_site_uri) or ".")
@@ -235,9 +273,33 @@ def add_provenance_banner(markdown: str, page_site_uri: str) -> str:
 # `config` is unused but the name is load-bearing: mkdocs dispatches plugin events
 # by keyword (`method(item, **kwargs)`), so renaming or dropping it breaks the call.
 def on_page_markdown(markdown: str, page: Any, config: Any, files: Any) -> str:  # noqa: ARG001
-    known = {f.src_uri for f in files}
+    known = published_uris(files)
     page_repo_uri = Path(page.file.abs_src_path).resolve().relative_to(REPO_ROOT).as_posix()
     out = rewrite_links(markdown, page_repo_uri, page.file.src_uri, known)
     if page_repo_uri.startswith(WIKI_DIR + "/"):
         out = add_provenance_banner(out, page.file.src_uri)
     return out
+
+
+# ── edit pencil ──────────────────────────────────────────────────────────────────────
+
+
+def wiki_edit_url(src_uri: str) -> str | None:
+    """GitHub edit URL for a mounted `openwiki/` page, or None for anything else.
+
+    Separated from the hook so `backend/tests/test_docs_site.py` can assert the
+    URL without standing up a mkdocs build.
+    """
+    if src_uri != WIKI_DIR and not src_uri.startswith(WIKI_DIR + "/"):
+        return None
+    return f"{_EDIT_BASE}/{src_uri}"
+
+
+# `config` and `nav` are unused but the names are load-bearing: mkdocs dispatches
+# plugin events by keyword (`method(item, **kwargs)`).
+def on_page_context(context: Any, page: Any, config: Any, nav: Any) -> Any:  # noqa: ARG001
+    """Repoint the edit pencil for pages whose source is not under `docs_dir`."""
+    fixed = wiki_edit_url(page.file.src_uri)
+    if fixed is not None:
+        page.edit_url = fixed
+    return context
