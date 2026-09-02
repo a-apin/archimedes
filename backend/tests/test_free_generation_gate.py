@@ -817,7 +817,7 @@ class TestAPipelineFailureReturnsTheFreeSlot:
     Sequence from the screenshots: two generations attempted, the second dying
     inside the pipeline with "the corpus yielded <2 papers for this steer — the
     society cannot fuse", and the Generate page then reporting **1 of 3 free
-    generations left**. The failed run had consumed a slot. ``/start``'s
+    generation left**. The failed run had consumed a slot. ``/start``'s
     ``except BaseException: release; raise`` only ever covered failures the
     REQUEST could see (the entitlement gate, the enqueue); nothing released a
     slot for a job that queued fine and then produced nothing.

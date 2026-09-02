@@ -80,8 +80,12 @@ class FreeGenerationGrantRecord(Base):
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=GRANT_USED)
 
-    #: The generation this slot funded. NULL until the job reaches the queue,
-    #: and NULL forever on a ``released`` row — there was no job.
+    #: The generation this slot funded. NULL until the job reaches the queue.
+    #: A ``released`` row is NULL only on the ``release_grant`` path — the
+    #: request never queued, so there was no job. One released by
+    #: ``release_grant_for_job`` KEEPS its job id: that is how the ledger shows
+    #: which run burned the slot and handed it back, and it is the key the
+    #: terminal-failure release finds the row by.
     job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
