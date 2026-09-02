@@ -29,6 +29,12 @@ defensible rather than decorative:
   and the omission is recorded. Stored text — `transcript_json`, the brief on
   the job record — is never modified by this module. Prompt assembly may
   decline to include something and say so; it does not silently edit history.
+* **Match on a canonical copy.** Every rule runs against a normalized COPY
+  (see ``_canonical``) as well as the raw string, because a regex word anchor
+  is defeated by a character nobody can see — a zero-width space inside
+  ``ig<ZWSP>nore``, a Cyrillic ``о`` in ``ignоre``, a fullwidth ``Ｓｙｓｔｅｍ``.
+  The copy is computed per call and thrown away; it never reaches a prompt, a
+  transcript or a store. Canonicalising for matching is not rewriting.
 
 What this is NOT: a semantic judge. It has no opinion on whether a brief is a
 *good* brief, whether it is on-topic, or whether the strategy it describes is
@@ -47,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
@@ -123,6 +130,115 @@ _INJECT_HINT = (
 
 def _reject(code: str, reason: str, hint: str) -> Verdict:
     return Verdict(allow=False, code=code, reason=reason, hint=hint)
+
+
+# ── CANON — one normalisation pass, run before any rule ──────────────────
+#
+# The threat this closes: every INJECT pattern below is anchored on ``\b`` and
+# on literal English words, and all three anchors are broken by characters a
+# human reviewer cannot see or cannot tell apart. ``ig<U+200B>nore`` renders as
+# "ignore"; ``ignоre`` with a Cyrillic "о" renders as "ignore"; ``Ｓｙｓｔｅｍ
+# ｐｒｏｍｐｔ`` renders as "System prompt". None of the three is something a
+# person writing about bonds produces by accident, and each is one keystroke
+# for an attacker — the same argument the module already makes for refusing
+# control characters, applied to the characters that survive a copy-paste.
+#
+# What this is NOT is a rewrite. ``_canonical`` returns a COPY used for
+# matching and then discarded; the string that reaches the prompt, the
+# transcript and the job record is byte-for-byte what its author wrote.
+
+#: Invisible in rendered text, and every one of them splits a regex word
+#: anchor: zero-width space / non-joiner / joiner, the LTR and RTL marks, word
+#: joiner, the invisible math operators, the BOM, and the soft hyphen.
+_ZERO_WIDTH = re.compile(r"[\u00ad\u200b-\u200f\u2060-\u2064\ufeff]")
+
+#: Non-breaking and exotic spaces fold to a space; the Unicode line and
+#: paragraph separators fold to a newline, so a payload that splits a rule
+#: across ``U+2028`` is read as the line break it renders as.
+_WHITESPACE_FOLD = str.maketrans({"\u00a0": " ", "\u202f": " ", "\u2007": " ", "\u2028": "\n", "\u2029": "\n"})
+
+#: Cyrillic and Greek letters that are pixel-identical to a Latin letter in
+#: the fonts a browser actually uses. Deliberately a SHORT, explicit table
+#: rather than a general confusables database: these are the ones that spell
+#: an English instruction word, and an explicit table can never quietly start
+#: folding a legitimate Cyrillic or Greek brief into something the mash
+#: heuristic mistakes for junk. Lowercase Greek is absent on purpose — it does
+#: not spell English words, and mapping it would damage real Greek text.
+_CONFUSABLES = str.maketrans(
+    {
+        # Cyrillic
+        "\u0410": "A",  # А
+        "\u0430": "a",  # а
+        "\u0412": "B",  # В
+        "\u0415": "E",  # Е
+        "\u0435": "e",  # е
+        "\u0406": "I",  # І
+        "\u0456": "i",  # і
+        "\u041a": "K",  # К
+        "\u041c": "M",  # М
+        "\u041d": "H",  # Н
+        "\u041e": "O",  # О
+        "\u043e": "o",  # о
+        "\u0420": "P",  # Р
+        "\u0440": "p",  # р
+        "\u0421": "C",  # С
+        "\u0441": "c",  # с
+        "\u0422": "T",  # Т
+        "\u0425": "X",  # Х
+        "\u0445": "x",  # х
+        "\u0423": "Y",  # У
+        "\u0443": "y",  # у
+        # Greek (uppercase only)
+        "\u0391": "A",  # Α
+        "\u0392": "B",  # Β
+        "\u0395": "E",  # Ε
+        "\u0396": "Z",  # Ζ
+        "\u0397": "H",  # Η
+        "\u0399": "I",  # Ι
+        "\u039a": "K",  # Κ
+        "\u039c": "M",  # Μ
+        "\u039d": "N",  # Ν
+        "\u039f": "O",  # Ο
+        "\u03a1": "P",  # Ρ
+        "\u03a4": "T",  # Τ
+        "\u03a5": "Y",  # Υ
+        "\u03a7": "X",  # Χ
+    }
+)
+
+_HORIZONTAL_RUN = re.compile(r"[^\S\n]+")
+_VERTICAL_RUN = re.compile(r"[^\S\n]*\n[\s]*")
+
+
+def _canonical(text: str) -> str:
+    """The matching copy: what the text *renders as*, spelled canonically.
+
+    NFKC (fullwidth → ASCII, ligatures, compatibility forms) → drop the
+    invisibles → fold the exotic spaces and separators → fold the homoglyphs →
+    collapse runs of whitespace, keeping ONE newline where a line break was.
+
+    The newline is kept deliberately: ``_ROLE_FORGERY``'s ``^system:`` anchor
+    and ``_struct_rules``' line-break rule both read line structure, and a
+    flat collapse to spaces would silently delete two rules.
+    """
+    folded = unicodedata.normalize("NFKC", text)
+    folded = _ZERO_WIDTH.sub("", folded)
+    folded = folded.translate(_WHITESPACE_FOLD)
+    folded = folded.replace("\r\n", "\n").replace("\r", "\n")
+    folded = folded.translate(_CONFUSABLES)
+    folded = _HORIZONTAL_RUN.sub(" ", folded)
+    return _VERTICAL_RUN.sub("\n", folded)
+
+
+def _hits(pattern: re.Pattern[str], text: str, canon: str) -> bool:
+    """Does this pattern fire on the raw text OR on its canonical copy?
+
+    Both, never canonical alone. Collapsing whitespace is what makes the
+    homoglyph and zero-width folds work, but it also erases the four-space
+    indent that marks a markdown code block — so the raw string keeps its own
+    vote. Searching a superset can only remove false negatives.
+    """
+    return bool(pattern.search(text) or pattern.search(canon))
 
 
 # ── LANG — lifted verbatim from generation_pipeline (Lane 1.3c) ───────────
@@ -204,12 +320,14 @@ _FINANCE_WORDS = frozenset(
 )
 
 
-def _lang_rules(text: str) -> Verdict:
+def _lang_rules(_text: str, canon: str) -> Verdict:
     """``lang.no_words`` / ``lang.mash`` — is this language at all?"""
     # Unicode-aware: letters in ANY script, no digits/underscores. A Cyrillic
     # or CJK brief must tokenize as words, not vanish into the letter-free
-    # branch below and be refused for "containing no words".
-    tokens = re.findall(r"[^\W\d_]{2,}", text)
+    # branch below and be refused for "containing no words". Read off the
+    # canonical copy so a brief padded with zero-width characters tokenizes as
+    # the words it renders as.
+    tokens = re.findall(r"[^\W\d_]{2,}", canon)
     if not tokens:
         # No word-like content at all — pure digits/punctuation/symbols.
         return _reject("lang.no_words", "it does not contain any words", _BRIEF_HINT)
@@ -230,7 +348,7 @@ def _lang_rules(text: str) -> Verdict:
 # ── SHAPE ─────────────────────────────────────────────────────────────────
 
 
-def _shape_rules_brief(text: str) -> Verdict:
+def _shape_rules_brief(text: str, canon: str) -> Verdict:
     """Empty / too short / too long / control characters.
 
     The control-character test reuses ``generate_schemas``' rule for the
@@ -242,8 +360,15 @@ def _shape_rules_brief(text: str) -> Verdict:
 
     Note this reads a COLLAPSED COPY. The brief itself is never rewritten —
     the stored intent is whatever the user sent.
+
+    Emptiness and the minimum are judged on the CANONICAL copy, so a brief of
+    nothing but zero-width spaces reads as the blank it renders as rather than
+    as a three-character brief. The maximum is judged on the RAW string,
+    because that is the bound ``GenerateBrief.intent``'s ``max_length``
+    enforces one layer out — measuring a collapsed copy here would admit
+    something the schema rejects.
     """
-    stripped = text.strip()
+    stripped = canon.strip()
     if not stripped:
         return _reject("shape.empty", "it did not describe an investment goal", _BRIEF_HINT)
     if len(stripped) < _MIN_INTENT_CHARS:
@@ -263,11 +388,15 @@ def _shape_rules_brief(text: str) -> Verdict:
     return _ALLOW
 
 
-def _shape_rules_model(text: str) -> Verdict:
+def _shape_rules_model(text: str, _canon: str) -> Verdict:
     """Model text: only the bounds that keep it safe to interpolate.
 
     No empty/too-short rule — an empty rebuttal is simply no rebuttal, and the
     caller already has a fallback for an empty strategy name.
+
+    Both bounds read the RAW string on purpose: the length that matters is the
+    length that lands in the next prompt, and a control character is refused,
+    not folded.
     """
     if len(text) > MODEL_TEXT_MAX_CHARS:
         return _reject(
@@ -295,11 +424,31 @@ def _shape_rules_model(text: str) -> Verdict:
 #: verb + previous-ish + instruction-ish, within a short window. "disregard
 #: prior signals" does not match (signals is not an instruction noun);
 #: "ignore all previous instructions" does.
+#:
+#: The gap class is ``[^.]`` and NOT ``[^.\n]``: a single Enter between two
+#: anchors is not a sentence boundary, it is the cheapest possible bypass of
+#: this module's headline rule, and the brief box is a three-row textarea whose
+#: newlines are pinned as legitimate by ``test_a_brief_may_contain_a_newline``.
+#: The period still bounds the window, which is what keeps two unrelated
+#: sentences from being read as one directive.
 _OVERRIDE_DIRECTIVE = re.compile(
-    r"\b(?:ignore|disregard|forget|override|bypass|discard)\b[^.\n]{0,40}"
-    r"\b(?:previous|prior|above|earlier|preceding|foregoing|all|any)\b[^.\n]{0,40}"
+    r"\b(?:ignore|disregard|forget|override|bypass|discard|set\s+aside|put\s+aside)\b[^.]{0,40}"
+    r"\b(?:previous|prior|above|earlier|preceding|foregoing|all|any|everything)\b[^.]{0,40}"
     r"\b(?:instruction|direction|prompt|rule|guideline|guardrail|restriction|constraint|"
     r"policy|message|command|system)s?\b",
+    re.IGNORECASE,
+)
+
+#: Asking for the prompt back. Distinct from an override directive (nothing is
+#: being disregarded) and from role forgery (no role is being reassigned): the
+#: payload is "print what you were told", which is a request for the one string
+#: this service must never emit. Needs a leak verb AND a prompt-ish noun AND a
+#: pointer at earlier text, so "print the portfolio rules" is not enough.
+_PROMPT_LEAK = re.compile(
+    r"\b(?:repeat|reveal|print|show|output|display|echo|disclose|dump|reproduce|recite)\b[^.]{0,40}"
+    r"\b(?:instructions?|prompts?|configuration|config|rules?|guidelines?|guardrails?|"
+    r"system\s+message)\b[^.]{0,40}"
+    r"\b(?:above|earlier|preceding|previous|prior|verbatim|word\s+for\s+word|in\s+full)\b",
     re.IGNORECASE,
 )
 
@@ -334,24 +483,61 @@ _SCHEMA_KEYS = (
     "discard",
     "claim",
 )
+#: Straight quotes, the four smart quotes macOS/iOS/Word substitute for them
+#: by default, and the backtick. Autocorrect turning ``"`` into ``“`` was
+#: enough to walk a forged reply terminator straight past this rule.
+_QUOTE_CHARS = "[\"'\u2018\u2019\u201c\u201d`]"
+
+#: Quoted key, or bare key followed by a colon. The unquoted branch is there
+#: because ``{is_valid: true}`` is not valid JSON and is read as a forged reply
+#: by exactly the same downstream parser — and because dropping the quotes is
+#: the first thing an attacker tries after the quoted form is refused. The
+#: false-positive cost is a brief that writes one of these thirteen schema
+#: keys immediately before a colon; a green-corpus line pins the near-miss
+#: ("signal confidence, capped at 20%") that a real brief actually contains.
 _SCHEMA_FORGERY = re.compile(
-    r"[\"'](?:" + "|".join(_SCHEMA_KEYS) + r")[\"']\s*:",
+    _QUOTE_CHARS + r"(?:" + "|".join(_SCHEMA_KEYS) + r")" + _QUOTE_CHARS + r"\s*:"
+    r"|(?<![\w-])(?:" + "|".join(_SCHEMA_KEYS) + r")\s*:",
     re.IGNORECASE,
 )
 
 _CODE_FENCE = re.compile(r"(?:`{3,}|~{3,})")
 
-#: A scheme, a www-prefixed host, or a bare host on a short TLD list. The list
-#: is short ON PURPOSE: exchange suffixes are written exactly like bare hosts
-#: ("XIU.TO" is the Toronto listing of an ETF, ".CO" is Copenhagen, ".ME" is
-#: Moscow), so every TLD that collides with one is left out rather than
-#: refusing a paying user for naming a foreign-listed ticker. A green corpus
-#: line pins that.
+#: Markdown's OTHER code block: a blank line followed by a line indented four
+#: spaces (or a tab). It renders exactly like a fenced block and it carried a
+#: ``SYSTEM OVERRIDE`` payload past the fence rule. The blank line is required
+#: on purpose — a brief that merely opens with an accidental indent is not a
+#: code block in markdown either, and refusing it would cost a real user.
+_INDENTED_CODE = re.compile(r"\n[ \t]*\n[ \t]*(?: {4}|\t)\S")
+
+#: An HTML comment. Invisible everywhere the brief is rendered, carried
+#: verbatim into the prompt, and read as text by the model — the same
+#: "hidden from the human, visible to the machine" shape as a control
+#: character. Only the opener is matched: a bare ``-->`` is a plausible arrow
+#: in ordinary prose ("momentum --> value").
+_HTML_COMMENT = re.compile(r"<!--")
+
+#: A link needs a scheme, a ``www.`` host, or a bare host FOLLOWED BY A PATH
+#: OR A QUERY. The last clause is the load-bearing one: "Amazon, Alphabet and
+#: Booking.com" is a list of companies, not a link, and half of a realistic
+#: sample of large-cap briefs named at least one ``.com`` company. Refusing
+#: those costs a paying user *before* the payment gate, which is the most
+#: expensive failure this module has. Something to fetch — ``/spec``,
+#: ``?payload=`` — is what separates an instruction to go elsewhere from a
+#: company's name.
+#:
+#: The TLD list stays short for the second reason: exchange suffixes are
+#: written exactly like bare hosts (".TO" Toronto, ".CO" Copenhagen, ".ME"
+#: Montenegro/Moscow, ".AI", ".L" London, ".PA" Paris, ".DE" Xetra, ".HK",
+#: ".SW" Swiss, ".AX" Australia), so every TLD colliding with one is left out
+#: rather than refusing a user for naming a foreign-listed ticker. Green
+#: corpus lines pin both halves.
 _URL = re.compile(
     r"\b(?:https?|ftp|file|data)://"
     r"|\bwww\.[a-z0-9-]+\.[a-z]{2,}"
     r"|(?<![\w.])[a-z0-9](?:[a-z0-9-]{1,61})?"
-    r"\.(?:com|net|org|io|xyz|ru|cn|info|biz|app|dev)(?![a-z])",
+    r"\.(?:com|net|org|io|xyz|ru|cn|info|biz|app|dev)(?![a-z])"
+    r"(?:/\S*|\?\S+)",
     re.IGNORECASE,
 )
 
@@ -360,33 +546,54 @@ _URL = re.compile(
 #: characters anyway.
 _B64_RUN = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])")
 
+#: An all-lowercase hex run walks past ``_B64_RUN``'s mixed-case requirement,
+#: and hex is the encoding an attacker reaches for once base64 is refused. The
+#: same both-kinds-of-character test applies below (digits AND a-f), so a long
+#: run of one letter — the ``aaaa…`` padding in the length-bound corpus lines —
+#: is not mistaken for a payload.
+_HEX_RUN = re.compile(r"(?<![A-Za-z0-9])(?:[0-9a-f]{2}){16,}(?![A-Za-z0-9])", re.IGNORECASE)
 
-def _inject_rules(text: str) -> Verdict:
-    """Instructions aimed at the model rather than a description of a portfolio."""
-    if _OVERRIDE_DIRECTIVE.search(text):
+
+def _inject_rules(text: str, canon: str) -> Verdict:
+    """Instructions aimed at the model rather than a description of a portfolio.
+
+    Every pattern is tried against the raw string and against its canonical
+    copy (:func:`_hits`), so an invisible character or a homoglyph changes what
+    the payload looks like without changing what it matches.
+    """
+    if _hits(_OVERRIDE_DIRECTIVE, text, canon):
         return _reject(
             "inject.override_directive",
             "it tried to override the system's instructions",
             _INJECT_HINT,
         )
-    if any(p.search(text) for p in _ROLE_FORGERY):
+    if any(_hits(p, text, canon) for p in _ROLE_FORGERY):
         return _reject(
             "inject.role_forgery",
             "it tried to reassign the model's role",
             _INJECT_HINT,
         )
-    if _SCHEMA_FORGERY.search(text):
+    if _hits(_PROMPT_LEAK, text, canon):
+        return _reject(
+            "inject.prompt_leak",
+            "it asked the system to repeat its own instructions",
+            _INJECT_HINT,
+        )
+    if _hits(_SCHEMA_FORGERY, text, canon):
         return _reject(
             "inject.schema_forgery",
             "it contained a forged machine reply",
             _INJECT_HINT,
         )
-    if _CODE_FENCE.search(text):
+    if _hits(_CODE_FENCE, text, canon) or _hits(_INDENTED_CODE, text, canon) or _hits(_HTML_COMMENT, text, canon):
         return _reject("inject.code_fence", "it contained a code block", _INJECT_HINT)
-    if _URL.search(text):
+    if _hits(_URL, text, canon):
         return _reject("inject.url", "it contained a link", _INJECT_HINT)
-    for run in _B64_RUN.findall(text):
+    for run in (*_B64_RUN.findall(text), *_B64_RUN.findall(canon)):
         if any(c.isdigit() for c in run) and any(c.islower() for c in run) and any(c.isupper() for c in run):
+            return _reject("inject.base64_blob", "it contained encoded data", _INJECT_HINT)
+    for run in (*_HEX_RUN.findall(text), *_HEX_RUN.findall(canon)):
+        if any(c.isdigit() for c in run) and any(c.isalpha() for c in run):
             return _reject("inject.base64_blob", "it contained encoded data", _INJECT_HINT)
     return _ALLOW
 
@@ -400,20 +607,25 @@ def _inject_rules(text: str) -> Verdict:
 # guard in `_turn` checks claims against the ids printed on the cards — so a
 # forged card is a forged evidence base, not just cosmetic.
 
-_CARD_MARKER = re.compile(r"\[C\d{1,3}\]")
+_CARD_MARKER = re.compile(r"\[\s*C\s*\d{1,3}\s*\]")
 _CITES_MARKER = re.compile(r"[—-]\s*cites\b", re.IGNORECASE)
 _REPLY_MARKER = re.compile(r"\breply\s+with\s+one\s+json\b", re.IGNORECASE)
 
 
-def _struct_rules(text: str) -> Verdict:
-    """``struct.newline_in_card_field`` / ``struct.delimiter_forgery``."""
-    if "\n" in text or "\r" in text:
+def _struct_rules(text: str, canon: str) -> Verdict:
+    """``struct.newline_in_card_field`` / ``struct.delimiter_forgery``.
+
+    The canonical copy folds ``U+2028``/``U+2029`` to ``\n``, so a separator
+    that renders as a line break is refused as one rather than sliding through
+    as an ordinary character.
+    """
+    if "\n" in text or "\r" in text or "\n" in canon:
         return _reject(
             "struct.newline_in_card_field",
             "model text contained a line break in a single-line prompt field",
             "This is an internal bound; the text was left out of the next prompt.",
         )
-    if _CARD_MARKER.search(text) or _CITES_MARKER.search(text) or _REPLY_MARKER.search(text):
+    if _hits(_CARD_MARKER, text, canon) or _hits(_CITES_MARKER, text, canon) or _hits(_REPLY_MARKER, text, canon):
         return _reject(
             "struct.delimiter_forgery",
             "model text forged a prompt delimiter",
@@ -448,16 +660,23 @@ def screen(text: str, surface: Surface | str) -> Verdict:
     surface, a non-string ``text``, or any exception raised inside a rule all
     return ``screen.internal_error`` with ``allow=False``: a screener that
     cannot run must refuse, never admit.
+
+    The canonical copy is computed ONCE here, before any rule runs, and handed
+    to every rule alongside the original. No rule sees a normalized string
+    without also seeing what was actually sent, and neither string is stored.
+
+    There is deliberately no "it is only whitespace, let it through"
+    short-circuit for model text: a claim of three newlines is not empty, it is
+    three line breaks landing in a single-line prompt slot, and the module's
+    own docstring promises that is refused.
     """
     try:
         rules = _SURFACE_RULES[Surface(surface)]
         if not isinstance(text, str):
             raise TypeError(f"screen() expects str, got {type(text).__name__}")
-        if Surface(surface) is Surface.MODEL_TEXT and not text.strip():
-            # Nothing to interpolate; there is nothing to refuse.
-            return _ALLOW
+        canon = _canonical(text)
         for rule in rules:
-            verdict = rule(text)
+            verdict = rule(text, canon)
             if not verdict.allow:
                 return verdict
         return _ALLOW
@@ -501,6 +720,7 @@ ALL_CODES = frozenset(
         "lang.no_words",
         "lang.mash",
         "inject.override_directive",
+        "inject.prompt_leak",
         "inject.role_forgery",
         "inject.schema_forgery",
         "inject.code_fence",
@@ -522,4 +742,4 @@ def code_digest() -> str:
 #: by ``test_brief_screen.py``, so adding, renaming or deleting a code without
 #: bumping this constant in the same commit is a red test — the version can
 #: never quietly describe a different ruleset than the one that shipped.
-RULESET_VERSION = "2026-09-02.f160bf1c"
+RULESET_VERSION = "2026-09-02.37df7771"
