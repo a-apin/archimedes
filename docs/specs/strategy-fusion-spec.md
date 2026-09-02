@@ -43,8 +43,9 @@ pressure. Instead:
 
 - **Additive at the time of writing.** A new `backend/archimedes/agents/strategy_fusion.py`. (Since superseded by adoption: it is now imported by the API routes, the debate engine, and tests — this spec describes its introduction, not its current wiring.) Originally nothing imported it
   yet; wiring it into a route is a later, separately reviewable step.
-- **Flagged.** `ARCHIMEDES_FUSION_ENABLED` (default OFF). Flag-off is a hard inert path:
-  no LLM call, no corpus read, returns a self-describing sentinel.
+- **Flagged.** ~~`ARCHIMEDES_FUSION_ENABLED` (default OFF). Flag-off is a hard inert path:
+  no LLM call, no corpus read, returns a self-describing sentinel.~~ **RETIRED 2026-09-02
+  (deck Q4)** — see § The feature flag below. Fusion is unconditional.
 - **Revertible.** Deleting the module and the spec fully reverts the change. The architect,
   guardrail, construction-trace, and the on-chain flow are byte-for-byte untouched.
 - **Seam-faithful.** It mirrors the architect's `LLMBackend` Protocol seam, lazy `anthropic`
@@ -203,9 +204,18 @@ sentinel, never an exception.
   proposal. No crash, no fabricated papers.
 - Extra/unknown fields are ignored (forward-compatible with manifest schema growth).
 
-## The feature flag
+## The feature flag — RETIRED 2026-09-02 (deck Q4)
 
-`ARCHIMEDES_FUSION_ENABLED`, default **OFF**. Truthy = `{"1","true","yes","on"}`
+**There is no fusion flag any more.** Fusion is the unconditional generation path:
+the debate society is the sole pipeline and every proposer routes through
+`StrategyFusion.propose()`, so the OFF branch below could only make Generate
+silently return nothing while every deployed environment pinned the flag `true`.
+The reader, the OFF branch and every injection site were deleted;
+`backend/tests/test_fusion_flag_retired.py` fails if a fusion switch comes back
+under any name. `/health` still publishes `fusion_enabled`, now a constant `true`.
+The rest of this section is kept as the historical description of what was removed.
+
+~~`ARCHIMEDES_FUSION_ENABLED`, default **OFF**.~~ Truthy = `{"1","true","yes","on"}`
 case-insensitively (the parsing convention shared with the rest of the env surface).
 Mechanism mirrors `ARCHIMEDES_STRATEGIES_DIR`: a plain `os.getenv` read, no central
 settings module (there is none in this codebase — env overrides are the established

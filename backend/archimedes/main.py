@@ -1046,7 +1046,6 @@ async def health(response: Response):
     """
     _no_store(response)
 
-    from archimedes.agents.strategy_fusion import fusion_enabled
     from archimedes.chain.client import chain_client
     from archimedes.services.corpus_service import count_corpus_papers, get_corpus_meta, get_paper_count
     from archimedes.services.health_cache import health_probe_cache
@@ -1236,8 +1235,6 @@ async def health(response: Response):
     else:
         corpus_count = int(corpus_outcome.value or 0)
         corpus_probe_fields = corpus_outcome.payload_fields(_CORPUS_PROBE)
-
-    _fusion_on = fusion_enabled()
 
     # ── LLM backend ──────────────────────────────────────────────────────
     llm_provider = os.getenv("LLM_PROVIDER", "auto")
@@ -1634,7 +1631,13 @@ async def health(response: Response):
         "corpus_kg_entities": kg_entity_count,
         "corpus_kg_relations": kg_relation_count,
         "corpus_artifact_present": corpus_artifact_present,
-        "fusion_enabled": _fusion_on,
+        # Retired flag, retained key (2026-09-02, deck Q4). Fusion is the
+        # unconditional generation path, so this is a constant, not a
+        # switch reading: ARCHIMEDES_FUSION_ENABLED no longer exists. The
+        # key stays because /health's published field set is a contract
+        # (backend/tests/test_health_always_answers.py) that dashboards and
+        # scripts/check-parity.sh read.
+        "fusion_enabled": True,
         "llm_provider": llm_provider,
         "llm_backend": llm_backend,
         "llm_model": llm_model,

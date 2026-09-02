@@ -525,7 +525,6 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "BETTER_AUTH_INTERNAL_URL", value = "http://127.0.0.1:3000" },
         { name = "APP_ENV", value = "production" },
         { name = "FEATURE_QUANT", value = "false" },
-        { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },
         # Runtime env-parity fix (PR #1041 correctness pass, 2026-07-07): the
         # prod EC2 box sets these three via docker-compose's `env_file: .env`
         # (docker-compose.yml's `backend` service) — a box-local, gitignored
