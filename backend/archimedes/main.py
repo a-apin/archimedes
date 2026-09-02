@@ -655,6 +655,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     yield  # ── app is now running ────────────────────────────────────────
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────────
+    # Stop the paper-advance arming task FIRST, because it owns a child
+    # interpreter and a child is not reaped by this process's SIGTERM. Without
+    # this cancel, a task draining out of a deploy leaves its paper-advance
+    # child ticking against the same ledger rows the replacement task's child
+    # is starting on. stop_paper_advance_task tolerates None and never raises.
+    try:
+        from archimedes.services.paper_trading import stop_paper_advance_task
+
+        await stop_paper_advance_task(getattr(_app.state, "paper_advance_task", None))
+    except Exception as exc:  # shutdown must not raise
+        _logger.warning("shutdown: paper-advance task did not stop cleanly (%s: %s)", type(exc).__name__, exc)
+
     market = getattr(_app.state, "market", None)
     if market is not None:
         market._stop.set()

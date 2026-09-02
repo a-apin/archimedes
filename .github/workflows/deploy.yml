@@ -369,12 +369,16 @@ jobs:
         #
         # Prod died ~10 min after every boot with a bare `Fatal Python error:
         # Aborted` — a raw C abort(), no Python traceback, no glibc/terminate/SSL
-        # message — inside psycopg2 do_executemany on the OHLCV cache-write
-        # commit. psycopg2-binary vendors its own libssl/libcrypto next to the
+        # message. psycopg2-binary vendors its own libssl/libcrypto next to the
         # interpreter's, and two OpenSSL builds in one address space CAN produce
-        # that signature — the leading but unproven hypothesis for #1632 (the
-        # #1729 A/B reproduced the co-residency, not the abort; do NOT read a
-        # green run here as license to re-enable PAPER_ADVANCE_ENABLED).
+        # that signature — which was the leading hypothesis for #1632 and is now
+        # FALSIFIED: prod rev 214 aborted with exactly one OpenSSL mapped, and
+        # the faulthandler traceback named two /health corpus-probe threads
+        # racing in SQLAlchemy session teardown (fixed by #1740). This step
+        # stays because it forecloses the class cheaply, not because it is the
+        # #1632 cause. It is also NOT the reason PAPER_ADVANCE_ENABLED is armed
+        # today (#1778): that rests on the #1728 process boundary — the tick
+        # runs in a child interpreter, so a C abort there cannot take /health.
         # requirements-base.txt now installs source-built
         # psycopg2; this step imports ssl + psycopg2 + aiohttp inside the image
         # and fails the build if /proc/self/maps names two distinct OpenSSLs.
@@ -675,7 +679,8 @@ jobs:
       # Needed by the task-def rewrite script below. This job historically
       # cloned the live task definition with jq inline and never touched the
       # tree; pinning PAPER_ADVANCE_ENABLED cannot live only in that jq
-      # comment — it has to be the same function the unit tests run.
+      # comment — it has to be the same function the unit tests run, in
+      # whichever direction the pin currently points.
       - uses: actions/checkout@v7
 
       - name: Configure AWS credentials (OIDC)
@@ -718,18 +723,18 @@ jobs:
           # Fetch the CURRENTLY REGISTERED task definition for this family —
           # not `aws_ecs_task_definition.backend`'s Terraform-authored JSON —
           # so cpu/memory/roles/secrets/log config carry forward. Images are
-          # retagged to this commit. PAPER_ADVANCE_ENABLED is pinned false
-          # HERE, not only in infra/ecs.tf: this job never terraform-applies,
-          # so an ecs.tf pin is not live until someone applies. Last-good
-          # 011b6bfc predates #1725, so cloning it without this pin leaves
-          # the code default ON and the tick still kills the web container
-          # (~240s after boot, #1632). Proven on task-def :211: the #1725
-          # image deployed, the clone had no PAPER_ADVANCE_ENABLED, the old
-          # code default ON started the tick, /health 502'd at 240s. The
-          # code default is now also false; this pin remains so a future
-          # default-flip cannot tick through a cloned task-def. terraform
-          # apply is still required for other ecs.tf drift; this flag must
-          # not depend on it.
+          # retagged to this commit. PAPER_ADVANCE_ENABLED is pinned HERE, not
+          # only in infra/ecs.tf: this job never terraform-applies, so an
+          # ecs.tf pin is not live until someone applies. Proven on task-def
+          # :211: the #1725 image deployed, the clone had no
+          # PAPER_ADVANCE_ENABLED, the then-ON code default started the tick,
+          # and /health 502'd at 240s. The value the script pins is "true" as
+          # of 2026-09-01 (#1778, the #1632 lift — the tick runs in an
+          # isolated child, #1728); pulling it back is PAPER_ADVANCE_VALUE in
+          # .github/scripts/ecs_rewrite_task_def.py plus the ecs.tf twin. The
+          # code default stays false, so a revision that never heard of the
+          # name still cannot tick. terraform apply is still required for
+          # other ecs.tf drift; this flag must not depend on it.
           aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" \
             --query 'taskDefinition' > current-task-def.json
 
