@@ -26,9 +26,14 @@
 //
 // Idiom is the repo's source-text one (oracle-copy.test.js,
 // roadmap-copy.test.js): `.jsx` is not importable under `node --test`, so the
-// component is read as text. Every check below is paired with a mutation that
-// must turn it red, so a check that stops checking anything fails loudly
-// instead of passing vacuously.
+// component is read as text. The three properties above are each computed by a
+// `null`-or-reason helper (`orderingProblem`, `priceLabelProblem`,
+// `hardCodedModelProblem`) and each is paired with a mutation test that feeds
+// the helper an input it must reject and asserts the exact reason — so a helper
+// that stops checking anything fails loudly instead of passing vacuously. The
+// two remaining tests (the /health wiring and the drill-in) are flat
+// `assert.match` regexes with no branch that can silently stop checking, so
+// they carry no paired mutation.
 
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
@@ -196,7 +201,7 @@ test("mutation: a hard-coded served model is rejected", () => {
 		`Debate society over the research corpus, served by ${recommended.provider} ${recommended.name}`,
 	);
 	assert.equal(
-		hardCodedModelProblem(HARD_CODED),
+		hardCodedModelProblem(stripComments(HARD_CODED)),
 		`hard-codes model name ${recommended.name}`,
 		`writing ${JSON.stringify(recommended.name)} into the card is not caught by the hard-coded-model check — it is guarding nothing`,
 	);
