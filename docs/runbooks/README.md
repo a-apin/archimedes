@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-07-28
+> **updated:** 2026-09-01
 > **superseded-by:** —
 
 A runbook is a procedure someone follows **under pressure**, usually during an incident.
@@ -31,6 +31,7 @@ an incident should not have to know which tree a procedure lives in.
 | [`erc8004-identity-registration.md`](erc8004-identity-registration.md) | Dan Browne | Minting the ERC-8004 agent identity on Arc (#1527): live-verified registry facts, `--plan`/`--verify`/`--execute`, the Circle-signed owner step, and the honest surface flip. |
 | [`runner-ec2-wedge.md`](runner-ec2-wedge.md) | Dan Browne | The `archimedes-runner` box wedging (#1402) — impaired instance check, healthy system check, dead SSM agent. Symptoms, read-only diagnosis, the recovery ladder, and what the `ec2:reboot` alarm now does for you before you get there. |
 | [`email-verification-validation.md`](email-verification-validation.md) | Dan Browne | Validating signup verification and password reset against a real inbox before `EMAIL_VERIFICATION_ENFORCED` is flipped: pre-flight checks, the local and sandbox rehearsals, the reset rehearsal, the flip's blast radius and rollback, and the SES sandbox-vs-production gotchas. Human-only — every step is a person with a browser and a mailbox. |
+| [`ses-suppression.md`](ses-suppression.md) | Dan Browne | The AWS account-level SES suppression list (#1748 item 4): a suppressed address makes `SendEmail` succeed and the message vanish, so silence is the symptom. Read-only inspection, the three conditions that must all hold before one address comes off, why there is no bulk clear, and the verify-then-watch step. Tooling: `backend/archimedes/scripts/ses_suppression.py`, dry-run by default. |
 | `infra/runbooks/ecs-fargate-cutover.md` | owner of `infra/` | The 2026-07-09 EC2 → ECS Fargate cutover, **including the rollback procedure**. This is the closest thing to a break-glass path that currently exists. |
 | `infra/runbooks/disaster-recovery.md` | owner of `infra/` | Recovery from data-store and account-level loss. |
 
