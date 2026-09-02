@@ -774,16 +774,22 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "CIRCLE_ENTITY_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_ENTITY_SECRET" },
         { name = "WALLET_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/WALLET_ID" },
         # Tiingo market-data credential (#1798). The parameter has existed as a
-        # SecureString since 2026-08-31; nothing read it, because the container
-        # was never handed it. `services/market_data_provider._tiingo_api_key()`
-        # reads TIINGO_API_TOKEN off the process environment (legacy alias
+        # SecureString since 2026-08-31. It already reaches the web-tier app
+        # process, but only by accident of the boot-time bulk load:
+        # `main.py:47-48` calls `secrets_service.load_ssm_secrets()` when
+        # PUBLIC_DOMAIN is set, which GetParametersByPath's the whole
+        # /archimedes/prod/ prefix (AWS_SSM_PATH_PREFIX, in the `environment`
+        # block above) into os.environ. That loader catches every error and
+        # boots degraded — a credential that arrives only through it is a
+        # SOFT dependency nothing verifies. This entry makes it a task-launch
+        # dependency instead, which is what the runbook's execute-command
+        # check can actually observe.
+        # `services/market_data_provider._tiingo_api_key()` reads
+        # TIINGO_API_TOKEN off the process environment (legacy alias
         # TIINGO_API_KEY second) and raises TiingoAPIKeyMissingError at provider
         # construction when both are blank — it does NOT fall back to yfinance,
         # by design (docs/adr/market-data-sourcing.md § "Never mix vendors
-        # inside one run"). So without this entry, MARKET_DATA_PROVIDER=tiingo
-        # is not a slow path or a degraded path: it is a hard failure on the
-        # first backtest fetch. Wiring the token is what makes the flip
-        # *possible*; the flip itself is deliberately NOT in this change — it
+        # inside one run"). The flip itself is deliberately NOT in this change — it
         # is the owner's proof step, and it is guarded (MARKET_DATA_PROVIDER is
         # absent from the `environment` block above on purpose, pinned by
         # backend/tests/test_ecs_backend_secrets.py's FORBIDDEN_WHY).

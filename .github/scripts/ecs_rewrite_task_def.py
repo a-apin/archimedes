@@ -25,14 +25,15 @@ This script is the path that actually ships. It:
 
 Step 3 exists for the same reason step 2 does, one issue later (#1798, with
 #1799 as the reason it cannot be an ``ecs.tf``-only change). The SSM parameter
-has been seeded since 2026-08-31 and no container has ever been handed it,
-because the live revisions are clones of clones and ``infra/ecs.tf`` is only
-live after somebody applies. ``market_data_provider._tiingo_api_key()`` reads
-the name off the process environment and raises rather than falling back to
-yfinance, so a missing token is not a degraded path — it is a hard failure on
-the first fetch after ``MARKET_DATA_PROVIDER=tiingo``. The twin entry lives in
-``infra/ecs.tf``'s backend ``secrets`` block; both paths are pinned together by
-``backend/tests/test_ecs_backend_secrets.py``.
+has been seeded since 2026-08-31 and no cloned revision has ever carried it as
+a ``secrets`` entry, because the live revisions are clones of clones and
+``infra/ecs.tf`` is only live after somebody applies. The web tier's app
+process does already get the value, via ``main.py``'s boot-time
+``load_ssm_secrets()`` bulk load of the whole ``/archimedes/prod/`` prefix — a
+best-effort loader that swallows every error, so it is a soft dependency
+nothing verifies. This step makes it a task-launch dependency. The twin entry
+lives in ``infra/ecs.tf``'s backend ``secrets`` block; both paths are pinned
+together by ``backend/tests/test_ecs_backend_secrets.py``.
 
 The pinned value is ``"true"`` as of 2026-09-01 (#1778, the #1632 lift): the
 paper-advance tick is ARMED. It never runs in the web interpreter —

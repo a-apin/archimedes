@@ -24,7 +24,13 @@ fallback would attach a "ran on licensed data" provenance to a run that did not
 (``docs/adr/market-data-sourcing.md``). So the missing token is not a silence,
 it is a hard failure on the first fetch — but only once someone flips
 ``MARKET_DATA_PROVIDER``, which is exactly why it went unnoticed: the parameter
-has existed in SSM since 2026-08-31 and no container has ever been handed it.
+has existed in SSM since 2026-08-31 and no task definition has ever carried it
+as a ``secrets`` entry. The value does already reach the web-tier process, but
+only through ``main.py``'s boot-time ``load_ssm_secrets()`` bulk load of the
+whole ``/archimedes/prod/`` prefix — a loader that catches every error and
+boots degraded, so it is a soft dependency nothing verifies. A ``secrets``
+entry makes it a task-launch dependency instead, which is the thing an operator
+can actually observe.
 
 And it has to land TWICE. #1799: ``infra/ecs.tf`` is one source of truth for the
 backend task definition and ``deploy.yml``'s clone-and-retag step is the other,
@@ -388,9 +394,12 @@ class TestTiingoTokenOnTheTerraformPath:
         """Fails against `main` before #1798 — `grep -ri tiingo infra/` was empty."""
         assert TIINGO_SECRET in backend_secrets, (
             f"{TIINGO_SECRET} is missing from the backend container's `secrets` block. "
-            "The task starts healthy and MARKET_DATA_PROVIDER=tiingo raises "
-            "TiingoAPIKeyMissingError on the first fetch — the provider refuses to "
-            "fall back to yfinance on purpose (docs/adr/market-data-sourcing.md)."
+            "Without it the token is a SOFT dependency only — it reaches the process "
+            "via main.py's best-effort SSM bulk load, which catches every error and "
+            "boots degraded — so nothing declares or verifies it, and "
+            "MARKET_DATA_PROVIDER=tiingo can raise TiingoAPIKeyMissingError at provider "
+            "construction with no prior signal. The provider refuses to fall back to "
+            "yfinance on purpose (docs/adr/market-data-sourcing.md)."
         )
 
     def test_it_resolves_from_ssm_not_a_literal(self, backend_secrets: dict[str, str]) -> None:

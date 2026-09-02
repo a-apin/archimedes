@@ -20,12 +20,18 @@ the flip at the end of this page is the point where that decision becomes real.
 ## What was wrong, in one paragraph
 
 `/archimedes/prod/TIINGO_API_TOKEN` has existed in SSM (SecureString, `us-east-1`, account
-`037613907429`) since 2026-08-31. Nothing read it, because no container was ever handed it:
-the backend task definition carried no `TIINGO_*` secret at all. `market_data_provider`
-refuses to fall back to yfinance when the token is missing — it raises
+`037613907429`) since 2026-08-31, and the backend task definition carried no `TIINGO_*`
+secret at all. It was **not** true that nothing could read it: the value already reached the
+web-tier app process by a side door — `backend/archimedes/main.py:47-48` calls
+`secrets_service.load_ssm_secrets()` whenever `PUBLIC_DOMAIN` is set, and that
+`GetParametersByPath`es the whole `/archimedes/prod/` prefix into `os.environ`. But that
+loader catches every error and boots degraded by design, so a credential arriving only
+through it is a **soft** dependency: nothing declares it, nothing verifies it, and its
+absence produces a log line rather than a failed deploy. What this change does is convert it
+into a task-launch dependency, which is the thing step 1 below can actually observe.
+`market_data_provider` refuses to fall back to yfinance when the token is missing — it raises
 `TiingoAPIKeyMissingError` at provider construction, deliberately, so that a run can never
-carry a "licensed data" provenance it did not earn. So the gap was invisible: everything
-worked, because everything was still on yfinance.
+carry a "licensed data" provenance it did not earn.
 
 ## The two paths, and which one actually ships
 
@@ -62,9 +68,11 @@ aws ecs describe-task-definition --task-definition <that-arn> \
   --query "taskDefinition.containerDefinitions[?name=='backend'].secrets[].name" --output text
 ```
 
-Expected: the eight names, `TIINGO_API_TOKEN` among them. If it is absent, the deploy did not
-run the rewrite script — check the `deploy-ecs` job's "Register a new task-definition
-revision" step, not this page.
+Expected: `TIINGO_API_TOKEN` in the list. (The rest of the list is whatever the clone chain
+carries, not what `infra/ecs.tf` declares — the deploy clones the live revision. It will only
+be the full eight after a `terraform apply` has also landed.) If `TIINGO_API_TOKEN` is absent,
+the deploy did not run the rewrite script — check the `deploy-ecs` job's "Register a new
+task-definition revision" step, not this page.
 
 No IAM change is needed and none was made. The execution role's SSM statement is a prefix
 wildcard over `parameter/archimedes/prod/*`, which already authorises the read, and its
@@ -144,19 +152,30 @@ reason is a real hazard rather than caution:
 Step 2's command is exactly that rehearsal: `MARKET_DATA_PROVIDER=tiingo` set for one
 short-lived process, which exercises the token, the adapter and the vendor's real responses
 and touches nothing else — the process exits. A green run there is evidence the credential
-works and the adapter is correct against live vendor responses; whether
-the global flip is acceptable is a separate call, and the honest answer today is that it
-needs Tiingo's intraday methods implemented first, or a second variable so the two seams can
+works and the adapter is correct against live vendor responses.
+
+Be clear about what that green run does *not* unblock. The credential was never what stood
+between here and the flip — it was already in the web tier's process environment via the bulk
+load described at the top of this page, so the daily-bar path would have answered before this
+change too. What blocks the flip is the `NotImplementedError` surfaces above. Whether the
+global flip is acceptable is a separate call, and the honest answer today is that it needs
+Tiingo's intraday methods implemented first, or a second variable so the two seams can
 diverge.
 
 ## Rollback
 
-Nothing to roll back for the wiring itself: an unused secret changes no behaviour, because
-nothing reads `TIINGO_API_TOKEN` while `MARKET_DATA_PROVIDER` is unset. If a flip is in
+Nothing to roll back in the *runtime* behaviour: nothing reads `TIINGO_API_TOKEN` while
+`MARKET_DATA_PROVIDER` is unset, so no code path changes. If a flip is in
 effect and the oracle or Explore starts failing, unset `MARKET_DATA_PROVIDER` (or set it to
 `yfinance`) and redeploy. Note the ADR's cache consequence: **a provider flip in either
 direction starts cold**, because `asset_daily_bars` reads filter on the vendor that wrote
 each row. The first run after a flip is slow, and that is correct behaviour, not a fault.
+
+One thing this wiring does change: `/archimedes/prod/TIINGO_API_TOKEN` is now a task-LAUNCH
+dependency. Deleting, renaming or moving that parameter fails every task start with
+`ResourceInitializationError` — the whole service, not one feature. Before it was a soft
+dependency reaching the process only via `main.py`'s best-effort bulk load. Rotating the
+value in place is safe; removing the parameter is not.
 
 ## Related
 
@@ -165,3 +184,5 @@ each row. The first run after a flip is slow, and that is correct behaviour, not
 - [`../claims-ledger.md`](../claims-ledger.md) — the row this proof is for.
 - [`../operations/feature-flag-fliplist.md`](../operations/feature-flag-fliplist.md) —
   `MARKET_DATA_PROVIDER`, `ORACLE_CRYPTO_SOURCE` and `TIINGO_MIN_REQUEST_INTERVAL_S`.
+- [#1798 comment correcting the issue's premise](https://github.com/aprin-labs/archimedes/issues/1798#issuecomment-5504420216)
+  — why "nothing could read the token" was wrong, and what actually blocks the flip.
