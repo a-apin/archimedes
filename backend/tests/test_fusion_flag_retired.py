@@ -43,7 +43,13 @@ _PY_ROOTS = (
     "mcp-server/src",
 )
 _JS_ROOTS = ("ui/src", "auth")
-_CONFIG_GLOBS = ("infra/**/*.tf", "docker-compose*.yml", ".env.example", "ui/.env.example")
+_CONFIG_GLOBS = (
+    "infra/**/*.tf",
+    "infra/**/*env*.txt",  # spike-1411/function-env.txt — deploy.sh injects it verbatim
+    "docker-compose*.yml",
+    ".env.example",
+    "ui/.env.example",
+)
 
 # The two files that carry the generation path. A switch here is the failure
 # this guard exists to prevent, whatever it is named.
