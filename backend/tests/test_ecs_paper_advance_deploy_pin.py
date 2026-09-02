@@ -314,7 +314,10 @@ class TestRewriteStripsRetiredBackendEnv:
         assert package_root.is_dir(), package_root
 
         offenders: list[str] = []
+        scanned = 0
+        control_hits = 0
         for path in sorted(package_root.rglob("*.py")):
+            scanned += 1
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
             # String constants only: comments are stripped by the parser, so a
             # tombstone comment naming the retired knob does not trip this,
@@ -323,6 +326,17 @@ class TestRewriteStripsRetiredBackendEnv:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Constant) and node.value in mod.RETIRED_BACKEND_ENV:
                     offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}: {node.value}")
+                if isinstance(node, ast.Constant) and node.value == "PAPER_ADVANCE_ENABLED":
+                    control_hits += 1
+
+        # Not vacuous: an empty or broken walk (a glob typo, a moved package)
+        # would leave ``offenders`` empty and pass with the guard disarmed. The
+        # package has 200+ modules and exactly one string constant naming the
+        # live kill switch; both sentinels must be seen for the verdict to count.
+        assert scanned >= 20, f"walk saw only {scanned} modules under {package_root}"
+        assert control_hits == 1, (
+            f"expected exactly one 'PAPER_ADVANCE_ENABLED' string constant under backend/archimedes, saw {control_hits}"
+        )
 
         assert not offenders, (
             "retired env names are read again under backend/archimedes: "
