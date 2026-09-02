@@ -106,6 +106,9 @@ export async function resolveVerificationStatus({ user, deliveryLog, suppression
   // `inWindow` counts ALL rows, accepted or not, because the rate limiter
   // counts REQUESTS: a send that threw still consumed a slot on its way in.
   const inWindow = rows ? rows.filter(row => row.createdAt.getTime() > windowCutoff) : []
+  // THE latest attempt. `recent()` orders by the delivery table's DB-assigned
+  // `seq`, so "latest" is the order the database saw across every task of this
+  // service — not the order one process's clock happened to record.
   const newest = rows?.[0] ?? null
   const lastSent = rows?.find(row => row.status === 'sent') ?? null
 
