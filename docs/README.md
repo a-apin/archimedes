@@ -145,7 +145,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
-| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-09-01 | ADR index and status vocabulary. All twenty-three records are listed there. |
+| [`adr/README.md`](adr/README.md) | current | Dan Browne | 2026-09-01 | ADR index and status vocabulary. All twenty-four records are listed there. |
 | [`adr/unlicense-public-domain.md`](adr/unlicense-public-domain.md) | accepted | Dan Browne | initial commit | The Unlicense as a public-domain dedication, and its ownership/contributor consequences. |
 | [`adr/arc-settlement-chain.md`](adr/arc-settlement-chain.md) | accepted | Dan Browne | 2026-05-13 | Arc testnet 5042002; USDC as settlement asset and native gas token. |
 | [`adr/two-tier-marketplace.md`](adr/two-tier-marketplace.md) | accepted | Dan Browne | 2026-05-13 | Verified / Community tiers; rigor as the wedge. |
@@ -169,6 +169,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`adr/market-data-sourcing.md`](adr/market-data-sourcing.md) | accepted | Dan Browne | 2026-08-31 | Market data is sourced **by surface**: Tiingo (Free tier, for testing) for backtesting and paid analysis; yfinance for the free, ungated Explore viewer, which sells and redistributes nothing. Flags a **Tiingo commercial plan as a mainnet prerequisite**, and records that the split is reversible by build — a full vendor swap is a config + adapter change, not surgery (#1218). |
 | [`adr/lambda-generation-offload.md`](adr/lambda-generation-offload.md) | proposed (verdict: defer) | Dan Browne | 2026-08-30 | Measured spike (#1411): a real Lambda container built from the production backend image reaches Redis/Aurora/Bedrock/MiniLM from inside the VPC, but cold start is 13.6 s steady-state and 51 s after a deploy. Defers the lane; adopts the lane-agnostic worker entrypoint and the measured-cost model, and records why the quote seam is `_price()` rather than `quote()`. |
 | [`adr/ipfs-pinning-not-live.md`](adr/ipfs-pinning-not-live.md) | accepted | Dan Browne | 2026-09-01 | Reveal is hash-only (empty `storagePointer`). The Pinata pin path is removed, not half-wired — `PINATA_JWT` was never in prod ECS secrets (#1526). |
+| [`adr/rigor-verdict-of-record.md`](adr/rigor-verdict-of-record.md) | accepted | Dan Browne | 2026-09-01 | Generation, backtesting and grading are one-time events: a strategy is graded **once, at backtest time**, by the real gate, and the verdict is persisted on its passport with `graded_at` / `gate_version` / `cohort_n`. Every surface reads the stored verdict; a re-grade is an explicit, versioned event, never a recompute on read. Supersedes #868's read-time premise; #821's rule survives tightened (#1746/#1747). |
 
 ## Plans and roadmaps (intent, not state)
 
