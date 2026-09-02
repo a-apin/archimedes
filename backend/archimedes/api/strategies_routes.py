@@ -130,21 +130,13 @@ def _to_strategy_response(
     if s.status == StrategyStatus.CANDIDATE and verdict.passes:
         served_status = StrategyStatus.VALIDATED.value
 
-    # The same spec-wins reconciliation the generated path takes (#1769), on the
-    # provider path's own in-hand spec — no query, because `Strategy` already
-    # carries `strategy_spec`. A no-op for today's curated corpus, where
-    # `strategy_provider._to_strategy` sets no spec at all and the YAML's
-    # POSITION_SIZING / REBALANCE_FREQUENCY metadata IS the source of truth. It
-    # is here so the invariant is unconditional: wherever a validated spec
-    # exists, the card shows the spec. A curated row that later gains one must
-    # not quietly become the surface where prose beats the DSL again.
-    _card = reconcile_card_fields(
-        s.id,
-        s.strategy_spec,
-        asset_universe=s.asset_universe,
-        rebalance_frequency=s.rebalance_frequency,
-        position_sizing=s.position_sizing,
-    )
+    # No spec reconciliation on this path (#1769). `strategy_provider` never
+    # sets `strategy_spec` on a curated `Strategy`, so the call would be a
+    # provable no-op today — dead code with a comment claiming an invariant it
+    # does not enforce. The curated card's source of truth is the YAML's
+    # POSITION_SIZING / REBALANCE_FREQUENCY metadata, and it gains DSL parity
+    # for free the day `strategy_provider` writes a spec: this function reads
+    # the same fields the generated path does.
 
     # Build papers list from passport
     papers_list = [
@@ -169,14 +161,10 @@ def _to_strategy_response(
         paper_title=s.paper_title,
         paper_authors=s.paper_authors,
         methodology_summary=s.methodology_summary,
-        asset_universe=_card["asset_universe"],
+        asset_universe=s.asset_universe,
         universe_source=s.universe_source,
-        # A bare `.value` is gone on purpose: `reconcile_card_fields` hands back
-        # the enum member it was given when the stored side won, and the DSL's
-        # own literal string when the spec won. The schema field is `str`, so
-        # both shapes are normalised here rather than assuming either one.
-        position_sizing=str(getattr(_card["position_sizing"], "value", _card["position_sizing"])),
-        rebalance_frequency=str(getattr(_card["rebalance_frequency"], "value", _card["rebalance_frequency"])),
+        position_sizing=s.position_sizing.value,
+        rebalance_frequency=s.rebalance_frequency.value,
         status=served_status,
         paper_venue=s.paper_venue,
         paper_year=s.paper_year,
@@ -1268,12 +1256,22 @@ def _strategy_spec_for_passport(strategy_id: str, session) -> dict | None:
     ``_generation_cost_for`` and ``_num_trials_for_passport`` immediately above.
     It does not change the complexity class of the list path.
 
-    **This is not a #1557 leak.** The spec itself is REASONING and stays
-    owner-gated at the detail route; nothing here puts it on the wire. What
-    comes back out of ``reconcile_card_fields`` is three fields the passport row
-    already serves publicly to every caller — a rebalance cadence, a sizing
-    rule and a ticker list — with their values corrected. A public field with a
-    right value discloses nothing a public field with a wrong value did not.
+    **The spec itself does not go on the wire.** It is REASONING under #1557 and
+    stays owner-gated at the detail route; what comes back out of
+    ``reconcile_card_fields`` is three fields the passport row already serves
+    publicly to every caller — a rebalance cadence, a sizing rule and a ticker
+    list.
+
+    Their *values* do change, and that is a real disclosure delta the owner
+    signed off on rather than an argument this docstring can win. Before #1769
+    every generated row served the same ``weekly`` / ``equal_weight`` column
+    defaults, which carried no information about the strategy at all. It now
+    serves the true cadence, the true sizing rule and the spec's universe —
+    three of the seven fields of an artifact #1557 gates. The judgement is that
+    a card is *for* saying what the strategy does, and that a card which lies
+    about it is worth less than the secrecy it buys; the entry rule, the exit
+    rule, the indicator parameters and the condition tree — the parts that make
+    the spec reproducible — remain gated.
 
     Fails soft: a lookup failure means the card keeps its stored values, which is
     exactly today's behaviour, and never takes down a strategy read.
@@ -1440,7 +1438,10 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
     # rows written before that fix are still in the table and the table is
     # append-only — a read that trusted them would keep serving the card that
     # contradicts its own backtest. The spec wins and the disagreement is logged
-    # naming this id; see services/passport_spec_parity.py.
+    # naming this id, ONCE per id per process — this function is the per-row
+    # mapper for Library and the public leaderboard and it repairs the response,
+    # not the row, so a per-call line would repeat on every request forever. The
+    # dedupe lives in services/passport_spec_parity.py (`_LOGGED_DISAGREEMENTS`).
     _card = reconcile_card_fields(
         record.id,
         _strategy_spec_for_passport(record.id, session),

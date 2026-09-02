@@ -149,9 +149,14 @@ async def test_the_disagreement_is_logged_naming_the_strategy_id(_tmp_db, caplog
     stop appearing and this fails.
     """
     from archimedes.main import app
+    from archimedes.services import passport_spec_parity
     from httpx import ASGITransport, AsyncClient
 
     sid = "parity-read-logged"
+    # The warning is deduped per id for the life of the process (see
+    # `test_the_disagreement_warning_does_not_repeat_for_the_same_strategy`), so
+    # this asserts on the FIRST read of this id whatever else ran before it.
+    passport_spec_parity._LOGGED_DISAGREEMENTS.discard(sid)
     _seed_disagreeing_row(sid)
 
     with caplog.at_level(logging.WARNING, logger="archimedes.services.passport_spec_parity"):
@@ -308,6 +313,129 @@ def test_the_post_backtest_rebuild_repairs_a_stale_card(_tmp_db):
         assert json.loads(row.asset_universe) == SPEC_UNIVERSE
 
 
+def test_every_passport_writer_derives_its_card_fields_from_the_spec():
+    """All THREE ``StrategyPassport(...)`` constructions spread ``_passport_spec_fields``.
+
+    The two above pin writers #1 (``_persist_candidate``) and #2
+    (``_refresh_passport_real_metrics``) behaviourally. Writer #3 lives inside
+    ``_backtest_and_persist``, behind a real portfolio backtest and an
+    ``asyncio.to_thread`` — reaching it in a unit test would mean mocking the
+    backtester, the artifact, the live gate and the session, and the mock would
+    then be what the test pins. So it is pinned STRUCTURALLY instead, which is
+    also the stronger guard: it holds for every writer, including the fourth one
+    somebody adds next month.
+
+    That is the actual failure mode. ``_passport_spec_fields``' own docstring
+    states the rule — a field only one writer sets is a field the next rebuild
+    reverts — and it is exactly how this bug survived: three writers
+    re-declaring the same passport from scratch, and no one place that made all
+    three agree.
+
+    MUTATION: in ``_backtest_and_persist``, put ``asset_universe=c.asset_universe
+    or []`` back in place of ``**_passport_spec_fields(c)``. Every behavioural
+    test in this file stays green; this one fails naming the line.
+    """
+    import ast
+    import pathlib
+
+    from archimedes.agents import generation_pipeline
+
+    tree = ast.parse(pathlib.Path(generation_pipeline.__file__).read_text(encoding="utf-8"))
+    writers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "StrategyPassport"
+    ]
+    # Not `== 3`: a new writer must satisfy the rule, not be forbidden. The
+    # floor only proves the AST search still finds the writers at all — a
+    # renamed symbol that matched nothing would otherwise pass vacuously.
+    assert len(writers) >= 3, f"expected the three passport writers, found {len(writers)}"
+
+    for call in writers:
+        spread = [
+            kw
+            for kw in call.keywords
+            if kw.arg is None
+            and isinstance(kw.value, ast.Call)
+            and isinstance(kw.value.func, ast.Name)
+            and kw.value.func.id == "_passport_spec_fields"
+        ]
+        assert spread, (
+            f"generation_pipeline.py:{call.lineno}: StrategyPassport(...) does not spread "
+            "_passport_spec_fields — its card fields will not come from the validated DSL spec"
+        )
+        # A literal kwarg beside the spread would silently win over it (later
+        # keys beat earlier ones in a `{**d, k: v}` call), which is the same
+        # defect wearing the fix as camouflage.
+        overrides = {kw.arg for kw in call.keywords if kw.arg} & {
+            "asset_universe",
+            "rebalance_frequency",
+            "position_sizing",
+        }
+        assert not overrides, (
+            f"generation_pipeline.py:{call.lineno}: {sorted(overrides)} passed literally "
+            "alongside **_passport_spec_fields — the literal wins and the spec loses"
+        )
+
+
+def test_the_disagreement_warning_does_not_repeat_for_the_same_strategy():
+    """One WARNING per bad row per process — not one per read.
+
+    ``_passport_to_strategy_response`` is the per-row mapper for Library and the
+    public leaderboard, ``list_passports`` has no LIMIT, and the read path fixes
+    the RESPONSE without repairing the ROW. So every pre-#1769 generated row
+    disagrees on every request, forever, on unauthenticated traffic: an
+    undeduped line is a permanent log flood, not a transitional one.
+
+    Deduping rather than demoting to DEBUG is the owner's call (2026-09-01):
+    the whole value of the line is that a stale row can be found by id, and
+    DEBUG on the surface where most rows are read would hide exactly those ids.
+
+    MUTATION: drop the ``_first_time_for(strategy_id)`` guard in
+    ``reconcile_card_fields`` — the second and third calls log again and the
+    count below is 3.
+    """
+    from archimedes.services import passport_spec_parity
+    from archimedes.services.passport_spec_parity import reconcile_card_fields
+
+    def _reconcile(sid):
+        return reconcile_card_fields(
+            sid,
+            dict(DISAGREEING_SPEC),
+            asset_universe=list(PROSE_UNIVERSE),
+            rebalance_frequency=PROSE_REBALANCE,
+            position_sizing=PROSE_SIZING,
+        )
+
+    # The memo is process-global by design, so the ids have to be unseen and the
+    # test has to leave the process as it found it.
+    sid, other = "parity-dedupe-a", "parity-dedupe-b"
+    passport_spec_parity._LOGGED_DISAGREEMENTS.discard(sid)
+    passport_spec_parity._LOGGED_DISAGREEMENTS.discard(other)
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    logger = logging.getLogger("archimedes.services.passport_spec_parity")
+    logger.addHandler(handler)
+    previous_level = logger.level
+    logger.setLevel(logging.WARNING)
+    try:
+        for _ in range(3):
+            assert _reconcile(sid)["rebalance_frequency"] == "monthly"
+        named = [r for r in records if r.levelno >= logging.WARNING and sid in r.getMessage()]
+        assert len(named) == 1, f"expected one warning for {sid}, got {len(named)}"
+
+        # Deduped by ID, not silenced: a different stale row still gets its line.
+        _reconcile(other)
+        assert [r for r in records if other in r.getMessage()], "a second strategy must still be logged"
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        passport_spec_parity._LOGGED_DISAGREEMENTS.discard(sid)
+        passport_spec_parity._LOGGED_DISAGREEMENTS.discard(other)
+
+
 # ── The coupling this all rests on ──────────────────────────────────────────
 
 
@@ -329,6 +457,27 @@ def test_position_sizing_enum_covers_every_dsl_sizing_type():
 
     missing = sorted(POSITION_SIZING_TYPES - {m.value for m in PositionSizing})
     assert not missing, f"DSL sizing types with no PositionSizing member: {missing}"
+
+
+def test_rebalance_frequency_enum_covers_every_dsl_cadence():
+    """The same superset coupling on the OTHER enum, which had no guard at all.
+
+    ``_passport_spec_fields`` calls ``RebalanceFrequency(derived[...])`` under a
+    comment asserting that *both* enums are supersets of the DSL's closed
+    vocabulary — but only ``PositionSizing`` was pinned. Add ``"quarterly"`` to
+    ``strategy_dsl.REBALANCE_FREQUENCIES`` with no member here and every
+    generated persist raises ``ValueError`` out of the passport writer: the
+    exact failure the sizing docstring exists to prevent, on the field that
+    started this issue.
+
+    MUTATION: delete ``MONTHLY`` from ``RebalanceFrequency`` (or add a cadence
+    to the DSL and not to the enum) — this fails naming it.
+    """
+    from archimedes.models.strategy import RebalanceFrequency
+    from archimedes.services.strategy_dsl import REBALANCE_FREQUENCIES
+
+    missing = sorted(REBALANCE_FREQUENCIES - {m.value for m in RebalanceFrequency})
+    assert not missing, f"DSL cadences with no RebalanceFrequency member: {missing}"
 
 
 def test_an_unvalidatable_spec_never_overrides_the_stored_card():

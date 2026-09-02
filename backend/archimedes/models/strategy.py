@@ -64,6 +64,16 @@ class PositionSizing(str, Enum):
 
 
 class RebalanceFrequency(str, Enum):
+    """Rebalance cadences a passport can declare.
+
+    Same superset rule as ``PositionSizing`` above, and pinned by the same file:
+    ``_passport_spec_fields`` constructs this enum from a validated spec's
+    ``rebalance_frequency``, so a DSL cadence with no member here is a
+    ``ValueError`` out of every generated persist — not an unsupported option.
+    Today the two vocabularies happen to be identical; the test is what keeps
+    them from drifting apart silently.
+    """
+
     DAILY = "daily"
     WEEKLY = "weekly"
     MONTHLY = "monthly"

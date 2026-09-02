@@ -55,11 +55,28 @@ test("zero attributions gets its own sentence, not silence", () => {
 	// case is the one a reader most needs told, and it is the honest-shortfall
 	// rule (#1636): label it, never hide it and never gate on it.
 	const h = paperAttributionHeader(papers(5, 0));
-	assert.match(
-		h.note,
-		/None of the cited papers was attributed to any element of this strategy's spec/,
-	);
-	assert.match(h.note, /citations, not mechanisms/);
+	assert.match(h.note, /No per-paper mechanism attribution is recorded/);
+	assert.match(h.note, /does not tie any of them to an element this strategy trades/);
+});
+
+test("the zero sentence claims nothing was RECORDED, never that nothing was found", () => {
+	// MUTATION: restore "None of the cited papers was attributed to any element
+	// of this strategy's spec". That asserts an attribution step ran and came
+	// back empty. Curated rows have no spec at all, and every generated row
+	// written before #1739's `contribution` writer simply has an empty column —
+	// so the completed negative is false on both, and it contradicts the
+	// blank-cell footnote ("unrecorded, not zero") in the same panel.
+	for (const n of [1, 2, 5]) {
+		const note = paperAttributionHeader(papers(n, 0)).note;
+		assert.doesNotMatch(note, /was attributed to/);
+		assert.doesNotMatch(note, /None of the cited papers/);
+		assert.match(note, /recorded/);
+	}
+	// The partial branch is the same claim with a smaller subject and must use
+	// the same framing.
+	const partial = paperAttributionHeader(papers(3, 2)).note;
+	assert.doesNotMatch(partial, /without an attributed mechanism/);
+	assert.match(partial, /no recorded mechanism attribution/);
 });
 
 test("a partial attribution says how many are left over", () => {
@@ -68,7 +85,11 @@ test("a partial attribution says how many are left over", () => {
 		h.heading,
 		"3 papers cited · 2 name a mechanism this strategy trades",
 	);
-	assert.match(h.note, /remaining 1 paper is cited without an attributed mechanism/);
+	assert.match(h.note, /The remaining 1 paper has no recorded mechanism attribution/);
+	assert.match(
+		paperAttributionHeader(papers(5, 2)).note,
+		/The remaining 3 papers have no recorded mechanism attribution/,
+	);
 });
 
 test("the header reads as English at every count", () => {

@@ -5,8 +5,8 @@
 // the model emitted no usable `paper_mechanisms`, so every `contribution` cell
 // is an em-dash. "Fused from N" turns a citation count into a claim about
 // fusion DEPTH: it tells a reader that five papers were synthesized into the
-// methodology, when what is on record is that five papers were cited and none
-// of them is tied to an element of the spec the strategy actually trades.
+// methodology, when what is on record is that five papers were cited and no
+// attribution tying any of them to an element of the spec was ever recorded.
 //
 // The count that means something is how many cited papers name a mechanism this
 // strategy trades. That number can be 0, and when it is, the header has to say
@@ -56,18 +56,28 @@ export function paperAttributionHeader(papers, distinctMechanismPapers) {
 }
 
 /** The sub-line under the heading. Never empty: silence after a "0" reads as a
- * rendering bug, and the zero case is the one a reader most needs explained. */
+ * rendering bug, and the zero case is the one a reader most needs explained.
+ *
+ * Every branch below is phrased as a statement about THE RECORD, never as a
+ * completed negative about the strategy. "None of these papers was attributed
+ * to the spec" asserts that an attribution step ran and came back empty; for a
+ * curated row there is no spec at all, and for every generated row written
+ * before #1739's `contribution` writer the column was simply never filled. The
+ * true statement in both cases is that nothing is recorded — which is also what
+ * the passport's own blank-cell footnote says four lines further down
+ * ("Blank cells are unrecorded, not zero"). Two sentences in one panel must not
+ * disagree about which of those two facts is on the page. */
 function attributionNote(cited, attributed) {
 	if (attributed === 0) {
 		return (
-			"None of the cited papers was attributed to any element of this strategy's spec — " +
-			"they are citations, not mechanisms it is recorded as trading."
+			"No per-paper mechanism attribution is recorded for these references — " +
+			"the table below cites them; it does not tie any of them to an element this strategy trades."
 		);
 	}
 	if (attributed < cited) {
 		return `The remaining ${cited - attributed} ${
-			cited - attributed === 1 ? "paper is" : "papers are"
-		} cited without an attributed mechanism.`;
+			cited - attributed === 1 ? "paper has" : "papers have"
+		} no recorded mechanism attribution — cited, not tied to an element this strategy trades.`;
 	}
 	return cited === 1
 		? "The cited paper is tied to a named element of the spec."

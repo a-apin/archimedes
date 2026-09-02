@@ -28,7 +28,10 @@ Two call sites, because the card could go wrong in two different places:
   reconciliation therefore runs again on the way out, and LOGS the disagreement
   naming the strategy id rather than repairing it silently: a card that was
   wrong for months is a fact about the data, and the operator should be able to
-  find every row it happened to.
+  find every row it happened to. That log is deduped by strategy id for the
+  life of the process — see ``_LOGGED_DISAGREEMENTS``; the read path corrects
+  the *response* without repairing the *row*, so an undeduped line would repeat
+  on every request forever, on a list surface that has no LIMIT.
 
 The spec wins, always — never the reverse. A stored column can only ever be a
 copy of something; the spec is the artifact the backtest consumed.
@@ -48,6 +51,30 @@ SPEC_DERIVED_CARD_FIELDS: tuple[str, ...] = (
     "rebalance_frequency",
     "position_sizing",
 )
+
+# Strategy ids whose card/spec disagreement has already been logged by this
+# process.
+#
+# WHY this exists: ``_passport_to_strategy_response`` is the per-row mapper for
+# the Library list and the public leaderboard, and ``list_passports`` has no
+# LIMIT. Every generated row written before #1769 disagrees with its spec by
+# construction — that is the bug — and the read path corrects the RESPONSE
+# without repairing the ROW, so an undeduped WARNING is one line per row per
+# request, forever, on unauthenticated traffic.
+#
+# WHICH mechanism (owner call, 2026-09-01): dedupe by strategy id and keep
+# WARNING, rather than demoting the list path to DEBUG. The point of the line is
+# that a stale row can be FOUND; DEBUG on the surface where most rows are read
+# would have hidden exactly the ids worth finding. One line per bad row per
+# process is the operator's inventory; every repeat after it is noise.
+#
+# Not thread-synchronised on purpose: the worst race duplicates one log line.
+_LOGGED_DISAGREEMENTS: set[str] = set()
+
+# A process that serves every strategy holds one short id per disagreeing row.
+# Past the cap the memo is dropped wholesale rather than evicted one by one:
+# forgetting re-logs a line (harmless), unbounded growth is not.
+_LOGGED_DISAGREEMENTS_CAP = 50_000
 
 
 def card_fields_from_spec(spec: Any, *, strategy_id: str = "") -> dict[str, Any] | None:
@@ -114,10 +141,17 @@ def reconcile_card_fields(
     usable spec, which is the correct answer for curated rows (no spec at all)
     and for the fixture path.
 
-    A disagreement is logged at WARNING, once per strategy, naming the id and
-    every field that differed with both sides of the difference. It is not an
-    error and it does not fail the read: the served card is now right, and the
-    log is how the stale row that produced it gets found and rewritten.
+    A disagreement is logged at WARNING naming the id and every field that
+    differed, with both sides of the difference — **once per strategy id for the
+    life of the process**, not once per call. This function runs on the Library
+    list and the public leaderboard, once per row, on a query with no LIMIT, and
+    it corrects the response without repairing the row; the second and every
+    later line about the same id would say exactly what the first one said. See
+    ``_LOGGED_DISAGREEMENTS`` for why WARNING was kept over a DEBUG demotion.
+
+    The log is not an error and does not fail the read: the served card is now
+    right, and the line is how the stale row that produced it gets found and
+    rewritten.
     """
     derived = card_fields_from_spec(spec, strategy_id=strategy_id)
     stored = {
@@ -133,13 +167,29 @@ def reconcile_card_fields(
         for field in SPEC_DERIVED_CARD_FIELDS
         if not _same(stored[field], derived[field])
     ]
-    if disagreements:
+    if disagreements and _first_time_for(strategy_id):
         logger.warning(
             "strategy %s: passport card disagreed with its validated DSL spec (%s) — the spec wins",
             strategy_id or "<unknown>",
             "; ".join(disagreements),
         )
     return derived
+
+
+def _first_time_for(strategy_id: str) -> bool:
+    """Whether this process has yet to log a disagreement for *strategy_id*.
+
+    Records the id as a side effect. An empty id collapses to one shared key:
+    a caller that passed no id gives the operator nothing to look up anyway, so
+    repeating the line buys nothing.
+    """
+    key = strategy_id or "<unknown>"
+    if key in _LOGGED_DISAGREEMENTS:
+        return False
+    if len(_LOGGED_DISAGREEMENTS) >= _LOGGED_DISAGREEMENTS_CAP:
+        _LOGGED_DISAGREEMENTS.clear()
+    _LOGGED_DISAGREEMENTS.add(key)
+    return True
 
 
 def _same(stored: Any, derived: Any) -> bool:
