@@ -1296,11 +1296,11 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                 failure pill. Merged alone, this paragraph contradicts the pill two
                 inches below it, so land this after or with #1792.
 
-                This is an ORDERING constraint, not a conflict one: a 3-way merge
-                against that branch is clean (base=origin/main, git merge-file
-                EXIT=0, zero conflict markers). Do not "fix" it by softening the
-                copy — the copy is the correct end state; #1792 is what makes the
-                rows agree with it. */}
+                This is an ORDERING constraint, not a conflict one:
+                `git merge-tree --write-tree --name-only` of this branch against
+                origin/dbrowneup/verdict-of-record-a is EXIT=0 with no conflicted
+                paths. Do not "fix" it by softening the copy — the copy is the
+                correct end state; #1792 is what makes the rows agree with it. */}
             <p style={{ marginBottom: 6 }}>
               They are <strong>not a scoreboard</strong>. A curated example is graded only
               once a backtest has been run for it here; until then it carries no verdict,
