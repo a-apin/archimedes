@@ -35,9 +35,24 @@ Hermetic: one file in the repo, no AWS, no terraform binary, no network, no DB.
 bound to the wrong cache policy, and a behaviour ordered behind a broader
 pattern that swallows it are all syntactically valid HCL.
 
+Not every path these patterns cover is session-dependent, and the suite says so
+rather than papering over it. ``nginx/nginx.conf:293-326`` is the anonymous-browse
+carve-out block (#1194 revision d) — bare ``/app``, ``/app/explore``,
+``/app/leaderboard``, ``/app/corpus`` and ``/app/strategy/*`` are PUBLIC, ungated,
+identical for every viewer. They are de-cached here **on purpose** (the owner's
+ruling on the review of PR #1772, 2026-09-01) and
+``TestThePublicCarveOutsAreDeCachedOnPurpose`` pins that, so a later "optimisation"
+that quietly puts them back on the ``html`` policy is a failing test rather than a
+silent reopening of #1768's blast radius.
+
 MUTATION: delete any one of the three ``ordered_cache_behavior`` blocks →
 ``test_the_behaviour_is_declared`` and ``test_the_path_resolves_to_caching_disabled``
 go red naming the pattern.
+
+MUTATION: rebind ``/app/*`` to ``aws_cloudfront_cache_policy.html.id`` → **9 failed**
+— the binding assertion, the four gated ``/app/`` resolutions, and all four public
+carve-outs under ``/app/``. (Bare ``/app`` stays green: it has its own behaviour, which
+is exactly why there are two patterns and not one.)
 
 Run:
     /path/to/env/bin/pytest backend/tests/test_cloudfront_session_paths_uncached.py -q
@@ -81,6 +96,20 @@ SESSION_DEPENDENT_PATHS = (
     "/app/library",
     "/app/nonsense",
     "/sign-in",
+)
+
+# The anonymous-browse carve-outs (#1194 revision d): PUBLIC pages that live
+# under /app and are NOT session-dependent — nginx serves them with no
+# `auth_request` (nginx/nginx.conf:293-326), and nginx's longest-prefix match
+# puts them ahead of the gated `^~ /app`. `/app/strategy/abc123` stands in for
+# a real strategy-detail URL. Listed separately from SESSION_DEPENDENT_PATHS so
+# the distinction survives in the file that asserts on it.
+PUBLIC_APP_CARVE_OUTS = (
+    "/app",
+    "/app/explore",
+    "/app/leaderboard",
+    "/app/corpus",
+    "/app/strategy/abc123",
 )
 
 # Anti-goal: this change must not pull anything else off its behaviour. The
@@ -267,6 +296,64 @@ class TestOrdering:
                 f"{anchor!r} is ordered in front of {pattern!r}; a gated {anchor} under "
                 f"/app would be cached for an hour, keyed without the session cookie"
             )
+
+
+class TestThePublicCarveOutsAreDeCachedOnPurpose:
+    """The public half of /app is de-cached deliberately. Owner's ruling.
+
+    Reviewed on PR #1772 (2026-09-01): `/app/*` and `/app` do not only cover
+    session-dependent pages. The anonymous-browse carve-outs of #1194 revision
+    d — bare `/app` (the SPA's alias for Explore), `/app/explore`,
+    `/app/leaderboard`, `/app/corpus`, `/app/strategy/*` — are public, ungated
+    at nginx (`nginx/nginx.conf:293-326`, no `auth_request`, no
+    `error_page 401 = @sign_in`), and identical for every viewer. Carving them
+    back onto the `html` policy would be a defensible cache optimisation and
+    the owner ruled AGAINST it, for two reasons:
+
+    1. A carve-out promoted to gated later must not be able to reintroduce
+       #1767's cached anonymous 302. The product has already moved pages across
+       that line; the edge must not be the thing that has to be remembered.
+    2. Per-carve-out behaviours here would make `infra/cloudfront.tf` a fourth
+       copy of the anon-page list that `nginx/nginx.conf` and `ANON_APP_PAGES`
+       in `ui/src/routes.js` already have to keep in lockstep — and a fourth
+       copy needs a fourth lockstep guard.
+
+    The price paid is named in the comment above the blocks and asserted below:
+    an origin hit per anonymous visitor for a ~4 KB static shell.
+
+    So this class is a DECISION pin, not a correctness pin. It fails if someone
+    reverses the ruling without the ruling being reversed.
+    """
+
+    @pytest.mark.parametrize("path", PUBLIC_APP_CARVE_OUTS)
+    def test_the_public_carve_out_resolves_to_caching_disabled(self, path: str):
+        pattern, policy = _resolve(path)
+        assert policy == CACHING_DISABLED, (
+            f"{path} is a PUBLIC anonymous-browse page (#1194 rev d) and it now resolves "
+            f"to the {pattern!r} behaviour with policy {policy!r}. Putting the carve-outs "
+            f"back on a caching policy is the owner's call to reverse, not a cleanup: it "
+            f"buys edge hits on a ~4 KB static shell and sells the guarantee that a "
+            f"carve-out promoted to gated cannot reintroduce #1768."
+        )
+
+    def test_the_comment_says_the_de_caching_is_deliberate(self):
+        """The pin is worthless if the file still calls these paths session-
+        dependent — the next reader would "fix" the prose by deleting the
+        behaviour instead of reading the ruling.
+        """
+        comment = _comment_above("/app/*")
+        assert "#1194" in comment, "the comment does not cite the carve-out decision (#1194 rev d)"
+        for page in ("/app/explore", "/app/leaderboard", "/app/corpus", "/app/strategy"):
+            assert page in comment, f"the comment does not name {page} as a public page de-cached on purpose"
+        assert "PUBLIC" in comment, "the comment does not say these carve-outs are public"
+
+    def test_the_comment_states_the_cost_of_de_caching_them(self):
+        """A deliberate cost that is not written down reads as an oversight."""
+        comment = _comment_above("/app/*").lower()
+        assert "origin" in comment and "index.html" in comment, (
+            "the comment must say what de-caching the public pages costs: every anonymous "
+            "visitor reaches the origin for the static index.html shell"
+        )
 
 
 class TestAntiGoals:

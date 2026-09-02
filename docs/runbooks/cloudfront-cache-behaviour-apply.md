@@ -15,12 +15,20 @@ not about production.
 This runbook is the step between those two facts. It is written for the pending change
 first, then generalised.
 
-## Pending: issue #1768 — session-dependent paths on CachingDisabled
+## Pending: issue #1768 — `/app` and `/sign-in*` on CachingDisabled
 
 **What merged.** Three `ordered_cache_behavior` blocks — `/app/*`, `/app`, `/sign-in*` —
 bound to `data.aws_cloudfront_cache_policy.caching_disabled`, the `all_viewer` origin
 request policy, and the same response headers policy the default behaviour uses. They sit
 after `/static/*` and ahead of `*.js` / `*.css`.
+
+`/app/*` and `/app` cover more than the gated pages. The anonymous-browse carve-outs of
+#1194 revision d — bare `/app`, `/app/explore`, `/app/leaderboard`, `/app/corpus`,
+`/app/strategy/*` — are public and ungated at nginx, and they come off the 60s `html`
+policy too. That is the owner's ruling (2026-09-01, on the review of PR #1772), not an
+oversight: it costs an origin hit per anonymous visitor for a ~4 KB static shell, and it
+buys the guarantee that promoting a carve-out to gated later cannot reintroduce the cached
+anonymous 302.
 
 **Why it is not already fixed.** PR #1767 shipped `Cache-Control: private, no-store` from
 nginx on the gated `/app` locations and the `@sign_in` redirect, and that is live — the
@@ -52,6 +60,13 @@ infra/apply.sh          # plan is the default; --apply is a separate, later step
 
 **Expected:** exactly three new cache behaviours on the distribution and nothing else.
 
+One rendering caveat, so it is not mistaken for scope creep: the three blocks are inserted
+in the *middle* of the behaviour list, ahead of `*.js` / `*.css`. Terraform may render that
+index shift as changes to the trailing behaviours rather than as three clean insertions. If
+it does, check that every rendered change is a re-ordering only — the `path_pattern`,
+`cache_policy_id` and `origin_request_policy_id` values before and after must be the same
+set. Three new patterns appear; no existing pattern's policy changes.
+
 ```
   # aws_cloudfront_distribution.main will be updated in-place
   ~ resource "aws_cloudfront_distribution" "main" {
@@ -72,13 +87,6 @@ one resource is `aws_cloudfront_distribution.main`. Any other resource in the pl
 ECS task definition, a security group, an ACM certificate — means the working tree is
 carrying something other than this change, or `terraform.tfvars` drifted. Stop and find out
 which; do not apply through it.
-
-One rendering caveat, so it is not mistaken for scope creep: the three blocks are inserted
-in the *middle* of the behaviour list, ahead of `*.js` / `*.css`. Terraform may render that
-index shift as changes to the trailing behaviours rather than as three clean insertions. If
-it does, check that every rendered change is a re-ordering only — the `path_pattern`,
-`cache_policy_id` and `origin_request_policy_id` values before and after must be the same
-set. Three new patterns appear; no existing pattern's policy changes.
 
 ### 3. Apply
 
@@ -123,6 +131,20 @@ Expected on every iteration: `302`, `x-cache: Miss from cloudfront` (CachingDisa
 produces a `Hit`), and `cache-control: private, no-store` from nginx (#1767 — both halves
 should now be visible on the same response). A `Hit from cloudfront` on any repeat means the
 apply did not take or an invalidation is still propagating.
+
+Then the public carve-out, which must also be a `Miss` — deliberately, per the ruling
+above. Twice, because one `Miss` proves nothing:
+
+```bash
+for i in 1 2; do
+  curl -sI https://archimedes-arc.com/app/explore | grep -iE '^HTTP/|^x-cache'
+done
+```
+
+Expected on both: `200` and `x-cache: Miss from cloudfront`. A `Hit` on the second means a
+carve-out has been put back on the `html` policy — check
+`backend/tests/test_cloudfront_session_paths_uncached.py::TestThePublicCarveOutsAreDeCachedOnPurpose`,
+which exists to make that a red test rather than a surprise here.
 
 Then the real check, which needs a browser: sign in at `https://archimedes-arc.com/sign-in`
 and confirm you land on `/app/...` once, without the address bar bouncing. The failure this

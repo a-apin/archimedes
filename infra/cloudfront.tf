@@ -7,9 +7,12 @@
 #   - Static assets (/assets/*, /static/*, *.js, *.css) cached 1h at the edge.
 #   - /health, /health/*, /api/* and /events/* NEVER cached (liveness probes +
 #     dynamic responses + SSE pass-through).
-#   - Session-dependent paths (/app, /app/*, /sign-in*) NEVER cached — their
-#     responses depend on the session cookie, and the edge keys without it
-#     (2026-09-01 sign-in outage, issue #1768).
+#   - /app, /app/* and /sign-in* NEVER cached. The gated pages under /app
+#     must not be: their responses depend on the session cookie and the edge
+#     keys without one (2026-09-01 sign-in outage, issue #1768). The public
+#     anonymous-browse carve-outs (bare /app, /app/explore, /app/leaderboard,
+#     /app/corpus, /app/strategy/*) are de-cached alongside them deliberately —
+#     the block comment on those behaviours carries the cost and the reason.
 #   - Generated 5xx error responses NEVER cached (custom_error_response with
 #     error_caching_min_ttl = 0) — see the block near the bottom of this file.
 #   - HTML ("/") cached 60s, respecting origin Cache-Control.
@@ -377,7 +380,7 @@ resource "aws_cloudfront_distribution" "main" {
     compress                   = true
   }
 
-  # /app, /app/* and /sign-in* — session-dependent. NEVER cached (#1768).
+  # /app, /app/* and /sign-in* — NEVER cached at the edge (#1768).
   #
   # 2026-09-01 sign-in outage ("I can't sign into the production site. It
   # thrashes endlessly"). nginx's `auth_request` gate on `^~ /app` answers an
@@ -413,15 +416,50 @@ resource "aws_cloudfront_distribution" "main" {
   #     behaviours above (#1520) — the fix is "do not match the caching policy",
   #     not "make the caching policy weaker".
   #
+  # NOT every path these three patterns cover is session-dependent, and that is
+  # a decision rather than an oversight. nginx/nginx.conf:293-326 is the
+  # anonymous-browse carve-out block (#1194 revision d, the owner's product
+  # call), and nginx picks the LONGEST matching prefix, so those locations win
+  # over the gated `^~ /app` below them. Bare `/app` (the SPA's alias for
+  # Explore), `/app/explore`, `/app/leaderboard`, `/app/corpus` and
+  # `/app/strategy/*` are PUBLIC: no `auth_request`, no
+  # `error_page 401 = @sign_in`, the same shell for every viewer. `/app` and
+  # `/app/*` pull them off the 60s `html` policy along with the gated pages, on
+  # purpose (owner's ruling on the review of PR #1772, 2026-09-01):
+  #
+  #   Cost. Every anonymous visitor to those pages now reaches the origin
+  #   instead of being answered at the edge for up to 60s. What they fetch is
+  #   the ~4 KB `ui/index.html` shell, read straight off nginx's disk
+  #   (`root /usr/share/nginx/html; try_files $uri $uri/ /index.html`) with no
+  #   backend call; the SPA's data then comes over `/api/*`, which was never
+  #   cached at the edge anyway.
+  #
+  #   Benefit. Promoting one of those carve-outs to gated later — the product
+  #   has already moved pages across that line — cannot reintroduce the cached
+  #   anonymous 302 of #1767/#1768. The alternative, per-carve-out behaviours
+  #   on the `html` policy, makes this file a fourth copy of the anon-page list
+  #   that nginx/nginx.conf and `ANON_APP_PAGES` in ui/src/routes.js already
+  #   have to keep in lockstep (ui/public/sitemap.xml carries the same set
+  #   under its top-level aliases), and a fourth copy needs a fourth lockstep
+  #   guard. Origin hits on a static file are the cheaper thing to spend.
+  #
   # `all_viewer` forwards cookies, headers and the query string to the origin,
   # so `auth_request` still sees the session cookie and `?next=` still reaches
   # the SPA. The response headers policy is the same one the default behaviour
   # uses: these are the same HTML pages, and HSTS / frame-options must not
   # silently drop off the gated half of the site. `allowed_methods` mirrors the
-  # default behaviour's list too, so the ONLY thing that changes for these paths
-  # is caching — not which verbs the edge forwards. `compress = false` matches
-  # the other CachingDisabled behaviours and gives up nothing: nginx sets
-  # `gzip off` on the `/app` and `/` locations that serve these responses.
+  # default behaviour's list too, so what changes for these paths is caching and
+  # edge compression — not which verbs the edge forwards.
+  #
+  # `compress = false` matches the other CachingDisabled behaviours, and here it
+  # describes rather than decides: the AWS-managed CachingDisabled policy sets
+  # `EnableAcceptEncodingGzip = false` (Brotli likewise), and CloudFront
+  # compresses only when the behaviour's `compress` flag AND the cache policy's
+  # accept-encoding settings are on — so `compress = true` on these blocks would
+  # be inert. The cost is real and it lands at the origin: nginx sets `gzip off`
+  # on every one of these locations, so the shell reaches the browser
+  # uncompressed, ~4.0 KB where gzip would have sent ~1.4 KB. Named, not waved
+  # off as free.
   #
   # Ordered AHEAD of `*.js` / `*.css`, not after them. Those patterns match any
   # path ending in `.js` / `.css` — `/app/x.js` included — and bind it to
