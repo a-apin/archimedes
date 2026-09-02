@@ -4,7 +4,7 @@
 // Pure and I/O-free — it takes an already-fetched delivery history and an
 // already-performed suppression lookup and returns one state. server.js owns
 // the session check and the two awaits; everything that DECIDES lives here, so
-// every rule below is executable in auth/test/verification-status.test.js
+// every rule below is executable in auth/test/delivery-feedback.test.js
 // without a socket, a database, or an AWS client. (Same split ui/'s
 // freeGenerations.js makes for the free-tier banner.)
 //

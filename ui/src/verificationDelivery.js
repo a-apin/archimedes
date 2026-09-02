@@ -63,6 +63,18 @@ function plural(count, noun) {
 }
 
 /**
+ * The suppression lookup did not run — a missing IAM grant, throttling, or the
+ * console mailer. `checked: false` is NOT "not suppressed": the server keeps
+ * those apart and the copy must too, or an address SES is silently binning
+ * reads as an ordinary "accepted" and we are back to the eternal 200.
+ */
+function suppressionCaveat(status) {
+	return status?.suppression && status.suppression.checked === false
+		? " We could not check whether our mail provider is blocking this address, so a permanent block cannot be ruled out."
+		: "";
+}
+
+/**
  * Turn a `GET /api/auth/verification-status` body into what the UI shows.
  *
  * Returns `null` for "render nothing": no response yet, a malformed one, a
@@ -144,7 +156,7 @@ export function deriveVerificationDeliveryView(status) {
 			tone: "ok",
 			message:
 				"Our mail provider accepted the last verification email for this address. " +
-				`That is acceptance, not proof it reached you — it can take a few minutes.${spam}`,
+				`That is acceptance, not proof it reached you — it can take a few minutes.${spam}${suppressionCaveat(status)}`,
 			canResend: retryAfterSeconds === null,
 			retryAfterSeconds,
 		};
@@ -158,9 +170,11 @@ export function deriveVerificationDeliveryView(status) {
 		return {
 			state,
 			tone: "unknown",
-			message: unreadable
-				? "We cannot read this account's email delivery history right now, so we cannot say whether a verification email went out."
-				: "No verification email has been recorded for this address yet. Request one below.",
+			message:
+				(unreadable
+					? "We cannot read this account's email delivery history right now, so we cannot say whether a verification email went out."
+					: "No verification email has been recorded for this address yet. Request one below.") +
+				suppressionCaveat(status),
 			canResend: retryAfterSeconds === null,
 			retryAfterSeconds,
 		};

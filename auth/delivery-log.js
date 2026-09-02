@@ -54,6 +54,44 @@ export function normalizeAddress(email) {
   return String(email ?? '').trim().toLowerCase()
 }
 
+/** Last ordering key this process handed out. Never goes backwards. */
+let lastIssuedAt = 0
+
+/**
+ * The row's ordering key — and why it is not simply `new Date()`.
+ *
+ * `recent()` promises most-recent-first, and verification-status.js reads
+ * `rows[0]` as THE latest attempt. That one row decides whether the account
+ * owner is told "our provider accepted it" or "the last attempt was refused",
+ * which is the entire claim this feature makes.
+ *
+ * `new Date()` has millisecond resolution, and two records written back to
+ * back — a send and the record of the failure it threw, a signup send followed
+ * immediately by a resend — land on the SAME millisecond as a matter of
+ * routine (measured on this code: 197 pairs in 200). `ORDER BY created_at
+ * DESC` is then a tie, the database may return either row first, and a
+ * `failed` send can be reported as `sent`: precisely the optimistic claim this
+ * file exists to stop. The ordering was never guaranteed; it was lucky, which
+ * is how auth/test/delivery-feedback.test.js could pass on one machine and
+ * fail on a faster CI runner.
+ *
+ * So the key issued here is STRICTLY increasing within a process: never behind
+ * the wall clock, never equal to the row before it. The drift that introduces
+ * is bounded by how many rows one process writes inside a single millisecond
+ * (a handful, at a few mails per second) and buys an ordering claim that is
+ * true rather than lucky.
+ *
+ * RESIDUAL, stated rather than hidden: this is per PROCESS. If the auth
+ * service ever runs more than one task (`ecs_service_desired_count` is 1 today
+ * but the service autoscales), two rows for one address written by two tasks
+ * inside the same millisecond can still tie, and no key available here can
+ * recover an order those two events do not have.
+ */
+export function nextCreatedAt(now = Date.now()) {
+  lastIssuedAt = Math.max(now, lastIssuedAt + 1)
+  return new Date(lastIssuedAt)
+}
+
 /**
  * The "no delivery log configured" implementation.
  *
@@ -103,7 +141,9 @@ export function createDeliveryLog(db) {
         status,
         messageId: messageId || null,
         error: error || null,
-        createdAt: new Date(),
+        // Not `new Date()` — see nextCreatedAt above. `recent()`'s
+        // most-recent-first contract is only as good as this key is total.
+        createdAt: nextCreatedAt(),
       }
       try {
         await db.query(

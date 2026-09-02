@@ -23,6 +23,7 @@ import test from 'node:test'
 import {
   createDeliveryLog,
   DELIVERY_KINDS,
+  nextCreatedAt,
   nullDeliveryLog,
   normalizeAddress,
 } from '../delivery-log.js'
@@ -48,13 +49,21 @@ function fakeDb({ failOn = null } = {}) {
       if (failOn && text.includes(failOn)) throw Object.assign(new Error('boom'), { name: 'DatabaseError' })
       if (text.startsWith('INSERT')) {
         const [id, user_id, email, kind, status, message_id, error, created_at] = params
-        rows.push({ id, user_id, email, kind, status, message_id, error, created_at })
+        rows.push({ id, user_id, email, kind, status, message_id, error, created_at, seq: rows.length })
         return { rows: [] }
       }
       const [email, kind, since, limit] = params
       const matched = rows
         .filter(row => row.email === email && row.kind === kind && row.created_at >= since)
-        .sort((a, b) => b.created_at - a.created_at)
+        // Postgres gives NO order to rows that tie on `created_at`, so this
+        // picks the worst legal one — the older row first, the exact inverse
+        // of the contract — rather than letting a stable sort quietly return
+        // insertion order and make a tie look like a correct answer. A tie
+        // reaching here means "most-recent-first" is a coin flip in
+        // production, which is what delivery-log.js's monotonic ordering key
+        // exists to prevent. (Before that key, this test passed locally and
+        // failed on CI on exactly this tie.)
+        .sort((a, b) => (b.created_at - a.created_at) || (a.seq - b.seq))
         .slice(0, limit)
       return { rows: matched }
     },
@@ -132,6 +141,42 @@ test('a send is recorded per address with its SES MessageId, and read back most-
   await log.record({ userId: 'u1', email: 'dan@example.com', kind: DELIVERY_KINDS.RESET, status: 'sent' })
   const still = await log.recent({ email: 'dan@example.com', kind: DELIVERY_KINDS.VERIFICATION, now: Date.now() })
   assert.equal(still.length, 2)
+})
+
+test('two records in the same millisecond still come back in order — the key is monotonic, not the clock', async () => {
+  // The bug this pins: `createdAt` used to be `new Date()`, so back-to-back
+  // records shared a millisecond, `ORDER BY created_at DESC` was a tie, and
+  // `rows[0]` — the row verification-status.js reads as THE latest attempt —
+  // was whichever one the sort happened to leave in front. A `failed` send
+  // reported as `sent` is the optimistic claim this whole feature exists to
+  // end. It passed on a Mac and failed on a CI runner for no reason but speed.
+  const frozen = Date.now()
+  const realNow = Date.now
+  Date.now = () => frozen // the wall clock does not advance at all
+  const db = fakeDb()
+  const log = createDeliveryLog(db)
+  try {
+    await log.record({ email: 'tie@example.com', kind: DELIVERY_KINDS.VERIFICATION, status: 'sent', messageId: 'ses-1' })
+    await log.record({ email: 'tie@example.com', kind: DELIVERY_KINDS.VERIFICATION, status: 'failed', error: 'MessageRejected' })
+  } finally {
+    Date.now = realNow
+  }
+
+  assert.equal(db.rows.length, 2)
+  assert.ok(
+    db.rows[1].created_at.getTime() > db.rows[0].created_at.getTime(),
+    'a stopped clock must still produce a strictly increasing ordering key',
+  )
+  const rows = await log.recent({ email: 'tie@example.com', kind: DELIVERY_KINDS.VERIFICATION, now: frozen + 1000 })
+  assert.equal(rows[0].status, 'failed', 'the newest attempt is the one the status endpoint reports on')
+
+  // The key itself, directly: same input millisecond, three distinct answers.
+  const stamps = [nextCreatedAt(frozen), nextCreatedAt(frozen), nextCreatedAt(frozen)].map(d => d.getTime())
+  assert.deepEqual([...new Set(stamps)].length, 3)
+  assert.ok(stamps[0] < stamps[1] && stamps[1] < stamps[2])
+  // Never BEHIND the wall clock either — a stamp that lags would age rows out
+  // of the 24h window early and understate the resend count.
+  assert.ok(nextCreatedAt(frozen + 10_000).getTime() >= frozen + 10_000)
 })
 
 test('an unreadable log answers null, never an empty history — they are different claims', async () => {

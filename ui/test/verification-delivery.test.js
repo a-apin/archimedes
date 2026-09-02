@@ -224,3 +224,33 @@ test("the honesty constants live in the pure module, not scattered across compon
 	assert.match(deliveryModule, /suppression list/i);
 	assert.match(deliveryModule, /spam or junk folder/i);
 });
+
+test("a suppression lookup that never ran is never hidden behind an optimistic 'accepted'", () => {
+	// Day one in production: `terraform apply` has not run, so every
+	// GetSuppressedDestination is AccessDeniedException and the server answers
+	// `checked: false`. That is not "not suppressed" — an address SES is
+	// silently binning would otherwise read as an ordinary accepted send, which
+	// is the eternal 200 this feature exists to end.
+	const unchecked = {
+		checked: false,
+		suppressed: false,
+		reason: null,
+		since: null,
+		detail: "suppression lookup failed",
+	};
+	for (const status of [
+		{ state: "sent", sends: 1, checkSpam: false, retryAfterSeconds: 0, suppression: unchecked },
+		{ state: "unknown", sends: 0, retryAfterSeconds: 0, suppression: unchecked },
+	]) {
+		assert.match(deriveVerificationDeliveryView(status).message, /could not check|cannot be ruled out/i);
+	}
+
+	const clean = deriveVerificationDeliveryView({
+		state: "sent",
+		sends: 1,
+		checkSpam: false,
+		retryAfterSeconds: 0,
+		suppression: { checked: true, suppressed: false, reason: null, since: null, detail: null },
+	});
+	assert.doesNotMatch(clean.message, /could not check/i);
+});
