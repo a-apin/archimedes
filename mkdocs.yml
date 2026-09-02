@@ -169,6 +169,7 @@ nav:
       - runbooks/docs-site-setup.md
       - runbooks/email-verification-validation.md
       - runbooks/ses-suppression.md
+      - runbooks/curated-backtests.md
 
   - Decisions (ADRs):
       - adr/README.md
@@ -191,6 +192,7 @@ nav:
       - adr/num-trials-self-containment.md
       - adr/aurora-postgres-alembic-datastore.md
       - adr/ipfs-pinning-not-live.md
+      - adr/backtests-are-frozen-evidence.md
 
   - Plans and roadmaps:
       - account-authentication.md
