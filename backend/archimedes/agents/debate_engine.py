@@ -48,6 +48,7 @@ from archimedes.agents.generation_pipeline import (
     _CandidateResult,
     _society_num_trials,
 )
+from archimedes.agents.prompts import PROMPTS
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
 from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
@@ -381,20 +382,16 @@ async def _propose_pool(
 
 # ── Step 2 — best-effort adversarial round (transcript only, never gates) ─────
 
-_DEBATE_SYSTEM = (
-    "You are the {role} researcher in a quant strategy debate, round {rnd}. {stance}. "
-    "Cite ONLY the listed candidate strategies, and ONLY the arXiv ids printed on their cards. "
-    "Every key_claim must name at least one arxiv_id from the cards; a claim you cannot ground "
-    "in a listed paper must carry an EMPTY arxiv_ids list — never an invented id. "
-    "Use `discard` to name papers you read and rejected, with the reason. {rebuttal}"
-    'Reply with ONE JSON object: {{"verdict": "act"|"decline", "confidence": <0..1>, '
-    '"key_claims": [{{"claim": <str>, "candidate_id": "<C1|C2|…>", "arxiv_ids": ["<arxiv id>"]}}], '
-    '"discard": [{{"arxiv_id": "<arxiv id>", "reason": <str>}}]}}.'
-)
+# The turn template, the two stances and the round-2 rebuttal preamble all live
+# in the prompt registry (`agents/prompts.py`), rendered into
+# `docs/specs/prompt-inventory.md` under a drift test (#1800). The registry
+# templates on `$name`, so the JSON schema the turn prints no longer needs its
+# braces doubled the way `.format` required.
+_DEBATE_SYSTEM = PROMPTS["debate.turn.system"]
 
 _DEBATE_STANCES = {
-    "bull": "Argue FOR acting on the strongest candidate",
-    "bear": "Argue for ABSTENTION — the null is buy-and-hold; attack overfit/cost",
+    "bull": PROMPTS["debate.stance.bull"].text,
+    "bear": PROMPTS["debate.stance.bear"].text,
 }
 
 # How many pooled candidates get a card in the debate prompt. Unchanged from
@@ -623,10 +620,10 @@ async def _debate_round(
         if opponent_claims:
             texts = [t for t in (_claim_text(c) for c in opponent_claims[:3]) if t]
             if texts:
-                rebuttal = f"The opposing researcher argued: {'; '.join(texts)}. Directly rebut their strongest point. "
+                rebuttal = PROMPTS["debate.rebuttal_preamble"].render(opponent_claims="; ".join(texts))
         try:
             raw = backend.complete(
-                _DEBATE_SYSTEM.format(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
+                _DEBATE_SYSTEM.render(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
                 cards,
             )
             parsed = extract_json(raw)
