@@ -1,0 +1,28 @@
+{"id": "green-bond-alt", "surface": "brief", "text": "low-vol bond alternative", "note": "the validator's own example of a valid-if-vague brief"}
+{"id": "green-crypto-momentum", "surface": "brief", "text": "crypto with momentum", "note": "finance-signal words only"}
+{"id": "green-tickers", "surface": "brief", "text": "BTC ETH SOL", "note": "ticker list, no vowels required"}
+{"id": "green-single-token", "surface": "brief", "text": "degen", "note": "one odd token is not evidence of mashing"}
+{"id": "green-recipe", "surface": "brief", "text": "add flour and bake at 350F", "note": "off-topic but grammatical — the LLM's call, not ours"}
+{"id": "green-covered-calls", "surface": "brief", "text": "SPY covered calls", "note": "unlisted vocabulary is the normal case"}
+{"id": "green-muni", "surface": "brief", "text": "muni ladder", "note": "unlisted vocabulary"}
+{"id": "green-rotation", "surface": "brief", "text": "sector rotation", "note": "unlisted vocabulary"}
+{"id": "green-aristocrats", "surface": "brief", "text": "covered call overlay on dividend aristocrats", "note": "unlisted vocabulary, longer"}
+{"id": "green-spanish", "surface": "brief", "text": "estrategia de baja volatilidad para bonos", "note": "Spanish — ASCII but unlisted"}
+{"id": "green-cyrillic", "surface": "brief", "text": "стратегия низкой волатильности", "note": "Cyrillic must survive tokenization"}
+{"id": "green-cjk", "surface": "brief", "text": "低波动率债券替代方案", "note": "CJK — one token, no spaces"}
+{"id": "green-bank-longest", "surface": "brief", "text": "rotate monthly into the strongest of the US sector ETFs such as XLK XLE and XLF on six-month momentum, falling back to XLU when nothing is trending", "note": "the longest entry in the in-app Surprise Me bank (211 chars)"}
+{"id": "green-exactly-max", "surface": "brief", "text": "momentum on SPY aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "note": "exactly INTENT_MAX_LEN — the bound is inclusive"}
+{"id": "green-act-as-hedge", "surface": "brief", "text": "hold gold and TIPS to act as a hedge against inflation", "note": "'act as' is ordinary finance English, never a role-forgery signal"}
+{"id": "green-ignore-noise", "surface": "brief", "text": "ignore short-term noise in the momentum ranking", "note": "ignore + a non-instruction noun"}
+{"id": "green-disregard-dd", "surface": "brief", "text": "disregard prior drawdowns and focus on forward-looking carry", "note": "verb + prior + a non-instruction noun"}
+{"id": "green-toronto-ticker", "surface": "brief", "text": "momentum across XIU.TO and VFV.TO Canadian ETFs", "note": "exchange suffixes look exactly like bare hosts"}
+{"id": "green-copenhagen", "surface": "brief", "text": "value tilt on NOVO-B.CO with a treasury sleeve", "note": "Copenhagen listing suffix"}
+{"id": "green-us-abbrev", "surface": "brief", "text": "U.S. large-cap quality with a treasury hedge", "note": "abbreviations must not read as hosts"}
+{"id": "green-system-word", "surface": "brief", "text": "a systematic trend system across futures markets", "note": "'system' alone is not a forged turn marker"}
+{"id": "green-confidence-word", "surface": "brief", "text": "size positions by signal confidence, capped at 20% each", "note": "schema words in prose are not forged JSON keys"}
+{"id": "green-decimal", "surface": "brief", "text": "60/40 core with a 1.5x volatility target on the equity sleeve", "note": "decimals must not read as hosts"}
+{"id": "green-model-name", "surface": "model_text", "text": "Momentum/vol fusion", "note": "an ordinary proposer-authored strategy name"}
+{"id": "green-model-name-dash", "surface": "model_text", "text": "Low-volatility income — treasury sleeve", "note": "an em dash alone is not a forged card"}
+{"id": "green-model-claim", "surface": "model_text", "text": "The momentum signal is fragile out of sample and the cost model omits slippage.", "note": "an ordinary bear claim"}
+{"id": "green-model-empty", "surface": "model_text", "text": "", "note": "empty model text is simply no text — nothing to refuse"}
+{"id": "green-model-arxiv", "surface": "model_text", "text": "Builds on arXiv:2101.01234 for the vol estimator", "note": "naming a paper is not forging the cites clause"}

@@ -50,6 +50,7 @@ from archimedes.agents.generation_pipeline import (
 )
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
+from archimedes.services.brief_screen import omit_if_rejected
 from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -443,7 +444,21 @@ def _candidate_cards(pool: list[Any], evidence_by_id: dict[str, dict[str, str]])
     """
     lines: list[str] = []
     for i, p in enumerate(_debate_pool_order(pool)[:_DEBATE_CARD_MAX], start=1):
-        name = str(getattr(p, "strategy_name", "") or "").strip() or f"Candidate {i}"
+        # STRUCT screen on model-authored text re-entering a prompt (#1801).
+        # `strategy_name` is proposer output and lands unescaped in a
+        # LINE-ORIENTED format: a name carrying "\n[C6] … — cites arXiv:0000"
+        # forges a card no proposer produced, and `_turn`'s anti-hallucination
+        # guard checks claims against the ids printed on these cards — so a
+        # forged card is a forged evidence base. A refused name is OMITTED
+        # (the card falls back to its positional label, exactly as it already
+        # does for an empty name) and the omission is logged. The stored name
+        # is never rewritten; only this outgoing prompt declines to carry it.
+        screened, _ = omit_if_rejected(
+            str(getattr(p, "strategy_name", "") or "").strip(),
+            field="strategy_name",
+            context=f"card C{i}",
+        )
+        name = screened or f"Candidate {i}"
         cites: list[str] = []
         for arxiv_id in getattr(p, "source_arxiv_ids", None) or []:
             title = (evidence_by_id.get(str(arxiv_id)) or {}).get("title", "").strip()
@@ -462,6 +477,36 @@ def _claim_text(claim: Any) -> str:
     if isinstance(claim, dict):
         return str(claim.get("claim", "") or "")
     return str(claim or "")
+
+
+def _rebuttal_clause(opponent_claims: list[Any], *, role: str, rnd: int) -> str:
+    """The round-2 rebuttal sentence, built from the opponent's own prose.
+
+    This is the one place in the debate where a model writes another model's
+    instructions: the text lands unescaped inside ``_DEBATE_SYSTEM``'s
+    ``{rebuttal}`` slot, so a claim carrying a newline, a ``[C6]`` card marker
+    or an override directive would be read as system-level framing by the next
+    turn.
+
+    Every claim is screened (#1801) and a refused one is **omitted** from this
+    clause — never rewritten, never truncated, never redacted. If every claim
+    is refused the clause is empty, which is exactly the prompt round 1 gets.
+    The claims themselves stay byte-for-byte intact in the transcript.
+    """
+    if not opponent_claims:
+        return ""
+    texts = [
+        screened
+        for screened, _ in (
+            omit_if_rejected(t, field="rebuttal_claim", context=f"{role} r{rnd}")
+            for t in (_claim_text(c) for c in opponent_claims[:3])
+            if t
+        )
+        if screened
+    ]
+    if not texts:
+        return ""
+    return f"The opposing researcher argued: {'; '.join(texts)}. Directly rebut their strongest point. "
 
 
 def _normalize_claim(raw: Any, known_ids: set[str]) -> dict[str, Any] | None:
@@ -619,11 +664,7 @@ async def _debate_round(
         return transcript
 
     def _turn(role: str, rnd: int, opponent_claims: list[Any]) -> dict[str, Any]:
-        rebuttal = ""
-        if opponent_claims:
-            texts = [t for t in (_claim_text(c) for c in opponent_claims[:3]) if t]
-            if texts:
-                rebuttal = f"The opposing researcher argued: {'; '.join(texts)}. Directly rebut their strongest point. "
+        rebuttal = _rebuttal_clause(opponent_claims, role=role, rnd=rnd)
         try:
             raw = backend.complete(
                 _DEBATE_SYSTEM.format(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
