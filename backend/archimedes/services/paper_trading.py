@@ -76,7 +76,7 @@ def advance_enabled() -> bool:
     C-level abort cannot be caught by a ``try/except``, so fail-soft does not
     help and the only lever that works is not running the tick.
 
-    DEPLOYED VALUE as of 2026-09-01 (#1741): ``"true"`` — armed. The pin that
+    DEPLOYED VALUE as of 2026-09-01 (#1778): ``"true"`` — armed. The pin that
     ships is ``PAPER_ADVANCE_VALUE`` in
     ``.github/scripts/ecs_rewrite_task_def.py``, with the ``infra/ecs.tf`` line
     as its documentation twin. What justifies arming it is NOT a proof that
@@ -1173,7 +1173,7 @@ async def paper_advance_loop() -> None:
     replay (#1632) kills the interpreter, and ``/health`` lives in that same
     interpreter. See :func:`arm_paper_advance_for_web_tier`.
 
-    ONE TICKER PER FLEET (#1741). The fleet runs more than one task and they
+    ONE TICKER PER FLEET (#1778). The fleet runs more than one task and they
     boot together, so both children reach this loop and tick within seconds of
     each other. Each cycle therefore asks
     :func:`try_take_paper_advance_lock` first and does nothing at all when it
@@ -1254,8 +1254,14 @@ async def paper_advance_loop() -> None:
             # reported as a ledger failure. It also stays out of
             # `advance_all`, which is a pure, hermetically tested function that
             # callers other than this loop rely on. It IS inside the fleet
-            # lock's scope, though: a cycle that lost the lock stands down
-            # whole, or the lock would only be buying half of what it claims.
+            # lock's scope whenever the lock was ASKED for: a cycle that lost
+            # it stands down whole, or the lock would only be buying half of
+            # what it claims. It is NOT locked when we never asked — with the
+            # kill switch off, or if init_db()/get_session() raised before the
+            # ask, `contended` stays False and this pass runs unlocked in every
+            # task, exactly as it did before the lock existed. That is the
+            # pre-existing behaviour, kept deliberately: gating the agent tick
+            # on PAPER_ADVANCE_ENABLED too is a separate call, not made here.
             if not contended:
                 try:
                     from archimedes.services.paper_agent_execution import advance_agent_execution
@@ -1331,7 +1337,7 @@ async def arm_paper_advance_for_web_tier(*, argv: list[str] | None = None, popen
     paper-advance window. When the flag is false we do not spawn a child
     either: the tick is off, and a second Python on the 1-vCPU web task is not
     free. The flag stays the operator lever; isolation is the blast-radius cap
-    now that the tick is armed (#1741) on a frame #1632 never cleared.
+    now that the tick is armed (#1778) on a frame #1632 never cleared.
 
     Called UNCONDITIONALLY from the lifespan (``main.py``) — it reads its own
     flag one frame in. It used to be armed inside ``if refresh_enabled():``, a
@@ -1405,7 +1411,7 @@ def _module_main() -> None:
     WARNING. That silently ate ``paper advance: {...}`` — the one line that
     says a tick ran and what it appended — and a tick nobody can observe is
     indistinguishable from a tick that never happened, which is the whole
-    point of arming it (#1741).
+    point of arming it (#1778).
 
     stdout rather than stderr: the parent inherits both and awslogs treats them
     alike, but an INFO summary is not an error. ``force=True`` because an

@@ -561,7 +561,7 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" },
         { name = "PAPER_TRADING", value = "true" },
         # ------------------------------------------------------------------
-        # PAPER-ADVANCE TICK: ARMED (2026-09-01, #1741 — the #1632 lift).
+        # PAPER-ADVANCE TICK: ARMED (2026-09-01, #1778 — the #1632 lift).
         #
         # "true" means paper ledgers advance again: one appended bar per active
         # deployment per day, replayed on the graded engine. That is a live

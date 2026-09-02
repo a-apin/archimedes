@@ -21,7 +21,7 @@ This script is the path that actually ships. It:
    ``"true"``, or ``"false"``.
 3. Drops the describe-only fields ``register-task-definition`` rejects.
 
-The pinned value is ``"true"`` as of 2026-09-01 (#1741, the #1632 lift): the
+The pinned value is ``"true"`` as of 2026-09-01 (#1778, the #1632 lift): the
 paper-advance tick is ARMED. It never runs in the web interpreter —
 ``arm_paper_advance_for_web_tier`` spawns a child (#1728) — so a C-level abort
 on the tick kills that child while ``/health``, in the parent, keeps

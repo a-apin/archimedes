@@ -71,6 +71,20 @@ class _FakeProc:
         self.returncode = -9
 
 
+def _called_name(node: ast.Call) -> str | None:
+    """``f(...)`` -> ``"f"``; ``pkg.f(...)`` -> ``"f"``; anything else -> None.
+
+    Both spellings must be recognised, so that moving a call behind a module
+    attribute cannot slip it past a guard that only knew ``ast.Name``.
+    """
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
 def _main_code() -> str:
     """``main.py`` with comments stripped, so a warning in a comment cannot
     satisfy (or fail) a call-site assertion."""
@@ -114,10 +128,17 @@ class TestArmingIsUnconditional:
     nothing and proved nothing.
 
     Asked structurally rather than textually. The call may sit inside a
-    ``try`` (fail-soft arming is the house rule) but must not sit inside any
-    ``if``/``while``: the only permitted gate on this work is the one
-    ``arm_paper_advance_for_web_tier`` applies to itself, one frame in, where
-    it reads ``PAPER_ADVANCE_ENABLED``.
+    ``try`` (fail-soft arming is the house rule) but must not sit under any
+    node that can decide whether it runs: the only permitted gate on this work
+    is the one ``arm_paper_advance_for_web_tier`` applies to itself, one frame
+    in, where it reads ``PAPER_ADVANCE_ENABLED``.
+
+    "Branch" therefore means every form the gate can take, not just the
+    statement one. Checking ``If``/``While`` alone let the inert shape back in
+    through a ternary — ``create_task(arm(...)) if os.getenv(OTHER) else None``
+    is ``ast.IfExp``, which is not an ``ast.If``, and the guard stayed green on
+    it (verified by mutation). ``Match`` and ``BoolOp`` (``flag and arm(...)``)
+    are the same hole in two other spellings.
     """
 
     @staticmethod
@@ -139,7 +160,7 @@ class TestArmingIsUnconditional:
         calls = [
             node
             for node in ast.walk(lifespan)
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "arm_paper_advance_for_web_tier"
+            if isinstance(node, ast.Call) and _called_name(node) == "arm_paper_advance_for_web_tier"
         ]
         return calls, parents, lifespan
 
@@ -156,11 +177,12 @@ class TestArmingIsUnconditional:
             node = call
             while node is not lifespan:
                 node = parents[node]
-                assert not isinstance(node, ast.If | ast.While), (
-                    "arm_paper_advance_for_web_tier is nested under a branch at main.py line "
-                    f"{getattr(node, 'lineno', '?')}. Arming must be unconditional: the flag check "
-                    "belongs inside arm_paper_advance_for_web_tier, one frame in. Nesting it under "
-                    "another flag is how the #1741 lift shipped inert under BACKTEST_REFRESH_ENABLED=false."
+                assert not isinstance(node, ast.If | ast.While | ast.IfExp | ast.Match | ast.BoolOp), (
+                    f"arm_paper_advance_for_web_tier is nested under a {type(node).__name__} branch "
+                    f"at main.py line {getattr(node, 'lineno', '?')}. Arming must be unconditional: "
+                    "the flag check belongs inside arm_paper_advance_for_web_tier, one frame in. "
+                    "Nesting it under another flag — as an if, a ternary, a match arm or an `and` — "
+                    "is how the #1741 lift shipped inert under BACKTEST_REFRESH_ENABLED=false."
                 )
 
     def test_the_dead_backtest_gate_is_not_back(self):
@@ -334,7 +356,7 @@ class TestChildInterpreterLogsWhatItDid:
     ``_module_main`` is the whole logging configuration this interpreter gets:
     the web process inherits uvicorn's handlers, the child inherits none, and
     Python's ``lastResort`` fallback drops everything below WARNING. The cycle
-    summary is INFO, so before #1741 it went nowhere — the deploy could be
+    summary is INFO, so before #1778 it went nowhere — the deploy could be
     observed only by watching the database.
     """
 
@@ -480,16 +502,42 @@ class TestShutdownStopsTheChild:
     def test_the_lifespan_shutdown_actually_calls_it(self):
         """Source inspection: the helper is worthless if nobody calls it.
 
-        ``main.py``'s shutdown half is everything after the lifespan's
-        ``yield``; the cancel must live there, not in the startup half where it
-        would stop the task it just armed.
+        The cancel must live in the lifespan's SHUTDOWN half — after the
+        ``yield`` — and not in the startup half, where it would cancel the task
+        the lifespan has just armed and make the whole lift inert again.
+
+        Asked of the AST, because the textual version of this test did not
+        hold. Splitting the source on the first substring ``"yield"`` finds the
+        word in the lifespan's own docstring ("startup before yield, shutdown
+        after"), so the "shutdown half" swallowed the startup half and the
+        assertion passed for a cancel placed anywhere at all — including
+        immediately BEFORE the yield, the one placement it exists to forbid
+        (verified: moving the shutdown block above the yield kept this file
+        green). A ``Yield`` node is the statement; the word in prose is not.
         """
-        code = _main_code()
-        # The call form, not the bare name: an `import stop_paper_advance_task`
-        # left behind after the call was deleted would satisfy a name check and
-        # stop nothing.
-        assert "stop_paper_advance_task(" in code, "the lifespan never stops the paper-advance task"
-        shutdown_half = code.split("yield", 1)[1]
-        assert "stop_paper_advance_task(" in shutdown_half, (
-            "stop_paper_advance_task is called before the lifespan's yield — that is the startup half"
+        tree = ast.parse(MAIN_PY.read_text(encoding="utf-8"))
+        lifespan = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name == "lifespan"
+        )
+        yields = [node for node in ast.walk(lifespan) if isinstance(node, ast.Yield)]
+        assert len(yields) == 1, (
+            f"lifespan has {len(yields)} yield statements, so the startup/shutdown split this test "
+            "reasons about is no longer well defined — re-aim the guard rather than deleting it"
+        )
+        calls = [
+            node
+            for node in ast.walk(lifespan)
+            if isinstance(node, ast.Call) and _called_name(node) == "stop_paper_advance_task"
+        ]
+        assert calls, (
+            "lifespan() never calls stop_paper_advance_task — an ECS task draining out of a deploy "
+            "keeps its paper-advance child ticking against the same ledger rows its replacement's "
+            "child is starting on"
+        )
+        assert all(call.lineno > yields[0].lineno for call in calls), (
+            f"stop_paper_advance_task is called at main.py line {min(c.lineno for c in calls)}, "
+            f"before the lifespan's yield at line {yields[0].lineno} — that is the STARTUP half, "
+            "where it cancels the task the lifespan has just armed and the tick never runs"
         )

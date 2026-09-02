@@ -13,7 +13,7 @@ abort is not running the code, which is what made this switch load-bearing.
 (cloned last-good, name absent, tick started, /health 502 at 240s). Unset is
 still OFF and the code default is still ``"false"``.
 
-The DEPLOYED value is now ``"true"`` (#1741, 2026-09-01). #1632's found cause
+The DEPLOYED value is now ``"true"`` (#1778, 2026-09-01). #1632's found cause
 turned out to be elsewhere — concurrent ``/health`` corpus loads racing in
 session teardown, fixed by #1740 and caught with this flag off — so the tick's
 own frame is unproven rather than cleared, and what carries the risk is the
@@ -262,7 +262,7 @@ class TestLoopHonoursTheSwitch:
         assert tick.advances == 1
 
 
-# ─── One ticker per fleet (#1741) ──────────────────────────────────────
+# ─── One ticker per fleet (#1778) ──────────────────────────────────────
 
 
 class TestOneTickerPerFleet:

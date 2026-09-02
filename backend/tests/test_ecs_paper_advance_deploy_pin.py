@@ -9,7 +9,7 @@ code default happens to be — which is how task-def :211 ticked itself to death
 The invariant these tests hold is therefore direction-independent: the value
 that ships is the one ``ecs_rewrite_task_def.PAPER_ADVANCE_VALUE`` states, on
 every deploy, no matter what the clone carried. That value is ``"true"`` as of
-2026-09-01 (#1741, the #1632 lift): the tick is armed and runs in an isolated
+2026-09-01 (#1778, the #1632 lift): the tick is armed and runs in an isolated
 child (#1728). Flipping it back means editing that constant and these tests
 together — the point of hard-coding it is that turning the tick on or off
 cannot happen by accident or by CLI flag.
