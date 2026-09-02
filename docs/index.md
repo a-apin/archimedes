@@ -12,10 +12,11 @@ Two rules for anyone editing this page.
    build time. If you cannot re-read a number from its endpoint, delete it —
    docs/CONVENTIONS.md § 4: "an absent number beats a substituted one".
 
-2. THE "LINUS FOR QUANTITATIVE FINANCE" FRAMING IS RETIRED (owner call,
-   2026-09-01). The identity is "Portfolio strategy, under scrutiny." — the
-   product's own words, ui/src/components/Landing.jsx:231. Do not reintroduce
-   the analogy here or anywhere else on this site.
+2. THE ANALOGY FRAMING THE OWNER RETIRED ON 2026-09-01 MUST NOT COME BACK —
+   not in prose, and not in a comment on this page: comments here are
+   published verbatim in the page source. The identity is "Portfolio
+   strategy, under scrutiny." — the product's own words,
+   ui/src/components/Landing.jsx:231.
 -->
 
 # Archimedes documentation
@@ -43,7 +44,7 @@ The verdict is recorded whichever way it lands.
     [writing a brief that works](writing-a-brief.md) and
     [what you can build over](asset-universe.md).
 
-    <!-- PR 3 repoints this card at start/quickstart.md, the browser walkthrough. -->
+    
 
 -   **I want to check the method**
 
@@ -63,7 +64,7 @@ The verdict is recorded whichever way it lands.
     [HTTP API reference](api/README.md) and the
     [auth model](security/auth-model.md).
 
-    <!-- PR 4 adds build/index.md — HTTP vs CLI vs MCP — above this. -->
+    
 
 </div>
 
