@@ -13,6 +13,7 @@ with the mutation it would catch.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -222,3 +223,112 @@ class TestDeployYmlIsThePathThatShips:
         assert "#1632" in source
         mod = _load_rewrite()
         assert mod.PAPER_ADVANCE_VALUE == "false"
+
+
+class TestRewriteStripsRetiredBackendEnv:
+    """The deploy must delete retired env names, not carry them forever.
+
+    #1766 retired ``services/backtest_scheduler.py``. The owner's mitigation
+    pin ``BACKTEST_REFRESH_ENABLED=false`` (hand-set as revision 216 during
+    the 2026-09-01 #1760 storm) now names a flag nothing reads, and the deploy
+    clones the live task-def forward, so it rides along on every revision
+    until something takes it out. Cleanups ship with the deploy — no operator
+    ritual — so the first deploy after this merge registers a revision without
+    them.
+    """
+
+    def test_the_live_pin_is_stripped_and_nothing_else_moves(self):
+        """A clone carrying the pin comes out identical minus that entry.
+
+        Mutation this catches: delete the ``strip_retired_backend_env`` call
+        from ``rewrite_registered_task_definition`` and the retired name is
+        still in the registered revision.
+        """
+        clean = _last_good_task_def(paper_advance="false")
+        pinned = _last_good_task_def(paper_advance="false")
+        backend = next(c for c in pinned["containerDefinitions"] if c["name"] == "backend")
+        # Insert mid-list, as revision 216 did: stripping must not reorder.
+        backend["environment"].insert(1, {"name": "BACKTEST_REFRESH_ENABLED", "value": "false"})
+
+        out_pinned = _rewrite(pinned)
+        out_clean = _rewrite(clean)
+
+        assert "BACKTEST_REFRESH_ENABLED" not in _backend_env(out_pinned)
+        assert json.dumps(out_pinned, sort_keys=True) == json.dumps(out_clean, sort_keys=True), (
+            "stripping the retired pin changed something other than that entry"
+        )
+
+    def test_every_retired_name_is_stripped(self):
+        mod = _load_rewrite()
+        task_def = _last_good_task_def()
+        backend = next(c for c in task_def["containerDefinitions"] if c["name"] == "backend")
+        for name in mod.RETIRED_BACKEND_ENV:
+            backend["environment"].append({"name": name, "value": "whatever"})
+
+        env = _backend_env(_rewrite(task_def))
+        assert not (set(mod.RETIRED_BACKEND_ENV) & set(env)), env
+        assert env["APP_ENV"] == "production"
+        assert env["PAPER_TRADING"] == "true"
+        assert env["PAPER_ADVANCE_ENABLED"] == "false"
+
+    def test_stripping_is_idempotent(self):
+        """The deploy after the first one is a no-op, not a second edit."""
+        once = _rewrite(_last_good_task_def(paper_advance="true"))
+        # Feed the registered revision back in the way the next deploy clones it.
+        twice = _rewrite(json.loads(json.dumps(once)))
+        assert json.dumps(twice, sort_keys=True) == json.dumps(once, sort_keys=True)
+
+    def test_it_says_what_it_removed(self, capsys):
+        task_def = _last_good_task_def()
+        backend = next(c for c in task_def["containerDefinitions"] if c["name"] == "backend")
+        backend["environment"].append({"name": "BACKTEST_REFRESH_ENABLED", "value": "false"})
+        _rewrite(task_def)
+        assert "BACKTEST_REFRESH_ENABLED" in capsys.readouterr().err
+
+    def test_a_clone_without_them_logs_nothing(self, capsys):
+        _rewrite(_last_good_task_def())
+        assert "BACKTEST_REFRESH" not in capsys.readouterr().err
+
+    def test_other_containers_keep_the_names(self):
+        """Only the backend container is rewritten; nginx/auth are untouched."""
+        task_def = _last_good_task_def()
+        nginx = next(c for c in task_def["containerDefinitions"] if c["name"] == "nginx")
+        nginx["environment"].append({"name": "BACKTEST_REFRESH_ENABLED", "value": "false"})
+        out_nginx = next(c for c in _rewrite(task_def)["containerDefinitions"] if c["name"] == "nginx")
+        assert {e["name"] for e in out_nginx["environment"]} == {"FOO", "BACKTEST_REFRESH_ENABLED"}
+
+    def test_no_retired_name_has_a_reader_left_in_the_backend(self):
+        """Re-adding a reader without un-retiring the name must go red.
+
+        The deploy now *deletes* these names from the shipped task
+        definition. If someone lands ``os.getenv("BACKTEST_MAX_AGE_HOURS")``
+        under ``backend/archimedes`` while the name is still on
+        ``RETIRED_BACKEND_ENV``, their flag is silently unsettable in
+        production. Either the reader goes or the name comes off the tuple.
+
+        Scans committed sources rather than importing: a reader added to a
+        module the test suite never imports still trips this.
+        """
+        mod = _load_rewrite()
+        package_root = REPO_ROOT / "backend" / "archimedes"
+        assert package_root.is_dir(), package_root
+
+        offenders: list[str] = []
+        for path in sorted(package_root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+            # String constants only: comments are stripped by the parser, so a
+            # tombstone comment naming the retired knob does not trip this,
+            # but any getenv/os.environ lookup (whose key is a string literal)
+            # does.
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and node.value in mod.RETIRED_BACKEND_ENV:
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}: {node.value}")
+
+        assert not offenders, (
+            "retired env names are read again under backend/archimedes: "
+            f"{offenders}. The CI deploy strips every name in "
+            "RETIRED_BACKEND_ENV from the backend container, so this reader "
+            "can never be set in production. Take the name off "
+            "RETIRED_BACKEND_ENV (and re-add it to the task definition) or "
+            "delete the reader. Policy: docs/adr/backtests-are-frozen-evidence.md."
+        )

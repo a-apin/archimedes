@@ -15,7 +15,13 @@ This script is the path that actually ships. It:
 1. Retags the backend / nginx / auth images to this commit.
 2. Pins ``PAPER_ADVANCE_ENABLED=false`` on the backend container, whether
    the cloned definition had the name unset, ``true``, or already ``false``.
-3. Drops the describe-only fields ``register-task-definition`` rejects.
+3. Strips the retired env names in ``RETIRED_BACKEND_ENV`` from the backend
+   container. #1766 deleted ``services/backtest_scheduler.py``; nothing on
+   main reads ``BACKTEST_REFRESH_*``/``BACKTEST_MAX_AGE_HOURS`` any more, but
+   the owner's hand-pinned ``BACKTEST_REFRESH_ENABLED=false`` (task-def 216,
+   the #1760 mitigation) rides forward on every clone. Cleanups ship with the
+   deploy rather than as an operator ritual, so the clone drops them here.
+4. Drops the describe-only fields ``register-task-definition`` rejects.
 
 terraform apply is still required for other ``ecs.tf`` drift. This flag
 must not depend on it. Flip-back of the tick is this pin *and* the ecs.tf
@@ -32,6 +38,22 @@ from typing import Any
 PAPER_ADVANCE_NAME = "PAPER_ADVANCE_ENABLED"
 PAPER_ADVANCE_VALUE = "false"
 BACKEND_CONTAINER = "backend"
+
+# Env names the backend container must no longer carry. Every name here has
+# zero readers under ``backend/archimedes`` — asserted by
+# ``backend/tests/test_ecs_paper_advance_deploy_pin.py``, so re-adding a
+# reader without taking the name off this tuple goes red rather than shipping
+# a flag the deploy silently deletes.
+#
+# ``BACKTEST_REFRESH_ENABLED`` is the live pin: the owner set it by hand as
+# task-def revision 216 during the 2026-09-01 #1760 storm, #1766 deleted the
+# loop it switched, and the deploy has cloned it forward ever since.
+RETIRED_BACKEND_ENV = (
+    "BACKTEST_REFRESH_ENABLED",
+    "BACKTEST_REFRESH_INTERVAL_HOURS",
+    "BACKTEST_MAX_AGE_HOURS",
+    "BACKTEST_REFRESH_STARTUP_DELAY_S",
+)
 
 # Same drop-list the previous inline jq used. These fields come back from
 # ``describe-task-definition`` and ``register-task-definition`` will not
@@ -63,6 +85,30 @@ def pin_backend_paper_advance_off(environment: list[dict[str, Any]] | None) -> l
     return pinned
 
 
+def strip_retired_backend_env(
+    environment: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return ``environment`` without any :data:`RETIRED_BACKEND_ENV` name.
+
+    Idempotent: a clone that already lost them comes back unchanged with an
+    empty removal list, so the deploy after the first one is a no-op. Entries
+    that survive keep their order and their objects untouched.
+
+    Returns the filtered list and the names that were actually removed, so
+    the caller can say what it deleted instead of deleting silently.
+    """
+    retired = set(RETIRED_BACKEND_ENV)
+    kept: list[dict[str, Any]] = []
+    removed: list[str] = []
+    for entry in environment or []:
+        name = entry.get("name")
+        if name in retired:
+            removed.append(name)
+        else:
+            kept.append(entry)
+    return kept, removed
+
+
 def rewrite_registered_task_definition(
     task_def: dict[str, Any],
     *,
@@ -87,7 +133,13 @@ def rewrite_registered_task_definition(
         if name == BACKEND_CONTAINER:
             saw_backend = True
             next_container["image"] = backend_image
-            next_container["environment"] = pin_backend_paper_advance_off(container.get("environment"))
+            environment, removed = strip_retired_backend_env(container.get("environment"))
+            if removed:
+                print(
+                    f"::notice::dropping retired backend env from the cloned task definition: {', '.join(removed)}",
+                    file=sys.stderr,
+                )
+            next_container["environment"] = pin_backend_paper_advance_off(environment)
         elif name == "nginx":
             next_container["image"] = nginx_image
         elif name == "auth":
