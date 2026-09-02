@@ -800,7 +800,10 @@ resource "aws_ecs_task_definition" "backend" {
         # its kms:Decrypt statement already covers every SecureString fetched
         # via ssm.<region>.amazonaws.com. That property is itself pinned by
         # test_execution_role_policy_is_a_prefix_wildcard — if someone narrows
-        # the policy to an enumeration, that guard fails and names this secret.
+        # the policy to an enumeration, that guard fails (its message enumerates
+        # REQUIRED_CIRCLE_SECRETS, not this entry). The guard that names THIS
+        # secret is test_every_secret_sits_under_the_execution_roles_prefix,
+        # which fires if this ARN ever moves outside parameter/archimedes/prod/.
         #
         # This entry is only half the wiring. deploy.yml does not terraform
         # apply: it CLONES the live revision and retags images (#1799 — the two

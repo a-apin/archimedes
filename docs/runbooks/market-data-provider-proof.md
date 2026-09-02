@@ -80,7 +80,11 @@ wildcard over `parameter/archimedes/prod/*`, which already authorises the read, 
 by `test_execution_role_policy_is_a_prefix_wildcard` in
 [`../../backend/tests/test_ecs_backend_secrets.py`](../../backend/tests/test_ecs_backend_secrets.py).
 
-Then confirm the *process* has it, not just the definition — without ever printing the value:
+Then confirm the running *container's environment* carries it, not just the definition — without
+ever printing the value. Note what this proves: the exec shell is a sibling process reading the
+container env, not the app process's `os.environ`, so before this change it would have printed
+`MISSING` while the app process held the token via the bulk load described above. `MISSING` here
+means the `secrets` entry has not shipped yet — not that the credential is unavailable to the app:
 
 ```bash
 aws ecs execute-command --cluster archimedes-cluster \
