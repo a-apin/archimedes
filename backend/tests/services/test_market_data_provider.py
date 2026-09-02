@@ -32,30 +32,38 @@ from sqlalchemy.orm import sessionmaker
 
 
 class TestProviderSelection:
+    """Selection on the ``intraday`` seam — ``MARKET_DATA_PROVIDER``, the
+    variable that existed before #1798 split the seams. The ``daily`` seam's
+    own variable and the routing between the two are covered in
+    ``test_market_data_seams.py``."""
+
     def test_default_is_yfinance(self, monkeypatch):
         monkeypatch.delenv("MARKET_DATA_PROVIDER", raising=False)
-        assert provider_name() == "yfinance"
+        assert provider_name("intraday") == "yfinance"
 
     def test_explicit_yfinance(self, monkeypatch):
         monkeypatch.setenv("MARKET_DATA_PROVIDER", "yfinance")
-        assert provider_name() == "yfinance"
+        assert provider_name("intraday") == "yfinance"
 
     def test_unknown_value_falls_back_to_yfinance(self, monkeypatch, caplog):
         import logging
 
         monkeypatch.setenv("MARKET_DATA_PROVIDER", "some_unreleased_vendor")
         with caplog.at_level(logging.WARNING):
-            assert provider_name() == "yfinance"
+            assert provider_name("intraday") == "yfinance"
         assert any("some_unreleased_vendor" in rec.message for rec in caplog.records)
 
     def test_case_and_whitespace_insensitive(self, monkeypatch):
         monkeypatch.setenv("MARKET_DATA_PROVIDER", "  YFinance  ")
-        assert provider_name() == "yfinance"
+        assert provider_name("intraday") == "yfinance"
 
     def test_get_provider_wraps_vendor_in_caching_provider(self):
-        assert isinstance(get_provider(), CachingMarketDataProvider)
+        # Nesting since #1798: SeamRoutedProvider → CachingMarketDataProvider
+        # → vendor. The cache layer is still there, one level in.
+        provider = get_provider(seam="intraday")
+        assert isinstance(provider._inner, CachingMarketDataProvider)
         # The inner vendor is the default (yfinance) implementation.
-        assert isinstance(get_provider()._inner, YFinanceProvider)
+        assert isinstance(provider._inner._inner, YFinanceProvider)
 
 
 # ─── Cache read-through / miss ──────────────────────────────────────────
@@ -706,7 +714,7 @@ class TestIntradayDelayedDeclaration:
         real-time for a feed nobody verified is the dishonest direction."""
         from archimedes.services import market_data_provider as mdp
 
-        monkeypatch.setattr(mdp, "provider_name", lambda: "some-unlisted-vendor")
+        monkeypatch.setattr(mdp, "provider_name", lambda _seam: "some-unlisted-vendor")
         assert mdp.intraday_is_delayed() is True
 
 

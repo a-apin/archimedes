@@ -1,18 +1,20 @@
 # ADR: Split market-data sourcing — Tiingo for paid analysis, yfinance for the free Explore viewer
 
 > **Audience:** Archimedes team (decision owner: Dan, strategy-engine + architecture owner)
-> **Status:** Accepted
+> **Status:** Accepted (amended 2026-09-01 — see § Amendment: per-seam routing)
 > **Date:** 2026-08-31
+> **Amended:** 2026-09-01 ([#1798](https://github.com/aprin-labs/archimedes/issues/1798)) — one variable per SEAM instead of one global variable, so daily bars can move to Tiingo without taking the live/intraday surfaces with them. The decision above is unchanged; what changed is the mechanism that expresses it.
 > **Owner:** Dan Browne
 > **Supersedes:** —
 > **Superseded-by:** —
 > **Question being decided:** Now that [#1218](https://github.com/aprin-labs/archimedes/issues/1218) has priced yfinance as an unlicensed-for-commercial-redistribution dependency sitting on the MVP critical path, which surfaces move to a commercial vendor, which stay on yfinance, and what has to be true before real money touches either?
-> **Related issues/PRs:** [#1218](https://github.com/aprin-labs/archimedes/issues/1218) (the costing exercise this decides), [#1282](https://github.com/aprin-labs/archimedes/pull/1282) (the provider seam), [#1455](https://github.com/aprin-labs/archimedes/pull/1455) (the Tiingo adapter), [#1203](https://github.com/aprin-labs/archimedes/issues/1203) (per-strategy universes — the routing fix that put market-data volume on the critical path), [#775](https://github.com/aprin-labs/archimedes/issues/775) (yfinance as an oracle cross-check — different use, same dependency).
+> **Related issues/PRs:** [#1218](https://github.com/aprin-labs/archimedes/issues/1218) (the costing exercise this decides), [#1282](https://github.com/aprin-labs/archimedes/pull/1282) (the provider seam), [#1455](https://github.com/aprin-labs/archimedes/pull/1455) (the Tiingo adapter), [#1203](https://github.com/aprin-labs/archimedes/issues/1203) (per-strategy universes — the routing fix that put market-data volume on the critical path), [#775](https://github.com/aprin-labs/archimedes/issues/775) (yfinance as an oracle cross-check — different use, same dependency), [#1798](https://github.com/aprin-labs/archimedes/issues/1798) (the per-seam routing amendment below).
 
 ## TL;DR
 
 **Source market data by surface, not by system.** Backtesting and any paid analysis run
-on **Tiingo**, reached through the existing `MARKET_DATA_PROVIDER` seam — starting on
+on **Tiingo**, reached through the existing provider seam's daily half
+(`MARKET_DATA_DAILY_PROVIDER`, #1798) — starting on
 Tiingo's **Free tier, for testing only**. The free, ungated **Explore** viewer stays on
 **yfinance**, because Explore is a free open-source data viewer that sells and
 redistributes nothing, which is the posture yfinance's terms actually permit.
@@ -48,7 +50,8 @@ Two things sharpened the problem after the issue was filed:
 
 Every path whose output could become something a user pays for — the generation-path
 fusion/debate panel, the portfolio backtester, the universe sweep that feeds them — moves
-to Tiingo when `MARKET_DATA_PROVIDER=tiingo`.
+to Tiingo when `MARKET_DATA_DAILY_PROVIDER=tiingo` (or, for back-compat,
+`MARKET_DATA_PROVIDER=tiingo` with the daily variable unset — see § Amendment).
 
 **Starting on the Free tier, deliberately, and only for testing.** The purpose of the
 free tier here is to exercise the adapter against real vendor responses, real symbol
@@ -77,7 +80,8 @@ removed and when the copy drifts into claiming a licence we do not hold.
 
 Two guarantees, both enforced in code rather than described here:
 
-- **Flag on, no token → refuse loudly.** `MARKET_DATA_PROVIDER=tiingo` with no
+- **Flag on, no token → refuse loudly.** A seam resolved to `tiingo` (by either
+  variable) with no
   `TIINGO_API_TOKEN` raises `TiingoAPIKeyMissingError` at provider construction. It does
   not fall back to yfinance. A silent fallback would attach a "ran on licensed data"
   provenance to a run that did not.
@@ -96,6 +100,75 @@ header call it a token). `TIINGO_API_KEY` — the name the adapter originally sh
 — is still read as a legacy alias so existing local `.env` files keep working; the
 canonical name wins when both are set. Prod: SSM SecureString at
 `/archimedes/prod/TIINGO_API_TOKEN`, owner-seeded.
+
+## Amendment: per-seam routing (2026-09-01, #1798)
+
+**What did not change:** a single **run** never mixes vendors. Every guarantee in § 3
+stands — the refuse-loudly-on-missing-token rule, and the per-vendor `asset_daily_bars`
+cache that makes a flip start cold rather than blend two vendors' bars inside one
+backtest panel.
+
+**What changed:** different **features** may run on different vendors, and the mechanism
+now says so. Before this amendment there was one variable, `MARKET_DATA_PROVIDER`, read
+by every call site. Since the Tiingo adapter serves daily bars only, flipping that one
+variable would have moved the backtests onto licensed data *and simultaneously* pointed
+the live oracle push, the paper-marks loop, the VIX/S&P regime reads and the Explore
+history modal at three `NotImplementedError`s. The decision this ADR records — paid daily
+analysis on Tiingo, the free viewer and the live surfaces on yfinance — was not
+expressible in one variable.
+
+So routing is by **seam**. A seam is the set of reads one feature makes inside one run:
+
+| Seam | Env var | Serves | Refuses |
+| --- | --- | --- | --- |
+| `daily` | `MARKET_DATA_DAILY_PROVIDER`, falling back to `MARKET_DATA_PROVIDER`, then `yfinance` | `get_daily_close_batch`, `get_daily_ohlcv` | the intraday methods — **always**, whatever vendor is configured, so a call site cannot pass review on yfinance and break on the day of the flip |
+| `intraday` | `MARKET_DATA_PROVIDER`, then `yfinance` | the whole interface, daily bars included | nothing |
+
+The intraday seam serves daily bars *on purpose*: `oracle_updater.fetch_market_snapshot`
+reads ^VIX (intraday) and ^GSPC's 50/200-day moving averages (daily) inside one run, and
+"never mix vendors inside one run" is exactly what pins both to the same vendor. ^GSPC is
+also an index ticker, which Tiingo does not serve at all.
+
+`get_provider(seam=…)` is keyword-only and required — after the split there is no such
+thing as "the active provider", and a call site that did not name its seam would be
+picking a vendor by accident. `provider_name(seam)` is likewise required, so the vendor
+name stamped on a row is always the vendor that actually served it.
+
+### Which feature reads which seam
+
+| Feature | Call site | Seam | Vendor today | After `MARKET_DATA_DAILY_PROVIDER=tiingo` |
+| --- | --- | --- | --- | --- |
+| Strategy signal evaluation (marketplace ticks: vault + paper rebalances) | `strategy_signal_evaluator._fetch_price_history(ies)` | `daily` | yfinance | **Tiingo** |
+| Generation-path fusion/debate real-data panel | `fusion_market_data._fetch_one` | `daily` | yfinance | **Tiingo** |
+| Generation-path portfolio backtester | `portfolio_backtester._fetch_price_panel` | `daily` | yfinance | **Tiingo** |
+| Live oracle push — equities | `oracle_updater._fetch_yfinance` | `intraday` | yfinance | yfinance |
+| Live oracle push — crypto seam leg (`ORACLE_CRYPTO_SOURCE`) | `oracle_updater._fetch_crypto_provider` | `intraday` | yfinance | yfinance |
+| VIX read + the #775 cross-check's secondary reading | `oracle_updater._fetch_yfinance_single` | `intraday` | yfinance | yfinance |
+| S&P 50/200-day regime moving averages | `oracle_updater._fetch_sp500_moving_averages` | `intraday` (daily bars, intraday seam — same run as the ^VIX read) | yfinance | yfinance |
+| Paper-trading mark loop | `paper_marks.mark_all` | `intraday` | yfinance | yfinance |
+| Explore per-asset history modal | `asset_market_service._fetch_yfinance_series` | `intraday` (arbitrary interval) | yfinance | yfinance |
+| analytics-engine standalone CLI backtests | `archimedes_analytics_engine.data.fetch_ohlcv` | its own module-level seam, `MARKET_DATA_PROVIDER` only | yfinance | yfinance — **it registers no Tiingo adapter** |
+
+The last row is the one to watch. `analytics-engine` is a separate, DB-less package with
+its own one-vendor registry; the daily flip does not reach it, and must not, because a
+`tiingo` value there would log "unknown provider" and serve yfinance — a run labelled
+licensed that was not. What the flip does instead is stop routing daily OHLCV through
+that package at all (backend selects `TiingoProvider`, and only `YFinanceProvider`
+delegates to `fetch_ohlcv`), so the two never disagree about which vendor served a bar.
+Moving the CLI path onto Tiingo is a follow-up: register an adapter there, then have it
+read the daily variable.
+
+### A vendor that cannot serve a seam is substituted, and said so
+
+`_VENDOR_SEAMS` declares which seams each vendor can serve (`yfinance`: both; `tiingo`:
+`daily`). Naming a vendor for a seam it cannot serve resolves that seam to yfinance and
+**logs the substitution by name**. That is not the silent fallback § 3 forbids: § 3 is
+about the missing-token case, which still raises `TiingoAPIKeyMissingError` at
+construction, and here the returned vendor name is the vendor that really answered — so
+every `source` stamp on an `asset_prices` row, a paper mark or an `asset_daily_bars` row
+stays true. The practical effect is that the pre-#1798 global flip
+(`MARKET_DATA_PROVIDER=tiingo`) now moves daily bars and leaves the live surfaces alone,
+rather than breaking them.
 
 ## The mainnet gate, stated explicitly
 
@@ -121,8 +194,10 @@ open deliverable.
 The point of doing this behind `MarketDataProvider` rather than by rewriting call sites:
 
 - A new vendor is **one class** implementing the interface plus **one row** in
-  `_VENDOR_PROVIDERS`.
-- Selecting it is **one env var** (`MARKET_DATA_PROVIDER`), read in one place.
+  `_VENDOR_PROVIDERS` and **one row** in `_VENDOR_SEAMS` declaring which seams it can
+  serve (added by #1798).
+- Selecting it is **one env var per seam** (`MARKET_DATA_DAILY_PROVIDER`,
+  `MARKET_DATA_PROVIDER`), each read in one place.
 - Replacing yfinance on Explore too — the full migration this ADR deliberately does *not*
   do today — is therefore a config change plus, at most, implementing the three methods
   the Tiingo adapter currently declines (`get_intraday_quote`,
@@ -149,9 +224,11 @@ rather than quietly ignored.
 - Two vendors to reason about, and a cache that cannot be shared between them.
 - A cold cache on the first run after any provider flip.
 - The Tiingo adapter covers daily bars only; intraday quotes and arbitrary-interval
-  series still require `MARKET_DATA_PROVIDER=yfinance`, so the live oracle push, the
-  VIX/S&P regime reads and the Explore history modal are **not** cutover-ready. They fail
-  loudly (`NotImplementedError`) rather than returning a plausible wrong number.
+  series are not implemented, so the live oracle push, the VIX/S&P regime reads and the
+  Explore history modal are **not** cutover-ready. *(Amended 2026-09-01, #1798: they no
+  longer have to be. Those surfaces sit on the `intraday` seam, which keeps its own
+  vendor, so the daily-bar cutover does not wait on them and cannot break them. The
+  `NotImplementedError`s remain as the belt-and-braces refusal — see the amendment.)*
 - Tiingo has no endpoint for index (`^GSPC`, `^VIX`) or futures (`GC=F`, `CL=F`) tickers
   on the families this adapter targets. Those symbols raise
   `TiingoUnsupportedSymbolError` rather than silently falling back.
