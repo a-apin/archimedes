@@ -23,11 +23,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import os
+import re
 import sys
 import time
 import urllib.parse
 from collections.abc import Iterator
+from datetime import date as _Date
 
 import click
 import httpx
@@ -181,6 +184,12 @@ def _response_detail(response: httpx.Response) -> str:
 # invocation is refused before a request is spent. The SERVER is the authority:
 # these are pre-flight conveniences, and every limit is enforced there too.
 _MAX_TRIALS = 10_000
+
+# The two per-bar shape rules from `ReturnPoint` (rigor_verify_routes.py),
+# mirrored for the same reason and with the same values. See the block above
+# `_parse_returns_csv` for why the CLI checks these locally at all.
+_MAX_ABS_DAILY_RETURN = 1.0
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # The reason codes `POST /api/rigor/verify` attaches to an input refusal
 # (`INPUT_REJECTED_CODES` in backend/archimedes/api/rigor_verify_routes.py,
@@ -462,12 +471,63 @@ def meter(api_url: str | None, as_json: bool) -> None:
     sys.exit(exits.OK)
 
 
-def _parse_returns_csv(source: str) -> list[dict]:
+def _reject_local_input(*, as_json: bool, error: str, reason: str, message: str) -> None:
+    """A locally-caught violation of the verify input contract. Never returns.
+
+    ``error`` is this CLI's own stable string and ``reason`` is the SERVER's code for
+    the identical refusal, exactly the split ``--trials`` already uses: a CI job
+    branches on one ``reason`` whichever side caught the bad row. The exit code is
+    ``USAGE``, never ``GATE_FAILED`` — a malformed file is not a verdict about a
+    strategy, and ``exits.py`` exists to keep those two apart.
+    """
+    _fail(
+        "verify",
+        as_json=as_json,
+        exit_code=exits.USAGE,
+        error=error,
+        message=message,
+        extra={"reason": reason},
+        lines=[_INPUT_REJECTED_REMEDY[reason]],
+    )
+
+
+# ── The local mirror of the verify input contract (#1803 review round 2) ──
+#
+# WHY THE CLI CHECKS AT ALL. `httpx` serialises the body with
+# `json.dumps(..., allow_nan=False)`, so a CSV carrying `nan`/`inf` did not fail
+# at the server with `reason: non_finite` — it raised `ValueError` inside the
+# request build, printed a traceback, and exited **1**. Exit 1 is `GATE_FAILED`,
+# which `exits.py` reserves for "the gate ran and the answer was no": a
+# mistyped column was being reported to CI as a research finding, and `--json`
+# emitted nothing parseable at all. The other rules are mirrored alongside it so
+# one bad file gets one shape of answer rather than two.
+#
+# WHAT IT IS NOT. This is a mirror, never a replacement. The server re-checks
+# every one of these; a row this misses is still refused there, with the same
+# code, and the response's sentence is still the one printed. Nothing is sorted,
+# deduplicated, dropped or coerced here either — the CLI refuses exactly what
+# the server refuses, and repairs nothing.
+#
+# WHAT IS DELIBERATELY NOT MIRRORED: the row-count floor and ceiling
+# (`too_short` / `too_many_rows`). Those are the gate's own moving policy — the
+# floor IS `DSR_MIN_BARS`, imported from the rigor helpers server-side, and the
+# ceiling tracks the edge's payload budget (#1749). A CLI that hard-coded either
+# would refuse a series a newer server accepts, which is worse than spending one
+# request to be told. `--trials` keeps its local bound because it is an argument
+# THIS tool defines, not a property of the caller's file.
+def _parse_returns_csv(source: str, *, as_json: bool) -> list[dict]:
     """Parse ``RETURNS_CSV`` into ``[{"date": ..., "daily_return": ...}, ...]``.
 
     Two columns: date, then daily return. A header row (or any row whose second column
     does not parse as a float — a blank line, a comment) is skipped rather than rejected,
     so both a ``date,daily_return`` header and a bare headerless file work.
+
+    Every row that IS a data row is then held to the endpoint's contract: strict
+    ``YYYY-MM-DD`` calendar dates, unique, ascending, with finite returns inside
+    ``[-1.0, 1.0]``. A violation exits ``USAGE`` with the server's own ``reason``
+    code (see the block above). Row numbers in the messages count DATA rows — the
+    index the server would see — not physical lines, so a skipped header does not
+    shift them.
     """
     if source == "-":
         text = click.get_text_stream("stdin").read()
@@ -476,17 +536,96 @@ def _parse_returns_csv(source: str) -> list[dict]:
             text = handle.read()
 
     rows: list[dict] = []
+    dates: list[_Date] = []
     for row in csv.reader(io.StringIO(text)):
         if len(row) < 2:
             continue
         date_str = row[0].strip()
         if not date_str:
             continue
+        raw_value = row[1].strip()
         try:
-            value = float(row[1].strip())
+            value = float(raw_value)
         except ValueError:
             continue
+
+        # Date before value, the order `ReturnPoint` declares its two fields in,
+        # so a row that is wrong in both ways is named the same way on both sides.
+        number = len(rows) + 1
+        if not _ISO_DATE_RE.match(date_str):
+            _reject_local_input(
+                as_json=as_json,
+                error="invalid_date_format",
+                reason="invalid_date",
+                message=(
+                    f"{source!r} row {number} has date {date_str!r}, which is not a strict "
+                    "ISO calendar date (YYYY-MM-DD). Epoch seconds, ISO week dates and "
+                    "YYYYMMDD are refused rather than guessed at"
+                ),
+            )
+        try:
+            parsed = _Date.fromisoformat(date_str)
+        except ValueError:
+            _reject_local_input(
+                as_json=as_json,
+                error="invalid_date_format",
+                reason="invalid_date",
+                message=(
+                    f"{source!r} row {number} has date {date_str!r}, which is well-formed "
+                    "YYYY-MM-DD but is not a real calendar date"
+                ),
+            )
+        if not math.isfinite(value):
+            _reject_local_input(
+                as_json=as_json,
+                error="non_finite_returns",
+                reason="non_finite",
+                message=(
+                    f"{source!r} row {number} has daily_return {raw_value!r}, which is not a "
+                    "finite number and cannot be sent as JSON"
+                ),
+            )
+        if abs(value) > _MAX_ABS_DAILY_RETURN:
+            _reject_local_input(
+                as_json=as_json,
+                error="out_of_range_returns",
+                reason="out_of_range",
+                message=(
+                    f"{source!r} row {number} has daily_return {value}, outside "
+                    f"[-{_MAX_ABS_DAILY_RETURN}, {_MAX_ABS_DAILY_RETURN}] (simple return units, "
+                    "0.01 = +1%)"
+                ),
+            )
         rows.append({"date": date_str, "daily_return": value})
+        dates.append(parsed)
+
+    # Whole-series rules, in the server's order: every per-row error is reported
+    # before either of these, and a duplicate before an inversion.
+    first_seen: dict[_Date, int] = {}
+    for number, parsed in enumerate(dates, start=1):
+        if parsed in first_seen:
+            _reject_local_input(
+                as_json=as_json,
+                error="duplicate_date_rows",
+                reason="duplicate_date",
+                message=(
+                    f"{source!r} row {number} repeats the date {parsed.isoformat()}, already "
+                    f"used by row {first_seen[parsed]}. A daily series has one bar per date"
+                ),
+            )
+        first_seen[parsed] = number
+    for index in range(1, len(dates)):
+        if dates[index] < dates[index - 1]:
+            _reject_local_input(
+                as_json=as_json,
+                error="unsorted_date_rows",
+                reason="unsorted_dates",
+                message=(
+                    f"{source!r} is not in ascending date order: row {index + 1} "
+                    f"({dates[index].isoformat()}) precedes row {index} "
+                    f"({dates[index - 1].isoformat()})"
+                ),
+            )
     return rows
 
 
@@ -615,9 +754,16 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     shuffled series could otherwise park its best 30% in the holdout, and the server
     will not silently sort it for you because that would grade a series you did not send.
 
+    A row this CLI can already see is wrong — a non-finite or out-of-range return, a date
+    that is not ``YYYY-MM-DD``, a duplicate, a row out of order — is refused HERE, before
+    the request is sent, carrying the same ``reason`` code the server would have used. The
+    server re-checks all of it and remains the authority; the local pass only spends fewer
+    round trips and keeps a malformed file from ever reaching the JSON encoder.
+
     Requires a cached session; run ``archimedes login`` first. Exits 0 when the gate
     passes and 1 when it fails, which is what makes ``archimedes verify returns.csv``
-    usable as a CI check before a deploy.
+    usable as a CI check before a deploy. A refused input exits 2 and an incomplete
+    evaluation exits 4 — never 1, which means only "the gate ran and said no".
     """
     if run_local:
         _unavailable("verify", as_json=as_json)
@@ -636,7 +782,7 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
             extra={"reason": "trials_out_of_range"},
         )
 
-    returns = _parse_returns_csv(returns_csv)
+    returns = _parse_returns_csv(returns_csv, as_json=as_json)
     if not returns:
         _fail(
             "verify",

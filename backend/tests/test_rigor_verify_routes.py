@@ -560,6 +560,74 @@ async def test_reason_code_trials_out_of_range(app, monkeypatch, bad):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [1e18, 1e9, "10000000000", "0", " 10001 "])
+async def test_trials_out_of_range_survives_every_spelling_of_the_number(app, monkeypatch, bad):
+    """Review round 2. The guard used to test `isinstance(value, int)` only, so a
+    JSON float or a numeric string with the same value slipped past it onto the
+    declarative `le` — which types as `less_than_equal`, NOT one of this route's
+    codes, so the refusal degraded to the generic list shape and the documented
+    `trials_out_of_range` envelope never reached the caller. Both spellings are
+    ordinary: `json.dumps(10**18)` emits `1e+18`. (`1e400` parses to `inf`.)"""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES, trials=bad))
+    assert resp.status_code == 422
+    assert _reason(resp) == "trials_out_of_range"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["Infinity", "-Infinity", "NaN"])
+async def test_a_non_finite_trials_literal_is_refused_with_the_documented_code(app, monkeypatch, literal):
+    """Python's own `json.dumps(float("inf"))` emits `Infinity`, and `json.loads`
+    accepts it — the same door the `non_finite` rule closed on `returns`. On
+    `trials` it has to answer with a code too, not with the generic list shape."""
+    _sign_in(monkeypatch)
+    body = json.dumps(_returns_body(_STRONG_SERIES, trials=1)).replace('"trials": 1', f'"trials": {literal}')
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/rigor/verify",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+    assert resp.status_code == 422
+    assert _reason(resp) == "trials_out_of_range"
+
+
+@pytest.mark.asyncio
+async def test_trials_true_is_refused_rather_than_read_as_one(app, monkeypatch):
+    """Review round 2. Pydantic's lax mode coerces `True` to `1`, so `trials: true`
+    returned 200 with `trials: 1`: a route that refuses `20240102` as a date rather
+    than guessing at it was guessing a boolean into a count of variants tried."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES, trials=True))
+    assert resp.status_code == 422
+    assert _reason(resp) == "trials_out_of_range"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("good", [1, 10_000, 1.0, "7", 7.0])
+async def test_a_well_formed_trial_count_is_still_accepted_in_every_spelling(app, monkeypatch, good):
+    """The guard widens in order to BOUND, not in order to refuse: everything
+    pydantic would have accepted still arrives."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES, trials=good))
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_non_numeric_trials_keeps_pydantics_own_error(app, monkeypatch):
+    """`trials: "many"` has no range to be out of. Inventing `trials_out_of_range`
+    for it would be the wrong reason code, so it keeps the generic shape."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES, trials="many"))
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], list)
+
+
+@pytest.mark.asyncio
 async def test_trials_at_the_cap_is_accepted_and_still_deflates(app, monkeypatch):
     """10,000 is a bound, not a wall the endpoint stops working at."""
     _sign_in(monkeypatch)

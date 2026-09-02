@@ -631,9 +631,16 @@ an account session or an `archim_` key. It is also the backend for the CLI's
 curl -s -X POST $BASE/api/rigor/verify \
   -b /tmp/session.jar -H "Content-Type: application/json" \
   -d '{"returns": [{"date": "2025-01-02", "daily_return": 0.01078},
-                   {"date": "2025-01-03", "daily_return": -0.00055}],
+                   {"date": "2025-01-03", "daily_return": -0.00055},
+                   {"date": "2025-01-06", "daily_return": -0.02371},
+                   {"date": "2025-01-07", "daily_return": -0.00077}],
        "trials": 12}'
 ```
+
+Four rows is the minimum the server accepts (`too_short` below it), and it is the minimum
+that runs *anything*: at this length only the DSR leg can run, so the answer is
+`legs_evaluated: 1` of 2 — an INCOMPLETE evaluation, not a pass. The OOS leg needs ~70 bars.
+Send a real series to get a real verdict; this body is here to show the shape.
 
 **The input contract is strict and the server repairs nothing.** Build the body to these
 rules or it is refused — there is no coercion, no sorting, no deduplication and no
@@ -662,15 +669,24 @@ time order being graded, and a series sorted by return would park its best bars 
 holdout and collect a pass. The server refuses an out-of-order series rather than sorting
 it, because sorting would hand you a verdict on a series you did not send.
 
+Be clear about what that closes: the **row-order** form of the attack, which is the
+accidental one and the detectable one. It does not close relabelling — a caller who writes
+ascending dates onto return-sorted values sends a body no server can tell from a real
+series, and gets a 200. That is why every response says `self_attested: true` and
+`verdict_capped: true`: this route grades the numbers you sent, it does not attest that
+they are yours or that they happened in that order.
+
 **What the verdict can and cannot claim.** Two of the gate's four legs can never run on a
 bare returns series — PBO needs a trial matrix of candidate strategies, and the look-ahead
 audit needs strategy source, which is never uploaded — so both always come back
 `not_evaluable` and `verdict_capped` is always `true`. `passes` is a quorum over the two
 runnable legs: true only when DSR **and** walk-forward OOS both ran and both passed. Below
 about 70 bars the OOS leg cannot run at all, which shows up as `legs_evaluated <
-legs_runnable` — an **incomplete evaluation**, neither a pass nor a fail; do not report it
-as either. `trials` is self-attested and unverifiable, so the DSR is only as honest as the
-number you declared. Nothing here earns "Archimedes Verified"; the passport gate
+legs_runnable`. When **no leg actually failed**, that is an **incomplete evaluation** —
+neither a pass nor a fail, and it must not be reported as either. When a leg *did* fail,
+the failure is a real verdict and stands: a short series is not an excuse that erases a
+FAIL (the CLI exits `1` there, not `4`). `trials` is self-attested and unverifiable, so the
+DSR is only as honest as the number you declared. Nothing here earns "Archimedes Verified"; the passport gate
 (step 9) is the verdict that does.
 
 ## Error table

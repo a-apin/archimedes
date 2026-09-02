@@ -285,7 +285,15 @@ so row order **is** the time order being graded. A caller who sorted their
 series by return could park their best 30% in the holdout and collect
 `oos_consistency: pass` on numbers that fail chronologically. The server
 therefore refuses an out-of-order series rather than sorting it: sorting would
-hand back a verdict on a series the caller never sent. `trials` is bounded for
+hand back a verdict on a series the caller never sent.
+
+What that closes is the **row-order** form of it — the accidental one, and the
+only one a server can see. It does not close relabelling: a caller who writes
+ascending dates onto return-sorted values sends a body indistinguishable from a
+real series and gets a 200. No input rule can detect that, which is why the
+response carries `self_attested: true` and `verdict_capped: true` — this route
+grades the numbers it was handed and attests nothing about where they came from
+or when they happened. `trials` is bounded for
 the same reason — it is self-attested and deflates the DSR, and an unbounded
 count (`10**18`) drove the deflation to `-inf`, which reports as
 `not_evaluable`: a caller-controlled way to erase a FAIL.
@@ -300,8 +308,10 @@ with the decisive reason, and `verdict_capped` is always `true`. `passes` is a
 OOS both ran *and* passed — so it is never a claim that the strategy cleared
 the passport gate, and it can never be earned by a series that was merely too
 short to fail. Below ~70 bars the OOS leg cannot run at all: that shows up as
-`legs_evaluated < legs_runnable`, which is an **incomplete evaluation**, not a
-pass and not a fail. `--trials` is unverifiable self-attestation, so the DSR is
+`legs_evaluated < legs_runnable`, which — **when no leg failed** — is an
+**incomplete evaluation**, not a pass and not a fail. A leg that did fail is
+still a fail; too few bars does not launder it. `--trials` is unverifiable
+self-attestation, so the DSR is
 only as honest as the number the caller declared. "Archimedes Verified" is not
 obtainable here.
 
@@ -331,9 +341,12 @@ is synthetic — `numpy` normal draws, mean 0.0011, sd 0.0085, seed 1803 — whi
 is exactly why its Sharpe is implausibly good: it is a rendering example, not
 a result.)
 
-Exit codes: `0` pass, `1` fail, `4` incomplete (not every runnable leg ran) —
-so a CI job can never read "too few bars" as "strategy rejected". A rejected
-body exits `2` and prints the `reason`. Re-sending the same 252 bars sorted by
+Exit codes: `0` pass, `1` fail, `4` incomplete — **no leg failed** and not every
+runnable leg ran — so a CI job can never read "too few bars" as "strategy
+rejected". The two are checked in that order: a leg that actually failed is a
+real verdict and exits `1` even when another leg could not run, because a short
+series is not an excuse that erases a FAIL. A rejected body exits `2` and prints
+the `reason` — never `1`, which means only "the gate ran and said no". Re-sending the same 252 bars sorted by
 return instead of by date, so the best 30% falls in the holdout:
 
 ```console
@@ -343,13 +356,27 @@ Sort the CSV by date, oldest first (`sort -t, -k1,1 returns.csv`). The out-of-sa
 exit=2
 ```
 
-The same series over HTTP:
+The CLI holds the CSV to the same rules before it builds the request, so a
+non-finite or out-of-range return, a date that is not `YYYY-MM-DD`, a duplicate
+or an out-of-order row is refused locally — same `reason` code, same exit `2`,
+no request spent. (A `nan` in the file used to reach the JSON encoder instead
+and abort with a traceback and exit `1`, which reads as a failing verdict.) It
+is a mirror, not a second opinion: the server re-checks everything, its sentence
+is the one printed when the request does go out, and the row-count bounds are
+left to it entirely.
+
+The same series over HTTP (its first four bars — four is the floor, and a body
+of two rows is refused with `too_short`):
 
 ```bash
 curl -s -X POST https://archimedes-arc.com/api/rigor/verify \
   -b /tmp/session.jar -H "Content-Type: application/json" \
-  -d '{"returns": [{"date": "2025-01-02", "daily_return": 0.01078}, {"date": "2025-01-03", "daily_return": -0.00055}], "trials": 12}'
+  -d '{"returns": [{"date": "2025-01-02", "daily_return": 0.01078}, {"date": "2025-01-03", "daily_return": -0.00055}, {"date": "2025-01-06", "daily_return": -0.02371}, {"date": "2025-01-07", "daily_return": -0.00077}], "trials": 12}'
 ```
+
+Four bars is enough to be *accepted*, not enough to be graded: the OOS leg needs
+~70, so this body answers `legs_evaluated: 1` of 2 and the verdict is INCOMPLETE.
+Send the whole series — the 252-row file above — for the answer shown above it.
 
 ## Rigor gate status semantics (honesty note)
 

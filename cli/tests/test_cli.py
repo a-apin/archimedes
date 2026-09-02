@@ -78,7 +78,7 @@ def _forbid_network(monkeypatch):
     client — proves a client-side guard short-circuited BEFORE any request, not merely
     that the eventual response happened to look like a failure."""
 
-    def factory(api_url, *, cookies=None):  # noqa: ARG001 — signature must match `_http_client`'s
+    def factory(api_url, *, cookies=None):  # signature must match `_http_client`'s
         raise AssertionError("a guard should have stopped this before any HTTP client was built")
 
     monkeypatch.setattr(cli_module, "_http_client", factory)
@@ -781,6 +781,176 @@ class TestVerify:
         # The SERVER's code for the identical refusal rides along, so a caller
         # branches on one string whichever side caught it.
         assert payload["reason"] == "trials_out_of_range"
+
+    # ── The local mirror of the input contract (#1803 review round 2) ──
+    #
+    # Every test below writes a file the server would refuse and asserts the CLI
+    # refuses it FIRST, without building an HTTP client. The regression they pin
+    # is specific: `httpx` serialises with `allow_nan=False`, so a `nan` bar used
+    # to raise inside the request build — traceback on stderr, nothing on stdout,
+    # and exit **1**, which `exits.py` reserves for a real failing verdict. A
+    # malformed file must never be reportable to CI as "strategy rejected".
+
+    @pytest.mark.parametrize("literal", ["nan", "NaN", "NAN", "inf", "-inf", "Infinity", "-Infinity"])
+    def test_non_finite_return_is_refused_locally_never_as_a_failing_verdict(
+        self, runner, monkeypatch, tmp_path, literal
+    ):
+        """The defect this exists for. `float()` takes every one of these spellings,
+        case-insensitively, and the JSON encoder then refuses to send it."""
+        (tmp_path / "poison.csv").write_text(
+            f"date,daily_return\n2026-01-02,0.0021\n2026-01-05,{literal}\n2026-01-06,0.0014\n"
+        )
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "poison.csv", "--json"])
+        assert result.exit_code == USAGE
+        assert result.exit_code != GATE_FAILED  # the whole point: not a verdict
+        payload = json.loads(result.stdout)  # parseable, not a traceback
+        assert payload["ok"] is False
+        assert payload["error"] == "non_finite_returns"
+        assert payload["reason"] == "non_finite"
+        assert "row 2" in payload["message"]
+
+    @pytest.mark.parametrize("value", ["1.5", "-1.5", "13", "-42.0"])
+    def test_out_of_range_return_is_refused_locally(self, runner, monkeypatch, tmp_path, value):
+        """A percentage column (1.3 for +1.3%) inflates the Sharpe the verdict rests on."""
+        (tmp_path / "pct.csv").write_text(f"date,daily_return\n2026-01-02,0.0021\n2026-01-05,{value}\n")
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "pct.csv", "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "out_of_range_returns"
+        assert payload["reason"] == "out_of_range"
+
+    @pytest.mark.parametrize("value", ["1.0", "-1.0", "0.999999"])
+    def test_a_return_exactly_on_the_boundary_is_accepted(self, runner, monkeypatch, tmp_path, value):
+        """The mirror must not be STRICTER than the server: |r| <= 1.0 is allowed,
+        so a boundary bar still reaches the API."""
+        (tmp_path / "edge.csv").write_text(f"date,daily_return\n2026-01-02,{value}\n2026-01-05,0.0014\n")
+        _seed_session()
+        _install_transport(
+            monkeypatch, _route({("POST", "/api/rigor/verify"): httpx.Response(200, json=_VERIFY_PASS_BODY)})
+        )
+        result = runner.invoke(main, ["verify", "edge.csv"])
+        assert result.exit_code == OK
+
+    @pytest.mark.parametrize("bad_date", ["20260102", "2026-W01-1", "2026-1-2", "02/01/2026", "1767312000"])
+    def test_a_date_that_is_not_strict_iso_is_refused_locally(self, runner, monkeypatch, tmp_path, bad_date):
+        """Same strictness as `ReturnPoint._strict_iso_date`: epoch seconds, ISO week
+        dates and YYYYMMDD are refused rather than guessed at."""
+        (tmp_path / "dates.csv").write_text(f"date,daily_return\n{bad_date},0.0021\n2026-01-05,0.0014\n")
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "dates.csv", "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "invalid_date_format"
+        assert payload["reason"] == "invalid_date"
+
+    def test_a_well_formed_date_that_is_not_a_real_day_is_refused_locally(self, runner, monkeypatch, tmp_path):
+        """`2026-02-30` matches the regex and is still not a calendar date."""
+        (tmp_path / "feb30.csv").write_text("date,daily_return\n2026-02-30,0.0021\n2026-03-02,0.0014\n")
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "feb30.csv", "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "invalid_date_format"
+        assert payload["reason"] == "invalid_date"
+
+    def test_a_duplicate_date_is_refused_locally(self, runner, monkeypatch, tmp_path):
+        """One bar per date, refused rather than deduplicated, summed or averaged —
+        a repeated date can also be inserted anywhere without breaking monotonicity."""
+        (tmp_path / "dupe.csv").write_text(
+            "date,daily_return\n2026-01-02,0.0021\n2026-01-05,-0.0009\n2026-01-05,0.0014\n"
+        )
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "dupe.csv", "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "duplicate_date_rows"
+        assert payload["reason"] == "duplicate_date"
+        assert "2026-01-05" in payload["message"]
+
+    def test_an_unsorted_series_is_refused_locally_and_never_sorted(self, runner, monkeypatch, tmp_path):
+        """The attack the ordering rule exists for: the walk-forward split is
+        POSITIONAL, so a caller who sorts by return parks the best 30% in the
+        holdout. The CLI refuses it — and, like the server, does not repair it."""
+        (tmp_path / "shuffled.csv").write_text(
+            "date,daily_return\n2026-01-02,0.0021\n2026-01-08,-0.0009\n2026-01-05,0.0014\n"
+        )
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "shuffled.csv", "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "unsorted_date_rows"
+        assert payload["reason"] == "unsorted_dates"
+        assert "row 3 (2026-01-05) precedes row 2 (2026-01-08)" in payload["message"]
+
+    def test_a_local_refusal_prints_the_same_remedy_the_server_path_prints(self, runner, monkeypatch, tmp_path):
+        """The human path: one shape of answer whichever side caught the bad row."""
+        (tmp_path / "shuffled.csv").write_text(
+            "date,daily_return\n2026-01-02,0.0021\n2026-01-08,-0.0009\n2026-01-05,0.0014\n"
+        )
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "shuffled.csv"])
+        assert result.exit_code == USAGE
+        assert "ascending date order" in result.stderr
+        assert "Sort the CSV by date" in result.stderr  # the same remedy line as the 422 path
+        assert result.stdout == ""
+
+    def test_local_refusal_row_numbers_count_data_rows_not_file_lines(self, runner, monkeypatch, tmp_path):
+        """A skipped header (and a comment line) must not shift the row number, or the
+        CLI and the server would name different rows for the same file."""
+        (tmp_path / "commented.csv").write_text(
+            "date,daily_return\n# generated 2026-01-01\n2026-01-02,0.0021\n2026-01-05,nan\n"
+        )
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "commented.csv", "--json"])
+        assert result.exit_code == USAGE
+        assert "row 2" in json.loads(result.stdout)["message"]
+
+    def test_every_locally_mirrored_reason_is_one_the_server_also_uses(self):
+        """The mirror is only useful if a caller can branch on ONE code. Every reason
+        the local path emits must be in the endpoint's own code set (and each must
+        carry a remedy line)."""
+        mirrored = {"invalid_date", "duplicate_date", "unsorted_dates", "non_finite", "out_of_range"}
+        assert mirrored <= set(cli_module._INPUT_REJECTED_CODES)
+        assert mirrored <= set(cli_module._INPUT_REJECTED_REMEDY)
+
+    def test_the_local_mirror_does_not_bound_the_row_count(self, runner, monkeypatch, tmp_path):
+        """Deliberate: `too_short`/`too_many_rows` are the gate's own moving policy
+        (the floor IS `DSR_MIN_BARS`), so the CLI spends one request rather than
+        hard-coding a number a newer server may have changed."""
+        (tmp_path / "short.csv").write_text("date,daily_return\n2026-01-02,0.0021\n")
+        _seed_session()
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                422,
+                json={
+                    "detail": {
+                        "error": "input_rejected",
+                        "reason": "too_short",
+                        "reasons": ["too_short"],
+                        "message": "returns has 1 rows; the minimum is 4",
+                        "loc": ["body", "returns"],
+                    }
+                },
+            )
+
+        _install_transport(monkeypatch, handler)
+        result = runner.invoke(main, ["verify", "short.csv", "--json"])
+        assert len(seen["body"]["returns"]) == 1  # it really was sent
+        assert result.exit_code == USAGE
+        assert json.loads(result.stdout)["reason"] == "too_short"
 
     @pytest.mark.parametrize(
         "reason",

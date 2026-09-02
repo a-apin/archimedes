@@ -488,8 +488,50 @@ class RigorVerifyRequest(BaseModel):
     @field_validator("trials", mode="before")
     @classmethod
     def _trials_bounds(cls, value: object) -> object:
-        """Bound the self-attested trial count (#1803)."""
-        if isinstance(value, int) and not isinstance(value, bool) and not (1 <= value <= _MAX_TRIALS):
+        """Bound the self-attested trial count (#1803).
+
+        Runs in ``mode="before"``, on the RAW JSON value, so it has to widen the
+        value the same way pydantic's lax mode is about to before it can bound it.
+        An earlier version tested only ``isinstance(value, int)``, and every other
+        spelling of a huge count slipped past it onto the declarative ``le`` —
+        whose error type is ``less_than_equal``, not one of this route's codes, so
+        the refusal came back in the GENERIC list shape and the documented
+        ``trials_out_of_range`` envelope never reached the caller. Both spellings
+        are ordinary: ``json.dumps(10**18)`` emits ``1e+18``, and a form-ish client
+        sends ``"10000000000"``.
+
+        A bool is refused outright rather than widened. Pydantic's lax mode reads
+        ``True`` as ``1``, so ``trials: true`` used to return 200 with ``trials: 1``
+        — a route that refuses ``"20240102"`` as a date rather than guessing at it
+        must not guess a boolean into a count.
+
+        Anything that is not a number at all is returned untouched: pydantic's own
+        ``int_parsing`` error is the right answer for it, and inventing a range
+        refusal for a value that has no range would be a wrong reason code.
+        """
+        if isinstance(value, bool):
+            raise PydanticCustomError(
+                "trials_out_of_range",
+                "trials must be a whole number between 1 and {limit}; got the boolean {got}. It is "
+                "a count of variants tried, and a boolean is not one — refused rather than read as "
+                "0 or 1.",
+                {"got": value, "limit": _MAX_TRIALS},
+            )
+        candidate: int | float | None = None
+        if isinstance(value, (int, float)):
+            candidate = value
+        elif isinstance(value, str):
+            try:
+                candidate = float(value.strip())
+            except ValueError:
+                candidate = None
+        if candidate is None:
+            return value
+        # `math.isfinite` on an arbitrarily large int would itself raise
+        # (OverflowError), so the finiteness test is scoped to floats; a huge int
+        # compares exactly and is caught by the range test below.
+        non_finite = isinstance(candidate, float) and not math.isfinite(candidate)
+        if non_finite or not 1 <= candidate <= _MAX_TRIALS:
             raise PydanticCustomError(
                 "trials_out_of_range",
                 "trials must be between 1 and {limit}; got {got}. It is self-attested and "

@@ -99,6 +99,20 @@ _INPUT_REJECTED_REMEDY = {
     "trials_out_of_range": "trials is 1..10000 — the number of variants you actually tried.",
 }
 
+_UNKNOWN_INPUT_REJECTION_REMEDY = (
+    "Fix the field named in `detail.loc` and retry. The server refuses a malformed series rather than repairing it."
+)
+
+
+def input_rejected_remedy(reason: str) -> str:
+    """What to change, per input-rejection code (#1803).
+
+    Shared with :mod:`tools`, which refuses some of these locally: one code must
+    come back with one remedy whether the row was caught before the request or by
+    the server. An unrecognised code — a newer server's — still gets an answer.
+    """
+    return _INPUT_REJECTED_REMEDY.get(reason, _UNKNOWN_INPUT_REJECTION_REMEDY)
+
 
 def from_response(response: httpx.Response, *, credential_kind: str | None) -> dict[str, Any]:
     """Map a non-2xx API response onto a structured, actionable failure result."""
@@ -217,11 +231,7 @@ def from_response(response: httpx.Response, *, credential_kind: str | None) -> d
             return failure(
                 reason,
                 _message(detail, "The API rejected the input."),
-                _INPUT_REJECTED_REMEDY.get(
-                    reason,
-                    "Fix the field named in `detail.loc` and retry. The server refuses a malformed "
-                    "series rather than repairing it.",
-                ),
+                input_rejected_remedy(reason),
                 http_status=422,
                 detail=detail,
             )
