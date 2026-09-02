@@ -6,13 +6,15 @@ import {
 	PAPER_INTRADAY_CADENCE,
 	PAPER_SETTLE_CADENCE,
 	newestMark,
+	noMarksNote,
 	paperCadenceCopy,
 } from "../src/paperCopy.js";
 
 // #1802 PR 0. The Paper Trading intro told every reader, unconditionally, that
 // the live value "re-prices the strategy's asset basket every 15 minutes".
 // The marks job exists in the backend (services/paper_marks.py,
-// scripts/run_paper_marks.py) but nothing under infra/ schedules it, so in
+// backend/archimedes/scripts/run_paper_marks.py) but nothing under infra/
+// schedules it, so in
 // production no marks are written — the sentence was a promise about a job
 // that does not run. The DAILY settle is the graded truth
 // (paper_trading.py's advance loop, PAPER_ADVANCE_INTERVAL_HOURS default 24),
@@ -99,6 +101,25 @@ test("newestMark: falls back to the summary's latest_mark, and prefers the polle
 	assert.equal(newestMark(summaryOnly, { d1: [FRESH, polled] }), polled);
 });
 
+test("newestMark ignores a deployment whose marks fetch failed", () => {
+	// LiveValue checks `error` BEFORE it checks for marks, so a failed fetch
+	// renders "Live value unavailable" with no number at all. If newestMark
+	// still fell back to the summary's latest_mark, a total marks outage would
+	// leave the intro as the only line on the page still claiming a cadence.
+	const deps = [{ deployment_id: "d1", latest_mark: FRESH }];
+	assert.equal(newestMark(deps, {}, { d1: "Live value unavailable — the marks feed did not respond." }), null);
+	assert.equal(paperCadenceCopy(newestMark(deps, {}, { d1: "x" }), NOW).intraday, false);
+	// Absent an error it is unchanged — the skip is scoped to the failure.
+	assert.equal(newestMark(deps, {}, {}), FRESH);
+});
+
+test("noMarksNote does not promise a tick no deployed job produces", () => {
+	// The same claim the intro dropped survived on every card: with no marks
+	// job scheduled, this string renders under EVERY active deployment.
+	assert.doesNotMatch(noMarksNote("active"), /15-minute|15 minutes|next tick/);
+	assert.doesNotMatch(noMarksNote("stopped"), /15-minute|15 minutes/);
+});
+
 test("newestMark: picks the newest across deployments and skips unusable timestamps", () => {
 	const older = { portfolio_value: 1.0, ts: "2026-08-30T13:00:00Z" };
 	const broken = { portfolio_value: 1.0, ts: "not-a-date" };
@@ -123,7 +144,7 @@ test("PaperTrading.jsx no longer states the 15-minute cadence as page prose", ()
 });
 
 test("PaperTrading.jsx derives the intro cadence from the marks in the payload", () => {
-	assert.match(paperTrading, /paperCadenceCopy\(newestMark\(deployments, marks\)\)/);
+	assert.match(paperTrading, /paperCadenceCopy\(newestMark\(deployments, marks, marksErrors\)\)/);
 	assert.match(paperTrading, /cadence\.sentences\.map\(/);
 	assert.match(paperTrading, /cadence\.staleness/);
 });

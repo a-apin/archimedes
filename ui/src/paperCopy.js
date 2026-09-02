@@ -216,7 +216,7 @@ export function marksStalenessNote(mark, now = Date.now(), intervalMinutes = 15)
  */
 export function noMarksNote(status) {
   return status === 'active'
-    ? 'No live value yet — the first intraday mark lands at the next 15-minute tick.'
+    ? 'No live value yet — none has been marked for this deployment. The daily settle is the graded number.'
     : 'No live value — marks stop when a deployment is stopped.'
 }
 
@@ -284,7 +284,7 @@ export function marksUnavailableNote(err) {
 // The intro used to tell EVERY reader, unconditionally, that the live value
 // "re-prices the strategy's asset basket every 15 minutes". That sentence is a
 // claim about a job that runs: `backend/archimedes/services/paper_marks.py` and
-// `scripts/run_paper_marks.py` exist, but nothing under `infra/` schedules
+// `backend/archimedes/scripts/run_paper_marks.py` exist, but nothing under `infra/` schedules
 // them (grep -rn paper_marks infra/ -> no hits), so in production no marks are
 // written and the 15-minute cadence is a promise the deployment does not keep.
 //
@@ -350,11 +350,16 @@ export function paperCadenceCopy(mark, now = Date.now(), intervalMinutes = 15) {
  * the intro can never claim a cadence the cards below it are not showing. A
  * mark with an unusable timestamp is skipped rather than ordered arbitrarily.
  */
-export function newestMark(deployments, marksById = {}) {
+export function newestMark(deployments, marksById = {}, errorsById = {}) {
   let best = null
   let bestTs = -Infinity
   for (const dep of deployments || []) {
-    const polled = marksById[dep?.deployment_id]
+    const id = dep?.deployment_id
+    // Same precedence as LiveValue, error branch included: a deployment whose
+    // marks fetch failed shows NO number on its card, so it must not supply
+    // the intro's cadence claim either.
+    if (errorsById[id]) continue
+    const polled = marksById[id]
     const latest = polled && polled.length > 0 ? polled[polled.length - 1] : dep?.latest_mark
     if (!latest) continue
     const t = new Date(latest.ts).getTime()

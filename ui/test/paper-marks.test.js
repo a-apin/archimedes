@@ -125,10 +125,14 @@ test("marksStalenessNote: degrades cleanly on a missing or malformed mark", () =
 
 // ── noMarksNote: an absence with a reason ───────────────────────────────────
 
-test("noMarksNote: an active deployment is told when its first value arrives", () => {
+test("noMarksNote: an active deployment is told the absence, not a cadence", () => {
+	// It used to promise "the next 15-minute tick". No marks job is scheduled
+	// under infra/, so that tick is not coming — the note states the absence
+	// and points at the number that IS graded (#1802).
 	const note = noMarksNote("active");
 	assert.match(note, /No live value yet/);
-	assert.match(note, /next 15-minute tick/);
+	assert.match(note, /daily settle is the graded number/);
+	assert.doesNotMatch(note, /15-minute|15 minutes|next tick/);
 });
 
 test("noMarksNote: a stopped deployment is never told to wait for a mark that will never come", () => {

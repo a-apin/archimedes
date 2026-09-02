@@ -311,7 +311,7 @@ export default function PaperTrading({ onNavigate }) {
   // The intro's cadence copy is derived from the marks actually in the payload,
   // never asserted as a standing fact: no marks job is scheduled in infra/, so
   // a quarter-hourly cadence is only true where a fresh mark proves it (#1802).
-  const cadence = paperCadenceCopy(newestMark(deployments, marks))
+  const cadence = paperCadenceCopy(newestMark(deployments, marks, marksErrors))
 
   return (
     <div style={{ maxWidth: 1100 }}>
