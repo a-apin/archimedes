@@ -215,18 +215,27 @@ def get_account_metrics() -> dict[str, Any]:
         from sqlalchemy import func
 
         from archimedes.db import get_session
-        from archimedes.models.account import AuthUser
+        from archimedes.models.account import PLATFORM_LEGACY_USER_ID, AuthUser
+
+        # The #1283 legacy-adoption account owns adopted rows; it is not a
+        # user and must not appear in any account count the product publishes.
+        real_accounts = AuthUser.id != PLATFORM_LEGACY_USER_ID
 
         now = _now()
         window_7d_start = (now - timedelta(days=_TREND_DAYS - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
         session = get_session()
         try:
-            total = int(session.query(func.count(AuthUser.id)).scalar() or 0)
+            total = int(session.query(func.count(AuthUser.id)).filter(real_accounts).scalar() or 0)
             new_7d = int(
-                session.query(func.count(AuthUser.id)).filter(AuthUser.created_at >= window_7d_start).scalar() or 0
+                session.query(func.count(AuthUser.id))
+                .filter(real_accounts, AuthUser.created_at >= window_7d_start)
+                .scalar()
+                or 0
             )
             new_30d = int(
-                session.query(func.count(AuthUser.id)).filter(AuthUser.created_at >= now - timedelta(days=30)).scalar()
+                session.query(func.count(AuthUser.id))
+                .filter(real_accounts, AuthUser.created_at >= now - timedelta(days=30))
+                .scalar()
                 or 0
             )
         finally:

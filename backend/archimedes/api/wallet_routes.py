@@ -258,6 +258,16 @@ def claim_legacy_wallet_data(
     stale reclaim from a rename would wrongly slam that door shut with no
     un-claim path) or adopt a PII-bearing profile on a caller who has only
     proven a stale wallet link, not fresh signature control.
+
+    RELEASE (#1283, the adoption migration's mirror). The stamp above filters
+    on ``owner_user_id IS NULL``, so it cannot reach a row the platform
+    legacy account has already adopted. ``release_platform_adopted_rows``
+    closes exactly that gap: any row the adoption migration took *because
+    this address had never been linked to an account* is handed to
+    ``user_id`` here, the first time that address is proven. Scoped to the
+    same tables this call was asked to stamp, so a narrowed claim stays
+    narrow. Without it, adopting an orphan would be a one-way door and the
+    real wallet holder could never recover their own rows.
     """
     from archimedes.models.chat import VaultMetadata
     from archimedes.models.strategy_passport_record import StrategyPassportRecord
@@ -276,6 +286,15 @@ def claim_legacy_wallet_data(
             wallet_column == address,
             model.owner_user_id.is_(None),
         ).update({model.owner_user_id: user_id}, synchronize_session=False)
+
+    from archimedes.models.legacy_adoption import release_platform_adopted_rows
+
+    release_platform_adopted_rows(
+        session,
+        user_id,
+        address,
+        table_names=tuple(model.__tablename__ for model, _ in (models if models is not None else default_models)),
+    )
 
     if include_profile:
         existing_profile = session.query(UserProfile).filter(UserProfile.owner_user_id == user_id).first()

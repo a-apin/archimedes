@@ -31,6 +31,32 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# ── The platform legacy-adoption account (#1283) ───────────────────────────
+#
+# A real ``auth_users`` row, created idempotently by the alembic revision that
+# adopts orphaned pre-account rows, so the ownership FK those rows carry
+# (``owner_user_id -> auth_users.id``) points at something that exists. It is
+# an OWNER, never a LOGIN:
+#
+#   * no ``auth_accounts`` credential row and no ``auth_sessions`` row is ever
+#     written for it, so nothing can authenticate as it — adopted rows are
+#     therefore readable by nobody, which is the fail-closed direction;
+#   * the address is in the RFC 6761 ``.invalid`` TLD, which by definition
+#     resolves nowhere, so no email flow can ever reach it — and because
+#     ``auth_users.email`` is UNIQUE, a signup attempting this address is
+#     rejected by the database rather than taking the account over;
+#   * every account COUNT in this codebase excludes it by id (see
+#     ``services/user_stats.py`` and ``services/engagement_metrics.py``) —
+#     a bookkeeping row must never inflate a user-count the product publishes.
+#
+# The id is fixed and documented rather than generated: the migration, its
+# downgrade, the release path, and the metrics filters all have to name the
+# same account, and a generated id would make the migration non-idempotent.
+PLATFORM_LEGACY_USER_ID = "platform-legacy"
+PLATFORM_LEGACY_EMAIL = "platform-legacy@archimedes.invalid"
+PLATFORM_LEGACY_NAME = "Archimedes Platform (legacy rows)"
+
+
 class AuthUser(Base):
     __tablename__ = "auth_users"
 

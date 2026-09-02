@@ -88,6 +88,57 @@ def test_account_metrics_empty_db_is_honest_zero(tmp_db):
     assert engagement_metrics.get_account_metrics() == {"total": 0, "new_7d": 0, "new_30d": 0}
 
 
+def test_account_metrics_never_counts_the_platform_legacy_account(tmp_db):
+    """#1283 created a real ``auth_users`` row so adopted orphan rows have an
+    owner FK that resolves. It is a bookkeeping owner, not a user, and it was
+    created inside a window this dashboard reports on — so if any of these
+    three counts included it, every account number the product publishes
+    would be overstated by one from the day that migration ran.
+    """
+    from archimedes.models.account import PLATFORM_LEGACY_USER_ID
+
+    now = _now()
+    with get_session() as session:
+        session.add(_make_user("u-real", created_at=now - timedelta(hours=1)))
+        session.add(
+            AuthUser(
+                id=PLATFORM_LEGACY_USER_ID,
+                name="Archimedes Platform (legacy rows)",
+                email="platform-legacy@archimedes.invalid",
+                email_verified=False,
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(hours=1),
+            )
+        )
+        session.commit()
+
+    assert engagement_metrics.get_account_metrics() == {"total": 1, "new_7d": 1, "new_30d": 1}
+
+
+def test_distinct_user_count_never_counts_the_platform_legacy_account(tmp_db):
+    """The same exclusion on the other account counter — ``user_stats`` feeds
+    the public "users" figure, and the two must not disagree."""
+    from archimedes.models.account import PLATFORM_LEGACY_USER_ID
+    from archimedes.services import user_stats
+
+    now = _now()
+    with get_session() as session:
+        session.add(_make_user("u-real", created_at=now))
+        session.add(
+            AuthUser(
+                id=PLATFORM_LEGACY_USER_ID,
+                name="Archimedes Platform (legacy rows)",
+                email="platform-legacy@archimedes.invalid",
+                email_verified=False,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    assert user_stats._query_distinct_user_count() == 1
+
+
 def test_account_new_7d_uses_same_calendar_day_window_as_strategies(tmp_db, monkeypatch):
     """Round 2 fix: accounts' `new_7d` used to be a plain rolling 168-hour
     window while strategies' `new_7d` was always calendar-day-anchored
