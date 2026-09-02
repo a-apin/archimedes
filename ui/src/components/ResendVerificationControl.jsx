@@ -4,6 +4,7 @@ import { VERIFICATION_REQUESTED_MESSAGE } from "../freeGenerations";
 import {
 	deriveVerificationDeliveryView,
 	RATE_LIMITED_BY_CLIENT,
+	shouldShowRequestedFallback,
 } from "../verificationDelivery";
 import VerificationDeliveryStatus from "./VerificationDeliveryStatus";
 
@@ -72,7 +73,11 @@ export default function ResendVerificationControl({ email }) {
 			>
 				{status === "sending" ? "Sending…" : "Resend verification email"}
 			</button>
-			{status === "sent" && (
+			{/* Pre-status fallback only — see shouldShowRequestedFallback. Once
+			    the delivery panel has a recognised state for this click it owns
+			    the answer, so the eternal "requested" line stands down rather
+			    than contradicting it. */}
+			{status === "sent" && shouldShowRequestedFallback(delivery) && (
 				<p className="caption mb-0" role="status" style={{ marginTop: 6 }}>
 					{VERIFICATION_REQUESTED_MESSAGE}
 				</p>

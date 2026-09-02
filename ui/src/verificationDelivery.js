@@ -182,3 +182,33 @@ export function deriveVerificationDeliveryView(status) {
 
 	return null;
 }
+
+/**
+ * Should a surface still fall back to `VERIFICATION_REQUESTED_MESSAGE` — the
+ * eternal "requested — delivery isn't confirmed and may take a few minutes" —
+ * after a successful resend click?
+ *
+ * Review push (#1790, 2026-09-02): both mount points used to render that
+ * sentence AND `<VerificationDeliveryStatus />` for the same click, which is
+ * two answers to one question. Once the status GET has come back with
+ * something this build recognises, the panel is saying a specific true thing
+ * — accepted / suppressed / failed / rate-limited — and the eternal caption
+ * can only contradict it ("isn't confirmed…" beside **suppressed**) or dilute
+ * it (a softer second "requested" beside an honest **sent**).
+ *
+ * So the caption survives ONLY as the brief pre-status fallback: the GET is
+ * still in flight, or it failed closed to `null` (401 / 503 / offline), or the
+ * body named a state this build has never heard of. In every one of those
+ * cases the panel renders nothing and something must still acknowledge the
+ * click — and the one thing that is always true is that a send was requested.
+ *
+ * One predicate, both surfaces (AccountSettings.jsx and
+ * ResendVerificationControl.jsx), for the same reason they already share the
+ * panel: two surfaces deciding this separately is how one of them drifts.
+ *
+ * @param {object|null|undefined} status — parsed /api/auth/verification-status body
+ * @returns {boolean} true when nothing more specific is available to say
+ */
+export function shouldShowRequestedFallback(status) {
+	return deriveVerificationDeliveryView(status) === null;
+}

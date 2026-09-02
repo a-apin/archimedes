@@ -7,6 +7,7 @@ import {
 	RATE_LIMITED_BY_CLIENT,
 	VERIFICATION_STATUS_ENDPOINT,
 	deriveVerificationDeliveryView,
+	shouldShowRequestedFallback,
 } from "../src/verificationDelivery.js";
 
 // Verification-mail delivery feedback (#1748 item 2).
@@ -253,4 +254,71 @@ test("a suppression lookup that never ran is never hidden behind an optimistic '
 		suppression: { checked: true, suppressed: false, reason: null, since: null, detail: null },
 	});
 	assert.doesNotMatch(clean.message, /could not check/i);
+});
+
+// ── 3. one click, one answer (review push, 2026-09-02) ───────────────────
+//
+// Both surfaces used to mount VERIFICATION_REQUESTED_MESSAGE — "requested —
+// delivery isn't confirmed and may take a few minutes" — ABOVE the delivery
+// panel on a successful click. That was right when the eternal 200 was the
+// only fact available. It is wrong now: the panel can say **suppressed** /
+// **failed** / **rate_limited** while the caption above it says delivery
+// merely "isn't confirmed", or say an honest **sent** under a second, softer
+// "requested". Two competing truths for one click.
+//
+// The rule, held by ONE shared predicate so the two surfaces cannot drift:
+// the caption is the pre-status fallback only.
+
+const STATES_WITH_A_VIEW = [
+	["sent", { state: "sent", sends: 1, checkSpam: false, retryAfterSeconds: 0 }],
+	["suppressed", { state: "suppressed", suppression: { checked: true, suppressed: true, reason: "BOUNCE" } }],
+	["failed", { state: "failed", lastError: "MessageRejected", retryAfterSeconds: 0 }],
+	["rate_limited", { state: "rate_limited", retryAfterSeconds: 42 }],
+];
+
+test("once the panel has something real to say, the eternal 'requested' caption stands down", () => {
+	for (const [name, status] of STATES_WITH_A_VIEW) {
+		assert.ok(deriveVerificationDeliveryView(status), `${name} must render a view at all`);
+		assert.equal(
+			shouldShowRequestedFallback(status),
+			false,
+			`${name} has a specific answer — the eternal caption would contradict or dilute it`,
+		);
+	}
+});
+
+test("the caption is still there while the status GET has nothing", () => {
+	// The three ways the panel renders nothing after a click: the GET is
+	// still in flight, it failed closed (401 / 503 / offline → null), or the
+	// body named a state this build has never heard of. Something must still
+	// acknowledge the click, and "a send was requested" is always true.
+	assert.equal(shouldShowRequestedFallback(null), true, "GET still loading / failed closed");
+	assert.equal(shouldShowRequestedFallback(undefined), true);
+	assert.equal(shouldShowRequestedFallback({ state: "quarantined_by_a_future_build" }), true);
+	assert.equal(shouldShowRequestedFallback(RATE_LIMITED_BY_CLIENT), false, "a client 429 IS a specific answer");
+});
+
+test("both mount points gate the caption on the SAME predicate, and neither keeps a copy", () => {
+	// Mutation this pins: restore either unconditional mount and this goes red.
+	assert.match(
+		settings,
+		/\{verifyStatus === 'sent' && shouldShowRequestedFallback\(verifyDelivery\) && \(/,
+		"AccountSettings must gate VERIFICATION_REQUESTED_MESSAGE on the shared predicate",
+	);
+	assert.match(
+		control,
+		/\{status === "sent" && shouldShowRequestedFallback\(delivery\) && \(/,
+		"ResendVerificationControl must gate VERIFICATION_REQUESTED_MESSAGE on the shared predicate",
+	);
+	for (const [name, source] of [["AccountSettings", settings], ["ResendVerificationControl", control]]) {
+		assert.match(source, /shouldShowRequestedFallback\b/, `${name} must import the shared predicate`);
+		// No surface may re-derive the rule for itself.
+		assert.doesNotMatch(
+			source,
+			/deriveVerificationDeliveryView\([a-zA-Z]+\)\s*(===|!==)\s*null/,
+			`${name} must not reimplement shouldShowRequestedFallback inline`,
+		);
+	}
+	// And the predicate itself is defined once, in the pure module.
+	assert.match(deliveryModule, /export function shouldShowRequestedFallback/);
 });

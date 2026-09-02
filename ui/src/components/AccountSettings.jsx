@@ -24,7 +24,7 @@ import {
   revokeSession,
 } from '../auth-client'
 import VerificationDeliveryStatus from './VerificationDeliveryStatus'
-import { deriveVerificationDeliveryView, RATE_LIMITED_BY_CLIENT } from '../verificationDelivery'
+import { deriveVerificationDeliveryView, RATE_LIMITED_BY_CLIENT, shouldShowRequestedFallback } from '../verificationDelivery'
 import { PASSWORD_MIN, passwordRulesMet, passwordsMatch } from '../password-rules'
 import { listLinkedWallets, makePrimaryWallet, removeLinkedWallet } from '../linked-wallets'
 import { providerLabel } from '../wallet-providers'
@@ -563,7 +563,14 @@ export default function AccountSettings({ walletAddr, onDisconnect, linkError })
             ) : (
               <span className="caption">Email verified ✓</span>
             )}
-            {verifyStatus === 'sent' && (
+            {/* The eternal "requested" line is the PRE-STATUS fallback only.
+                Once the GET below has an answer this build recognises, the
+                panel is the single source of truth for this click — mounting
+                both puts "delivery isn't confirmed…" next to a specific
+                suppressed / failed / rate_limited, or a second softer
+                "requested" next to an honest sent. Shared predicate so this
+                surface and the Generate page cannot drift. */}
+            {verifyStatus === 'sent' && shouldShowRequestedFallback(verifyDelivery) && (
               <div className="status" role="status">{VERIFICATION_REQUESTED_MESSAGE}</div>
             )}
             {verifyStatus === 'error' && (
