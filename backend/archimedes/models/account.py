@@ -171,8 +171,11 @@ class AuthEmailDelivery(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
 
     __table_args__ = (
-        # The status endpoint's only query: newest-first rows for one address
-        # and kind inside a 24h window.
+        # The status endpoint's only query: rows for one address and kind
+        # inside a 24h window, ordered by ``seq`` DESC. This index serves the
+        # WHERE — the selective half — and the ORDER BY is a sort over what
+        # survives it, which the resend limiter bounds to a handful of rows
+        # per address per day.
         Index("ix_auth_email_deliveries_email_kind_created", "email", "kind", "created_at"),
     )
 
