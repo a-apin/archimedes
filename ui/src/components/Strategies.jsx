@@ -20,7 +20,7 @@ import {
   UNKNOWN_RIGOR_LABEL,
   UNKNOWN_RIGOR_TITLE,
 } from '../rigorGateStatus.js'
-import { statusTag, statusLabel } from '../libraryStatus.js'
+import { statusTag, statusLabel, statusTitle } from '../libraryStatus.js'
 import { signClass } from '../signClass.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 
@@ -193,9 +193,10 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   // #1358: a strategy with ZERO statistics computed must render as honestly
   // unknown, never as a failed rigor gate. rigor_gate_status is the
   // four-state badge curated/generated StrategyResponse rows carry
-  // ("pass"|"fail"|"pending"|"degenerate"); coerceGenerated's own rows don't
-  // set it at all but already encode the same "no verdict yet" case as
-  // passes_rigor_gate === null (see Strategies.jsx's coerceGenerated) — both
+  // ("pass"|"fail"|"pending"|"degenerate"). coerceGenerated now carries it
+  // through on generated rows too (it is the verdict of record, overlaid from
+  // strategy_passports), falling back to null only when the API sent none —
+  // the same "no verdict yet" case passes_rigor_gate === null encodes. Both
   // checked so the same pending treatment applies on the Examples and
   // Generated tabs alike. Checked BEFORE the true/false badge below so a
   // pending row can never fall through to the "does not pass" X.
@@ -276,7 +277,7 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
           <div className="flex items-center gap-1.5 flex-wrap">
             <span
               className={`tag ${statusTag(s.status, s.passes_rigor_gate, s.rigor_gate_status)}`}
-              title={s.status === 'pending_backtest' ? 'Generated but the rigor gate has not scored real metrics yet — DSR / PBO / OOS Sharpe pending a backtest run.' : undefined}
+              title={statusTitle(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
             >
               {statusLabel(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
             </span>
@@ -576,7 +577,7 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
             must not be able to say "Live" for a row nothing graded. */}
         <span
           className={`tag ${statusTag(s.status, s.passes_rigor_gate, s.rigor_gate_status)}`}
-          title={s.status === 'pending_backtest' ? 'Generated but the rigor gate has not scored real metrics yet — DSR / PBO / OOS Sharpe pending a backtest run.' : undefined}
+          title={statusTitle(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
         >
           {statusLabel(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
         </span>
@@ -745,17 +746,22 @@ function coerceGenerated(row) {
   // (docs/adr/rigor-verdict-of-record.md, `_passport_verdicts_for`), and it
   // arrives on real top-level fields. The fusion verdict is still persisted and
   // still worth having — it is the debate record — but it is not a grade.
-  const hasRealMetrics = row.sharpe_ratio != null || row.deflated_sharpe_ratio != null
-  // Honest status mapping: the generation pipeline persists status="rejected"
-  // when its synthesis-time signal didn't pass, but for these rows no real
-  // backtest has run yet (every metric column is null). Calling that
-  // "Rejected" is misleading — surface it as "pending_backtest" so users
-  // know what's actually happening: candidate generated, real metrics not
-  // computed yet. The rigor gate verdict + DSR/PBO numbers still render
-  // honestly on the strategy passport.
-  const honestStatus = (!hasRealMetrics && row.status === 'rejected')
-    ? 'pending_backtest'
-    : (row.status || 'candidate')
+  // The store status travels UNCHANGED. This used to rewrite "rejected" to an
+  // invented `pending_backtest` whenever no metric number was present, to avoid
+  // calling a pre-backtest hypothesis "Rejected". That workaround predates the
+  // four-state: it asked "is there a NUMBER?" when the real question is "has a
+  // GATE run?", and the two answers diverge. A strategy the real gate graded
+  // `fail` whose backtest produced no DSR (deflated_sharpe_ratio is Optional)
+  // has no number and was relabelled amber "Pending Backtest" — a badge
+  // asserting no gate had run, on a row a gate ran and failed, which is exactly
+  // the #1747 claim class. A `degenerate` row got the same rewrite and with it
+  // a tooltip announcing that no backtest had run, over flat returns that HAD
+  // one.
+  //
+  // The honest answer now comes from the verdict of record instead: `pending`
+  // renders "Not yet graded" through statusLabel's ungraded arm, for BOTH
+  // "rejected" and "candidate" store statuses, and with the tooltip that
+  // explains it (statusTitle). Nothing has to be invented here to get it.
   return {
     id: row.id,
     // The strategy's OWN name, kept as its own field rather than smuggled into
@@ -767,7 +773,7 @@ function coerceGenerated(row) {
     paper_year: paperYear,
     paper_venue: row.generation_method,
     methodology_summary: row.thesis || '',
-    status: honestStatus,
+    status: row.status || 'candidate',
     asset_universe: row.asset_universe || [],
     sharpe_ratio: null,
     cagr: null,

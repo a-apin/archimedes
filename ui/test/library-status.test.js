@@ -19,10 +19,13 @@ import test from "node:test";
 
 import {
 	DEGENERATE_LABEL,
+	DEGENERATE_TITLE,
 	GATE_FAILED_LABEL,
 	NOT_GRADED_LABEL,
+	NOT_GRADED_TITLE,
 	statusLabel,
 	statusTag,
+	statusTitle,
 } from "../src/libraryStatus.js";
 
 const strategies = readFileSync(
@@ -31,6 +34,14 @@ const strategies = readFileSync(
 );
 const passport = readFileSync(
 	new URL("../src/components/StrategyPassport.jsx", import.meta.url),
+	"utf8",
+);
+const libraryStatus = readFileSync(
+	new URL("../src/libraryStatus.js", import.meta.url),
+	"utf8",
+);
+const metricDomain = readFileSync(
+	new URL("../src/metricDomain.js", import.meta.url),
 	"utf8",
 );
 
@@ -90,13 +101,155 @@ test("a degenerate row gets its own words, not pending's and not fail's", () => 
 	assert.notEqual(DEGENERATE_LABEL, GATE_FAILED_LABEL);
 });
 
-test("the curated tab's existing labels are unchanged", () => {
+test("a curated row with a real pass keeps its label", () => {
 	// CONTROL. MUTATION: reorder the arms so the four-state arms swallow these.
-	// The Examples tab serves curated rows with a real verdict and a `validated`
-	// / `candidate` status; this change must not touch what they say.
+	// The Examples tab serves curated rows with a live verdict and a `validated`
+	// / `candidate` status; a row the gate actually passed must read exactly as
+	// it did before.
+	//
+	// Named honestly. This used to be called "the curated tab's existing labels
+	// are unchanged", which asserted one tuple and claimed the whole tab —
+	// see the next test for the curated labels that DO move.
 	assert.equal(statusTag("validated", true, "pass"), "tag-accent");
 	assert.equal(statusLabel("validated", true, "pass"), "Validated");
 	assert.equal(statusLabel("", true, "pass"), "Candidate");
+});
+
+test("curated rows with a pending or degenerate verdict change label, on purpose", () => {
+	// NOT a control — this is the intended movement on the Examples tab, pinned
+	// so it is a decision rather than a surprise (docs/adr/rigor-verdict-of-record.md,
+	// "Two curated pill labels change wording"). A `validated` store status
+	// beside a gate that has not graded is the same false-confidence shape as
+	// the generated side, so it loses its accent and says what is true.
+	// MUTATION: drop the `isUngraded` / degenerate arms from statusLabel — these
+	// redden and the row goes back to claiming "Validated" over an ungraded gate.
+	assert.equal(statusLabel("validated", null, "pending"), NOT_GRADED_LABEL);
+	assert.equal(statusTag("validated", null, "pending"), "tag-muted");
+	assert.equal(statusLabel("validated", false, "degenerate"), DEGENERATE_LABEL);
+	assert.equal(statusTag("validated", false, "degenerate"), "tag-muted");
+	assert.equal(statusLabel("candidate", null, "pending"), NOT_GRADED_LABEL);
+	assert.equal(statusLabel("candidate", false, "degenerate"), DEGENERATE_LABEL);
+});
+
+// ── (a2) The retired `pending_backtest` invention ──────────────────────────
+
+test("a strategy the gate FAILED never reads as pending, with or without a DSR", () => {
+	// THE DEFECT THIS CLOSES. `/api/strategies/generated` serves no
+	// `sharpe_ratio` key at all (StrategyRecord.to_dict has none, and the
+	// passport overlay adds only the verdict + its four numbers), and
+	// `deflated_sharpe_ratio` is Optional on a BacktestResult — so a real
+	// `fail` with no DSR was the common case, not a corner. The old
+	// coerceGenerated rewrote exactly that row to `pending_backtest` and the
+	// pill rendered amber "Pending Backtest": a badge asserting NO GATE HAD RUN
+	// on a row a gate ran and failed.
+	// MUTATION: restore `status: honestStatus` with the `!hasRealMetrics &&
+	// row.status === 'rejected'` rewrite in coerceGenerated, or re-add the
+	// `status === "pending_backtest"` arms to statusTag/statusLabel.
+	for (const gate of ["fail", "pass", "pending", "degenerate"]) {
+		assert.notEqual(
+			statusTag("pending_backtest", false, gate),
+			"tag-warning",
+			`no state may render the retired amber pill (${gate})`,
+		);
+		assert.notEqual(
+			statusLabel("pending_backtest", false, gate),
+			"Pending Backtest",
+			`no state may render the retired label (${gate})`,
+		);
+	}
+	// The real served shape: store status "rejected", gate says fail, no DSR.
+	assert.equal(statusLabel("rejected", false, "fail"), "Rejected");
+	assert.equal(statusTag("rejected", false, "fail"), "tag-muted");
+	assert.equal(statusTitle("rejected", false, "fail"), undefined);
+});
+
+test("the tooltip fires on exactly the rows the pill calls ungraded", () => {
+	// The tooltip used to be keyed on `s.status === 'pending_backtest'` while
+	// the pill was keyed on the four-state, so the two disagreed in BOTH
+	// directions: silent on an ungraded `candidate` row, and firing on a
+	// DEGENERATE row to announce that no backtest had run — over returns that
+	// exist. One state, one vocabulary.
+	// MUTATION: key the `title=` in Strategies.jsx back on
+	// `s.status === 'pending_backtest'`, or swap the two arms of statusTitle.
+	for (const [passes, gate] of [
+		[null, "pending"],
+		[null, null],
+		[undefined, undefined],
+	]) {
+		assert.equal(statusLabel("rejected", passes, gate), NOT_GRADED_LABEL);
+		assert.equal(statusTitle("rejected", passes, gate), NOT_GRADED_TITLE);
+	}
+	// Degenerate gets its OWN sentence, never the ungraded one.
+	assert.equal(statusLabel("rejected", false, "degenerate"), DEGENERATE_LABEL);
+	assert.equal(statusTitle("rejected", false, "degenerate"), DEGENERATE_TITLE);
+	assert.notEqual(DEGENERATE_TITLE, NOT_GRADED_TITLE);
+	assert.doesNotMatch(
+		DEGENERATE_TITLE,
+		/pending a backtest run/,
+		"a degenerate row HAS a backtest — its tooltip must not say one is pending",
+	);
+	// A graded row gets no tooltip at all; its pill already says what it means.
+	assert.equal(statusTitle("live", true, "pass"), undefined);
+	assert.equal(statusTitle("live", false, "fail"), undefined);
+});
+
+test("coerceGenerated invents no status of its own, and the retired one has no readers", () => {
+	// MUTATION: put `? 'pending_backtest'` back in coerceGenerated, or restore
+	// the `row.status === "pending_backtest"` operand in metricDomain.js.
+	const coerce = strategies.slice(
+		strategies.indexOf("function coerceGenerated(row)"),
+	);
+	const body = coerce.slice(0, coerce.indexOf("\n}\n"));
+	assert.ok(
+		body.includes("status: row.status || 'candidate'"),
+		"the store status must travel unchanged",
+	);
+	assert.ok(
+		!/\?\s*'pending_backtest'/.test(body),
+		"coerceGenerated must not rewrite a store status to an invented one",
+	);
+	assert.ok(
+		!body.includes("hasRealMetrics"),
+		"the number-presence heuristic must be gone — the four-state is the answer",
+	);
+	// No LIVE reader of the retired status may remain anywhere in ui/src. Only
+	// prose explaining why it went is allowed.
+	for (const [file, text] of [
+		["Strategies.jsx", strategies],
+		["libraryStatus.js", libraryStatus],
+		["metricDomain.js", metricDomain],
+	]) {
+		for (const line of text.split("\n")) {
+			const code = line.trim();
+			if (code.startsWith("//") || code.startsWith("*")) continue;
+			assert.ok(
+				!code.includes("pending_backtest"),
+				`${file} still has a live reader of the retired status: ${code}`,
+			);
+		}
+	}
+});
+
+test("the pill's three helpers are called with the same argument list", () => {
+	// MUTATION: drop the third argument from any one call, or pass a different
+	// expression to statusTitle than to statusTag/statusLabel. The three
+	// answers — class, words, tooltip — must be derived from one row's one
+	// verdict, on both the desktop row and the mobile card.
+	const args = "\\(s\\.status, s\\.passes_rigor_gate, s\\.rigor_gate_status\\)";
+	for (const fn of ["statusTag", "statusLabel", "statusTitle"]) {
+		const calls = strategies.match(new RegExp(fn + args, "g"));
+		assert.equal(
+			calls?.length,
+			2,
+			`${fn} must be called with the full four-state on BOTH the table row and the lib-card`,
+		);
+	}
+	assert.ok(
+		strategies.includes(
+			"import { statusTag, statusLabel, statusTitle } from '../libraryStatus.js'",
+		),
+		"all three helpers come from the shared module",
+	);
 });
 
 // ── (b) The wiring, as source text ─────────────────────────────────────────
@@ -141,15 +294,14 @@ test("coerceGenerated no longer reads rigor_verdict for the badge or its numbers
 	}
 });
 
-test("the pill helpers are imported, not redefined, and get the four-state", () => {
-	// MUTATION: re-declare `function statusTag(...)` inside Strategies.jsx, or
-	// drop the third argument at either call site.
-	assert.ok(
-		strategies.includes(
-			"import { statusTag, statusLabel } from '../libraryStatus.js'",
-		),
-		"Strategies.jsx must import the shared helpers",
-	);
+test("the pill helpers are imported, not redefined", () => {
+	// MUTATION: re-declare `function statusTag(...)` inside Strategies.jsx.
+	// The per-call-site argument lists are pinned by "the pill's three helpers
+	// are called with the same argument list" above, which also covers BOTH
+	// renderings — the desktop table row AND the mobile lib-card. The card has
+	// no rigor icon of its own, so its pill is the only verdict signal on a
+	// phone; a fix that reached only the table would leave a bare green "Live"
+	// there with zero counter-signal.
 	assert.ok(
 		!/^function statusTag\(/m.test(strategies),
 		"Strategies.jsx must not carry its own copy of statusTag",
@@ -158,19 +310,10 @@ test("the pill helpers are imported, not redefined, and get the four-state", () 
 		!/^function statusLabel\(/m.test(strategies),
 		"Strategies.jsx must not carry its own copy of statusLabel",
 	);
-
-	// BOTH renderings — the desktop table row AND the mobile lib-card. The card
-	// has no rigor icon of its own, so its pill is the only verdict signal on a
-	// phone; a fix that reached only the table would leave a bare green "Live"
-	// there with zero counter-signal.
-	const tagCalls = strategies.match(
-		/statusTag\(s\.status, s\.passes_rigor_gate, s\.rigor_gate_status\)/g,
+	assert.ok(
+		!/^function statusTitle\(/m.test(strategies),
+		"Strategies.jsx must not carry its own copy of statusTitle",
 	);
-	const labelCalls = strategies.match(
-		/statusLabel\(s\.status, s\.passes_rigor_gate, s\.rigor_gate_status\)/g,
-	);
-	assert.equal(tagCalls?.length, 2, "both the table row and the lib-card must pass the four-state");
-	assert.equal(labelCalls?.length, 2, "both the table row and the lib-card must pass the four-state");
 	assert.ok(
 		!/statusTag\(s\.status, s\.passes_rigor_gate\)/.test(strategies),
 		"no two-argument call may remain — it would silently drop the four-state",

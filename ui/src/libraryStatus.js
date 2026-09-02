@@ -24,6 +24,18 @@
 // renders. These helpers consume the four-state `rigor_gate_status` instead —
 // the same four words `ui/src/rigorGateStatus.js` lists and the API has served
 // since #1184 — so each state gets its own answer.
+//
+// There is no `pending_backtest` arm here any more. That status was never an
+// API value — `coerceGenerated` INVENTED it client-side, rewriting a store
+// status of "rejected" to it whenever no metrics had been computed, back when
+// the Generated tab had no four-state to read. Once these helpers took
+// `rigor_gate_status`, the invention became a second, worse answer to a
+// question the four-state already answers: it keyed on whether a NUMBER was
+// present rather than on whether a GATE had run. So a strategy the real gate
+// graded `fail`, but for which no DSR could be computed, was relabelled amber
+// "Pending Backtest" — asserting that no gate had run, on a row a gate ran and
+// failed. That is the #1747 claim class on the #1747 surface. The rewrite is
+// gone: "has a gate graded this?" is `rigor_gate_status`, and nothing else.
 
 import { RIGOR_GATE_STATES } from "./rigorGateStatus.js";
 
@@ -47,6 +59,16 @@ export const NOT_GRADED_LABEL = "Not yet graded";
  */
 export const DEGENERATE_LABEL = "Unevaluable — flat returns";
 
+/** Why an ungraded row is blank, in words. The pill says WHAT, this says WHY. */
+export const NOT_GRADED_TITLE =
+	"No rigor gate has graded this strategy yet — DSR / PBO / OOS Sharpe are pending a backtest run.";
+
+/** Why a degenerate row is blank. Deliberately NOT the ungraded sentence: these
+ * returns exist and were read, they are just flat, so "pending a backtest run"
+ * would be a fresh lie on a row that HAS one. */
+export const DEGENERATE_TITLE =
+	"The persisted return series is zero-variance (broken data or a zero-trade backtest), so the gate had nothing it could legitimately score — not an evaluation the strategy lost.";
+
 /** True when this row carries no verdict at all.
  *
  * Two shapes mean the same thing and both must be caught: an explicit
@@ -55,8 +77,14 @@ export const DEGENERATE_LABEL = "Unevaluable — flat returns";
  * `_UNGRADED_VERDICT_FIELDS` in backend/archimedes/api/strategies_routes.py).
  * A row carrying a KNOWN non-pending status is not ungraded even if some other
  * field is missing.
+ *
+ * Exported because the pill's TOOLTIP has to fire on exactly the rows the pill
+ * labels ungraded. When the tooltip was keyed on its own separate condition
+ * (`status === 'pending_backtest'`) the two disagreed in both directions: it
+ * stayed silent on an ungraded row whose store status was `candidate`, and it
+ * fired on a DEGENERATE row to announce that no backtest had run.
  */
-function isUngraded(passesRigor, rigorGateStatus) {
+export function isUngraded(passesRigor, rigorGateStatus) {
 	if (rigorGateStatus === "pending") return true;
 	if (RIGOR_GATE_STATES.includes(rigorGateStatus)) return false;
 	return passesRigor == null;
@@ -74,7 +102,6 @@ export function statusTag(status, passesRigor, rigorGateStatus) {
 	if (status === "live" && passesRigor === false) return "tag-muted";
 	if (status === "live") return "tag-positive";
 	if (status === "validated") return "tag-accent";
-	if (status === "pending_backtest") return "tag-warning";
 	return "tag-muted";
 }
 
@@ -83,7 +110,24 @@ export function statusLabel(status, passesRigor, rigorGateStatus) {
 	if (rigorGateStatus === "degenerate") return DEGENERATE_LABEL;
 	if (isUngraded(passesRigor, rigorGateStatus)) return NOT_GRADED_LABEL;
 	if (status === "live" && passesRigor === false) return GATE_FAILED_LABEL;
-	if (status === "pending_backtest") return "Pending Backtest";
 	if (!status) return "Candidate";
 	return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+/** The pill's tooltip. Same first two arms as the helpers above, same order.
+ *
+ * `undefined` for every other state on purpose: "Live", "Rejected" and
+ * "Reference only — gate failed" say what they mean, and a tooltip that
+ * restates a self-explanatory pill is noise a screen reader still has to read.
+ *
+ * Takes `status` it does not read, so all three helpers are called with the
+ * same three arguments at both call sites — a reviewer comparing the pill's
+ * class, words and tooltip sees one argument list, not three subtly different
+ * ones, and an arm that DOES need the store status can be added without
+ * changing any caller.
+ */
+export function statusTitle(status, passesRigor, rigorGateStatus) {
+	if (rigorGateStatus === "degenerate") return DEGENERATE_TITLE;
+	if (isUngraded(passesRigor, rigorGateStatus)) return NOT_GRADED_TITLE;
+	return undefined;
 }
