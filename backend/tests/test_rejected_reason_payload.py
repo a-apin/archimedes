@@ -9,9 +9,11 @@ could be read — so for a candidate rejected for a DIFFERENT reason the page
 stated something false about it.
 
 ``services/rigor_reasons.rigor_reasons_for_verdict`` derives the per-check
-report from the strategy's own stored ``rigor_verdict`` — the same blob
-``generation_pipeline._rigor_verdict_for`` and ``debate_engine._rigor_verdict_dict``
-write — and ``GET /api/strategies/generated`` serves it as the additive
+report from the strategy's own stored ``rigor_verdict`` — the blob
+``debate_engine._rigor_verdict_dict`` writes on the graded fusion/debate path,
+``debate_engine._abstain_result`` and ``generation_pipeline``'s fixture branch
+write on the non-graded ones, and ``generation_pipeline._patch_pbo`` then patches
+— and ``GET /api/strategies/generated`` serves it as the additive
 ``rigor_reasons`` field.
 
 Hermetic (tmp-sqlite, no .env / network / Redis); the DB fixture copies the
@@ -39,7 +41,12 @@ from httpx import ASGITransport, AsyncClient
 _W_OWNER = "0xAbC0000000000000000000000000000000000009"
 _BADGE = get_profile(STRICTEST_LEVEL)
 
-# A candidate the gate actually GRADED and rejected on the numbers.
+# A candidate the gate actually GRADED and rejected on the numbers. Shape copied
+# from debate_engine._rigor_verdict_dict, which is the only writer of a graded
+# verdict — note it always emits the four-state ``look_ahead_status`` alongside
+# the fail-closed boolean, and derives the boolean FROM it. A graded row without
+# a status does not exist on any live path, and this module will not read one as
+# an audit pass (see test_a_bare_lookahead_true_is_not_a_passed_audit).
 _GRADED_FAIL = {
     "dsr": 0.31,
     "dsr_p_value": 0.08,
@@ -47,6 +54,7 @@ _GRADED_FAIL = {
     "oos_sharpe": -0.14,
     "in_sample_sharpe": 1.4,
     "lookahead_audit_passed": True,
+    "look_ahead_status": "pass",
     "passing": False,
     "num_trials": 6,
 }
@@ -229,6 +237,81 @@ def test_a_real_look_ahead_finding_is_a_failure():
     assert _by_key(report)["look_ahead"]["status"] == FAIL
 
 
+def test_a_default_number_on_an_ungraded_verdict_is_not_a_passed_check():
+    """THE GUARD for the sentinel-as-measurement bug.
+
+    ``_patch_pbo`` stamps ``pbo = 0.0  # PBO undefined for N<2`` onto every
+    candidate that carries a recorded reason (they are all ``has_real_rigor
+    =False``, so they are all in its ``agent_cands``). 0.0 is below the 0.50
+    ceiling, so a naive read renders "PBO — 0.00 < 0.50 required" under
+    **Passed** on a candidate the gate never scored. The fixture here is not
+    hand-written: it is the real blob ``debate_engine._abstain_result`` produces
+    after the real ``_patch_pbo`` runs, so it cannot drift from the pipeline."""
+    from archimedes.agents.debate_engine import _abstain_result
+    from archimedes.agents.generation_pipeline import _patch_pbo
+
+    cand = _abstain_result("c-abstain", regime="neutral", reason="society could not agree on a candidate")
+    _patch_pbo([cand])
+    assert cand.rigor_verdict["pbo"] == 0.0, "pipeline no longer stamps the N<2 sentinel — re-check this guard"
+
+    report = rigor_reasons_for_verdict(cand.rigor_verdict)
+    assert _by_key(report)["pbo"]["status"] == NOT_COMPUTED
+    assert _by_key(report)["pbo"]["value"] is None
+    # Nothing on an ungraded verdict may be reported as a check that cleared.
+    assert not [c for c in report["checks"] if c["status"] == PASS]
+    assert report["recorded_reason"] == "society could not agree on a candidate"
+
+
+def test_a_bare_lookahead_true_is_not_a_passed_audit():
+    """``_lookahead_for_candidate`` is "vacuously True when none expose auditable
+    source", and ``dsl_lookahead_audit.verdict_from_persisted_row`` retired
+    exactly this rendering. With no four-state ``look_ahead_status`` there is no
+    audit result to report — a stored ``True`` is a default, not a finding."""
+    report = rigor_reasons_for_verdict(
+        {"dsr_p_value": 0.97, "pbo": 0.2, "oos_sharpe": 0.8, "lookahead_audit_passed": True, "passing": False}
+    )
+    look_ahead = _by_key(report)["look_ahead"]
+    assert look_ahead["status"] == NOT_COMPUTED
+    assert "not an audit result" in look_ahead["detail"]
+
+
+def test_an_inconclusive_status_beats_a_stored_lookahead_true():
+    """The four-state status is the ONLY field a look-ahead claim keys off. A
+    verdict that explicitly says the audit reached no verdict must not be
+    rendered as a pass because a fail-closed boolean happens to read True."""
+    report = rigor_reasons_for_verdict(
+        {
+            "lookahead_audit_passed": True,
+            "look_ahead_status": "pending",
+            "look_ahead_reason": "spec had no auditable source",
+            "passing": False,
+        }
+    )
+    look_ahead = _by_key(report)["look_ahead"]
+    assert look_ahead["status"] == NOT_COMPUTED
+    assert "spec had no auditable source" in look_ahead["detail"]
+
+
+def test_a_conclusive_look_ahead_pass_still_passes():
+    """The fusion writer derives the boolean from ``look_ahead_status == "pass"``
+    (fusion_evaluator.RigorVerdict), so a genuinely audited row is unaffected."""
+    report = rigor_reasons_for_verdict(
+        {"look_ahead_status": "pass", "lookahead_audit_passed": True, "pbo": 0.2, "passing": False}
+    )
+    assert _by_key(report)["look_ahead"]["status"] == PASS
+
+
+def test_the_ratio_check_names_the_side_that_is_actually_missing():
+    """ "No positive in-sample Sharpe to compare against" is false on a row that
+    HAS one and is missing the out-of-sample leg."""
+    with_is = _by_key(rigor_reasons_for_verdict({"in_sample_sharpe": 1.2, "oos_sharpe": None, "passing": False}))
+    assert with_is["oos_is_ratio"]["status"] == NOT_COMPUTED
+    assert with_is["oos_is_ratio"]["detail"] == "no out-of-sample Sharpe to compare"
+
+    without_is = _by_key(rigor_reasons_for_verdict({"in_sample_sharpe": -0.3, "oos_sharpe": 0.4, "passing": False}))
+    assert without_is["oos_is_ratio"]["detail"] == "no positive in-sample Sharpe to compare against"
+
+
 def test_nan_is_not_a_measurement():
     """A NaN metric must not be printed as a number, nor skip its fail branch."""
     checks = _by_key(
@@ -256,10 +339,18 @@ def test_a_passing_verdict_reports_no_failures():
             "oos_sharpe": 0.9,
             "in_sample_sharpe": 1.2,
             "lookahead_audit_passed": True,
+            "look_ahead_status": "pass",
             "passing": True,
         }
     )
     assert not [c for c in report["checks"] if c["status"] == FAIL]
+    assert [c["key"] for c in report["checks"] if c["status"] == PASS] == [
+        "dsr",
+        "pbo",
+        "oos_sharpe",
+        "oos_is_ratio",
+        "look_ahead",
+    ]
     assert report["unattributed"] is False
 
 
@@ -274,6 +365,7 @@ def test_unattributed_when_nothing_on_record_falls_below_the_bar():
             "oos_sharpe": 0.9,
             "in_sample_sharpe": 1.2,
             "lookahead_audit_passed": True,
+            "look_ahead_status": "pass",
             "passing": False,
         }
     )
