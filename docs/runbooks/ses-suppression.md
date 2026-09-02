@@ -1,6 +1,6 @@
 # SES suppression list — when to look, when to remove, when to leave it alone
 
-> **status:** current
+> **status:** runbook
 > **owner:** Dan Browne
 > **updated:** 2026-09-01
 > **superseded-by:** —
@@ -10,10 +10,12 @@ to see it, and the single, narrow circumstance in which an address comes off. Th
 [`backend/archimedes/scripts/ses_suppression.py`](../../backend/archimedes/scripts/ses_suppression.py).
 
 **Read this first if:** a user reports that verification or password-reset mail never
-arrives and you need to know whether AWS is dropping it. The in-product signal for the same
-fact is `GET /api/auth/verification-status`, which reports `suppressed` for the signed-in
-caller's own address ([#1748](https://github.com/aprin-labs/archimedes/issues/1748) item 2);
-the human validation procedure for the mail flows themselves is
+arrives and you need to know whether AWS is dropping it. **This script is the only way to
+see that fact today.** The in-product signal — `GET /api/auth/verification-status`, which
+will report `suppressed` for the signed-in caller's own address — is
+[#1748](https://github.com/aprin-labs/archimedes/issues/1748) item 2 and is **not shipped
+yet**; until it is, every reference to it below describes the state after it lands. The human
+validation procedure for the mail flows themselves is
 [`email-verification-validation.md`](email-verification-validation.md).
 
 ---
@@ -29,11 +31,11 @@ When a message hard-bounces or draws a spam complaint, SES adds the recipient to
 - The recipient sees silence, and so does anyone reading our logs.
 
 That is why this list is dangerous rather than merely annoying: **the failure mode is a
-success response.** It is also why the product asks SES directly rather than trusting a
-successful send — see `GET /api/auth/verification-status`
-([#1748](https://github.com/aprin-labs/archimedes/issues/1748) item 2), which calls
-`GetSuppressedDestination` for the signed-in caller's own address and reports `suppressed`
-instead of the old eternal `200 {status:true}`.
+success response.** It is also why item 2 of the same issue will have the product ask SES
+directly rather than trust a successful send: `GET /api/auth/verification-status`
+([#1748](https://github.com/aprin-labs/archimedes/issues/1748) item 2, **not shipped yet**)
+calls `GetSuppressedDestination` for the signed-in caller's own address and reports
+`suppressed` instead of the eternal `200 {status:true}` the product answers today.
 
 **How ours got populated.** Dogfooding signup with throwaway addresses. Every bounce from a
 fake address is a real, correct suppression entry — AWS behaved exactly as designed. The
@@ -59,9 +61,21 @@ Exit codes: `0` found / listed, `3` the address is **not** on the list, `2` the 
 itself failed. A failed call is never printed as "not suppressed" — that distinction is the
 whole point, and it is pinned by `backend/tests/scripts/test_ses_suppression.py`.
 
-Credentials come from the ambient AWS profile or role. The read path needs
-`ses:ListSuppressedDestinations` and `ses:GetSuppressedDestination`; the app's own ECS task
-role has the GET only and **cannot** delete.
+Credentials come from the ambient AWS profile or role. Run these commands under an operator
+profile that holds `ses:ListSuppressedDestinations` and `ses:GetSuppressedDestination` — the
+read path needs both.
+
+The app's own ECS task role is a **separate** identity, and it is narrower in both states:
+
+- **Today**, the only SES statement on it is `ses:SendEmail` / `ses:SendRawEmail`
+  ([`infra/ecs.tf`](../../infra/ecs.tf)). It can send; it can neither read the suppression
+  list nor delete from it.
+- **After the `terraform apply`** that adds the `ses:GetSuppressedDestination` grant for
+  `GET /api/auth/verification-status` ([#1748](https://github.com/aprin-labs/archimedes/issues/1748)
+  item 2), it can look up **one** address at a time — still no list, and still no delete.
+
+`ses:DeleteSuppressedDestination` is granted to the task role in neither state, by design:
+removal is an operator action (§ 4), never something the running app can do.
 
 ## 3. When to remove — the only qualifying case
 
@@ -121,8 +135,9 @@ not on the list — it does **not** claim a removal it did not perform.
 
 1. Re-run `check <address>` — it should exit `3` ("not on the suppression list").
 2. Have the owner request a verification email and confirm it arrives.
-3. Confirm the account's own `GET /api/auth/verification-status` reports `sent`, not
-   `suppressed`.
+3. Once #1748 item 2 has shipped, confirm the account's own
+   `GET /api/auth/verification-status` reports `sent`, not `suppressed`. Until then, step 2
+   is the confirmation.
 4. **If it bounces again, leave it suppressed.** A second removal for the same address is a
    sign that step 2 of § 3 was not actually satisfied.
 
@@ -139,5 +154,5 @@ clean sending to repair, and no command reverses it.
   real-inbox validation procedure for verification and reset mail, and its delivery-state
   triage table, which is where a `suppressed` finding comes from.
 - [`../api/auth-and-accounts.md`](../api/auth-and-accounts.md) — the Better Auth sidecar's
-  HTTP contract, including `GET /api/auth/verification-status`, the in-product surface for
-  the same fact.
+  HTTP contract. It will gain `GET /api/auth/verification-status`, the in-product surface for
+  the same fact, when #1748 item 2 ships; it does not document that route today.
