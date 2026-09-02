@@ -23,10 +23,6 @@ class _Loader(yaml.SafeLoader):
     pass
 
 
-def _python_name(loader, node):  # noqa: ARG001 — the tag's value is all we need
-    return node.value
-
-
 _Loader.add_multi_constructor("tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix)
 
 
