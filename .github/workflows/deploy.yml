@@ -657,8 +657,16 @@ jobs:
     # DEPLOY_ROLLOUT_BUDGET_SECONDS (top-level env) plus the post-rollout probe
     # and the CloudFront invalidation wait — otherwise the job timeout silently
     # becomes the real budget and #1532 returns with a bigger number. 30 min
-    # covers the 20-min default budget + ~1 min probe + the invalidation wait
-    # with margin. The poll step asserts this headroom explicitly (see
+    # covers the 20-min default budget + the probe + the invalidation wait
+    # with margin. The probe is ~35s when the app is healthy and hard-caps its
+    # own wall clock at MAX_TOTAL_SECONDS (300s, see
+    # .github/scripts/post_rollout_probe.sh). That is a REAL ceiling, not a
+    # check between samples: the script starts no request whose deadline
+    # reaches past it (curl's --max-time is capped to the remaining budget)
+    # and no sleep that runs past it, precisely so retrying transport flakes
+    # (#1791) cannot turn a clean ::error into an opaque job timeout — or eat
+    # the CloudFront invalidation's share of the reserve below.
+    # The poll step asserts this headroom explicitly (see
     # DEPLOY_JOB_TIMEOUT_MINUTES there) rather than trusting the two numbers to
     # be edited together.
     timeout-minutes: 30
@@ -812,6 +820,10 @@ jobs:
           # timeout would kill the job first, with no verdict — exactly #1532's
           # bug wearing a bigger number. Reserve 7 min for the post-rollout
           # probe + the CloudFront invalidation wait that follow this step.
+          # The probe can consume at most MAX_TOTAL_SECONDS=300s of that 420s
+          # (a hard wall-clock ceiling, see .github/scripts/post_rollout_probe.sh);
+          # the rest is the invalidation wait's, and a test asserts the probe's
+          # ceiling stays strictly smaller than this reserve.
           JOB_TIMEOUT_SECONDS=$(( DEPLOY_JOB_TIMEOUT_MINUTES * 60 ))
           if [ "$BUDGET" -gt $(( JOB_TIMEOUT_SECONDS - 420 )) ]; then
             echo "::error::DEPLOY_ROLLOUT_BUDGET_SECONDS=${BUDGET}s leaves under 7 minutes of the deploy-ecs job's ${DEPLOY_JOB_TIMEOUT_MINUTES}-minute timeout for the answer probe and the CloudFront invalidation. Raise timeout-minutes on the deploy-ecs job (and DEPLOY_JOB_TIMEOUT_MINUTES here) alongside the budget."
@@ -910,14 +922,34 @@ jobs:
         # window. Static fast + API timing out is what identified the origin as
         # the culprit in the first place.)
         #
-        # Requiring the LAST 5 CONSECUTIVE samples to pass, rather than 5 of 10,
-        # is what makes a cold-start tail fail this step: a service warming up
-        # produces slow-then-fast, and only a trailing run of good samples shows
-        # it actually got there. The 5s ceiling is a client-realistic deadline,
-        # not a generous one — it is below #1436's recorded p99 of 16.8s on
+        # The verdict is "NEED_STREAK consecutive good samples were OBSERVED
+        # somewhere in the window AND the final (post-retry) sample is good
+        # AND it reports this commit AND no more than MAX_NOT_OK samples were
+        # NOT-OK". It was "the LAST 5 samples", and #1791 shows what that
+        # cost: two of
+        # the last four main deploys went red on a single transport transient
+        # (curl exit 28 at 15.0s; curl exit 35 — a TLS reset — at 25 ms) while
+        # prod was already serving the expected version. The "final sample must
+        # be good" half is what keeps this fail-closed: a cold-start tail —
+        # slow-then-fast, the #1532 shape this step exists for — still fails,
+        # because a window that is broken AT THE END fails no matter how
+        # healthy its start was. MAX_NOT_OK is the other half of that: the
+        # observed-streak rule ALONE would tolerate 4 bad samples out of 10
+        # (SAMPLES - NEED_STREAK - 1), so the cap is what keeps "one transient
+        # does not fail a healthy deploy" from becoming "a pockmarked window
+        # passes". Two NOT-OK samples pass with a ::warning; three go red.
+        # ONLY transport-level failures (no HTTP answer at all, http=000 —
+        # connect/DNS/TLS/client timeout) are retried. Anything the app
+        # answered is never retried, INCLUDING a 5xx that was truncated
+        # mid-body (curl exits non-zero there while reporting a real 503):
+        # #1714/#1713's rollout-window 503s have to stay visible.
+        #
+        # The 5s ceiling is a client-realistic deadline, not a generous one:
+        # it is below #1436's recorded p99 of 16.8s on
         # purpose. If this step turns out to be the flakiest thing in the
-        # pipeline, that is a finding about the app's post-rollout latency
-        # (#1309, #1436), not a reason to loosen the number.
+        # pipeline for reasons OTHER than transport flakes, that is a finding
+        # about the app's post-rollout latency (#1309, #1436), not a reason to
+        # loosen the number.
         env:
           # Through CloudFront and the ALB, exactly as a user reaches it —
           # not the ECS task's own container health check, which is what
@@ -930,69 +962,26 @@ jobs:
           EXPECTED_VERSION: ${{ github.sha }}
         run: |
           # `set +e` is load-bearing: GitHub runs `run:` under `bash -e`, and
-          # `sample="$(curl ...)"` is an assignment whose exit status IS curl's.
-          # With -e in force a single timed-out sample (curl exit 28) aborted
-          # this whole step before `rc=$?` ran and before a single
-          # `probe N/10` line was printed — the 2026-09-01 run 33553292497 went
-          # red that way with the rollout COMPLETED; the step never got to
-          # measure whether the app was answering. Every failure below is
-          # handled explicitly through `fail`; nothing here may rely on -e.
+          # `sample="$(curl ...)"` inside the probe is an assignment whose exit
+          # status IS curl's. With -e in force a single timed-out sample (curl
+          # exit 28) aborted this whole step before `rc=$?` ran and before a
+          # single `probe N/10` line was printed — the 2026-09-01 run
+          # 33553292497 went red that way with the rollout COMPLETED; the step
+          # never got to measure whether the app was answering. The script sets
+          # the same `set +e -uo pipefail` for itself and handles every failure
+          # explicitly; this line keeps the step shell honest too.
           set +e -uo pipefail
 
-          PROBES=10
-          REQUIRED_STREAK=5
-          MAX_SECONDS=5
-          streak=0
-          fail=0
-          body=""
-
-          echo "Probing $HEALTH_URL — ${PROBES} samples, need the last ${REQUIRED_STREAK} consecutive at 200 under ${MAX_SECONDS}s."
-          for i in $(seq 1 "$PROBES"); do
-            sample="$(curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 15 "$HEALTH_URL" 2>/dev/null)"
-            rc=$?
-            # curl writes the -w line even on timeout/connect failure (http_code
-            # 000); this only backfills the case where it wrote nothing at all,
-            # so an empty sample can never be mistaken for a fast 200.
-            [ -n "$sample" ] || sample="000 0"
-            code="${sample%% *}"
-            secs="${sample##* }"
-            if [ "$code" = "200" ] && awk -v t="$secs" -v m="$MAX_SECONDS" 'BEGIN { exit !(t + 0 < m + 0) }'; then
-              streak=$(( streak + 1 ))
-              verdict="ok"
-            else
-              streak=0
-              verdict="NOT-OK"
-            fi
-            # Every sample is printed, passing or not: the timings ARE the
-            # evidence, and #1532 had to be diagnosed by hand-curling because
-            # the pipeline kept none.
-            printf 'probe %2d/%d: http=%s time=%ss curl_exit=%s -> %-6s (consecutive good: %d)\n' \
-              "$i" "$PROBES" "$code" "$secs" "$rc" "$verdict" "$streak"
-            if [ "$i" -eq "$PROBES" ]; then
-              # The last probe also reads the body, so the version assertion is
-              # made against the same request that closed the streak.
-              body="$(curl -sS --max-time 15 "$HEALTH_URL" 2>/dev/null)"
-            else
-              sleep 3
-            fi
-          done
-
-          if [ "$streak" -lt "$REQUIRED_STREAK" ]; then
-            echo "::error::post-rollout answer probe: only ${streak} consecutive trailing samples answered 200 under ${MAX_SECONDS}s (needed ${REQUIRED_STREAK}). ECS reported the rollout COMPLETED, but the app is not answering inside a client-realistic deadline — this is the 58e337dc failure mode from #1532, and it is an outage whether or not the badge would have been green. Timings are printed above."
-            fail=1
-          fi
-
-          version="$(printf '%s' "$body" | jq -r '.version // empty' 2>/dev/null)"
-          if [ -z "$version" ]; then
-            echo "::error::post-rollout version check: could not read .version from ${HEALTH_URL} on the final probe (body was empty or not JSON). Cannot confirm which commit is serving."
-            fail=1
-          elif [ "$version" != "$EXPECTED_VERSION" ]; then
-            echo "::error::post-rollout version check: ${HEALTH_URL} reports version=${version} but this job deployed ${EXPECTED_VERSION}. The rollout completed and the app answers — but it is answering with different code than this run built, so this deploy did not take."
-            fail=1
-          fi
-
-          [ "$fail" = 0 ] || exit 1
-          echo "post-rollout probe OK: ${streak} consecutive samples 200 under ${MAX_SECONDS}s, serving version ${version}."
+          # The probe body lives in a script, not inline here, so
+          # backend/tests/test_post_rollout_probe.py can run THE EXACT SCRIPT
+          # THIS STEP RUNS against a fake /api/health (transport reset, 5xx,
+          # slow 200, wrong version) instead of a paraphrase that drifts.
+          # SAMPLES / NEED_STREAK / MAX_SECONDS / INTERVAL / TRANSPORT_RETRIES /
+          # RETRY_PAUSE default to 10 / 5 / 5s / 3s / 2 / 3s inside the script,
+          # alongside MAX_NOT_OK=2 (most NOT-OK samples a passing run may
+          # contain), CURL_MAX_TIME=15s and MAX_TOTAL_SECONDS=300s; they are
+          # documented and tested there.
+          bash .github/scripts/post_rollout_probe.sh
 
       - name: Invalidate CloudFront (unhashed SPA entry points only)
         # Gated on the ROLLOUT VERDICT, not on job success (issue #1532). The
