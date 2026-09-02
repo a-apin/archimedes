@@ -165,7 +165,8 @@ After provisioning the role + attaching to backend EC2:
 - [ ] `aws s3 ls s3://archimedes-corpus-artifacts-prod/` succeeds (empty list OK)
 - [ ] `aws dynamodb describe-table --table-name archimedes-papers-index` returns `TableStatus: ACTIVE`
 - [ ] `aws ssm get-parameter --name /archimedes/prod/test --with-decryption` returns either the value (if seeded) or `ParameterNotFound` (NOT `AccessDenied`)
-- [ ] Backend can `python -c "from archimedes.services.s3_artifact_store import S3ArtifactStore; print(S3ArtifactStore().list_keys()[:5])"` (returns `[]` if bucket is empty — that's fine)
+- [ ] Backend can `KB_S3_BUCKET=archimedes-corpus-artifacts-prod PYTHONPATH=backend python -c "from archimedes.services.kb_artifacts import _get_s3_client; print(_get_s3_client() is not None)"` → prints `True` (the call does a `head_bucket` probe, so this proves the *instance role* reaches the bucket from inside the Python process, not just from the CLI)
+  <sub>Was `services.s3_artifact_store.S3ArtifactStore`; that module was never wired to anything and was deleted 2026-09-01 (audit P1-1).</sub>
 
 ## Open question / future
 
