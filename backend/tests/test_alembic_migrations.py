@@ -18,6 +18,7 @@ services.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -1829,3 +1830,180 @@ def test_alembic_paper_agent_trades_table_added_and_removed(tmp_path):
             con.close()
 
     assert _columns(create_all_db, "paper_agent_trades") == _columns(db_path, "paper_agent_trades")
+
+
+def test_alembic_auth_email_deliveries_table_added_and_removed(tmp_path):
+    """#1748 item 2: ``auth_email_deliveries`` lands on upgrade, is gone on
+    downgrade, comes back on re-upgrade — and the ORM agrees with alembic.
+
+    Three properties beyond the up/down/idempotent contract, each of which is
+    a claim the delivery-feedback feature makes and would otherwise only
+    assert by inspection:
+
+      * the FK onto ``auth_users`` really CASCADES. The rows carry an email
+        address, so account deletion has to take them; the erasure half of
+        migration ``85ca5310b7a1``'s policy would be silently incomplete
+        otherwise. Asserted by DELETING a user with ``PRAGMA foreign_keys=ON``
+        (SQLite ignores ``ON DELETE`` actions without it — see
+        ``test_account_deletion_cascade.py``'s docstring), not by reading the
+        DDL back.
+      * ``user_id`` is NULLABLE and ``email`` is NOT NULL. That asymmetry is
+        the design: a send whose owner cannot be resolved is still recorded,
+        and the address — not the user id — is what the status endpoint
+        matches on, because ``changeEmail`` can move an account's address.
+      * ``create_all()`` and ``alembic upgrade head`` agree on the columns.
+        ``auth/delivery-log.js`` writes this table by literal column name; a
+        column present on one path and absent on the other means the Node
+        sidecar's INSERT works in one environment and fails in the other.
+
+    Same derived-target discipline as every test above: the downgrade target
+    is this revision's OWN ``down_revision``, never a hardcoded hash.
+    """
+    db_path = tmp_path / "auth_email_deliveries.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _sql(statement: str, *params, foreign_keys: bool = False):
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            if foreign_keys:
+                cur.execute("PRAGMA foreign_keys=ON")
+            cur.execute(statement, params)
+            con.commit()
+            return cur.fetchall()
+        finally:
+            con.close()
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("d4b1f7c8e206").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "auth_email_deliveries" in _table_names(db_path)
+
+    ddl = _sql("SELECT sql FROM sqlite_master WHERE name = ?", "auth_email_deliveries")[0][0]
+    assert "ON DELETE CASCADE" in ddl, "delivery rows carry an email address and must not outlive the account"
+    assert "email VARCHAR(320) NOT NULL" in ddl, "a receipt that cannot name the address it went to is not a receipt"
+    assert "user_id VARCHAR(64)," in ddl, "user_id stays nullable — an unresolvable owner must not lose the receipt"
+
+    # ─── the CASCADE fires, not just exists.
+    now = "2026-09-01 22:00:00"
+    _sql(
+        'INSERT INTO auth_users (id, name, email, "emailVerified", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?)',
+        "user-1748",
+        "Dan",
+        "dan@example.com",
+        0,
+        now,
+        now,
+    )
+    _sql(
+        "INSERT INTO auth_email_deliveries"
+        " (id, user_id, email, kind, status, message_id, error, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "d1",
+        "user-1748",
+        "dan@example.com",
+        "verification",
+        "sent",
+        "ses-message-1",
+        None,
+        now,
+    )
+    assert _sql("SELECT COUNT(*) FROM auth_email_deliveries")[0][0] == 1
+    _sql("DELETE FROM auth_users WHERE id = ?", "user-1748", foreign_keys=True)
+    assert _sql("SELECT COUNT(*) FROM auth_email_deliveries")[0][0] == 0, (
+        "deleting the account left its recorded email addresses behind"
+    )
+
+    # A ledger row the additive revision must not disturb in either direction.
+    _sql(
+        "INSERT INTO paper_daily_returns (deployment_id, date, daily_return, appended_at) VALUES (?, ?, ?, ?)",
+        "dep-1748",
+        "2026-08-21",
+        0.007,
+        "2026-08-22 00:00:00",
+    )
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "auth_email_deliveries" not in _table_names(db_path)
+    assert _sql("SELECT daily_return FROM paper_daily_returns WHERE deployment_id = ?", "dep-1748") == [(0.007,)]
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "auth_email_deliveries" in _table_names(db_path)
+
+    # ─── create_all() vs alembic: same columns, or auth/delivery-log.js's
+    # INSERT works in one environment and fails in the other.
+    create_all_db = tmp_path / "create_all_auth_email_deliveries.db"
+    build = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthEmailDelivery, AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", build],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    def _columns(path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    assert _columns(create_all_db, "auth_email_deliveries") == _columns(db_path, "auth_email_deliveries")
+
+
+def test_auth_delivery_log_sql_names_the_columns_the_migration_creates(tmp_path):
+    """The Node sidecar's INSERT/SELECT are string literals in
+    ``auth/delivery-log.js`` — nothing type-checks them against this schema, so
+    a column rename here would break email delivery feedback in production with
+    every Python test still green.
+
+    This reads the JS's own SQL and checks every column it names exists on the
+    migrated table. Cheap, and it is the only thing standing between the two
+    halves of this feature.
+    """
+    delivery_log = (_BACKEND_DIR.parent / "auth" / "delivery-log.js").read_text(encoding="utf-8")
+
+    insert = re.search(r"\+ ' \(([^)]*)\)'", delivery_log)
+    assert insert, "could not find the INSERT column list in auth/delivery-log.js"
+    insert_columns = {column.strip() for column in insert.group(1).split(",") if column.strip()}
+    assert insert_columns, "parsed an empty INSERT column list"
+
+    select = re.search(r"'SELECT ([^']*)'", delivery_log)
+    assert select, "could not find the SELECT column list in auth/delivery-log.js"
+    select_columns = {column.strip() for column in select.group(1).split(",") if column.strip()}
+
+    # The table name itself, so a rename on either side is caught too.
+    assert "auth_email_deliveries" in delivery_log
+
+    db_path = tmp_path / "delivery_log_sql.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{db_path}")
+    assert upgrade.returncode == 0, upgrade.stderr
+    con = sqlite3.connect(str(db_path))
+    try:
+        cur = con.cursor()
+        cur.execute("PRAGMA table_info(auth_email_deliveries)")
+        actual = {row[1] for row in cur.fetchall()}
+    finally:
+        con.close()
+
+    assert insert_columns <= actual, f"delivery-log.js INSERTs columns that do not exist: {insert_columns - actual}"
+    assert select_columns <= actual, f"delivery-log.js SELECTs columns that do not exist: {select_columns - actual}"

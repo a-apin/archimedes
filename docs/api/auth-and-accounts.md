@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-20
+> **updated:** 2026-09-01
 
 `/api/auth/*` — canonical account identity: email/password and (when configured) Google/GitHub
 OAuth sign-up, sign-in, session lookup, and email verification.
@@ -132,6 +132,56 @@ Errors:
 
 ```bash
 curl -sS "http://localhost:8080/api/auth/verify-email?token=<token-from-emailed-link>"
+```
+
+### GET /api/auth/verification-status
+What actually happened to this account's verification mail. | **Auth**: session required
+(reports on `session.user.email` and reads **no** address from the request) | **Flags**:
+the suppression half is live only with `EMAIL_MAILER=ses`; under the console mailer it
+answers `suppression.checked: false`, never "clean"
+
+Added by [#1748](https://github.com/aprin-labs/archimedes/issues/1748) item 2, because
+`POST /api/auth/send-verification-email` answers `200 {status: true}` forever — including
+for an address Amazon SES has already dropped onto the account suppression list, where SES
+accepts the send, returns a MessageId, and bins the message.
+
+**Why a separate GET rather than a richer response on the resend POST.** That POST is
+reachable with no session and Better Auth defends it with a 500ms constant-time floor so
+"unknown or already-verified" and "known and unverified" are indistinguishable to an
+anonymous caller (`auth/auth.js` `sendVerificationEmail` is fire-and-forget for the same
+reason — the measured leak was 504ms vs 922ms). Teaching that response to say `suppressed`
+vs `sent` would hand any anonymous caller a per-address oracle. This endpoint requires a
+live session and answers only about that session's own address, so it can be specific.
+
+Request: none (cookie only). Any query string is ignored.
+Response, HTTP 200:
+`{state, email, sends, sendsInWindow, lastSentAt, lastError, retryAfterSeconds, checkSpam,
+suppression: {checked, suppressed, reason, since, detail}, resendWindowSeconds,
+resendWindowMax}`.
+
+`state` is one of, in precedence order:
+- `suppressed` — SESv2 `GetSuppressedDestination` says this address is on the account
+  suppression list (`suppression.reason` is `BOUNCE` or `COMPLAINT`). Resending cannot work.
+- `failed` — the most recent send threw; `lastError` carries the AWS SDK error **name**
+  (never its message). Nothing went out.
+- `rate_limited` — the recorded sends fill the resend window; `retryAfterSeconds` says how
+  long until the limiter would accept another.
+- `sent` — the mailer **accepted** the last send. Acceptance, not delivery. `checkSpam`
+  turns on after two recorded sends.
+- `unknown` — no send on record. `sends: 0` means "none was ever made"; `sends: null` means
+  "the delivery log could not be read" — deliberately different values.
+- `verified` — the account is already verified; there is nothing pending to describe.
+
+Errors:
+- `401` — no live session.
+- `503` — the service has no delivery log wired (fail-closed; it never invents a `sent`).
+
+Rows come from `auth_email_deliveries` (migration `d4b1f7c8e206`), written one per send by
+`auth/mailer.js`; the decision logic is `auth/verification-status.js` and is unit-tested in
+`auth/test/delivery-feedback.test.js`.
+
+```bash
+curl -sS -b /tmp/session.jar http://localhost:8080/api/auth/verification-status
 ```
 
 ### GET /api/auth/providers

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from archimedes.models.account import (
     AuthAccount,
+    AuthEmailDelivery,
     AuthSession,
     AuthUser,
     AuthVerification,
@@ -54,6 +55,7 @@ from archimedes.models.user_profile import UserProfile
 __all__ = [
     "DATABASE_URL",
     "AuthAccount",
+    "AuthEmailDelivery",
     "AuthSession",
     "AuthUser",
     "AuthVerification",

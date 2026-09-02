@@ -101,6 +101,64 @@ class AuthVerification(Base):
     )
 
 
+class AuthEmailDelivery(Base):
+    """One row per outbound message the auth sidecar hands to a mailer (#1748).
+
+    WHY IT EXISTS. ``POST /api/auth/send-verification-email`` answered
+    ``200 {status: true}`` forever — for an address SES had already dropped
+    onto the account suppression list, for an address whose last send threw,
+    for every address. The only trace a send left was a ``console.error`` on
+    the failure path, so nothing in the product could tell those apart and
+    nothing could tell the user. ``auth/mailer.js`` now writes one row here per
+    send and ``GET /api/auth/verification-status`` reads them back for the
+    signed-in caller's own address.
+
+    WRITTEN BY NODE, SHAPED BY ALEMBIC — the same split every other ``auth_*``
+    table already lives under. Nothing in the Python backend inserts here; this
+    model exists so the DDL has one home (migration
+    ``d4b1f7c8e206``) and so ``create_all()`` and ``alembic upgrade head``
+    cannot drift apart.
+
+    WHAT IS DELIBERATELY ABSENT: the subject, the body, the verification URL
+    (a one-time bearer sign-in credential), and the error MESSAGE. ``error``
+    holds the AWS SDK error's *name* only — a fixed vocabulary
+    (``MessageRejected``, ``AccessDeniedException``, ...) that cannot carry an
+    address, a token, or a body fragment into the log.
+
+    ``user_id`` is ON DELETE CASCADE, so deleting an account takes its delivery
+    rows — and the addresses in them — with it, matching migration
+    ``85ca5310b7a1``'s erasure policy for the other account-owned tables. It is
+    nullable only because a send is recorded even if the owning row cannot be
+    resolved; the ``email`` column is what the read path actually matches on,
+    because ``changeEmail`` can move an account's address while old rows keep
+    the address they were actually sent to.
+    """
+
+    __tablename__ = "auth_email_deliveries"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    #: "verification" | "reset" | "change_email" | "account_change"
+    #: (auth/delivery-log.js DELIVERY_KINDS — that module is the vocabulary's home).
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: "sent" (the mailer accepted it) | "failed" (it threw). NEVER "delivered":
+    #: SES returns a MessageId for a suppressed address and then drops the mail,
+    #: which is precisely why the status endpoint also queries the suppression list.
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (
+        # The status endpoint's only query: newest-first rows for one address
+        # and kind inside a 24h window.
+        Index("ix_auth_email_deliveries_email_kind_created", "email", "kind", "created_at"),
+    )
+
+
 class AuthRateLimit(Base):
     __tablename__ = "auth_rate_limits"
 

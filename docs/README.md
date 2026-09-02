@@ -38,7 +38,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | Doc | Status | Owner | Last verified | What it is |
 |---|---|---|---|---|
 | [`api/README.md`](api/README.md) | current | Dan Browne | 2026-08-20 | Index of the API reference: per-surface docs, the auth-model overview table, and the `/docs` (Swagger) production-gate note. |
-| [`api/auth-and-accounts.md`](api/auth-and-accounts.md) | current | Dan Browne | 2026-08-20 | The Better Auth sidecar (`/api/auth/*`): email/password + OAuth, session lookup, email verification. |
+| [`api/auth-and-accounts.md`](api/auth-and-accounts.md) | current | Dan Browne | 2026-08-20 | The Better Auth sidecar (`/api/auth/*`): email/password + OAuth, session lookup, email verification. Amended 2026-09-01 with `GET /api/auth/verification-status` — the delivery-state endpoint that replaced the resend button's eternal `200 {status:true}` (#1748). |
 | [`api/wallets.md`](api/wallets.md) | current | Dan Browne | 2026-08-20 | `/api/wallets/*` — EIP-4361 wallet-link challenge/verify. |
 | [`api/generation.md`](api/generation.md) | current | Dan Browne | 2026-08-20 | `/api/generate/*` — the debate-society generation pipeline, its x402 payment gate, and daily quotas. |
 | [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md) | current | Dan Browne | 2026-08-20 | `/api/strategies/*` and `/api/selection-bias/*` — the strategy library, portfolio advisor, stress testing, and the rigor gate. |
