@@ -98,6 +98,18 @@ function priceLabelProblem(text) {
 	return null;
 }
 
+// `null` = no snapshot model name or id is a literal in the source; a string
+// = the problem. Shared by the property test and the mutation that must turn
+// it red — a check inlined only on the clean source cannot be shown to reject
+// a hard-coded model.
+function hardCodedModelProblem(src) {
+	for (const m of pricing.models) {
+		if (src.includes(m.name)) return `hard-codes model name ${m.name}`;
+		if (src.includes(m.model_id)) return `hard-codes model id ${m.model_id}`;
+	}
+	return null;
+}
+
 // ── 1. The header leads with the engine ───────────────────────────────────
 
 test("collapsed header names the engine before it quotes any price", () => {
@@ -169,16 +181,11 @@ test("no model name or id from the pricing snapshot is hard-coded in the card", 
 		pricing.models.length > 1,
 		"pricing snapshot is empty — this check would be vacuous",
 	);
-	for (const m of pricing.models) {
-		assert.ok(
-			!panel.includes(m.name),
-			`ModelCostPanel.jsx hard-codes the model name ${JSON.stringify(m.name)}. The card must name only the model /health reports as served (or the user's pick), never a literal — a literal keeps claiming that model after the backend moves off it.`,
-		);
-		assert.ok(
-			!panel.includes(m.model_id),
-			`ModelCostPanel.jsx hard-codes the model id ${JSON.stringify(m.model_id)} — same problem as a hard-coded name.`,
-		);
-	}
+	assert.equal(
+		hardCodedModelProblem(stripComments(panel)),
+		null,
+		"ModelCostPanel.jsx hard-codes a model name or id from the pricing snapshot. The card must name only the model /health reports as served (or the user's pick), never a literal — a literal keeps claiming that model after the backend moves off it.",
+	);
 });
 
 test("mutation: a hard-coded served model is rejected", () => {
@@ -188,8 +195,9 @@ test("mutation: a hard-coded served model is rejected", () => {
 		"Debate society over the research corpus",
 		`Debate society over the research corpus, served by ${recommended.provider} ${recommended.name}`,
 	);
-	assert.ok(
-		HARD_CODED.includes(recommended.name),
+	assert.equal(
+		hardCodedModelProblem(HARD_CODED),
+		`hard-codes model name ${recommended.name}`,
 		`writing ${JSON.stringify(recommended.name)} into the card is not caught by the hard-coded-model check — it is guarding nothing`,
 	);
 });
