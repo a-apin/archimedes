@@ -177,6 +177,69 @@ def _response_detail(response: httpx.Response) -> str:
     return str(body)
 
 
+# `POST /api/rigor/verify`'s own bounds (#1803), mirrored so an obviously-bad
+# invocation is refused before a request is spent. The SERVER is the authority:
+# these are pre-flight conveniences, and every limit is enforced there too.
+_MAX_TRIALS = 10_000
+
+# The reason codes `POST /api/rigor/verify` attaches to an input refusal
+# (`INPUT_REJECTED_CODES` in backend/archimedes/api/rigor_verify_routes.py,
+# #1803). Mirrored here rather than imported for the same reason
+# `RISK_APPETITES` is: this package does not depend on the backend, and the
+# server stays the authority — an unrecognised code still renders, it just
+# renders through the generic path below.
+_INPUT_REJECTED_CODES = frozenset(
+    {
+        "invalid_date",
+        "duplicate_date",
+        "unsorted_dates",
+        "non_finite",
+        "out_of_range",
+        "too_short",
+        "too_many_rows",
+        "trials_out_of_range",
+    }
+)
+
+# One line of "what to do about it" per code. The server's own sentence is
+# always printed first and is never replaced by these — it says what was
+# rejected; this says what to change.
+_INPUT_REJECTED_REMEDY = {
+    "invalid_date": "Write dates as YYYY-MM-DD. A two-column CSV of `2026-01-02,0.0013` rows is the expected shape.",
+    "duplicate_date": "One row per trading day. Duplicates are refused, not merged — decide which bar is real.",
+    "unsorted_dates": (
+        "Sort the CSV by date, oldest first (`sort -t, -k1,1 returns.csv`). The out-of-sample split is "
+        "positional, so row order IS the time order it grades; the server refuses to re-sort for you "
+        "because that would grade a series you did not send."
+    ),
+    "non_finite": "Remove NaN/inf bars (or drop those days). A non-finite bar cannot be graded.",
+    "out_of_range": (
+        "Returns are simple decimals, not percentages: +1.3% is 0.013, not 1.3. |r| > 1.0 in one day is "
+        "refused because it silently inflates the Sharpe the whole verdict rests on."
+    ),
+    "too_short": "Send a longer series. The walk-forward leg needs ~70 bars before it can run at all.",
+    "too_many_rows": "Split the series or aggregate to a coarser frequency.",
+    "trials_out_of_range": "--trials is the number of variants you actually tried: 1..10000.",
+}
+
+
+def _input_rejection(response: httpx.Response) -> tuple[str, str] | None:
+    """``(reason_code, server_message)`` when the API refused the BODY with one
+    of the verify endpoint's explicit reason codes (#1803), else ``None``.
+
+    The code is what a CI job branches on; the message is the server's own
+    sentence, never one this CLI invented.
+    """
+    detail = _detail(response)
+    if not isinstance(detail, dict) or detail.get("error") != "input_rejected":
+        return None
+    reason = detail.get("reason")
+    if reason not in _INPUT_REJECTED_CODES:
+        return None
+    message = detail.get("message")
+    return reason, message if isinstance(message, str) and message else reason
+
+
 def _handle_api_error(command: str, *, as_json: bool, response: httpx.Response) -> None:
     """Turn a non-2xx API response into a :func:`_fail` call. Never returns."""
     if response.status_code == 401:
@@ -196,6 +259,19 @@ def _handle_api_error(command: str, *, as_json: bool, response: httpx.Response) 
             message="rate limited by the API. Wait a moment and try again.",
         )
     if response.status_code == 422:
+        rejection = _input_rejection(response)
+        if rejection is not None:
+            reason, server_message = rejection
+            remedy = _INPUT_REJECTED_REMEDY.get(reason)
+            _fail(
+                command,
+                as_json=as_json,
+                exit_code=exits.USAGE,
+                error="input_rejected",
+                message=f"the API rejected the input ({reason}): {server_message}",
+                extra={"reason": reason},
+                lines=[remedy] if remedy else None,
+            )
         _fail(
             command,
             as_json=as_json,
@@ -508,7 +584,7 @@ def _render_verify(body: dict) -> None:
     default=1,
     show_default=True,
     metavar="N",
-    help="Self-attested trial/variant count the DSR deflation is computed against (>= 1).",
+    help=f"Self-attested trial/variant count the DSR deflation is computed against (1..{_MAX_TRIALS}).",
 )
 @_api_url_session_option
 @_json_option
@@ -527,6 +603,18 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     than being silently scored as a pass. ``--local`` (this machine, no network, no
     account) is not implemented yet.
 
+    **The input contract is strict, and the server refuses rather than repairs it**
+    (#1803). Dates must be ``YYYY-MM-DD``, unique, and in ascending order; returns must
+    be finite simple decimals with ``|r| <= 1.0`` (+1.3% is ``0.013``, not ``1.3``); the
+    series must be at least 4 rows (the deflated Sharpe's own sample floor) and at most
+    2,600 (~10 years); ``--trials`` is 1..10000. A refusal comes back as a 422 whose
+    ``reason`` is one of ``invalid_date``, ``duplicate_date``, ``unsorted_dates``,
+    ``non_finite``, ``out_of_range``, ``too_short``, ``too_many_rows``,
+    ``trials_out_of_range`` — printed here, and carried as ``reason`` in ``--json``.
+    Note ``unsorted_dates`` in particular: the walk-forward split is positional, so a
+    shuffled series could otherwise park its best 30% in the holdout, and the server
+    will not silently sort it for you because that would grade a series you did not send.
+
     Requires a cached session; run ``archimedes login`` first. Exits 0 when the gate
     passes and 1 when it fails, which is what makes ``archimedes verify returns.csv``
     usable as a CI check before a deploy.
@@ -534,13 +622,18 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     if run_local:
         _unavailable("verify", as_json=as_json)
 
-    if trials < 1:
+    if not 1 <= trials <= _MAX_TRIALS:
+        # `error` stays `invalid_trials` — an exit/error string is an API and is
+        # never redefined (see exits.py) — while `reason` carries the SERVER's
+        # code for the identical refusal, so a caller can branch on one code
+        # whether the bound was caught here or at the API (#1803).
         _fail(
             "verify",
             as_json=as_json,
             exit_code=exits.USAGE,
             error="invalid_trials",
-            message="--trials must be >= 1",
+            message=f"--trials must be between 1 and {_MAX_TRIALS} (got {trials})",
+            extra={"reason": "trials_out_of_range"},
         )
 
     returns = _parse_returns_csv(returns_csv)

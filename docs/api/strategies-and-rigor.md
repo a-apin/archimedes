@@ -244,6 +244,113 @@ curl -s -X POST https://archimedes-arc.com/api/selection-bias/pbo \
   -d '{"returns_matrix": {"strat_a": [0.001, -0.002, 0.003]}, "s_partitions": 16}'
 ```
 
+### POST /api/rigor/verify
+Grade a returns series you already have — the backend for the CLI's
+`archimedes verify` and the MCP `archimedes_rigor_verify` tool (#1305). |
+**Auth**: Better Auth account session (or an `archim_` API key) |
+**Flags**: rate limit `5/minute`
+
+Request (`RigorVerifyRequest`): `{returns: [{date: "YYYY-MM-DD", daily_return: float}], trials: int=1}`.
+Response (`RigorVerifyResponse`): `{passes: bool, trials, self_attested: true, n_bars,
+legs_evaluated, legs_runnable, legs_total, legs_not_run: [str], verdict_capped: true,
+dsr: {status, reason, deflated_sharpe, dsr_p_value}, pbo: {status, reason},
+oos_consistency: {status, reason, oos_sharpe, in_sample_sharpe},
+look_ahead: {status, reason}, rf_convention}`. Each `status` is
+`pass` | `fail` | `not_evaluable`. No strategy is persisted and no code is
+uploaded or executed — this endpoint accepts only numbers, on purpose.
+
+**The input contract, and why the server repairs nothing (#1803).** The
+request is refused unless *all* of the following hold. Every one of them is a
+422, never a truncation, a coercion or a silent accept:
+
+| Rule | `detail.reason` |
+|---|---|
+| `date` is a strict `YYYY-MM-DD` calendar date (no epoch seconds, no `YYYYMMDD`, no ISO week dates) | `invalid_date` |
+| No two rows share a date | `duplicate_date` |
+| Dates are in **ascending** order | `unsorted_dates` |
+| Every `daily_return` is finite (JSON `NaN`/`Infinity` parse — and are refused) | `non_finite` |
+| `abs(daily_return) <= 1.0`, in simple-return units (+1.3% is `0.013`, not `1.3`) | `out_of_range` |
+| At least **4** rows — the deflated Sharpe's own sample floor (`_rigor_helpers.DSR_MIN_BARS`) | `too_short` |
+| At most **2,600** rows (~10 years of daily bars) | `too_many_rows` |
+| `1 <= trials <= 10000` | `trials_out_of_range` |
+
+A refusal is a single object, not a validation list:
+`{"detail": {"error": "input_rejected", "reason": "unsorted_dates", "reasons":
+[...], "message": "...", "loc": ["body", "returns"]}}`. Branch on `reason`;
+`message` is the server's own sentence.
+
+Ordering is the load-bearing one. The walk-forward split is **positional** —
+the first 70% of *rows* is the training set and the remainder is the holdout —
+so row order **is** the time order being graded. A caller who sorted their
+series by return could park their best 30% in the holdout and collect
+`oos_consistency: pass` on numbers that fail chronologically. The server
+therefore refuses an out-of-order series rather than sorting it: sorting would
+hand back a verdict on a series the caller never sent. `trials` is bounded for
+the same reason — it is self-attested and deflates the DSR, and an unbounded
+count (`10**18`) drove the deflation to `-inf`, which reports as
+`not_evaluable`: a caller-controlled way to erase a FAIL.
+
+**What a verdict here can and cannot claim.** Two of the gate's four legs can
+*never* run on a bare returns series: PBO is a property of a selection set and
+needs a trial matrix of candidate strategies (`POST /api/selection-bias/pbo`
+is the trial-matrix form), and the look-ahead audit is static analysis of
+strategy source, which is never uploaded. Both always report `not_evaluable`
+with the decisive reason, and `verdict_capped` is always `true`. `passes` is a
+**quorum over the two runnable legs** — true only when DSR *and* walk-forward
+OOS both ran *and* passed — so it is never a claim that the strategy cleared
+the passport gate, and it can never be earned by a series that was merely too
+short to fail. Below ~70 bars the OOS leg cannot run at all: that shows up as
+`legs_evaluated < legs_runnable`, which is an **incomplete evaluation**, not a
+pass and not a fail. `--trials` is unverifiable self-attestation, so the DSR is
+only as honest as the number the caller declared. "Archimedes Verified" is not
+obtainable here.
+
+Worked example — one trading year (252 bars) through the CLI. `RETURNS_CSV` is
+two columns, `date,daily_return`; a header row is skipped automatically:
+
+```console
+$ head -3 returns.csv
+date,daily_return
+2025-01-02,0.01078
+2025-01-03,-0.00055
+$ wc -l < returns.csv
+     253
+$ archimedes verify returns.csv --trials 12
+n_bars=252  trials=12 (self-attested)
+  [PASS] DSR — self-attested trials=12: DSR p-value 0.9719 >= floor 0.50 (Newey-West HAC standard error)
+  [N/A] PBO — PBO (probability of backtest overfitting, Bailey et al. 2014 CSCV) is a property of a SELECTION SET, not one series — ...
+  [PASS] OOS consistency — walk-forward OOS Sharpe 3.5280 > floor 0.00 (chronological 70/30 holdout)
+  [N/A] Look-ahead — The look-ahead audit is AST-based static analysis of strategy SOURCE CODE; a bare returns series carries no code to inspect — ...
+rf_convention=excess_tbill_series
+legs evaluated: 2/2 runnable here of 4 in the full gate
+PASSES (capped — PBO and look-ahead cannot be evaluated on a returns series)
+```
+
+(The two `[N/A]` reasons are printed in full; they are elided here. That series
+is synthetic — `numpy` normal draws, mean 0.0011, sd 0.0085, seed 1803 — which
+is exactly why its Sharpe is implausibly good: it is a rendering example, not
+a result.)
+
+Exit codes: `0` pass, `1` fail, `4` incomplete (not every runnable leg ran) —
+so a CI job can never read "too few bars" as "strategy rejected". A rejected
+body exits `2` and prints the `reason`. Re-sending the same 252 bars sorted by
+return instead of by date, so the best 30% falls in the holdout:
+
+```console
+$ archimedes verify shuffled.csv --trials 12 ; echo "exit=$?"
+the API rejected the input (unsorted_dates): returns must be in ascending date order; row 4 (2025-03-03) precedes row 3 (2025-11-18). The walk-forward out-of-sample split is positional, so row order IS the time order it grades — a shuffled series is refused rather than sorted, because sorting would return a verdict on a series you did not send.
+Sort the CSV by date, oldest first (`sort -t, -k1,1 returns.csv`). The out-of-sample split is positional, so row order IS the time order it grades; the server refuses to re-sort for you because that would grade a series you did not send.
+exit=2
+```
+
+The same series over HTTP:
+
+```bash
+curl -s -X POST https://archimedes-arc.com/api/rigor/verify \
+  -b /tmp/session.jar -H "Content-Type: application/json" \
+  -d '{"returns": [{"date": "2025-01-02", "daily_return": 0.01078}, {"date": "2025-01-03", "daily_return": -0.00055}], "trials": 12}'
+```
+
 ## Rigor gate status semantics (honesty note)
 
 The gate reports a **multi-state status** — `rigor_gate_status` on

@@ -78,6 +78,28 @@ def _message(detail: Any, fallback: str) -> str:
     return fallback
 
 
+# One line of "what to change" per input-refusal code from
+# `POST /api/rigor/verify` (#1803). The server's own sentence always leads and
+# is never replaced by these; it says what was rejected, this says what to do.
+_INPUT_REJECTED_REMEDY = {
+    "invalid_date": "Write every date as strict YYYY-MM-DD. Epoch seconds and YYYYMMDD are refused, not guessed at.",
+    "duplicate_date": "One row per trading day. Duplicates are refused, not merged — decide which bar is real.",
+    "unsorted_dates": (
+        "Sort the rows by date, oldest first, and resend. The walk-forward split is POSITIONAL, so row "
+        "order is the time order it grades; the server will not re-sort for you because that would "
+        "return a verdict on a series you did not send."
+    ),
+    "non_finite": "Drop the NaN/Infinity bars. A non-finite return cannot be graded, only refused.",
+    "out_of_range": (
+        "Returns are simple decimals, not percentages: +1.3% is 0.013, not 1.3. |r| > 1.0 in a single "
+        "day is refused because it silently inflates the Sharpe the verdict rests on."
+    ),
+    "too_short": "Send a longer series — the walk-forward leg needs about 70 bars before it can run at all.",
+    "too_many_rows": "Split the series or aggregate to a coarser frequency; the cap is ~10 years of daily bars.",
+    "trials_out_of_range": "trials is 1..10000 — the number of variants you actually tried.",
+}
+
+
 def from_response(response: httpx.Response, *, credential_kind: str | None) -> dict[str, Any]:
     """Map a non-2xx API response onto a structured, actionable failure result."""
     status = response.status_code
@@ -187,6 +209,22 @@ def from_response(response: httpx.Response, *, credential_kind: str | None) -> d
         )
 
     if status == 422:
+        # `POST /api/rigor/verify` attaches a stable reason code to an input
+        # refusal (#1803). It is promoted to `error` so an agent branches on the
+        # specific cause rather than on the generic "the body was bad", and the
+        # server's own sentence is the message.
+        if isinstance(detail, dict) and detail.get("error") == "input_rejected" and isinstance(reason, str):
+            return failure(
+                reason,
+                _message(detail, "The API rejected the input."),
+                _INPUT_REJECTED_REMEDY.get(
+                    reason,
+                    "Fix the field named in `detail.loc` and retry. The server refuses a malformed "
+                    "series rather than repairing it.",
+                ),
+                http_status=422,
+                detail=detail,
+            )
         return failure(
             "invalid_request",
             _message(detail, "The API rejected the request body."),

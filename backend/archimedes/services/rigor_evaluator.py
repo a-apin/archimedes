@@ -31,6 +31,7 @@ from archimedes.services._rigor_helpers import (
     _ANNUALIZATION,
     _RF_ANNUAL,
     _RF_DAILY,
+    DSR_MIN_BARS,  # noqa: F401 - re-exported for rigor_verify_routes' input floor (#1803)
     _resolve_rf_daily_array,  # used by run_rigor_gate's in-sample-Sharpe fallback + compute_library_pbo (#1409)
     assert_self_contained_cohort_correlation,  # noqa: F401 - re-exported for the 3 cohort call sites (V4 guard)
     benjamini_hochberg_fdr,  # used by compute_board_level_fdr below (#1185)

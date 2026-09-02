@@ -768,6 +768,96 @@ class TestVerify:
         assert isinstance(result.exception, SystemExit)
         assert json.loads(result.stdout)["error"] == "empty_returns"
 
+    def test_adversarial_trials_over_the_cap_rejected_before_any_network_call(self, runner, monkeypatch):
+        """#1803: `trials` had no upper bound, and `trials=10**18` drove the DSR
+        deflation to -inf — a caller-controlled way to turn a FAIL into
+        `not_evaluable`. Shown failing, and failing without spending a call."""
+        _seed_session()
+        _forbid_network(monkeypatch)
+        result = runner.invoke(main, ["verify", "returns.csv", "--trials", str(10**18), "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "invalid_trials"
+        # The SERVER's code for the identical refusal rides along, so a caller
+        # branches on one string whichever side caught it.
+        assert payload["reason"] == "trials_out_of_range"
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "invalid_date",
+            "duplicate_date",
+            "unsorted_dates",
+            "non_finite",
+            "out_of_range",
+            "too_short",
+            "too_many_rows",
+            "trials_out_of_range",
+        ],
+    )
+    def test_every_input_rejection_code_is_surfaced_verbatim(self, runner, monkeypatch, reason):
+        """#1803: a 422 from `/api/rigor/verify` carries a machine-readable
+        `reason`. It must reach `--json` as `reason` (a CI job branches on it)
+        and reach a human as the SERVER's own sentence — never flattened into
+        the generic "invalid_request" the CLI used to print for every 422."""
+        _seed_session()
+        body = {
+            "detail": {
+                "error": "input_rejected",
+                "reason": reason,
+                "reasons": [reason],
+                "message": f"server sentence for {reason}",
+                "loc": ["body", "returns"],
+            }
+        }
+        _install_transport(monkeypatch, _route({("POST", "/api/rigor/verify"): httpx.Response(422, json=body)}))
+        result = runner.invoke(main, ["verify", "returns.csv", "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "input_rejected"
+        assert payload["reason"] == reason
+        assert f"server sentence for {reason}" in payload["message"]
+
+    def test_input_rejection_prints_the_server_sentence_and_a_remedy(self, runner, monkeypatch):
+        """The human path: the server says what was wrong, the CLI adds what to
+        change. The shuffle refusal is the one that most needs explaining."""
+        _seed_session()
+        body = {
+            "detail": {
+                "error": "input_rejected",
+                "reason": "unsorted_dates",
+                "reasons": ["unsorted_dates"],
+                "message": "returns must be in ascending date order; row 11 (2024-01-11) precedes row 10 ...",
+                "loc": ["body", "returns"],
+            }
+        }
+        _install_transport(monkeypatch, _route({("POST", "/api/rigor/verify"): httpx.Response(422, json=body)}))
+        result = runner.invoke(main, ["verify", "returns.csv"])
+        assert result.exit_code == USAGE
+        assert "unsorted_dates" in result.stderr
+        assert "ascending date order" in result.stderr
+        assert "Sort the CSV by date" in result.stderr
+
+    def test_an_uncoded_422_still_takes_the_generic_path(self, runner, monkeypatch):
+        """Only the endpoint's OWN codes get the new envelope. Anything else —
+        a shape error, an older server — must keep rendering as it did."""
+        _seed_session()
+        _install_transport(
+            monkeypatch,
+            _route(
+                {
+                    ("POST", "/api/rigor/verify"): httpx.Response(
+                        422, json={"detail": [{"type": "missing", "loc": ["body", "returns"], "msg": "Field required"}]}
+                    )
+                }
+            ),
+        )
+        result = runner.invoke(main, ["verify", "returns.csv", "--json"])
+        assert result.exit_code == USAGE
+        payload = json.loads(result.stdout)
+        assert payload["error"] == "invalid_request"
+        assert "reason" not in payload
+
     def test_no_session_exits_auth_without_touching_the_network(self, runner, monkeypatch):
         _forbid_network(monkeypatch)
         result = runner.invoke(main, ["verify", "returns.csv", "--json"])

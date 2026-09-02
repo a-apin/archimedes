@@ -237,10 +237,24 @@ strategy-passport verdict uses. A bare series can only support two of the four c
 | PBO | always `not_evaluable` — overfitting probability is a property of a *selection set* |
 | look-ahead audit | always `not_evaluable` — AST analysis of code, and this endpoint takes only numbers |
 
-`passes` is `true` **iff** no evaluable check failed *and* at least one check was
-evaluable: an all-`not_evaluable` request (e.g. a too-short series) must never report
-`passes: true` by vacuous truth. `self_attested: true` is returned to keep the caller's
-declared `trials` count visible as the unverified input it is. The response also carries
+`passes` is `true` **iff every RUNNABLE leg — DSR *and* walk-forward OOS — actually ran
+and passed**: a quorum, not "no evaluable check failed" (#1481). Neither an
+all-`not_evaluable` request nor a partially-evaluated one (a short series where DSR ran
+and the OOS split could not) may report `passes: true`; the response carries
+`legs_evaluated` / `legs_runnable` / `legs_total` / `verdict_capped` so the scalar is
+qualifiable without re-deriving the leg statuses. `self_attested: true` is returned to
+keep the caller's declared `trials` count visible as the unverified input it is.
+
+**The request body is validated strictly and nothing is repaired (#1803).** Dates must be
+strict `YYYY-MM-DD`, unique and ascending; returns must be finite with `abs(r) <= 1.0`
+(simple decimals — +1.3% is `0.013`); the series is 4..2,600 rows and `trials` is
+1..10,000. A violation is a 422 carrying `{"detail": {"error": "input_rejected", "reason":
+"<code>", "message": "…"}}` where `<code>` is one of `invalid_date`, `duplicate_date`,
+`unsorted_dates`, `non_finite`, `out_of_range`, `too_short`, `too_many_rows`,
+`trials_out_of_range`. The walk-forward split is positional, so an out-of-order series is
+REFUSED rather than sorted — sorting it would return a verdict on a series you did not
+send. Full table:
+[`api/strategies-and-rigor.md`](api/strategies-and-rigor.md). The response also carries
 `rf_convention` (`excess_tbill_series` | `excess_flat_fallback`, #1409) — the `date`s
 above already resolve against the historical 3-month T-bill series when they fall inside
 its vendored coverage, and DSR/OOS are computed against whichever rate that resolution

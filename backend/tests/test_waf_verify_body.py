@@ -61,7 +61,8 @@ from pathlib import Path
 import httpx
 import pytest
 from archimedes.api import account_auth, rigor_verify_routes
-from archimedes.api.rigor_verify_routes import _MAX_RETURN_ROWS, RigorVerifyRequest
+from archimedes.api.rigor_verify_routes import _MAX_RETURN_ROWS, _MIN_RETURN_ROWS, RigorVerifyRequest
+from archimedes.services.rigor_evaluator import DSR_MIN_BARS
 from fastapi import FastAPI
 from pydantic import ValidationError
 
@@ -475,11 +476,18 @@ def test_schema_rejects_one_row_over_the_cap_with_a_message_that_names_the_limit
     assert str(_MAX_RETURN_ROWS + 1) in message, "the error must say how many rows were sent"
 
 
-def test_max_length_is_declared_on_the_field_as_the_backstop():
-    """The validator produces the message; max_length is the contract in the OpenAPI schema."""
+def test_length_bounds_are_declared_on_the_field_as_the_backstop():
+    """The validator produces the message; min/max_length are the contract in the OpenAPI schema.
+
+    ``minItems`` moved 1 -> ``_MIN_RETURN_ROWS`` with #1803: the endpoint now
+    refuses a series shorter than the DSR's own sample floor instead of
+    answering 200 with every leg ``not_evaluable``, and the published schema
+    has to say so rather than advertise a length the server rejects.
+    """
     schema = RigorVerifyRequest.model_json_schema()
     assert schema["properties"]["returns"]["maxItems"] == _MAX_RETURN_ROWS
-    assert schema["properties"]["returns"]["minItems"] == 1
+    assert schema["properties"]["returns"]["minItems"] == _MIN_RETURN_ROWS
+    assert _MIN_RETURN_ROWS == DSR_MIN_BARS, "the floor is the gate's constant, never a second number"
 
 
 # ── 5. …and returns a 422 over HTTP, not a truncation or a silent accept ──

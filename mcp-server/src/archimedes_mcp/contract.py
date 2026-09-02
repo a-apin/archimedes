@@ -116,7 +116,17 @@ TOOLS: tuple[dict, ...] = (
             "candidate strategies and the look-ahead audit needs strategy source code. Both "
             "come back not_evaluable with the decisive reason rather than being scored as "
             "passes, so a `passes: true` here is a CAPPED verdict, not the full gate. Your "
-            "strategy code is never uploaded — only the returns series you pass in."
+            "strategy code is never uploaded — only the returns series you pass in. "
+            "THE INPUT CONTRACT IS STRICT AND THE SERVER REPAIRS NOTHING: dates must be strict "
+            "YYYY-MM-DD, unique, and in ASCENDING order; daily_return must be a finite simple "
+            "decimal with |r| <= 1.0 (+1.3% is 0.013, not 1.3); the series is 4 to 2600 rows and "
+            "trials is 1 to 10000. A violating body comes back 422 with a machine-readable "
+            "reason: invalid_date, duplicate_date, unsorted_dates, non_finite, out_of_range, "
+            "too_short, too_many_rows or trials_out_of_range. It will not sort or deduplicate "
+            "your rows for you — the walk-forward split is positional, so re-ordering them "
+            "server-side would return a verdict on a series you did not send. Below about 70 "
+            "bars the walk-forward leg cannot run at all: that is an INCOMPLETE evaluation "
+            "(legs_evaluated < legs_runnable), never a pass."
         ),
     },
     {

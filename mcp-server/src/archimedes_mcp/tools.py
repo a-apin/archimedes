@@ -65,21 +65,47 @@ def archimedes_usage() -> dict[str, Any]:
     return _call("archimedes_usage", "GET", "/api/account/usage")
 
 
+# `POST /api/rigor/verify`'s own input bounds (#1803). Mirrored, not imported —
+# this package depends on nothing — and the SERVER stays the authority: these
+# only save a round trip on an invocation that cannot succeed.
+_MIN_RETURN_ROWS = 4  # the deflated Sharpe's sample floor (_rigor_helpers.DSR_MIN_BARS)
+_MAX_RETURN_ROWS = 2600  # ~10 years of daily bars
+_MAX_TRIALS = 10_000
+
+
 def archimedes_rigor_verify(returns: list[dict[str, Any]], trials: int = 1) -> dict[str, Any]:
-    """`returns` is `[{"date": "2026-01-02", "daily_return": 0.001}, ...]`; `trials` >= 1."""
-    if trials < 1:
+    """`returns` is `[{"date": "2026-01-02", "daily_return": 0.001}, ...]`; `trials` is 1..10000.
+
+    Dates must be strict `YYYY-MM-DD`, unique and ASCENDING; returns must be finite
+    simple decimals with `|r| <= 1.0`; the series is 4..2600 rows. The server refuses a
+    violating body with a 422 whose `detail.reason` is one of `invalid_date`,
+    `duplicate_date`, `unsorted_dates`, `non_finite`, `out_of_range`, `too_short`,
+    `too_many_rows`, `trials_out_of_range` — surfaced here as `error` on the failure
+    result. It does NOT sort or deduplicate for you: the walk-forward split is
+    positional, so re-ordering server-side would grade a series you did not send.
+    """
+    if not 1 <= trials <= _MAX_TRIALS:
         return errors.failure(
-            "invalid_request",
-            "trials must be >= 1.",
+            "trials_out_of_range",
+            f"trials must be between 1 and {_MAX_TRIALS}.",
             "trials is the self-attested number of variants you tried; the DSR is deflated by it. "
-            "One attempt is 1, not 0.",
+            "One attempt is 1, not 0. It is bounded above because an enormous count drives the "
+            "deflation to -inf, which turns a FAIL into 'not_evaluable'.",
         )
-    if not returns:
+    if len(returns) < _MIN_RETURN_ROWS:
         return errors.failure(
-            "invalid_request",
-            "returns is empty.",
-            "Pass at least one {date, daily_return} row. The gate needs about 70 bars before the "
-            "walk-forward leg can run at all; fewer produces an honest not_evaluable, not a pass.",
+            "too_short",
+            f"returns has {len(returns)} rows; the minimum is {_MIN_RETURN_ROWS}.",
+            "Four bars is the deflated Sharpe's own sample floor, and the walk-forward leg needs "
+            "about 70 bars before it can run at all. A series between the two gets an honest "
+            "INCOMPLETE (legs_evaluated < legs_runnable), never a pass — do not read it as one.",
+        )
+    if len(returns) > _MAX_RETURN_ROWS:
+        return errors.failure(
+            "too_many_rows",
+            f"returns has {len(returns)} rows; the maximum is {_MAX_RETURN_ROWS}.",
+            "That is a payload cap (~10 years of daily bars), not a statistical one. Split the "
+            "series or aggregate to a coarser frequency.",
         )
     return _call(
         "archimedes_rigor_verify",

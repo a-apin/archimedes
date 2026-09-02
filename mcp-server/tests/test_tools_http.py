@@ -12,6 +12,7 @@ the product's real answers and this server neither retries them nor hides them.
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 
 import pytest
 from archimedes_mcp import contract, tools
@@ -31,6 +32,17 @@ PAID_QUOTE = {
 FREE_QUOTE = {**PAID_QUOTE, "payment_required": False, "dry_run": True, "price": "$0.000000"}
 
 BRIEF = {"intent": "diversified low-volatility strategy for idle USDC"}
+
+
+def _ROWS(n: int) -> list[dict]:
+    """`n` well-formed bars: strict ISO dates, unique, ascending, |r| <= 1.0.
+
+    Every input rule `POST /api/rigor/verify` enforces (#1803) is satisfied, so
+    a test that uses these is testing what it says it is testing and not
+    tripping the input contract by accident.
+    """
+    base = date(2026, 1, 1)
+    return [{"date": (base + timedelta(days=i)).isoformat(), "daily_return": 0.001} for i in range(n)]
 
 
 def call_tool(name: str, arguments: dict):
@@ -180,7 +192,10 @@ def test_gated_tools_refuse_locally_without_a_credential(mock_api, name):
     """No credential, no socket. The error names both ways to fix it."""
     recorder = mock_api(lambda r: json_response(200, {}))
     arguments = {
-        "archimedes_rigor_verify": {"returns": [{"date": "2026-01-02", "daily_return": 0.001}]},
+        # 4 rows: the endpoint's minimum (#1803). A shorter body would be
+        # refused by the local input pre-flight BEFORE the credential gate, and
+        # this test is about the credential gate.
+        "archimedes_rigor_verify": {"returns": _ROWS(4)},
         "archimedes_generate_start": BRIEF,
         "archimedes_generate_status": {"job_id": "job-1"},
     }.get(name, {})
@@ -246,10 +261,7 @@ def test_rigor_verify_returns_the_capped_verdict_verbatim(mock_api, cached_sessi
     }
     recorder = mock_api(lambda r: json_response(200, payload))
 
-    body = call_tool(
-        "archimedes_rigor_verify",
-        {"returns": [{"date": "2026-01-02", "daily_return": 0.001}], "trials": 4},
-    )
+    body = call_tool("archimedes_rigor_verify", {"returns": _ROWS(4), "trials": 4})
 
     assert body["ok"] is True
     # Not re-derived, not summarised, not "helpfully" flattened into a boolean.
@@ -259,11 +271,51 @@ def test_rigor_verify_returns_the_capped_verdict_verbatim(mock_api, cached_sessi
     assert recorder.last.url.path == "/api/rigor/verify"
 
 
-def test_rigor_verify_rejects_zero_trials_without_a_request(mock_api, cached_session):
+@pytest.mark.parametrize("trials", [0, -1, 10_001, 10**18])
+def test_rigor_verify_rejects_out_of_range_trials_without_a_request(mock_api, cached_session, trials):
+    """#1803: `trials` is bounded at both ends now, and the local refusal
+    carries the SERVER's own code for the identical condition (it used to be
+    the generic `invalid_request`) so an agent branches on one string whichever
+    side caught it. Unbounded above, `trials=10**18` drove the DSR deflation to
+    -inf and turned a FAIL into `not_evaluable`."""
     recorder = mock_api(lambda r: json_response(200, {}))
-    body = call_tool("archimedes_rigor_verify", {"returns": [{"date": "2026-01-02", "daily_return": 0.0}], "trials": 0})
-    assert body["error"] == "invalid_request"
+    body = call_tool("archimedes_rigor_verify", {"returns": _ROWS(4), "trials": trials})
+    assert body["error"] == "trials_out_of_range"
     assert recorder.requests == []
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [(3, "too_short"), (2601, "too_many_rows")],
+)
+def test_rigor_verify_refuses_an_ungradeable_length_without_a_request(mock_api, cached_session, rows, expected):
+    """Below the DSR's own sample floor, or over the payload cap, there is
+    nothing a request could buy — refuse before spending one of five calls a
+    minute (#1803)."""
+    recorder = mock_api(lambda r: json_response(200, {}))
+    body = call_tool("archimedes_rigor_verify", {"returns": _ROWS(rows)})
+    assert body["error"] == expected
+    assert recorder.requests == []
+
+
+def test_rigor_verify_surfaces_the_servers_input_rejection_code(mock_api, cached_session):
+    """A 422 the server raised (here: a shuffled series, which it refuses
+    rather than sorting) must reach the agent as its specific code, not as the
+    generic 'the body was bad' (#1803)."""
+    detail = {
+        "error": "input_rejected",
+        "reason": "unsorted_dates",
+        "reasons": ["unsorted_dates"],
+        "message": "returns must be in ascending date order; row 2 (2026-01-02) precedes row 1 (2026-01-03)",
+        "loc": ["body", "returns"],
+    }
+    mock_api(lambda r: json_response(422, {"detail": detail}))
+    body = call_tool("archimedes_rigor_verify", {"returns": _ROWS(80)})
+    assert body["ok"] is False
+    assert body["error"] == "unsorted_dates"
+    assert "ascending date order" in body["message"]
+    assert "will not re-sort" in body["remedy"]
+    assert body["detail"] == detail
 
 
 def test_strategy_read_is_public_and_preserves_the_four_state_gate(mock_api):
