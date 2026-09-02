@@ -79,7 +79,7 @@ data "aws_lb_target_group" "backend" {
   name = "${var.project_name}-backend-tg"
 }
 
-# ── ECS Cluster ───────────────────────────────────────────────
+# ── ECS Cluster ────────────────────────────────────────────────────────────
 
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
@@ -385,7 +385,7 @@ resource "aws_iam_role_policy" "ecs_task_exec_command" {
 #
 # NOT wired into any CI workflow step yet (deploy.yml still only builds/pushes
 # to ECR — the box-pull path from build-chunk 1). This is the IAM
-# groundwork a later chunk's `aws ecs register-task-definition` + 
+# groundwork a later chunk's `aws ecs register-task-definition` +
 # `aws ecs update-service --force-new-deployment` deploy step needs; landing
 # it now means that later chunk needs zero IAM changes of its own.
 
