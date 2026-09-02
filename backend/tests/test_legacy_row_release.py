@@ -58,7 +58,9 @@ def _adopt(session: Session, wallet: str) -> str:
     )
     session.flush()
     strategy_id = record.id
-    session.query(StrategyRecord).filter_by(id=strategy_id).update({StrategyRecord.owner_user_id: PLATFORM_LEGACY_USER_ID})
+    session.query(StrategyRecord).filter_by(id=strategy_id).update(
+        {StrategyRecord.owner_user_id: PLATFORM_LEGACY_USER_ID}
+    )
     session.add(
         LegacyRowAdoption(
             table_name="strategy_store",
@@ -149,9 +151,7 @@ def test_release_is_a_no_op_when_nothing_was_ever_adopted():
         session.commit()
 
         # The ordinary claim still worked...
-        assert (
-            session.query(StrategyRecord).filter(StrategyRecord.owner_user_id == "user-1").count() == 1
-        )
+        assert session.query(StrategyRecord).filter(StrategyRecord.owner_user_id == "user-1").count() == 1
         # ...and the release wrote no ledger rows.
         assert session.query(LegacyRowAdoption).count() == 0
 
@@ -185,3 +185,123 @@ def test_release_survives_a_database_that_has_no_ledger_table():
 
         # The ordinary claim still landed — the missing ledger changed nothing.
         assert session.query(StrategyRecord).filter(StrategyRecord.owner_user_id == "user-1").count() == 1
+
+
+# ── The release must stay DISCOVERABLE ─────────────────────────────────────
+#
+# The tests above prove the door opens. These prove the sign on it survives
+# adoption: `GET /api/wallet/check` -> `_wallet_has_unclaimed_legacy_data` is
+# the sole gate on the relink banner (`ui/src/AuthenticatedApp.jsx`), and that
+# banner is the only thing that ever tells a pre-account wallet holder their
+# strategies are recoverable. A release path nobody is told about is a one-way
+# door in practice, however reversible it is in code.
+
+
+def test_the_relink_prompt_still_fires_for_an_adopted_wallet():
+    """The blocking regression. ``_wallet_has_unclaimed_legacy_data`` mirrors
+    the claim loop's ``owner_user_id IS NULL`` filter — which adoption
+    defeats by construction, since the stamp is exactly what makes the row
+    non-NULL. Without the ledger check the predicate answers False for
+    precisely the wallets whose rows the platform is holding, the banner never
+    renders, and the real owner is never invited to claim.
+    """
+    from archimedes.api.wallet_routes import _wallet_has_unclaimed_legacy_data
+
+    with _session() as session:
+        # Before adoption: the ordinary unclaimed-row path already says yes.
+        upsert_strategy(
+            session,
+            generation_method="fusion",
+            strategy_name="Orphaned",
+            thesis="pre-account row",
+            source_papers=[],
+            asset_universe=["SPY"],
+            owner_wallet=ADOPTED_WALLET,
+        )
+        session.commit()
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADOPTED_WALLET) is True
+
+        # Adopt every one of this wallet's rows, exactly as the migration does.
+        session.query(StrategyRecord).filter(StrategyRecord.owner_wallet == ADOPTED_WALLET).update(
+            {StrategyRecord.owner_user_id: PLATFORM_LEGACY_USER_ID}, synchronize_session=False
+        )
+        for row in session.query(StrategyRecord).filter(StrategyRecord.owner_wallet == ADOPTED_WALLET).all():
+            session.add(
+                LegacyRowAdoption(
+                    table_name="strategy_store",
+                    row_pk=row.id,
+                    prior_owner_wallet=ADOPTED_WALLET.lower(),
+                    adopted_by_user_id=PLATFORM_LEGACY_USER_ID,
+                    adopted_at=NOW,
+                )
+            )
+        session.commit()
+
+        # No row is `owner_user_id IS NULL` any more...
+        assert (
+            session.query(StrategyRecord)
+            .filter(StrategyRecord.owner_wallet == ADOPTED_WALLET, StrategyRecord.owner_user_id.is_(None))
+            .count()
+            == 0
+        )
+        # ...and the prompt must STILL fire, because linking would still hand
+        # the row back.
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADOPTED_WALLET) is True
+
+
+def test_the_prompt_and_the_release_agree_end_to_end():
+    """The invariant the predicate's own docstring states: the prompt fires
+    iff linking would actually attach something. Pinned across the adoption
+    boundary — True while the platform holds the row, False the moment the
+    claim has handed it back, so the banner does not nag a user who has
+    already recovered everything."""
+    from archimedes.api.wallet_routes import _wallet_has_unclaimed_legacy_data, claim_legacy_wallet_data
+
+    with _session() as session:
+        strategy_id = _adopt(session, ADOPTED_WALLET)
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADOPTED_WALLET) is True
+
+        claim_legacy_wallet_data(session, "user-1", ADOPTED_WALLET)
+        session.commit()
+
+        assert session.get(StrategyRecord, strategy_id).owner_user_id == "user-1"
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADOPTED_WALLET) is False
+
+
+def test_the_prompt_does_not_fire_for_a_wallet_whose_rows_someone_else_holds():
+    """Discoverability must not become a leak. The ledger is keyed on the
+    prior wallet, so proving some OTHER address must not light the banner —
+    it would advertise the existence of a stranger's adopted rows to anyone
+    who can name an address."""
+    from archimedes.api.wallet_routes import _wallet_has_unclaimed_legacy_data
+
+    with _session() as session:
+        _adopt(session, ADOPTED_WALLET)
+
+        assert _wallet_has_unclaimed_legacy_data(session, "user-2", OTHER_WALLET) is False
+
+
+def test_the_prompt_survives_a_database_that_has_no_ledger_table():
+    """``/api/wallet/check`` runs for every account with an unlinked browser
+    wallet, including on a database that has not reached the adoption
+    revision. The ledger lookup must find that out cheaply and return, not
+    raise — a 500 here would break the banner for the users it exists for."""
+    from archimedes.api.wallet_routes import _wallet_has_unclaimed_legacy_data
+
+    with _session() as session:
+        upsert_strategy(
+            session,
+            generation_method="fusion",
+            strategy_name="Pre-migration",
+            thesis="pre-account row",
+            source_papers=[],
+            asset_universe=["SPY"],
+            owner_wallet=ADOPTED_WALLET,
+        )
+        session.commit()
+
+        LegacyRowAdoption.__table__.drop(session.get_bind())
+        assert not sa.inspect(session.connection()).has_table("legacy_row_adoptions")
+
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", ADOPTED_WALLET) is True
+        assert _wallet_has_unclaimed_legacy_data(session, "user-1", OTHER_WALLET) is False

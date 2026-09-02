@@ -11,7 +11,9 @@ Six behaviours, one test each:
   1. the happy path adopts every orphan and NOTHING else;
   2. a population outside the [140, 165] band is refused, with nothing written;
   3. each structural check (D1/D2/D3) refuses, with nothing written;
-  4. a dry run writes nothing at all — not even the alembic version stamp;
+  4. a dry run writes nothing at all — not even the alembic version stamp —
+     with or without a population, the zero case included, because that is
+     the branch that would otherwise return cleanly and get stamped;
   5. running ``upgrade()`` a second time over adopted data is a true no-op;
   6. ``downgrade()`` re-orphans ownership and leaves everything else alone.
 """
@@ -359,16 +361,16 @@ def test_adoption_stamps_every_orphan_and_nothing_else(tmp_path):
     assert _scalar(db_path, "SELECT COUNT(*) FROM strategy_store WHERE owner_user_id = ?", (platform,)) == _N_PAIRS
     assert _scalar(db_path, "SELECT COUNT(*) FROM strategy_passports WHERE owner_user_id = ?", (platform,)) == _N_PAIRS
     assert (
-        _scalar(db_path, "SELECT COUNT(*) FROM strategy_proposals WHERE owner_user_id = ?", (platform,))
-        == _N_PROPOSALS
+        _scalar(db_path, "SELECT COUNT(*) FROM strategy_proposals WHERE owner_user_id = ?", (platform,)) == _N_PROPOSALS
     )
     assert _owned_by_platform(db_path) == _N_ORPHANS
 
     # ...and the ledger records each one, with the wallet preserved.
     assert _scalar(db_path, "SELECT COUNT(*) FROM legacy_row_adoptions") == _N_ORPHANS
-    assert _scalar(
-        db_path, "SELECT COUNT(*) FROM legacy_row_adoptions WHERE prior_owner_wallet = ?", (_ORPHAN_WALLET,)
-    ) == _N_ORPHANS
+    assert (
+        _scalar(db_path, "SELECT COUNT(*) FROM legacy_row_adoptions WHERE prior_owner_wallet = ?", (_ORPHAN_WALLET,))
+        == _N_ORPHANS
+    )
 
     # The platform account exists, is unverified, and cannot be signed into
     # (no credential row, no session row).
@@ -487,6 +489,48 @@ def test_dry_run_logs_the_plan_and_writes_absolutely_nothing(tmp_path):
     wet = _run_alembic("upgrade", "head", database_url=url)
     assert wet.returncode == 0, wet.stderr
     assert _owned_by_platform(db_path) == _N_ORPHANS
+
+
+def test_dry_run_on_a_zero_population_database_also_writes_absolutely_nothing(tmp_path):
+    """The rehearsal branch the owner is most likely to actually hit.
+
+    ``population == 0`` writes the ledger table and returns cleanly — which
+    on a dry run means alembic COMMITS and stamps ``alembic_version``,
+    marking the revision applied so the real deploy skips it. The rehearsal
+    would report success while having silently applied the migration, and the
+    PR's promise that a dry run "writes nothing, alembic_version included"
+    would be false at the exact moment it matters: concern #1 says prod's
+    orphans may be mostly wallet-less, which lands here.
+
+    Mutation check: delete the `_dry_run_requested()` block from the
+    `population == 0` branch and this test fails on all three assertions —
+    exit 0, the ledger created, and the version stamped to the revision.
+    """
+    db_path = tmp_path / "dryrun_empty.db"
+    url = f"sqlite:///{db_path}"
+    pre = _run_alembic("upgrade", _down_revision(), database_url=url)
+    assert pre.returncode == 0, pre.stderr
+    # Deliberately NOT seeded: zero orphans, the CI / fresh-clone shape.
+
+    dry = _run_alembic("upgrade", "head", database_url=url, ORPHAN_MIGRATION_DRY_RUN="1")
+
+    combined = dry.stdout + dry.stderr
+    assert dry.returncode != 0, f"a dry run must abort, not apply:\n{combined[-2000:]}"
+    assert "OrphanMigrationDryRun" in combined, combined[-2000:]
+    assert "population 0" in combined, combined[-2000:]
+
+    # Nothing written — not the ledger DDL, and above all not the stamp.
+    assert not _has_table(db_path, "legacy_row_adoptions")
+    assert _rows(db_path, "SELECT version_num FROM alembic_version") == [(_down_revision(),)]
+    assert _scalar(db_path, "SELECT COUNT(*) FROM auth_users WHERE id = ?", (_platform_id(),)) == 0
+
+    # The real run afterwards still creates the ledger: the dry run changed
+    # the outcome of nothing, it only declined to be that outcome.
+    wet = _run_alembic("upgrade", "head", database_url=url)
+    assert wet.returncode == 0, wet.stderr
+    assert _has_table(db_path, "legacy_row_adoptions")
+    assert _rows(db_path, "SELECT version_num FROM alembic_version") == [(_REVISION,)]
+    assert _owned_by_platform(db_path) == 0
 
 
 # ── 5. Idempotency ─────────────────────────────────────────────────────────

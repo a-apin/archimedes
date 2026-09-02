@@ -53,10 +53,13 @@ THE PRE-FLIGHT, AND WHY IT REFUSES
 
 ``population = candidates + rows already adopted by this revision``.
 
-  * ``population == 0`` -> no-op, silently. Every fresh database (CI, a dev
-    clone, ``alembic upgrade head`` from zero) lands here; refusing there
-    would break the replay-from-empty contract
-    ``test_alembic_upgrade_head_from_empty_db`` pins.
+  * ``population == 0`` -> no-op, silently (the ledger table is still
+    created, because it is schema). Every fresh database (CI, a dev clone,
+    ``alembic upgrade head`` from zero) lands here; refusing there would
+    break the replay-from-empty contract
+    ``test_alembic_upgrade_head_from_empty_db`` pins. Under
+    ``ORPHAN_MIGRATION_DRY_RUN`` this branch raises like every other, so a
+    rehearsal never writes the table or the version stamp.
   * ``0 < population < 140`` or ``population > 165`` -> **RAISE**. The owner
     decided about a measured population of 152 rows. The band is that figure
     ±≈8%: wide enough to absorb rows that self-healed between the measurement
@@ -115,9 +118,12 @@ all*, on any dialect — comes from ORDERING, not from rollback: every raise in
 ``upgrade()`` happens BEFORE the first DDL or DML statement. That ordering is
 load-bearing rather than stylistic, because pysqlite does not open a
 transaction for DDL, so a ``CREATE TABLE`` issued before the raise would
-survive the abort on SQLite even though it would roll back on Postgres. The
-one exception is the zero-population early return, which creates the ledger
-deliberately and writes nothing else.
+survive the abort on SQLite even though it would roll back on Postgres.
+There is NO exception: the zero-population early return creates the ledger
+deliberately on a real run, and re-checks the dry-run flag first so that a
+dry run against a database with no orphans also writes nothing — not the
+ledger, and not the ``alembic_version`` stamp that would silently mark this
+revision applied.
 
 ────────────────────────────────────────────────────────────────────────────
 IDEMPOTENCY AND DOWNGRADE
@@ -181,11 +187,18 @@ DRY_RUN_ENV = "ORPHAN_MIGRATION_DRY_RUN"
 
 _LEDGER = "legacy_row_adoptions"
 
-#: Every (table, column) in this schema that points at ``auth_users.id``.
-#: Read only by ``downgrade()``, to prove the platform account is unreferenced
-#: before deleting it. Derived by grepping every ``ForeignKey("auth_users.id")``
-#: under ``backend/archimedes/models/``; the CASCADE ones are the reason this
-#: list exists rather than a bare DELETE.
+#: Every DECLARED ``ForeignKey("auth_users.id")`` in this schema, grepped from
+#: ``backend/archimedes/models/``. Read only by ``downgrade()``, to prove the
+#: platform account is unreferenced before deleting it; the CASCADE ones are
+#: the reason this list exists rather than a bare DELETE.
+#:
+#: "Declared" is the exact word, not a hedge. ``payment_receipts.user_id``,
+#: ``generation_credits.user_id`` and ``free_generation_grants.user_id`` also
+#: hold an ``auth_users.id`` with no FK behind it, and are deliberately absent:
+#: all three are written only for an account that authenticated, and this
+#: account has no credential row and no session row, so it can never hold one.
+#: A future soft reference that a NON-login account CAN acquire must be added
+#: here, or the downgrade's DELETE would orphan it silently.
 _AUTH_USER_REFERENCES: tuple[tuple[str, str], ...] = (
     ("strategy_store", "owner_user_id"),  # SET NULL
     ("strategy_passports", "owner_user_id"),  # SET NULL
@@ -290,7 +303,9 @@ def _structural_failures(bind, candidates: dict[str, list[tuple[str, str]]]) -> 
         owned_twins = [
             row[0]
             for row in bind.execute(
-                sa.text(f"SELECT id FROM {twin_table} WHERE owner_user_id IS NOT NULL")  # identifiers are constants, never user input: literal table names
+                sa.text(
+                    f"SELECT id FROM {twin_table} WHERE owner_user_id IS NOT NULL"
+                )  # identifiers are constants, never user input: literal table names
             ).all()
             if row[0] in candidate_ids
         ]
@@ -314,10 +329,7 @@ def _structural_failures(bind, candidates: dict[str, list[tuple[str, str]]]) -> 
 
     # D3 — non-lowercase wallet.
     mixed = sorted(
-        f"{table}:{row_pk}"
-        for table, rows in candidates.items()
-        for row_pk, wallet in rows
-        if wallet != wallet.lower()
+        f"{table}:{row_pk}" for table, rows in candidates.items() for row_pk, wallet in rows if wallet != wallet.lower()
     )
     if mixed:
         failures.append(
@@ -397,6 +409,25 @@ def upgrade() -> None:
     )
 
     if population == 0:
+        # A DRY RUN WRITES NOTHING, INCLUDING HERE. This branch is the one
+        # place upgrade() writes before reaching the dry-run check below, so
+        # the check has to be repeated at the top of it — otherwise
+        # ORPHAN_MIGRATION_DRY_RUN=1 on a zero-population database creates the
+        # ledger, returns cleanly, and STAMPS alembic_version, marking the
+        # revision applied so the real run skips it. That is not a corner
+        # case: it is precisely the outcome the owner's rehearsal is meant to
+        # catch (if prod's orphans are mostly wallet-less, the count comes in
+        # under the band), and it would report success while quietly applying
+        # the revision.
+        if _dry_run_requested():
+            logger.info(
+                "#1283 DRY RUN — population 0: no orphaned legacy rows on this database. The real "
+                "run would create %s and write nothing else. Aborting so NOTHING is written, "
+                "alembic_version included; a non-zero exit here is expected.",
+                _LEDGER,
+            )
+            raise OrphanMigrationDryRun(f"{DRY_RUN_ENV} is set: plan logged, transaction aborted, nothing written.")
+
         # The ledger is SCHEMA, not data: a database with zero orphans (every
         # CI run, every fresh clone, ``alembic upgrade head`` from empty) must
         # still get the table, or an alembic-built database and a
@@ -435,9 +466,7 @@ def upgrade() -> None:
             n_candidates,
             _LEDGER,
         )
-        raise OrphanMigrationDryRun(
-            f"{DRY_RUN_ENV} is set: plan logged, transaction aborted, nothing written."
-        )
+        raise OrphanMigrationDryRun(f"{DRY_RUN_ENV} is set: plan logged, transaction aborted, nothing written.")
 
     _create_ledger(bind)
     if n_candidates == 0:
@@ -508,9 +537,7 @@ def downgrade() -> None:
         pk_by_table = dict(_adoptable_tables())
         rows = (
             bind.execute(
-                sa.text(
-                    "SELECT table_name, row_pk FROM legacy_row_adoptions WHERE adopted_by_user_id = :platform"
-                ),
+                sa.text("SELECT table_name, row_pk FROM legacy_row_adoptions WHERE adopted_by_user_id = :platform"),
                 {"platform": platform_user_id},
             )
             .mappings()
@@ -548,7 +575,9 @@ def downgrade() -> None:
             continue
         count = int(
             bind.execute(
-                sa.text(f"SELECT COUNT(*) FROM {table} WHERE {column} = :platform"),  # identifiers are constants, never user input
+                sa.text(
+                    f"SELECT COUNT(*) FROM {table} WHERE {column} = :platform"
+                ),  # identifiers are constants, never user input
                 {"platform": platform_user_id},
             ).scalar()
             or 0

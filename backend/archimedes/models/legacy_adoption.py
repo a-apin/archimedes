@@ -109,6 +109,46 @@ class LegacyRowAdoption(Base):
     )
 
 
+def platform_adopted_row_count(session, address: str) -> int:
+    """How many rows the platform holds for *address*, releasable on link.
+
+    The DISCOVERY half of the release. ``release_platform_adopted_rows`` below
+    is the door; this is the sign on it. Adoption stamps ``owner_user_id``, so
+    ``_wallet_has_unclaimed_legacy_data`` — which mirrors the claim loop's
+    ``owner_user_id IS NULL`` filter one-for-one — stops seeing an adopted row
+    the moment the migration runs, and ``GET /api/wallet/check`` starts
+    answering ``has_legacy_data: false`` for exactly the ~10 pre-account
+    wallets whose rows are sitting in the ledger. The relink banner
+    (``ui/src/AuthenticatedApp.jsx``) is gated on that boolean and nothing
+    else, so without this the real owner of an adopted row is never told the
+    row exists: a release path with a key and no sign, and adoption becomes a
+    silent one-way door in practice even though it is reversible in code.
+
+    Guarded on the ledger table's existence for the same reason
+    ``release_platform_adopted_rows`` is, and via the same
+    ``session.connection()`` inspector: this runs on the ``/check`` path of
+    every account that has an unlinked browser wallet, including on a database
+    that has not reached the adoption revision, where raising would turn a
+    "you have nothing to claim" answer into a 500.
+    """
+    import sqlalchemy as sa
+
+    from archimedes.models.account import PLATFORM_LEGACY_USER_ID
+
+    if not address:
+        return 0
+    if not sa.inspect(session.connection()).has_table(LegacyRowAdoption.__tablename__):
+        return 0
+    return (
+        session.query(LegacyRowAdoption)
+        .filter(
+            LegacyRowAdoption.prior_owner_wallet == address.strip().lower(),
+            LegacyRowAdoption.adopted_by_user_id == PLATFORM_LEGACY_USER_ID,
+        )
+        .count()
+    )
+
+
 def release_platform_adopted_rows(session, user_id: str, address: str, *, table_names: tuple[str, ...]) -> int:
     """Hand rows the platform adopted for *address* back to *user_id*.
 
