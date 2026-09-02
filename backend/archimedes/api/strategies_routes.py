@@ -1470,7 +1470,15 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
             asset_universe=tuple(asset_universe),
             deflated_sharpe_ratio=record.deflated_sharpe_ratio,
             dsr_p_value=record.dsr_p_value,
-            passes_rigor_gate=bool(record.passes_rigor_gate),
+            # The SAME derivation the badge uses twenty lines below, not the raw
+            # column. The comment there says deriving from the status "removes
+            # the last place the two could be served apart" — this was that
+            # place: one function reading the stored boolean here and the stored
+            # four-state there is precisely the two-sources-for-one-fact shape
+            # this ADR exists to remove. They agree today because the migration
+            # and the loader couple them; reading one field means they cannot
+            # stop agreeing.
+            passes_rigor_gate=_rigor_status == "pass",
         )
     )
 
@@ -1513,9 +1521,7 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         # Generated/fusion strategies carry a PERSISTED live-gate verdict written by
         # the generation pipeline (strategy_passports.passes_rigor_gate) — a stored
         # *live* verdict, not a fixture boolean — so it is a legitimate badge source
-        # per #821 ("read a persisted live-gate verdict"). Map it to the tri-state:
-        # a passport with no real backtest (sharpe_ratio is None) is "pending".
-        # A degenerate row is never a pass, whatever the stored boolean says.
+        # per #821 ("read a persisted live-gate verdict").
         # Coupled to the four-state below by construction, on the READ side too:
         # `passes` is `status == "pass"` and nothing else. The row's own
         # `passes_rigor_gate` column says the same thing (passport_loader writes

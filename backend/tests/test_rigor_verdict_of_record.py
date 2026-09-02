@@ -485,3 +485,85 @@ async def test_the_passport_payload_carries_its_verdicts_provenance():
     assert passport["gate_version"] == gate_version()
     assert passport["cohort_n"] == 1
     assert datetime.fromisoformat(passport["graded_at"]).replace(tzinfo=UTC) <= datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_the_detail_route_derives_the_boolean_even_when_the_row_has_them_apart():
+    """ONE function, ONE source for "does this pass".
+
+    ``_passport_to_strategy_response`` answers "does this strategy pass" twice:
+    once for the badge it serves, and once for the ``StrategyView`` it hands
+    ``classify_return_source``. Those two answers used to come from two
+    different fields — the derived four-state for the badge, the raw
+    ``record.passes_rigor_gate`` column for the classifier. The column and the
+    status agree today only because the migration and ``_apply_rigor_verdict``
+    couple them, which is exactly the "coupled by convention" shape this ADR
+    replaces with a structural one.
+
+    The row seeded here is a MIXED-VINTAGE row: ``rigor_gate_status = 'pending'``
+    beside ``passes_rigor_gate = 1``. That is not hypothetical — it is the
+    pre-ADR prod state (#1746), reachable again through any manual UPDATE or a
+    restored old backup. ``_passport_verdicts_for`` already promises the LIST
+    route cannot serve the two apart; this pins the same promise on the DETAIL
+    route, on both of its consumers.
+
+    MUTATION: restore ``passes_rigor_gate=bool(record.passes_rigor_gate)`` in the
+    ``StrategyView`` passed to ``classify_return_source``. The classifier then
+    sees ``True`` for a row the badge calls ``pending``, and the captured-view
+    assert reddens.
+    """
+    import archimedes.services.return_source_classifier as rsc
+    from archimedes.main import app
+    from sqlalchemy import text
+
+    with db.get_session() as session:
+        ingest_passport(
+            session,
+            _passport("mixed-vintage", real_sharpe=0.31, deflated_sharpe_ratio=0.21, dsr_p_value=0.44),
+            generation_method="fusion",
+            force_update=True,
+            owner_wallet=_W_OWNER,
+            rigor_verdict=RigorVerdictWrite(status="pending", cohort_n=1),
+        )
+        session.commit()
+
+    # Force the two apart, the way a legacy row or a hand-run UPDATE would.
+    with db.get_session() as session:
+        session.execute(
+            text("UPDATE strategy_passports SET passes_rigor_gate = 1 WHERE id = :i"),
+            {"i": "mixed-vintage"},
+        )
+        session.commit()
+
+    with db.get_session() as session:
+        stored = session.execute(
+            text("SELECT rigor_gate_status, passes_rigor_gate FROM strategy_passports WHERE id = :i"),
+            {"i": "mixed-vintage"},
+        ).one()
+    assert stored[0] == "pending" and bool(stored[1]) is True, "the row must really hold them apart"
+
+    # `strategies_routes` imports the classifier INSIDE the function, so the
+    # patch has to land on the defining module for the route to pick it up.
+    seen: list[bool] = []
+    original = rsc.classify_return_source
+
+    def _capture(view):
+        seen.append(view.passes_rigor_gate)
+        return original(view)
+
+    rsc.classify_return_source = _capture
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/strategies/mixed-vintage", cookies=_siwe_cookies(_W_OWNER))
+    finally:
+        rsc.classify_return_source = original
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The badge: derived from the stored four-state, never the stray boolean.
+    assert body["rigor_gate_status"] == "pending"
+    assert body["passes_rigor_gate"] is False
+
+    # The classifier: the SAME answer, from the SAME derivation.
+    assert seen == [False], f"classify_return_source was handed {seen}, not the derived verdict"
