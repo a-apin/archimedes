@@ -42,16 +42,16 @@ export const EVENT_LABELS = {
 	brief_validated: "Brief read",
 	pipeline_selected: "Pipeline chosen",
 	candidates_selected: "Candidates chosen",
-	agent_iteration: "Stage",
+	agent_iteration: "Progress",
 	tool_called: "Started",
 	tool_result: "Finished",
 	debate_turn: "Researcher argued",
 	debate_attribution: "Papers accounted for",
 	candidate_drafted: "Candidate drafted",
-	candidate_failed: "No candidate",
+	candidate_failed: "Candidate dropped",
 	candidate_evaluated: "Candidate graded",
 	best_selected: "Leader picked",
-	trace_hashed: "Reasoning hashed",
+	trace_hashed: "Provenance",
 	persisted: "Saved",
 	done: "Done",
 	error: "Error",
@@ -66,10 +66,18 @@ export const REGIME_BADGED_EVENTS = new Set([
 
 // ── Tool copy ───────────────────────────────────────────────────────────
 //
-// One entry per `tool_name` the backend actually emits (debate_engine.py's
-// `tool_called` / `tool_result` sites). `started` and `finished` are separate
-// sentences because "backtesting every survivor" and "backtested every
-// survivor" are different claims about where the run is.
+// One entry per `tool_name` the backend emits (debate_engine.py's `tool_called`
+// / `tool_result` sites). `started` and `finished` are separate sentences
+// because "backtesting every survivor" and "backtested every survivor" are
+// different claims about where the run is.
+//
+// Most tools emit only ONE of the two phases today: `tool_called` fires for
+// `propose_pool`, the four `debate_*_r1`/`_r2` turns and `evaluate_fusion_spec`;
+// `tool_result` fires for `propose_pool`, `debate_paper_verdicts`, `critic_prov`,
+// `critic_regime` and `synthesize`. So several sentences below are unreachable
+// as the backend stands. They are written anyway, and kept in sync with their
+// pair, so that a new emit site gets real copy instead of the generic
+// `Running <tool>` fallback — not because all twenty lines are on screen.
 //
 // An unknown tool falls back to naming it rather than inventing a description —
 // a new backend tool must not be narrated by copy written before it existed.
@@ -166,10 +174,10 @@ function turnFallbackHeadline(data) {
 // those are the numbers, not the jargon. Everything else lives in `eventDetail`.
 
 export const HEADLINES = {
+	// Label is "Queued"; the headline shows the brief rather than saying
+	// "Queued" a second time.
 	job_queued: (d) =>
-		d?.brief?.intent
-			? `Queued your brief: "${excerpt(d.brief.intent, 90)}"`
-			: "Queued your brief",
+		d?.brief?.intent ? `Your brief: "${excerpt(d.brief.intent, 90)}"` : "Your brief",
 	brief_validated: (d) =>
 		`Read your brief — ${d?.risk_appetite || "unspecified"} risk appetite`,
 	pipeline_selected: (d) =>
@@ -206,10 +214,21 @@ export const HEADLINES = {
 	},
 	candidate_failed: (d) => d?.message || "No candidate survived for this regime",
 	best_selected: (d) => `Picked the leading candidate out of ${Number(d?.considered_count) || 0} considered`,
+	// NOT "hashed the reasoning", and NOT "can't be edited after the fact" —
+	// both were false. `generation_pipeline._persist_candidate` keccaks the
+	// canonical `{brief, candidate_id, strategy_name, weights, rigor_verdict}`
+	// tuple: the debate transcript and `fusion_reasoning` are nowhere in the
+	// preimage. And nothing makes it tamper-evident — it lands as
+	// `strategy_store.provenance_hash`, the pipeline writes no ReasoningTrace
+	// and anchors nothing on chain (the docstring's "mirrored on-chain" is v1.5),
+	// while PATCH /api/strategies/{id} renames the row afterwards and
+	// deliberately does NOT recompute it. Claiming immutability here would also
+	// borrow the affordance `trace-binding.js` invented `anchored_only` to deny.
 	trace_hashed: (d) =>
-		`Hashed the reasoning so it can't be edited after the fact — ${String(d?.trace_hash || "").slice(0, 14)}…`,
-	persisted: () => "Saved to your Library",
-	done: () => "Done — the strategy is ready",
+		`Stamped this generation with a content hash — ${String(d?.trace_hash || "").slice(0, 14)}…`,
+	// Label is "Saved"; the headline says where, not the same word again.
+	persisted: () => "Now in your Library",
+	done: () => "Your strategy is ready",
 	error: (d) => d?.message || "Generation failed",
 };
 

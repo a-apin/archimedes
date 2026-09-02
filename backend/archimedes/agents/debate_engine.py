@@ -1304,13 +1304,19 @@ async def _run_debate_leaderboard(
     if transcript:
         attribution = _paper_attribution_entry(leader)
         if attribution is not None:
-            await emit.emit(
-                "debate_attribution",
-                candidate_id=candidate_id,
-                papers_offered=leader.papers_offered,
-                distinct_mechanism_papers=leader.distinct_mechanism_papers,
+            # Built as ONE dict rather than spread into keyword arguments: a
+            # `**sanitized` spread makes every key of the attribution entry a
+            # kwarg, so the day `_paper_attribution_entry` grows a
+            # `candidate_id` the call dies with "got multiple values for
+            # keyword argument". Merging instead lets the entry's own keys land
+            # and keeps the three stream-only fields authoritative.
+            payload = {
                 **sanitize_transcript([attribution])[0],
-            )
+                "candidate_id": candidate_id,
+                "papers_offered": leader.papers_offered,
+                "distinct_mechanism_papers": leader.distinct_mechanism_papers,
+            }
+            await emit.emit("debate_attribution", **payload)
     return leaderboard
 
 

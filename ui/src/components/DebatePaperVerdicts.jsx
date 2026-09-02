@@ -64,15 +64,32 @@ const VERDICT_TAG = {
 };
 
 // What each per-paper verdict MEANS, stated rather than left to be inferred
-// from a one-word chip. "unused" in particular is the interesting one: it is a
-// paper that was retrieved and put in front of the researchers and that neither
-// of them named — an absence the tally records on purpose rather than omitting.
+// from a one-word chip.
+//
+// Two of these are carefully weaker than they look, because the backend is:
+//
+//   * "unused" is NOT "shown to the researchers and ignored". The rows come
+//     from `evidence_by_id`, which `_propose_pool` defines as every paper that
+//     entered any PROPOSER prompt on this run. What the bull/bear turns are
+//     actually handed is `_candidate_cards` — only the papers cited by the top
+//     `_DEBATE_CARD_MAX` pool candidates — so most unused rows are papers the
+//     debaters never saw. The absence is still worth recording; it is just an
+//     absence of citation, not of attention.
+//   * "contested" does NOT imply two researchers. `_aggregate_paper_verdicts`
+//     sets it on `cited_by AND discarded_by` and never compares the lists, so
+//     the bull citing a paper in round 1 and dropping it in round 2 lands here
+//     with one role on both sides.
 const VERDICT_TITLE = {
 	cited: "At least one researcher rested a claim on this paper.",
 	discarded: "A researcher named this paper and threw it out.",
-	contested: "One researcher cited this paper; another threw it out.",
-	unused: "Retrieved and shown to the researchers, but neither one named it.",
+	contested: "Cited in one turn and thrown out in another.",
+	unused: "Retrieved for this run, but named by neither researcher.",
 };
+
+// Legend order — most-engaged first. Rendered visibly (below), not only as a
+// `title=` tooltip: this panel was built for an owner reading a generation on a
+// phone, where nothing hovers.
+const VERDICT_ORDER = ["cited", "contested", "discarded", "unused"];
 
 // ── One debate turn ─────────────────────────────────────────────────────
 
@@ -177,8 +194,8 @@ export default function DebatePaperVerdicts({ entry, compact = false, showSummar
 				<div style={{ overflowX: "auto", marginTop: 10 }}>
 					<table className="caption" style={{ width: "100%", borderCollapse: "collapse" }}>
 						<caption className="caption" style={{ captionSide: "top", textAlign: "left", paddingBottom: 6, color: "var(--text-3)" }}>
-							Every paper the researchers were shown — including the ones neither of
-							them named.
+							Every paper this run retrieved and put in front of the proposers —
+							including the ones the debate never named.
 						</caption>
 						<thead>
 							<tr style={{ textAlign: "left", color: "var(--text-3)" }}>
@@ -226,6 +243,24 @@ export default function DebatePaperVerdicts({ entry, compact = false, showSummar
 						</tbody>
 					</table>
 				</div>
+			)}
+			{/* The key, OUTSIDE the horizontal scroller above: on a narrow screen
+			    the table scrolls sideways and a legend inside it would scroll out
+			    of view with the columns it explains. Only the verdicts this run
+			    actually produced are listed — an empty category needs no key. */}
+			{rows.length > 0 && (
+				<ul
+					className="caption"
+					style={{ margin: "8px 0 0", padding: 0, listStyle: "none", color: "var(--text-3)" }}
+				>
+					{VERDICT_ORDER.filter((v) => rows.some((r) => (r?.verdict || "unused") === v)).map(
+						(v) => (
+							<li key={v} style={{ marginTop: 3 }}>
+								<span className={`tag ${VERDICT_TAG[v]}`}>{v}</span> {VERDICT_TITLE[v]}
+							</li>
+						),
+					)}
+				</ul>
 			)}
 		</div>
 	);

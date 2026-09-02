@@ -312,8 +312,14 @@ test("the dead t.strategy_id follow-back is gone from Reasoning.jsx", () => {
 
 test("StrategyReasoning keeps the debate and the trading decisions separate", () => {
 	const panel = src("components/StrategyReasoning.jsx");
-	assert.ok(panel.includes("Generation debate"));
-	assert.ok(panel.includes("Trading decisions"));
+	// The RENDERED headings, not the section-divider comments. This pair used to
+	// read `"Generation debate"` / `"Trading decisions"`, which the engine-named
+	// headings ("Strategy engine — generation debate") no longer contain in that
+	// casing — the assertion survived only on the `// ── Generation debate ──`
+	// comment above the function and went vacuous. Verified: blanking both
+	// headings now fails here.
+	assert.ok(panel.includes("Strategy engine — generation debate"));
+	assert.ok(panel.includes("Execution engine — trading decisions"));
 	// A debate turn is anchored nowhere; it must not be rendered through the
 	// anchoring badge that trace rows use.
 	const debateStart = panel.indexOf("function GenerationDebate");

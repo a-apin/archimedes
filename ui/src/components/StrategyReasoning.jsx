@@ -337,9 +337,16 @@ export default function StrategyReasoning({ strategyId, onNavigate }) {
 				<div className="label mb-2" style={{ fontSize: "0.75rem" }}>
 					Execution engine — trading decisions
 				</div>
+				{/* Deliberately NOT "the Reasoning page carries only this engine's
+				    traces": /app/reasoning still advertises a `construction` filter
+				    and "a strategy construction from the Generate page" in its own
+				    blurb, which is strategy-engine reasoning sitting on the execution
+				    page. That is filed as its own issue; until it lands, this
+				    sentence may state what IS true — the debate above is not there —
+				    without claiming the page is already clean. */}
 				<p className="caption mb-2 leading-relaxed max-w-[640px]">
-					The Reasoning page carries this engine's traces across every strategy
-					and vault — nothing from the generation debate above appears there,
+					The Reasoning page carries the execution engine's traces across every
+					strategy and vault; the generation debate above is not among them,
 					because an argument is not a decision that moved money.
 				</p>
 				<TradingDecisions strategyId={strategyId} onNavigate={onNavigate} />

@@ -242,10 +242,65 @@ test("tool copy distinguishes starting from finishing, and never narrates an unk
 		assert.ok(copy.started && copy.finished, `${tool} is missing a phase`);
 		assert.notEqual(copy.started, copy.finished, `${tool} says the same thing twice`);
 	}
+	// NOT a claim that all twenty sentences reach a screen: the backend emits
+	// `tool_called` for six tools and `tool_result` for five, so several are
+	// unreachable fallbacks kept in sync with their pair (documented at the
+	// TOOL_COPY definition). What is pinned here is that the pair never says the
+	// same thing twice — a `finished` sentence must not be the `started` one.
+	//
 	// A tool this copy predates is NAMED, not described — describing it would be
 	// a claim about behaviour written before the behaviour existed.
 	assert.equal(eventHeadline("tool_called", { tool_name: "some_future_tool" }), "Running some_future_tool");
 	assert.equal(eventHeadline("tool_result", { tool_name: "some_future_tool" }), "Finished some_future_tool");
+});
+
+test("the hash line claims a stamp, never immutability", () => {
+	// The old copy said "Hashed the reasoning so it can't be edited after the
+	// fact" and both halves were false. `_persist_candidate` keccaks
+	// `{brief, candidate_id, strategy_name, weights, rigor_verdict}` — the
+	// transcript is not in the preimage — and stores it as
+	// `strategy_store.provenance_hash`: the generation pipeline writes no
+	// ReasoningTrace and anchors nothing, while PATCH /api/strategies/{id}
+	// renames the row afterwards and deliberately does not recompute it.
+	//
+	// MUTATION (verified red): restore the old sentence.
+	const line = eventHeadline("trace_hashed", FIXTURES.trace_hashed);
+	assert.match(line, /Stamped this generation with a content hash/);
+	assert.ok(line.includes("6ae4b039607e14"));
+	for (const claim of [
+		/can't be edited/i,
+		/cannot be edited/i,
+		/tamper/i,
+		/immutable/i,
+		/anchor/i,
+		/on-chain/i,
+		/verified/i,
+	]) {
+		assert.doesNotMatch(line, claim, `the hash line claims ${claim}`);
+	}
+	// …and the same restraint in the label above it: the hash covers no reasoning.
+	assert.doesNotMatch(EVENT_LABELS.trace_hashed, /Reasoning/);
+});
+
+test("no log row says its label twice", () => {
+	// "Stage — Stage 3 of 4", "Saved — Saved to your Library". The row renders
+	// `<label> — <headline>`; a headline that opens by repeating its own label
+	// wastes the only line a phone shows.
+	//
+	// It pins the LABEL against server text too, not just our own sentences:
+	// `candidate_failed` and `error` render the backend's `message` verbatim, and
+	// this is what caught `"No candidate"` labelling "No candidate beat the
+	// passive null". The fixture messages are the real ones the pipeline emits.
+	//
+	// MUTATION (verified red): set `persisted: () => "Saved to your Library"`.
+	for (const name of Object.keys(EVENT_LABELS)) {
+		const label = EVENT_LABELS[name];
+		const line = eventHeadline(name, FIXTURES[name]);
+		assert.ok(
+			!line.toLowerCase().startsWith(label.toLowerCase()),
+			`${name} renders "${label} — ${line}"`,
+		);
+	}
 });
 
 test("the stream links to the full transcript instead of ending at the Library", () => {
@@ -262,8 +317,16 @@ test("the passport names both engines", () => {
 	const panel = src("components/StrategyReasoning.jsx");
 	assert.match(panel, /Strategy engine — generation debate/);
 	assert.match(panel, /Execution engine — trading decisions/);
-	// …and points at where the other one lives.
-	assert.match(panel, /The Reasoning page carries this engine's traces/);
+	// …and points at where the other one lives, WITHOUT claiming that page is
+	// already clean. /app/reasoning still advertises a `construction` filter and
+	// "a strategy construction from the Generate page"; the honest sentence is
+	// that the debate above is not among its traces, not that nothing from the
+	// strategy engine reaches it.
+	//
+	// MUTATION (verified red): restore "carries this engine's traces … nothing
+	// from the generation debate above appears there".
+	assert.match(panel, /The Reasoning page carries the execution engine's traces/);
+	assert.doesNotMatch(panel, /nothing from the generation debate above appears there/);
 });
 
 test("the execution Reasoning page carries none of the generation debate", () => {
@@ -294,14 +357,55 @@ test("the passport panel reads the per-paper record, not just the summary senten
 	assert.match(renderer, /discarded_by/);
 	// The four verdicts the backend actually produces, each explained rather
 	// than left as a bare chip. "unused" is the load-bearing one: a paper that
-	// was retrieved, shown, and named by nobody.
+	// was retrieved for this run and named by neither researcher.
 	for (const verdict of ["cited", "discarded", "contested", "unused"]) {
 		assert.ok(renderer.includes(verdict), `the ${verdict} verdict is unrendered`);
 	}
-	assert.match(renderer, /Retrieved and shown to the researchers, but neither one named it\./);
+	assert.match(renderer, /Retrieved for this run, but named by neither researcher\./);
 	// It renders no anchoring claim: an argument moved no money.
 	assert.ok(!renderer.includes("AnchorBadge"));
 	assert.ok(!renderer.includes("anchorState"));
+});
+
+test("the per-paper copy claims only what the backend actually recorded", () => {
+	// Two overclaims this copy is easy to write and the backend does not support.
+	//
+	// 1. The rows are `evidence_by_id` — "every paper that entered ANY PROPOSER
+	//    prompt on this run" (debate_engine._propose_pool). The bull/bear turns
+	//    are handed `_candidate_cards`: only the papers cited by the top
+	//    `_DEBATE_CARD_MAX` pool candidates. So "shown to the researchers" is
+	//    false of most `unused` rows — they were retrieved for the proposers and
+	//    the debaters never saw them.
+	// 2. `_aggregate_paper_verdicts` sets `contested` on `cited_by AND
+	//    discarded_by` and never compares the lists, so one role citing in round
+	//    1 and discarding in round 2 lands there. "One researcher cited this
+	//    paper; another threw it out" invents a second researcher.
+	//
+	// MUTATION (verified red): restore either sentence.
+	const renderer = src("components/DebatePaperVerdicts.jsx");
+	// The chip legend itself, not the file — the comment above it explains what
+	// the copy may NOT say and would otherwise trip its own guard.
+	const start = renderer.indexOf("const VERDICT_TITLE = {");
+	assert.ok(start !== -1, "VERDICT_TITLE is gone");
+	const titles = renderer.slice(start, renderer.indexOf("};", start));
+	assert.doesNotMatch(titles, /shown to the researchers/);
+	assert.doesNotMatch(titles, /another threw it out/);
+	assert.match(titles, /Retrieved for this run, but named by neither researcher\./);
+	assert.match(titles, /Cited in one turn and thrown out in another\./);
+	// …and the table's own caption.
+	assert.doesNotMatch(renderer, /Every paper the researchers were shown/);
+	assert.match(renderer, /put in front of the proposers/);
+});
+
+test("the verdict meanings are visible, not hover-only", () => {
+	// VERDICT_TITLE shipped as a `title=` tooltip only. The owner reads this on a
+	// phone, where nothing hovers, so the chip was a bare word with no key.
+	//
+	// MUTATION (verified red): delete the legend list — VERDICT_TITLE then
+	// appears exactly once, inside the `title={...}` attribute.
+	const renderer = src("components/DebatePaperVerdicts.jsx");
+	assert.match(renderer, /VERDICT_ORDER/);
+	assert.match(renderer, /\{VERDICT_TITLE\[v\]\}/);
 });
 
 test("the attribution entry is split out of the turns rather than walked as one", () => {
