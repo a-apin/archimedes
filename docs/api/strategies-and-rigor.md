@@ -8,9 +8,16 @@ gate that grades every strategy on DSR (Deflated Sharpe Ratio), PBO
 before it is allowed to be promoted from `candidate` to `validated` or bound
 into a vault's `strategy_ids`. The badge (`passes_rigor_gate` /
 `rigor_gate_status`) and the numeric rigor fields served by `GET
-/api/strategies/` and `GET /api/strategies/{id}` come from the **same live
-gate run** `GET /api/selection-bias/gate` uses — none of these surfaces can
-disagree with another for the same strategy at the same strictness level.
+/api/strategies/` and `GET /api/strategies/{id}` are the **stored verdict of
+record** — graded once at backtest time and persisted on the strategy's
+passport row with its provenance (`gate_version`, `graded_at`, `cohort_n`;
+see the ADR `rigor-verdict-of-record`). `GET /api/selection-bias/gate/{id}`
+is different: it **recomputes** the gate live on every call (it backs the
+Deploy ladder and the vault deploy gate). The two can therefore differ in
+vintage for the same strategy until the row is explicitly re-graded; when
+they do, the passport row is the verdict of record and the live route is a
+fresh opinion. Curated strategies currently serve `pending` on the stored
+path until they are graded (PR-B of the same program).
 
 **Auth model.** Reads are anonymous by default — the library, passports,
 stress testing, and every `/api/selection-bias/*` route are public.
