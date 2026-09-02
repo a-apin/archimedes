@@ -23,6 +23,18 @@ is visible to *this* caller (private-until-published, 404-hides-existence) —
 absence of that proof is a normal anonymous request, never an error. Examples
 needing a session assume an authenticated cookie jar at `/tmp/session.jar`.
 
+**This is the API surface, not the web app.** #1753 gated the browser pages for
+the leaderboard and the strategy passport (`/app/leaderboard`,
+`/app/strategy/{id}`) — an anonymous browser request for either is answered with
+`302 /sign-in?next=…`. The endpoints below did **not** change: `GET
+/api/strategies/passports/{id}` and `GET /api/leaderboard` are still anonymous,
+because they are the contract the CLI (`archimedes generate`, which prints a
+passport URL) and the MCP server (`archimedes_passport`, `archimedes_leaderboard`)
+call, and because curated/published rows are public by the visibility matrix in
+`services/strategy_visibility.py` — none of that was ever justified by the
+anonymous *page*. The page gate and the route gate are separate decisions, and
+this doc describes only the second.
+
 ## Library & strategy endpoints
 
 ### GET /api/strategies/

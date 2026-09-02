@@ -433,7 +433,7 @@ test("metadata and sitemap describe canonical anonymous public routes", () => {
 		sitemap,
 		/<loc>https:\/\/archimedes-arc\.com\/architecture<\/loc>/,
 	);
-	for (const route of ["explore", "leaderboard", "corpus"]) {
+	for (const route of ["explore", "corpus"]) {
 		assert.match(
 			sitemap,
 			new RegExp(`<loc>https://archimedes-arc\\.com/${route}</loc>`),
@@ -446,6 +446,18 @@ test("metadata and sitemap describe canonical anonymous public routes", () => {
 	// guard and its rationale. Asserting its ABSENCE here, rather than just
 	// deleting it from the loop, keeps this test honest about the change.
 	assert.doesNotMatch(sitemap, /insights/i);
+	// `leaderboard` left the loop the same way with #1753 (the owner's
+	// call): /app/leaderboard is gated at nginx now, so the URL a
+	// crawler would follow answers 302 /sign-in and indexes nothing. Its
+	// <loc> ABSENCE is asserted rather than merely un-asserted — the sitemap
+	// must not advertise a page an anonymous visitor cannot read. (Unlike
+	// insights, the leaderboard's EXISTENCE is not a secret, so this is the
+	// <loc>-only form, not sitemap.test.js's whole-file form: the header
+	// comment names it and says why it is excluded.)
+	assert.doesNotMatch(
+		sitemap,
+		/<loc>https:\/\/archimedes-arc\.com\/leaderboard<\/loc>/,
+	);
 	assert.doesNotMatch(
 		sitemap,
 		/<loc>https:\/\/archimedes-arc\.com\/(marketplace|portfolio|publish|subscriptions)<\/loc>/,
