@@ -121,8 +121,9 @@ class ReturnPoint(BaseModel):
     daily_return: float
 
 
-# #1749: the ceiling on a verify payload belongs to the APPLICATION, at a number
-# we chose, not to whatever byte count the edge happens to enforce.
+# #1749: the size ceiling on a verify payload belongs to the APPLICATION, at a
+# row count we chose, instead of being set implicitly by whatever byte count the
+# edge happens to enforce.
 #
 # Until this cap existed, `returns` had `min_length=1` and no upper bound, so the
 # only ceiling anywhere in the path was AWS WAF's `SizeRestrictions_BODY` —
@@ -136,10 +137,13 @@ class ReturnPoint(BaseModel):
 # 2,600 rows is a decade of daily bars (10 x 252 = 2,520, plus headroom for
 # leap-year/exchange-calendar variation). A full-cap payload measures ~122 KB of
 # JSON with 6-decimal returns and extrapolates to ~131 KB at the 50.5 B/row seen
-# in production — comfortably inside FastAPI/uvicorn's defaults, and small
-# enough that the DSR/OOS math stays sub-second. A decade is the honest outer
-# edge of what a daily-bar rigor verdict can claim anyway; beyond it the caller
-# wants a different endpoint, not a bigger POST.
+# in production — well under nginx's implicit 1 MB `client_max_body_size`
+# default (nginx/nginx.conf sets none; nginx is the ALB target, infra/ecs.tf),
+# which with the WAF exception in place is now the only BYTE ceiling on this
+# path. Note this is a ROW cap: FastAPI buffers and json-parses the entire body
+# before dependencies or field validation run, so an over-cap — or
+# unauthenticated — request is still parsed in full first. It is also small
+# enough that the DSR/OOS math stays sub-second.
 #
 # Fail-closed: over the cap is a 422 with a message that names the limit, the
 # count received and the reason — never a truncation, never a silent accept.
@@ -162,9 +166,8 @@ class RigorVerifyRequest(BaseModel):
         if isinstance(value, list) and len(value) > _MAX_RETURN_ROWS:
             raise ValueError(
                 f"returns has {len(value)} rows; the maximum is {_MAX_RETURN_ROWS} "
-                f"(~10 years of daily bars). Split the series or aggregate to a "
-                f"coarser frequency — a rigor verdict over a longer daily window "
-                f"is not something this endpoint can honestly compute."
+                f"(~10 years of daily bars). This is a payload cap, not a statistical "
+                f"one: split the series or aggregate to a coarser frequency."
             )
         return value
 

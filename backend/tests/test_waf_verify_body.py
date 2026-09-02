@@ -28,13 +28,20 @@ The fix is deliberately SCOPED, and these tests exist to keep it scoped:
     "EXACTLY"` matters: widening it to a `/api/*` prefix would hand every API
     route an unlimited body, which is the DoS/parser-abuse control the managed
     rule was there to provide;
+  * the rule's statement NESTING is asserted as a parsed tree, not as substrings.
+    `not_statement { and_statement { size, byte_match } }` — the negation wrapped
+    AROUND the pair rather than ANDed beside the size test — is valid HCL, passes
+    `terraform validate`, and contains every string a substring guard looks for,
+    while meaning "block everything EXCEPT an oversize POST to /api/rigor/verify":
+    a site-wide outage the moment it is applied;
   * the application, not the edge, owns the real ceiling — `RigorVerifyRequest`
     caps `returns` at 2,600 rows (a decade of daily bars) and fails closed with
     a 422 that names the limit.
 
 `terraform validate` cannot catch any of this. A deleted override, an override
-on the wrong rule name, a prefix-widened exception and a custom rule ordered
-ahead of the managed group are all syntactically valid HCL.
+on the wrong rule name, a prefix-widened exception, an inverted NOT/AND nesting
+and a custom rule ordered ahead of the managed group are all syntactically valid
+HCL.
 
 Hermetic: reads one file from the repo and exercises the pydantic model plus the
 router over an in-process ASGI transport. No AWS, no terraform binary, no
@@ -126,6 +133,177 @@ def _collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# ── Structural reader: the statement TREE, not the strings in it ─────────
+#
+# Substring assertions cannot see nesting. `not_statement { statement {
+# and_statement { size, byte_match } } }` contains every token that
+# `and_statement`/`not_statement`/`EXACTLY` string checks look for, is valid
+# HCL, passes `terraform validate` — and means "block everything EXCEPT an
+# oversize POST to /api/rigor/verify", i.e. a site-wide outage on apply. So the
+# rule's statement tree is parsed and asserted node by node instead.
+
+_TRAILING_IDENT = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*)\s*\Z")
+
+
+def _skip_string(text: str, i: int) -> int:
+    """Index just past the double-quoted string starting at `i`."""
+    i += 1
+    while i < len(text) and text[i] != '"':
+        i += 2 if text[i] == "\\" else 1
+    return i + 1
+
+
+def _child_blocks(body: str) -> list[tuple[str, str]]:
+    """Direct child `label { ... }` blocks of an HCL block body, in source order.
+
+    Quoted strings are skipped, so `"${var.project_name}-oversize-body"` does not
+    open a block. Attribute lines (`size = 8192`) are not blocks and are ignored.
+    """
+    blocks: list[tuple[str, str]] = []
+    depth, label, opened_at, i = 0, None, 0, 0
+    while i < len(body):
+        char = body[i]
+        if char == '"':
+            i = _skip_string(body, i)
+            continue
+        if char == "{":
+            if depth == 0:
+                found = _TRAILING_IDENT.search(body, 0, i)
+                label, opened_at = (found.group(1) if found else None), i
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            assert depth >= 0, "unbalanced braces in infra/waf.tf"
+            if depth == 0 and label is not None:
+                blocks.append((label, body[opened_at + 1 : i]))
+                label = None
+        i += 1
+    assert depth == 0, "unterminated block in infra/waf.tf"
+    return blocks
+
+
+def _own_attrs(body: str) -> str:
+    """`body` with every child block's contents blanked — attributes of THIS block only."""
+    kept, depth, i = [], 0, 0
+    while i < len(body):
+        char = body[i]
+        if char == '"':
+            end = _skip_string(body, i)
+            kept.append(body[i:end] if depth == 0 else " " * (end - i))
+            i = end
+            continue
+        if char == "{":
+            depth += 1
+            kept.append("{" if depth == 1 else " ")
+        elif char == "}":
+            kept.append("}" if depth == 1 else " ")
+            depth -= 1
+        else:
+            kept.append(char if depth == 0 else ("\n" if char == "\n" else " "))
+        i += 1
+    return "".join(kept)
+
+
+def _attr(body: str, key: str) -> str | None:
+    """Value of `key = ...` declared directly on this block (never on a child)."""
+    found = re.search(rf"^\s*{re.escape(key)}\s*=\s*(\S.*?)\s*$", _own_attrs(body), re.MULTILINE)
+    return found.group(1) if found else None
+
+
+def _sole_child(body: str, label: str, *, where: str) -> str:
+    """The body of the ONLY child block, which must be named `label`.
+
+    Strict on purpose: this is what makes an inverted nesting fail. A
+    `not_statement` wrapped around the `and_statement` shows up here as the sole
+    child being `not_statement` instead of `and_statement`.
+    """
+    labels = [name for name, _ in _child_blocks(body)]
+    assert labels == [label], f"{where} must contain exactly one block, `{label} {{...}}`; got {labels}"
+    return _child_blocks(body)[0][1]
+
+
+def _named_child(body: str, label: str, *, where: str) -> str:
+    """The body of the one child block named `label` (siblings of other kinds allowed)."""
+    matches = [child for name, child in _child_blocks(body) if name == label]
+    assert len(matches) == 1, f"{where} must have exactly one `{label}` block; found {len(matches)}"
+    return matches[0]
+
+
+def _descendant_labels(body: str) -> list[str]:
+    labels: list[str] = []
+    for name, child in _child_blocks(body):
+        labels.append(name)
+        labels.extend(_descendant_labels(child))
+    return labels
+
+
+def _verify_rule_statement_tree() -> tuple[str, str]:
+    """Assert the custom rule's EXACT statement nesting; return (size body, byte_match body).
+
+        rule
+          statement
+            and_statement
+              statement -> size_constraint_statement      (the 8 KB ceiling)
+              statement -> not_statement
+                            statement -> byte_match_statement   (the one exempt path)
+
+    The two branches are SIBLINGS. If the `not_statement` were an ancestor of the
+    size constraint instead, the rule would read "block everything except an
+    oversize POST to /api/rigor/verify" — every other request on the site, of any
+    size, blocked at the edge.
+    """
+    rule = _rule_block(CUSTOM_RULE_NAME)
+    top = _named_child(rule, "statement", where=f"rule {CUSTOM_RULE_NAME!r}")
+
+    # The top-level statement must BE the and_statement. Anything wrapped around
+    # it — a not_statement above all, an or_statement — changes what the rule
+    # means while leaving every substring intact.
+    and_body = _sole_child(top, "and_statement", where="rule.statement")
+
+    branches = _child_blocks(and_body)
+    assert [name for name, _ in branches] == ["statement", "statement"], (
+        "rule.statement.and_statement must hold exactly two `statement` branches — "
+        f"the size test and the negated path test; got {[name for name, _ in branches]}"
+    )
+    kinds = {
+        _child_blocks(branch)[0][0]: _sole_child(branch, _child_blocks(branch)[0][0], where="an and_statement branch")
+        for _, branch in branches
+    }
+    assert set(kinds) == {"size_constraint_statement", "not_statement"}, (
+        "the and_statement's two branches must be a size_constraint_statement and a "
+        f"not_statement, as SIBLINGS; got {sorted(kinds)}"
+    )
+
+    size = kinds["size_constraint_statement"]
+    negated = kinds["not_statement"]
+
+    # The negation must not contain the size test: nesting it there is the
+    # inversion this function exists to catch.
+    assert "size_constraint_statement" not in _descendant_labels(negated), (
+        "the not_statement must NOT wrap the size constraint — that inverts the rule "
+        "into a site-wide block of everything except an oversize verify POST"
+    )
+
+    inner = _sole_child(negated, "statement", where="rule.statement.and_statement.*.not_statement")
+    byte_match = _sole_child(inner, "byte_match_statement", where="the not_statement's inner statement")
+
+    # Exactly one of each in the whole rule: no second size test, no smuggled
+    # extra path exception, no or_statement anywhere.
+    labels = _descendant_labels(rule)
+    for label, expected in (
+        ("and_statement", 1),
+        ("not_statement", 1),
+        ("size_constraint_statement", 1),
+        ("byte_match_statement", 1),
+        ("or_statement", 0),
+    ):
+        assert labels.count(label) == expected, (
+            f"rule {CUSTOM_RULE_NAME!r} must contain exactly {expected} `{label}`; found {labels.count(label)}"
+        )
+
+    return size, byte_match
+
+
 # ── 1. The override exists, on the right rule, in the right group ────────
 
 
@@ -167,33 +345,66 @@ def test_custom_rule_blocks_oversize_bodies():
     rule = _rule_block(CUSTOM_RULE_NAME)
     assert "block {}" in _collapse(_brace_block(rule, "action")), "the replacement rule must BLOCK"
 
-    size = _brace_block(rule, "size_constraint_statement")
-    collapsed = _collapse(size)
-    assert 'comparison_operator = "GT"' in collapsed
-    assert f"size = {REGIONAL_BODY_INSPECTION_LIMIT}" in collapsed, (
-        f"the replacement must keep the managed rule's own {REGIONAL_BODY_INSPECTION_LIMIT}-byte ceiling"
+    size, _ = _verify_rule_statement_tree()
+    assert _attr(size, "comparison_operator") == '"GT"'
+    assert _attr(size, "size") == str(REGIONAL_BODY_INSPECTION_LIMIT), (
+        f"the replacement must keep the managed rule's own {REGIONAL_BODY_INSPECTION_LIMIT}-byte "
+        f"ceiling; got size = {_attr(size, 'size')}"
     )
-    body = _collapse(_brace_block(size, "body"))
-    assert 'oversize_handling = "MATCH"' in body, (
+    field = _named_child(size, "field_to_match", where="the size_constraint_statement")
+    measured = _sole_child(field, "body", where="the size_constraint_statement's field_to_match")
+    assert _attr(measured, "oversize_handling") == '"MATCH"', (
         "on an ALB only the first 8 KB reaches WAF, so the GT comparison alone can "
-        'never fire; oversize_handling = "MATCH" is what blocks a >8 KB body'
+        'never fire; oversize_handling = "MATCH" on `body` is what blocks a >8 KB body; '
+        f"got field_to_match -> body {{ oversize_handling = {_attr(measured, 'oversize_handling')} }}"
     )
+    transform = _named_child(size, "text_transformation", where="the size_constraint_statement")
+    assert _attr(transform, "type") == '"NONE"', "the body must be measured as sent, untransformed"
 
 
 def test_the_exception_is_exactly_the_verify_path_and_is_negated():
-    rule = _rule_block(CUSTOM_RULE_NAME)
-    negated = _brace_block(rule, "not_statement")
-    byte_match = _collapse(_brace_block(negated, "byte_match_statement"))
-    assert f'search_string = "{VERIFY_PATH}"' in byte_match, (
-        f"the exception must be the literal path {VERIFY_PATH}; got: {byte_match}"
+    _, byte_match = _verify_rule_statement_tree()
+    assert _attr(byte_match, "search_string") == f'"{VERIFY_PATH}"', (
+        f"the exception must be the literal path {VERIFY_PATH}; got: {_collapse(_own_attrs(byte_match))}"
     )
-    assert 'positional_constraint = "EXACTLY"' in byte_match, (
+    assert _attr(byte_match, "positional_constraint") == '"EXACTLY"', (
         "EXACTLY, never a prefix — a /api/* widening would lift the body ceiling off every API route"
     )
-    assert "uri_path {}" in byte_match, "the exception must match on uri_path"
-    # The negation has to be ANDed with the size test, not left dangling: an
-    # or_statement here would block every request to every other path.
-    assert "and_statement" in _collapse(rule)
+    field = _named_child(byte_match, "field_to_match", where="the byte_match_statement")
+    assert [name for name, _ in _child_blocks(field)] == ["uri_path"], (
+        "the exception must match on uri_path, not on headers, the query string or the body; "
+        f"got field_to_match {{ {_collapse(field)} }}"
+    )
+    transform = _named_child(byte_match, "text_transformation", where="the byte_match_statement")
+    assert _attr(transform, "type") == '"NONE"', (
+        "NONE: the path is compared as sent, so every encoded/case variant of the "
+        "verify path falls through to blocked rather than exempt"
+    )
+
+
+def test_the_negation_is_a_sibling_of_the_size_test_not_a_wrapper():
+    """Adversarial: the inversion that every substring guard passes.
+
+    `not_statement { statement { and_statement { size, byte_match } } }` is valid
+    HCL, passes `terraform validate`, and contains `and_statement`,
+    `not_statement`, `EXACTLY` and the verify path — everything the old string
+    assertions looked for. It means the OPPOSITE of the intended rule: block
+    every request site-wide except an oversize POST to /api/rigor/verify. On
+    apply that is a total outage, so the nesting is asserted structurally.
+    """
+    _verify_rule_statement_tree()
+
+    rule = _rule_block(CUSTOM_RULE_NAME)
+    top = _named_child(rule, "statement", where=f"rule {CUSTOM_RULE_NAME!r}")
+    assert _child_blocks(top)[0][0] == "and_statement", (
+        "the rule's top-level statement must BE the and_statement; wrapping it in a "
+        f"not_statement inverts the rule into a site-wide block. got: {_collapse(top)[:120]}"
+    )
+    # …and the path negation lives strictly beneath it, on one of its branches.
+    and_body = _sole_child(top, "and_statement", where="rule.statement")
+    assert "not_statement" in _descendant_labels(and_body), (
+        "the size test and the negated path test must be SIBLING statements inside the and_statement"
+    )
 
 
 def test_no_wildcard_or_prefix_exception_anywhere_in_the_custom_rule():
@@ -242,8 +453,8 @@ def test_a_decade_of_daily_bars_fits_under_the_cap():
     assert _MAX_RETURN_ROWS == 2600
     assert _MAX_RETURN_ROWS >= 10 * 252, "the cap must admit ten years of daily bars"
     payload = len(json.dumps({"returns": _rows(_MAX_RETURN_ROWS), "trials": 1}, separators=(",", ":")).encode())
-    assert 100_000 < payload < 200_000, (
-        f"a full-cap payload is {payload} B; the ~135 KB claim in the code comment is wrong"
+    assert 118_000 < payload < 126_000, (
+        f"a full-cap payload is {payload} B; the ~122 KB measured claim in the code comment and the PR body is wrong"
     )
 
 
