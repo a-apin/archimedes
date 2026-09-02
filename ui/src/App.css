@@ -6323,16 +6323,48 @@ body:has(.public-site) {
 	color: var(--accent-text, var(--accent));
 }
 
+/* The hero's resting appearance must come from the cascade, never from a
+   retained animation value — issue #1750.
+
+   What broke: this keyframe declared only a `from` frame and both rules below
+   used `animation-fill-mode: both`. `both` adds the backwards fill (the first
+   frame, opacity 0, applied before the animation starts) *and* the forwards
+   fill (the last frame, applied after it ends) — and with no `to` frame the
+   last frame is one the UA synthesises from the element's underlying style.
+   Nothing in the hero declares an opacity of its own (the only `opacity` in
+   this whole block was the `from` frame), so opacity 0 was the only value the
+   stylesheet ever stated, and the hero's visibility depended entirely on the
+   animation running to completion *and* on that implicit frame resolving to 1.
+   When it didn't, the hero's children painted at opacity 0 over
+   `.public-hero__stage`'s own `--public-stage` (#0c0c11) — the solid black
+   void in #1750.
+
+   The two halves of the fix, and what each one buys:
+   • an explicit `to` frame: the end state is stated, so a forwards fill can
+     never resolve to an implicit frame the UA has to synthesise.
+   • `backwards` instead of `both`: no forwards fill at all, so once the
+     animation is over the element is drawn from its own cascade — where
+     opacity is 1 — rather than from a value the animation left behind.
+   Together: with the animation absent, idle, or finished, the hero is visible.
+   opacity 0 remains only *while* the animation is running (the ≤120ms delay
+   window and the fade itself), which is the animation doing its job.
+
+   Guard: ui/test/public-hero-visible-at-rest.test.js. */
 @keyframes public-arrive {
 	from {
 		opacity: 0;
 		transform: translateY(10px);
 	}
+
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
 
 @media (prefers-reduced-motion: no-preference) {
 	.public-hero__copy > * {
-		animation: public-arrive 360ms both;
+		animation: public-arrive 360ms backwards;
 	}
 
 	.public-hero__copy > :nth-child(2) {
@@ -6345,7 +6377,20 @@ body:has(.public-site) {
 
 	.public-hero__copy > :nth-child(4),
 	.public-product-frame {
-		animation: public-arrive 400ms 120ms both;
+		animation: public-arrive 400ms 120ms backwards;
+	}
+}
+
+/* Belt and braces. The rules above already sit inside a
+   `prefers-reduced-motion: no-preference` block, so a reduce preference never
+   applies them today — this block states the intent anyway, so that hoisting
+   the animation out of that media query (or adding another `public-arrive`
+   user outside it) cannot silently hand reduced-motion visitors an entrance
+   animation, and an opacity-0 entry state, that they asked not to have. */
+@media (prefers-reduced-motion: reduce) {
+	.public-hero__copy > *,
+	.public-product-frame {
+		animation: none;
 	}
 }
 
