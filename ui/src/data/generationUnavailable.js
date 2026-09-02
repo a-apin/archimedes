@@ -78,7 +78,7 @@ export function waysForward(data) {
 			id: "broaden",
 			title: "Broaden the brief",
 			detail:
-				"Name an asset class or mechanism the corpus actually covers. These come from the corpus itself — the number is how many of its papers each term matches:",
+				"Name an asset class the corpus actually covers. These come from the corpus itself — the number is how many of its papers each term matches:",
 			suggestions: d.suggestions,
 		});
 	}

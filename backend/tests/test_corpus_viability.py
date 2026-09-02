@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pytest
 from archimedes.agents.corpus_viability import (
-    _MECHANISM_STEMS,
     REASON_CORPUS_UNAVAILABLE,
     REASON_OK,
     REASON_TOO_FEW_PAPERS,
@@ -139,25 +138,40 @@ def test_suggestions_are_backed_by_papers_actually_in_the_corpus(crypto_corpus):
     terms = {s.term for s in sugg}
     assert "crypto" in terms, f"the corpus is all crypto; that must be the headline suggestion: {terms}"
     for s in sugg:
-        assert s.kind in ("asset_class", "mechanism")
+        assert s.kind == "asset_class"
         assert s.papers >= 2, f"{s.term} was offered on {s.papers} papers — below the fusion floor"
         assert s.papers <= len(crypto_corpus), (
             f"{s.term} claims {s.papers} papers in a {len(crypto_corpus)}-paper corpus"
         )
 
 
-def test_suggestions_offer_both_axes_not_three_of_one_kind(crypto_corpus):
+def test_every_suggestion_is_a_term_retrieval_can_actually_act_on(crypto_corpus):
+    """A chip that cannot move ``candidates_found`` is not a way forward.
+
+    ``select_candidates`` fixes candidate MEMBERSHIP on asset-class terms only
+    (``_asset_terms(brief.asset_classes)``); the brief's free text reaches the
+    ranking ``score()`` and nothing else. So the suggestion vocabulary has to
+    be exactly the vocabulary that filter reads. Offer a mechanism here —
+    "breakout · 2 papers", under a heading that says broadening works — and the
+    user pays another failed run to discover the chip could never have helped.
+    """
+    from archimedes.agents.strategy_fusion import _ASSET_SYNONYMS
+
     brief = GenerateBrief(
         intent="a treasury ladder that beats cash", risk_appetite="conservative", asset_classes=["rates"]
     )
-    kinds = [s.kind for s in assess_corpus_viability(brief).suggestions]
-    assert len(set(kinds)) > 1, f"all three suggestions are the same axis ({kinds}) — that is not a choice"
+    sugg = assess_corpus_viability(brief).suggestions
+
+    assert sugg, "the crypto corpus has broadening terms to offer"
+    for s in sugg:
+        assert s.kind == "asset_class", f"{s.term} is offered on an axis the candidate filter never reads"
+        assert s.term in _ASSET_SYNONYMS, f"{s.term} is not a term _asset_terms() can filter candidates on"
 
 
-# A corpus deliberately too thin to fill three slots: only "crypto" and the
-# momentum mechanism clear MIN_PAPERS. "commodities" matches exactly one paper
-# ("gold"), so it is the term a floor-less ranker would reach for to pad the
-# list — and the one that must never be offered.
+# A corpus deliberately too thin to fill three slots: only "crypto" clears
+# MIN_PAPERS. "commodities" matches exactly one paper ("gold"), so it is the
+# term a floor-less ranker would reach for to pad the list — and the one that
+# must never be offered.
 _THIN_CORPUS = [
     _paper(
         "2402.0001",
@@ -174,7 +188,7 @@ def test_a_suggestion_below_the_fusion_floor_is_never_offered_to_pad_the_list():
     fail for exactly the same reason the user just hit."""
     sugg = suggest_steers(_THIN_CORPUS, steer_text="a treasury ladder", min_papers=2)
 
-    assert [s.term for s in sugg] == ["crypto", "momentum / trend-following"], sugg
+    assert [s.term for s in sugg] == ["crypto"], sugg
     assert len(sugg) < 3, "a thin corpus must return fewer suggestions, not weaker ones"
     for s in sugg:
         assert s.papers >= 2, f"{s.term} offered on {s.papers} paper(s) — below the floor it must clear"
@@ -186,7 +200,6 @@ def test_suggestions_never_repeat_what_the_brief_already_says(crypto_corpus):
     sugg = suggest_steers(_CRYPTO_CORPUS, steer_text="crypto momentum sleeve", min_papers=2)
     terms = {s.term for s in sugg}
     assert "crypto" not in terms, terms
-    assert "momentum / trend-following" not in terms, terms
 
 
 def test_suggestions_are_deterministic(crypto_corpus):
@@ -239,20 +252,6 @@ def test_min_papers_fallback_matches_the_enforced_floor():
     from archimedes.agents.strategy_fusion import MIN_PAPERS
 
     assert _MIN_PAPERS_FALLBACK == MIN_PAPERS
-
-
-def test_mechanism_vocabulary_matches_the_debate_steer_grid():
-    """Suggest only mechanisms the society can actually steer a proposal with.
-
-    If someone adds a mechanism to ``_MECHANISM_AXIS`` (or renames one), this
-    goes red rather than letting the UI recommend a mechanism the debate grid
-    has never heard of.
-    """
-    from archimedes.agents.debate_engine import _MECHANISM_AXIS
-
-    assert set(_MECHANISM_STEMS) == set(_MECHANISM_AXIS), (
-        "corpus_viability._MECHANISM_STEMS has drifted from debate_engine._MECHANISM_AXIS"
-    )
 
 
 def test_debate_can_run_delegates_to_the_same_assessment(crypto_corpus):

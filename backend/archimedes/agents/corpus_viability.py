@@ -16,10 +16,23 @@ This module turns that dead end into a first-class outcome. It runs the SAME
 retrieval the pipeline runs (``strategy_fusion.select_candidates`` over
 ``load_corpus``), reports the count it actually measured, and derives concrete
 broadening suggestions from the corpus itself — by counting, for each asset
-class and mechanism in our vocabulary, how many corpus papers the lexical
-haystack filter matches. **No LLM call**, no second retrieval stack, no
-invented numbers: every ``papers`` count in a suggestion is a count this
-function performed over the loaded corpus.
+class in our vocabulary, how many corpus papers the lexical haystack filter
+matches. **No LLM call**, no second retrieval stack, no invented numbers:
+every ``papers`` count in a suggestion is a count this function performed over
+the loaded corpus.
+
+Why asset classes are the only axis offered
+-------------------------------------------
+``select_candidates`` fixes candidate MEMBERSHIP on asset-class terms alone
+(``strategy_fusion.select_candidates_scored``: ``terms = _asset_terms(brief.
+asset_classes)`` then ``filtered = [p for p in corpus if any(t in p.haystack
+for t in terms)]``). The brief's free text reaches only the ranking ``score()``
+— it re-orders a set the asset classes already fixed, and never widens it. So a
+mechanism term ("breakout", "carry") dropped into the brief box CANNOT change
+``candidates_found``: offering one as a way past this wall would be advice with
+nothing behind it, and it would cost the user another failed run to find out.
+Mechanisms still steer the debate society's proposals — they are simply not a
+remedy for a retrieval shortfall, so this card does not offer them.
 
 Claim discipline
 ----------------
@@ -61,23 +74,6 @@ REASON_CORPUS_UNAVAILABLE = "CORPUS_UNAVAILABLE"
 # _MAX_PAPERS_FLOOR``.)
 _MIN_PAPERS_FALLBACK = 2
 
-# Mechanism vocabulary → the lexical stems that identify it in a paper.
-#
-# Keys are EXACTLY ``debate_engine._MECHANISM_AXIS`` — the mechanisms the
-# society actually steers proposals with. Suggesting a mechanism the debate
-# grid cannot steer would be advice with nothing behind it, so
-# ``test_corpus_viability.py`` pins the two sets equal and goes red if either
-# side drifts. Kept here rather than imported so this module has no runtime
-# dependency on debate_engine (which reaches back into generation_pipeline).
-_MECHANISM_STEMS: dict[str, tuple[str, ...]] = {
-    "momentum / trend-following": ("momentum", "trend follow", "trend-follow", "time-series momentum"),
-    "volatility-managed / defensive": ("volatility-managed", "volatility target", "vol target", "defensive"),
-    "carry": ("carry",),
-    "breakout": ("breakout", "break-out"),
-    "mean-reversion": ("mean reversion", "mean-reversion", "mean revert", "reversal"),
-    "minimum-variance": ("minimum variance", "minimum-variance", "min-variance", "low volatility portfolio"),
-}
-
 
 @dataclass(frozen=True)
 class SteerSuggestion:
@@ -88,7 +84,10 @@ class SteerSuggestion:
     """
 
     term: str
-    kind: str  # "asset_class" | "mechanism"
+    # Always "asset_class" — the only axis that changes what retrieval finds
+    # (see "Why asset classes are the only axis offered" above). Kept on the
+    # wire so a second axis, if it ever earns one, arrives labelled.
+    kind: str
     papers: int
 
     def as_dict(self) -> dict[str, Any]:
@@ -171,20 +170,18 @@ def suggest_steers(
     steer_text: str,
     min_papers: int,
     limit: int = 3,
-    per_kind_cap: int = 2,
 ) -> list[SteerSuggestion]:
     """Corpus-derived broadening suggestions. Deterministic, no LLM.
 
-    For every asset class in ``strategy_fusion._ASSET_SYNONYMS`` and every
-    mechanism in ``_MECHANISM_STEMS``, count the corpus papers the lexical
-    filter matches, drop the ones the brief already names, drop anything that
-    could not clear ``min_papers`` on its own, and return the strongest
-    ``limit``. ``per_kind_cap`` keeps the list from collapsing into three
-    asset classes (or three mechanisms) when both kinds are available, so the
-    user is offered a genuine choice of axis.
+    For every asset class in ``strategy_fusion._ASSET_SYNONYMS``, count the
+    corpus papers the lexical filter matches, drop the ones the brief already
+    names, drop anything that could not clear ``min_papers`` on its own, and
+    return the strongest ``limit``. Asset classes are the whole vocabulary
+    here: they are the only terms ``select_candidates`` filters membership on,
+    so they are the only terms that can move ``candidates_found``.
 
     Sorted by (-papers, term) — a total order, so the same corpus always yields
-    the same three suggestions.
+    the same suggestions.
     """
     if not corpus:
         return []
@@ -198,29 +195,9 @@ def suggest_steers(
         if _already_steered(term, flat_steer):
             continue
         scored.append(SteerSuggestion(term, "asset_class", _count_matches(haystacks, (term, *synonyms))))
-    for term, stems in _MECHANISM_STEMS.items():
-        if _already_steered(term.split(" / ")[0], flat_steer):
-            continue
-        scored.append(SteerSuggestion(term, "mechanism", _count_matches(haystacks, stems)))
 
     viable = sorted((s for s in scored if s.papers >= min_papers), key=lambda s: (-s.papers, s.term))
-
-    picked: list[SteerSuggestion] = []
-    per_kind: dict[str, int] = {}
-    for s in viable:
-        if len(picked) >= limit:
-            break
-        if per_kind.get(s.kind, 0) >= per_kind_cap:
-            continue
-        picked.append(s)
-        per_kind[s.kind] = per_kind.get(s.kind, 0) + 1
-    # Relax the diversity cap only if it is what left us short.
-    for s in viable:
-        if len(picked) >= limit:
-            break
-        if s not in picked:
-            picked.append(s)
-    return picked
+    return viable[:limit]
 
 
 def assess_corpus_viability(brief: GenerateBrief) -> CorpusViability:

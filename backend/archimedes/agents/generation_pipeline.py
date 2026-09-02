@@ -1310,7 +1310,7 @@ async def run_generation(
         # No silent fallback to the retired single-agent paths: if the society
         # cannot run, the job errors HONESTLY. The deterministic fixture runner
         # survives strictly for hermetic tests (TESTING / explicit fixture env).
-        from archimedes.agents.corpus_viability import assess_corpus_viability
+        from archimedes.agents.corpus_viability import REASON_CORPUS_UNAVAILABLE, assess_corpus_viability
         from archimedes.agents.debate_engine import _debate_can_run, _run_debate_leaderboard
 
         use_live = _llm_available()
@@ -1355,8 +1355,23 @@ async def run_generation(
                 # they always did. `reason_code` carries the finer distinction
                 # (too few candidates vs. no corpus loaded at all).
                 reason = "the corpus yielded <2 papers for this steer — the society cannot fuse"
-                failure = viability.as_event_fields()
-                message = viability.message()
+                if viability.can_run:
+                    # The gate already said no; this second retrieval says yes
+                    # (transient DB failure into the file fallback, a concurrent
+                    # intake, …). We are committed to the failure branch, so its
+                    # counts would contradict it: "matched 3 papers … needs at
+                    # least 2" under a run that did not happen. Report the
+                    # disagreement with no numbers attached — CORPUS_UNAVAILABLE
+                    # renders the one-line message and no ways forward, which is
+                    # the honest reading when we cannot say what retrieval found.
+                    failure = {"reason_code": REASON_CORPUS_UNAVAILABLE, "steer": brief.intent or ""}
+                    message = (
+                        "Generation stopped before synthesis: the corpus check that gates the society "
+                        "and the one that explains it disagreed, so no strategy was drafted or saved."
+                    )
+                else:
+                    failure = viability.as_event_fields()
+                    message = viability.message()
             await emit.emit(
                 "error",
                 message=message,

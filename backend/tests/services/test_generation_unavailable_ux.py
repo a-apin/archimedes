@@ -98,7 +98,9 @@ async def test_error_event_carries_the_structured_fields_the_ui_needs(thin_corpu
     assert len(suggestions) <= 3
     for s in suggestions:
         assert set(s) == {"term", "kind", "papers"}, s
-        assert s["kind"] in ("asset_class", "mechanism")
+        # Asset classes only: they are the sole axis `select_candidates`
+        # filters membership on, so the sole axis a chip can act on.
+        assert s["kind"] == "asset_class", s
         assert s["papers"] >= data["min_papers"], f"suggested {s['term']} on {s['papers']} papers"
 
 
@@ -143,6 +145,37 @@ async def test_run_is_recorded_as_failed_before_synthesis(thin_corpus_run):
     # `/jobs/{id}/candidates` and `_job_summary` read these keys off `result`.
     assert "best_strategy_id" not in result
     assert "candidates" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_gate_that_disagrees_with_the_explanation_reports_no_numbers(thin_corpus_run, monkeypatch):
+    """The gate and the card are two retrievals; they can disagree.
+
+    ``_debate_can_run`` decides, then the failure branch re-assesses to explain.
+    If the corpus moved in between (transient DB failure into the file fallback,
+    a concurrent intake) the second assessment can come back viable while the
+    run is already committed to failing. Emitting its fields then would print
+    "matched 8 papers … needs at least 2, so no strategy was drafted" — a
+    sentence that contradicts itself — and ``reason_code=OK`` would leave the
+    user back at the bare red line with no card at all.
+    """
+    from archimedes.agents import debate_engine as de
+
+    # The gate says no; the brief it says no to is one the corpus can serve, so
+    # the explaining assessment comes back viable — the disagreement, staged.
+    monkeypatch.setattr(de, "_debate_can_run", lambda *_a, **_k: False)
+    brief = GenerateBrief(intent="momentum on crypto majors", risk_appetite="aggressive", asset_classes=["crypto"])
+
+    store = _FakeStore()
+    await gp.run_generation(job_id="job_gate_disagree", brief=brief, store=store, dual_regime=False, n_candidates=1)
+    data = _error_event(store)
+
+    assert data["code"] == "GENERATION_UNAVAILABLE"
+    assert data["reason_code"] == "CORPUS_UNAVAILABLE", data
+    assert "disagreed" in data["message"], data["message"]
+    # No count may be quoted for a retrieval whose answer we are not using.
+    for numeric in ("candidates_found", "min_papers", "corpus_size", "suggestions"):
+        assert numeric not in data, f"{numeric} was reported from an assessment the run did not act on"
 
 
 @pytest.mark.asyncio

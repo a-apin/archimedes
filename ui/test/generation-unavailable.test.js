@@ -49,7 +49,7 @@ const TOO_FEW = {
 	suggestions: [
 		{ term: "crypto", kind: "asset_class", papers: 8 },
 		{ term: "equities", kind: "asset_class", papers: 8 },
-		{ term: "breakout", kind: "mechanism", papers: 2 },
+		{ term: "vol", kind: "asset_class", papers: 2 },
 	],
 };
 
@@ -105,10 +105,23 @@ test("the broaden way carries the corpus-derived suggestions", () => {
 	assert.ok(broaden, "no broaden way was offered");
 	assert.deepEqual(
 		broaden.suggestions.map((s) => s.term),
-		["crypto", "equities", "breakout"],
+		["crypto", "equities", "vol"],
 	);
 	for (const s of broaden.suggestions) {
 		assert.ok(s.papers > 0, `${s.term} offered with no paper count`);
+	}
+});
+
+test("broaden never promises a mechanism it cannot deliver", () => {
+	// `select_candidates` filters candidate membership on asset-class terms
+	// only — the brief's free text reaches ranking, never membership. Copy
+	// that says "or mechanism" is a promise the retrieval cannot keep, and it
+	// costs the user another failed run to find out.
+	const broaden = waysForward(TOO_FEW).find((w) => w.id === "broaden");
+	assert.doesNotMatch(broaden.detail, /mechanism/i, broaden.detail);
+	assert.match(broaden.detail, /asset class/i);
+	for (const s of broaden.suggestions) {
+		assert.equal(s.kind, "asset_class", `${s.term} is offered on an axis retrieval never reads`);
 	}
 });
 

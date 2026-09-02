@@ -275,7 +275,10 @@ def _debate_can_run(brief: GenerateBrief) -> bool:
     which returns the same verdict PLUS the count it measured and the
     corpus-derived ways forward. This wrapper keeps the long-standing bool
     contract (every caller and test binds to it) while guaranteeing that the
-    gate and the failure explanation can never be computed two different ways.
+    gate and the failure explanation can never be computed by two different
+    implementations. They remain two INVOCATIONS over a corpus that can move
+    between them, so ``generation_pipeline`` guards the case where the second
+    one comes back viable after this gate has already said no.
     """
     from archimedes.agents.corpus_viability import assess_corpus_viability
 
