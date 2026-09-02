@@ -168,6 +168,7 @@ nav:
       - runbooks/t3.2-contract-redeploy.md
       - runbooks/docs-site-setup.md
       - runbooks/email-verification-validation.md
+      - runbooks/ses-suppression.md
 
   - Decisions (ADRs):
       - adr/README.md
