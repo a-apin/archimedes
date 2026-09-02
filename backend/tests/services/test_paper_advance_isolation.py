@@ -25,8 +25,10 @@ These tests pin six properties:
    task draining out of a deploy keeps ticking beside its replacement.
 
 Hermetic: no DB, no network, no ``archimedes.main`` import. Lifespan wiring is
-a source inspection of ``main.py`` — an AST walk for (2), because "is this call
-nested under an if?" is a structural question a substring cannot answer. The
+a source inspection of ``main.py`` — an AST walk for (2) and (6), because "is
+this call nested under a branch?" and "is this call before or after the yield?"
+are structural questions a substring search cannot answer, and both went green
+on the regression they name while they were asked textually. The
 SIGSEGV case is a real subprocess with a ``python -c`` child that never imports
 archimedes; the logging case is a real subprocess that imports the module with
 every boundary stubbed.
