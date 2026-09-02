@@ -7,12 +7,17 @@ import { formatMetric } from '../metricDomain.js'
 // Single-user leaderboard (MVP pivot — no publish mechanism exists yet, so
 // ranking a global cohort was incoherent; nobody had opted into competing).
 // Signed in: ranks YOUR OWN strategies against each other by the backend's
-// transparent conviction score (real rigor gate + backtest). Signed out (or
-// explicitly toggled): shows the curated seed library as an honestly-labeled
+// transparent conviction score (real rigor gate + backtest). Toggled to
+// `curated`: shows the curated seed library as an honestly-labeled
 // REFERENCE set, never framed as competition. Nothing here is fabricated:
-// validation metrics are real passport fields. Never auth-gated — public browse stays;
-// see backend's `scope` field (own|curated), which reports what was actually
-// served, not just what was requested.
+// validation metrics are real passport fields. The PAGE is auth-gated as of
+// #1753 (the owner's call): `leaderboard` left ANON_APP_PAGES and nginx
+// dropped its `^~ /app/leaderboard` carve-out, so a signed-out visitor gets
+// `302 /sign-in?next=/app/leaderboard` and the `!user` branch below is
+// defensive, not a live product state. The ENDPOINT is unchanged and still
+// anonymous (leaderboard_routes.py never 401s); see its `scope` field
+// (own|curated), which reports what was actually served, not what was
+// requested.
 //
 // TWO BOARDS, NEVER BLENDED (Lane 3.4). The conviction board is entirely
 // BACKTEST-ERA — gate, DSR, OOS and PBO are all measured on history the
