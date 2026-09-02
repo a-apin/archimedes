@@ -254,6 +254,39 @@ test("tool copy distinguishes starting from finishing, and never narrates an unk
 	assert.equal(eventHeadline("tool_result", { tool_name: "some_future_tool" }), "Finished some_future_tool");
 });
 
+test("debate turn copy uses the turn contract's words, not the abstain path's", () => {
+	// A bear TURN's verdict on the wire is `act` | `decline` — debate_engine's
+	// critique prompt: '{"verdict": "act"|"decline", …}'. ABSTAIN is a separate,
+	// first-class outcome: `_abstain_result` returns
+	// `generation_method="debate_abstain"` / "hold current weights", reached by
+	// the regime gate (CRISIS) or by no candidate beating the passive null —
+	// never by a bear turn. Copy that calls the bear's turn "abstention" tells
+	// the reader the run reached an outcome it did not.
+	//
+	// MUTATION (verified red): restore "Bear researcher is arguing for
+	// abstention" / "…argued for abstention".
+	for (const tool of ["debate_bear_r1", "debate_bear_r2"]) {
+		for (const phase of ["started", "finished"]) {
+			assert.doesNotMatch(
+				TOOL_COPY[tool][phase],
+				/abstain|abstention/i,
+				`${tool}.${phase} names the abstain path for a turn whose verdict is act|decline`,
+			);
+		}
+	}
+	assert.match(TOOL_COPY.debate_bear_r1.started, /arguing to decline/);
+	assert.match(TOOL_COPY.debate_bear_r1.finished, /argued to decline/);
+	// The bull's turn shares the same verdict field, so its copy stays neutral
+	// about the verdict rather than gaining a mirrored "arguing to act".
+	assert.match(TOOL_COPY.debate_bull_r1.started, /stating its case/);
+	// And no other tool sentence borrows the word either.
+	for (const [tool, copy] of Object.entries(TOOL_COPY)) {
+		for (const phase of ["started", "finished"]) {
+			assert.doesNotMatch(copy[phase], /abstain|abstention/i, `${tool}.${phase}`);
+		}
+	}
+});
+
 test("the hash line claims a stamp, never immutability", () => {
 	// The old copy said "Hashed the reasoning so it can't be edited after the
 	// fact" and both halves were false. `_persist_candidate` keccaks

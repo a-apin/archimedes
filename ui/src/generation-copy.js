@@ -91,9 +91,15 @@ export const TOOL_COPY = {
 		started: "Bull researcher is stating its case",
 		finished: "Bull researcher stated its case",
 	},
+	// The bear's turn verdict on the wire is `act` | `decline` (debate_engine's
+	// critique prompt), so this copy says "decline". "Abstain" is a different,
+	// first-class outcome — `_abstain_result` / `generation_method="debate_abstain"`,
+	// hold current weights — reached by the regime gate or by no candidate
+	// beating the passive null, never by a bear turn. Naming the turn
+	// "abstention" would collapse two distinct outcomes into one word.
 	debate_bear_r1: {
-		started: "Bear researcher is arguing for abstention",
-		finished: "Bear researcher argued for abstention",
+		started: "Bear researcher is arguing to decline",
+		finished: "Bear researcher argued to decline",
 	},
 	debate_bull_r2: {
 		started: "Bull researcher is rebutting the bear",
