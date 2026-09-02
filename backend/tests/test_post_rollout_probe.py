@@ -14,12 +14,13 @@ main deploys in #1791 —
 
 were both green deploys reported red by an unexecutable probe. These tests
 run THE EXACT SCRIPT CI RUNS against a local HTTP server that can be told to
-drop a connection, answer 503, answer slowly, or answer with the wrong
-version — no AWS, no network, no CloudFront.
+drop a connection, answer 503, answer slowly, answer with the wrong version,
+or answer 503 and then hang up mid-body — no AWS, no network, no CloudFront.
 
 Fail-closed is the property under test as much as flake-tolerance is: a
-transient inside a healthy window passes, and an outage that reaches the end
-of the window still fails.
+transient inside a healthy window passes, an outage that reaches the end of
+the window still fails, and a window that is bad more than MAX_NOT_OK times
+fails even when a good streak was observed.
 """
 
 from __future__ import annotations
@@ -140,45 +141,112 @@ def _serving(fake: _FakeHealth) -> Iterator[str]:
         thread.join(timeout=5)
 
 
-def run_probe(
-    actions: Sequence[str],
+@contextlib.contextmanager
+def _serving_truncated_503() -> Iterator[tuple[str, list[str]]]:
+    """A raw socket that answers ``503`` and then hangs up mid-body.
+
+    This is the shape ``is_transport_failure`` used to get wrong (#1791
+    review, defect 1): the status line DID come back, so it is the app
+    answering — but curl still exits non-zero (18, "transfer closed with N
+    bytes remaining to read") because the promised body never arrived. An
+    origin/ALB that 503s while dropping bodies under load is precisely the
+    #1714/#1713 rollout-window shape that must never be retried away.
+
+    http.server cannot produce this — it always finishes what it starts — so
+    the response is written byte by byte onto a raw socket.
+    """
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    requests: list[str] = []
+    stop = threading.Event()
+
+    def serve() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            try:
+                conn.settimeout(5)
+                with contextlib.suppress(OSError):
+                    requests.append(conn.recv(4096).decode("latin-1", "replace"))
+                with contextlib.suppress(OSError):
+                    conn.sendall(
+                        b"HTTP/1.1 503 Service Unavailable\r\n"
+                        b"Content-Type: application/json\r\n"
+                        b"Content-Length: 100\r\n"
+                        b"\r\n"
+                        b'{"detail":'  # 10 bytes of the 100 promised, then gone
+                    )
+                    conn.shutdown(socket.SHUT_RDWR)
+            finally:
+                conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}/api/health", requests
+    finally:
+        stop.set()
+        listener.close()
+        thread.join(timeout=5)
+
+
+def _run_script(
+    url: str,
     *,
     samples: int = 10,
     need_streak: int = 5,
+    max_not_ok: str = "2",
     max_seconds: str = "5",
     transport_retries: int = 2,
     expected_version: str = DEPLOYED_SHA,
     max_total_seconds: str = "300",
-    url_override: str | None = None,
-) -> tuple[subprocess.CompletedProcess[str], _FakeHealth]:
-    """Run the real script against a scripted fake health endpoint.
+    curl_max_time: str = "10",
+    retry_pause: str = "0.1",
+    interval: str = "0.1",
+) -> subprocess.CompletedProcess[str]:
+    """Run the real script against ``url``.
 
-    INTERVAL and RETRY_PAUSE are 0.1s here and 3s in CI; every other number is
-    the one deploy.yml ships with.
+    INTERVAL and RETRY_PAUSE default to 0.1s here and 3s in CI; every other
+    number is the one deploy.yml ships with unless a test says otherwise.
     """
-    fake = _FakeHealth(actions)
     env = {
         **os.environ,
+        "HEALTH_URL": url,
         "EXPECTED_VERSION": expected_version,
         "SAMPLES": str(samples),
         "NEED_STREAK": str(need_streak),
+        "MAX_NOT_OK": max_not_ok,
         "MAX_SECONDS": max_seconds,
-        "INTERVAL": "0.1",
+        "INTERVAL": interval,
         "TRANSPORT_RETRIES": str(transport_retries),
-        "RETRY_PAUSE": "0.1",
-        "CURL_MAX_TIME": "10",
+        "RETRY_PAUSE": retry_pause,
+        "CURL_MAX_TIME": curl_max_time,
         "MAX_TOTAL_SECONDS": max_total_seconds,
     }
+    return subprocess.run(
+        ["bash", str(PROBE_SH)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+
+def run_probe(
+    actions: Sequence[str],
+    *,
+    url_override: str | None = None,
+    **kwargs: object,
+) -> tuple[subprocess.CompletedProcess[str], _FakeHealth]:
+    """Run the real script against a scripted fake health endpoint."""
+    fake = _FakeHealth(actions)
     with _serving(fake) as url:
-        env["HEALTH_URL"] = url_override or url
-        proc = subprocess.run(
-            ["bash", str(PROBE_SH)],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
+        proc = _run_script(url_override or url, **kwargs)  # type: ignore[arg-type]
     return proc, fake
 
 
@@ -190,6 +258,11 @@ def _errors(proc: subprocess.CompletedProcess[str]) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line.startswith("::error::")]
 
 
+def _retry_lines(proc: subprocess.CompletedProcess[str]) -> list[str]:
+    """Lines for an actual retried REQUEST — not prose that contains "retry"."""
+    return re.findall(r"^.*retry \d+/\d+:.*$", proc.stdout, re.M)
+
+
 class TestHealthyWindow:
     def test_all_good_samples_pass(self) -> None:
         proc, fake = run_probe(["ok"])
@@ -198,6 +271,8 @@ class TestHealthyWindow:
         assert fake.request_count == 10, "one request per sample, no retries needed"
         # Every sample printed — the timings ARE the evidence (#1532).
         assert len(re.findall(r"^probe\s+\d+/10:", proc.stdout, re.M)) == 10, _log(proc)
+        # A clean window earns no warning at all.
+        assert "::warning::" not in proc.stdout, _log(proc)
 
 
 class TestTransportRetry:
@@ -208,6 +283,23 @@ class TestTransportRetry:
         assert re.search(r"^probe\s+7/10: http=000 .*transport failure.*retrying", proc.stdout, re.M), _log(proc)
         assert re.search(r"^probe\s+7/10 retry 1/2: http=200 .*-> ok", proc.stdout, re.M), _log(proc)
         assert fake.request_count == 11, "the retry is one extra request, not a re-run of the window"
+
+    def test_a_sample_that_recovered_on_retry_is_still_annotated(self) -> None:
+        """#1791 review, defect 3: a recovered retry left NO trace in the verdict.
+
+        The sample counts as good — the origin still failed to answer the
+        first request, which is the modal shape of both #1791 red runs, and a
+        run that reports "10/10, no warnings" would be hiding it.
+
+        MUTATION: gate the warning on ``not_ok`` alone and this goes red.
+        """
+        proc, _ = run_probe(["ok"] * 6 + ["reset", "ok"])
+        assert proc.returncode == 0, _log(proc)
+        warnings = [line for line in proc.stdout.splitlines() if line.startswith("::warning::")]
+        assert warnings, "a retried-and-recovered sample must not pass silently" + _log(proc)
+        assert "0 of 10 samples NOT-OK" in warnings[0], _log(proc)
+        assert "1 transport retry attempt(s) spent" in warnings[0], _log(proc)
+        assert "1 transport retry attempt(s)" in proc.stdout.splitlines()[-1], "the summary line names it too"
 
     def test_transport_reset_on_the_final_sample_is_retried_and_passes(self) -> None:
         """Run 33573075995's shape: the TLS reset landed on sample 10 of 10.
@@ -267,8 +359,28 @@ class TestAppLevelFailuresAreNotRetried:
         proc, fake = run_probe(["ok", "ok", "status:503", "ok"])
         assert proc.returncode == 0, _log(proc)
         assert re.search(r"^probe\s+3/10: http=503 .*-> NOT-OK \(consecutive good: 0", proc.stdout, re.M), _log(proc)
-        assert "retry" not in proc.stdout, "a 5xx is the app answering — retrying it would mask #1714's 503 windows"
+        assert not _retry_lines(proc), "a 5xx is the app answering — retrying it would mask #1714's 503 windows"
         assert fake.request_count == 10
+
+    def test_a_truncated_5xx_is_not_retried(self) -> None:
+        """#1791 review, defect 1: ``|| curl_exit != 0`` retried a REAL 503.
+
+        The origin sends ``503`` with ``Content-Length: 100`` and hangs up
+        after 10 bytes: curl reports ``http_code=503`` AND exits 18. That is
+        the app answering — #1714/#1713's rollout-window 503s must stay
+        visible, so it counts NOT-OK immediately and burns no retry.
+
+        MUTATION: restore ``|| [ "$sample_rc" -ne 0 ]`` in
+        ``is_transport_failure`` and this goes red (3 retry lines appear and
+        the request count triples).
+        """
+        with _serving_truncated_503() as (url, requests):
+            proc = _run_script(url, samples=3, need_streak=2)
+        assert proc.returncode == 1, _log(proc)
+        assert re.search(r"^probe\s+1/3: http=503 .*curl_exit=(18|56) .*-> NOT-OK", proc.stdout, re.M), _log(proc)
+        assert not _retry_lines(proc), "a truncated 5xx is still a 5xx" + _log(proc)
+        assert len(requests) == 3, f"one request per sample, no retry burned — got {len(requests)}" + _log(proc)
+        assert any("the FINAL sample" in e and "http=503" in e for e in _errors(proc)), _log(proc)
 
     def test_503_that_prevents_any_streak_fails(self) -> None:
         proc, _ = run_probe(["ok", "ok", "status:503", "ok"], samples=6)
@@ -287,6 +399,52 @@ class TestAppLevelFailuresAreNotRetried:
         assert re.search(r"^probe\s+10/10: http=200 .*-> NOT-OK", proc.stdout, re.M), _log(proc)
         assert any("the FINAL sample" in e and "http=200" in e for e in _errors(proc)), _log(proc)
         assert fake.request_count == 10, "a slow 200 is the app answering slowly, not a transport flake"
+
+
+class TestNotOkCap:
+    """Owner ruling (#1791 review): a streak alone must not pass a bad window.
+
+    "Observed somewhere in the window" on its own tolerates
+    ``SAMPLES - NEED_STREAK - 1`` = 4 bad samples out of 10. Two is a
+    transient; three is a degraded deploy.
+    """
+
+    def test_two_not_ok_samples_with_a_streak_and_a_good_final_sample_pass_with_a_warning(self) -> None:
+        proc, fake = run_probe(["ok"] * 5 + ["status:503"] * 2 + ["ok"])
+        assert proc.returncode == 0, _log(proc)
+        assert "::warning::post-rollout probe passed with 2 of 10 samples NOT-OK" in proc.stdout, _log(proc)
+        assert not any("were NOT-OK after retries" in e for e in _errors(proc)), _log(proc)
+        assert fake.request_count == 10
+
+    def test_three_not_ok_samples_fail_even_with_a_streak_and_a_good_final_sample(self) -> None:
+        """MUTATION: delete the MAX_NOT_OK check and this exits 0."""
+        proc, fake = run_probe(["ok"] * 5 + ["status:503"] * 3 + ["ok"])
+        assert proc.returncode == 1, _log(proc)
+        cap_errors = [e for e in _errors(proc) if "were NOT-OK after retries" in e]
+        assert cap_errors, "the cap must be the thing that failed this run" + _log(proc)
+        assert "3 of the 10 samples were NOT-OK after retries (MAX_NOT_OK=2)" in cap_errors[0], _log(proc)
+        # The other three conjuncts all held — only the cap failed it.
+        assert not any("longest run of consecutive good samples" in e for e in _errors(proc)), _log(proc)
+        assert not any("the FINAL sample" in e for e in _errors(proc)), _log(proc)
+        assert "best so far: 5" in proc.stdout
+        assert fake.request_count == 10
+
+    def test_the_cap_can_be_tightened_to_zero(self) -> None:
+        proc, _ = run_probe(["ok"] * 5 + ["status:503"] + ["ok"], max_not_ok="0")
+        assert proc.returncode == 1, _log(proc)
+        assert any("1 of the 10 samples were NOT-OK after retries (MAX_NOT_OK=0)" in e for e in _errors(proc)), _log(
+            proc
+        )
+
+    def test_a_non_integer_cap_is_rejected_instead_of_silently_disabling_the_check(self) -> None:
+        """`set -e` is off: `[ 3 -gt "two" ]` returns 2, which reads as FALSE.
+
+        A typo'd cap must not quietly pass a window the cap exists to fail.
+        """
+        proc, fake = run_probe(["ok"] * 5 + ["status:503"] * 3 + ["ok"], max_not_ok="two")
+        assert proc.returncode == 1, _log(proc)
+        assert any("MAX_NOT_OK='two' is not a non-negative integer" in e for e in _errors(proc)), _log(proc)
+        assert fake.request_count == 0, "rejected before a single request"
 
 
 class TestVersionAssertion:
@@ -315,14 +473,43 @@ class TestBudgetsAndMisconfiguration:
     def test_probe_stops_at_its_wall_clock_ceiling_and_fails(self) -> None:
         """Fail-closed: an unfinished probe cannot report a deploy as verified.
 
-        The samples it did take were good and satisfied NEED_STREAK, so the
-        wall-clock ceiling is the only thing failing this run.
+        The samples it did take satisfied NEED_STREAK, so the wall-clock
+        ceiling is the only thing failing this run.
         """
-        proc, _ = run_probe(["slow:1.0"], need_streak=2, max_seconds="5", max_total_seconds="3")
+        proc, _ = run_probe(["slow:1.0"], need_streak=1, max_seconds="5", max_total_seconds="3")
         assert proc.returncode == 1, _log(proc)
         errors = _errors(proc)
         assert any("wall-clock budget" in e for e in errors), _log(proc)
         assert not any("longest run of consecutive good samples" in e for e in errors), _log(proc)
+
+    def test_the_ceiling_bounds_the_whole_probe_not_just_the_gap_between_samples(self) -> None:
+        """#1791 review, defect 2: MAX_TOTAL_SECONDS was checked only BEFORE a
+        sample, so the last one could still start a full retry cycle
+        (``(TRANSPORT_RETRIES + 1) x CURL_MAX_TIME + retries x RETRY_PAUSE +
+        INTERVAL``) past it — 353s of overshoot at shipped defaults, eating
+        the reserve deploy.yml's poll step holds back for the CloudFront
+        invalidation.
+
+        4s ceiling, 4s retry pause, 4s interval: the old between-samples check
+        let this run ~12s.
+
+        MUTATION: drop the budget check on the retry path and the `capped_`
+        halves of the sleeps and this goes red on wall clock alone.
+        """
+        started = time.monotonic()
+        proc, _ = run_probe(["reset"], max_total_seconds="4", retry_pause="4", interval="4")
+        elapsed = time.monotonic() - started
+        assert proc.returncode == 1, _log(proc)
+        assert any("wall-clock budget" in e for e in _errors(proc)), _log(proc)
+        assert elapsed < 8, f"probe ran {elapsed:.1f}s against a 4s ceiling{_log(proc)}"
+
+    def test_a_single_slow_request_cannot_run_past_the_ceiling(self) -> None:
+        """curl's own --max-time is capped to the budget the probe has left."""
+        started = time.monotonic()
+        proc, _ = run_probe(["slow:8"], samples=3, need_streak=1, max_total_seconds="3", curl_max_time="20")
+        elapsed = time.monotonic() - started
+        assert proc.returncode == 1, _log(proc)
+        assert elapsed < 6, f"probe ran {elapsed:.1f}s against a 3s ceiling{_log(proc)}"
 
     def test_missing_required_env_fails_without_probing(self) -> None:
         env = {**os.environ, "HEALTH_URL": "", "EXPECTED_VERSION": ""}
@@ -389,6 +576,7 @@ class TestWorkflowWiring:
         expected = {
             "SAMPLES": "10",
             "NEED_STREAK": "5",
+            "MAX_NOT_OK": "2",
             "MAX_SECONDS": "5",
             "INTERVAL": "3",
             "TRANSPORT_RETRIES": "2",
@@ -400,12 +588,15 @@ class TestWorkflowWiring:
             assert re.search(rf'^{name}="\$\{{{name}:-{value}\}}"$', script, re.M), f"{name} default drifted"
         run = _probe_step()["run"]
         assert "10 / 5 / 5s / 3s / 2 / 3s" in run, "the step's comment must quote the script's live defaults"
+        assert "MAX_NOT_OK=2" in run, "the step's comment must name the NOT-OK cap too"
 
     def test_the_probe_fits_inside_the_deploy_job_timeout(self) -> None:
         """MAX_TOTAL_SECONDS + the rollout budget must leave the job room.
 
         Retrying transport flakes widens the probe's worst case; the job
-        timeout must not silently become the real budget (#1532).
+        timeout must not silently become the real budget (#1532). This holds
+        as stated only because MAX_TOTAL_SECONDS is a REAL ceiling — no
+        request or sleep starts that reaches past it (#1791 review, defect 2).
         """
         workflow_text = DEPLOY_YML.read_text(encoding="utf-8")
         rollout_budget_s = int(re.search(r"DEPLOY_ROLLOUT_BUDGET_SECONDS:\s*(\d+)", workflow_text).group(1))
@@ -416,6 +607,22 @@ class TestWorkflowWiring:
         assert rollout_budget_s + probe_ceiling_s < job_timeout_s, (
             f"rollout budget {rollout_budget_s}s + probe ceiling {probe_ceiling_s}s does not fit in the "
             f"deploy-ecs job's {job_timeout_s}s timeout, leaving nothing for the CloudFront invalidation"
+        )
+
+    def test_the_probe_ceiling_fits_the_reserve_the_poll_step_holds_back(self) -> None:
+        """The poll step refuses a rollout budget that eats the tail reserve.
+
+        That reserve is for the probe AND the CloudFront invalidation wait, so
+        the probe's ceiling has to be strictly smaller than all of it.
+        """
+        workflow_text = DEPLOY_YML.read_text(encoding="utf-8")
+        reserve_s = int(re.search(r"JOB_TIMEOUT_SECONDS - (\d+)", workflow_text).group(1))
+        probe_ceiling_s = int(
+            re.search(r'MAX_TOTAL_SECONDS="\$\{MAX_TOTAL_SECONDS:-(\d+)\}"', PROBE_SH.read_text()).group(1)
+        )
+        assert probe_ceiling_s < reserve_s, (
+            f"the probe's {probe_ceiling_s}s ceiling consumes the whole {reserve_s}s the poll step reserves "
+            "for the probe plus the CloudFront invalidation wait"
         )
 
 

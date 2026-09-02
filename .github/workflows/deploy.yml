@@ -658,10 +658,14 @@ jobs:
     # and the CloudFront invalidation wait — otherwise the job timeout silently
     # becomes the real budget and #1532 returns with a bigger number. 30 min
     # covers the 20-min default budget + the probe + the invalidation wait
-    # with margin. The probe is ~35s when the app is healthy and bounds its
-    # own worst case at MAX_TOTAL_SECONDS (300s, see
-    # .github/scripts/post_rollout_probe.sh) precisely so retrying transport
-    # flakes (#1791) cannot turn a clean ::error into an opaque job timeout.
+    # with margin. The probe is ~35s when the app is healthy and hard-caps its
+    # own wall clock at MAX_TOTAL_SECONDS (300s, see
+    # .github/scripts/post_rollout_probe.sh). That is a REAL ceiling, not a
+    # check between samples: the script starts no request whose deadline
+    # reaches past it (curl's --max-time is capped to the remaining budget)
+    # and no sleep that runs past it, precisely so retrying transport flakes
+    # (#1791) cannot turn a clean ::error into an opaque job timeout — or eat
+    # the CloudFront invalidation's share of the reserve below.
     # The poll step asserts this headroom explicitly (see
     # DEPLOY_JOB_TIMEOUT_MINUTES there) rather than trusting the two numbers to
     # be edited together.
@@ -816,6 +820,10 @@ jobs:
           # timeout would kill the job first, with no verdict — exactly #1532's
           # bug wearing a bigger number. Reserve 7 min for the post-rollout
           # probe + the CloudFront invalidation wait that follow this step.
+          # The probe can consume at most MAX_TOTAL_SECONDS=300s of that 420s
+          # (a hard wall-clock ceiling, see .github/scripts/post_rollout_probe.sh);
+          # the rest is the invalidation wait's, and a test asserts the probe's
+          # ceiling stays strictly smaller than this reserve.
           JOB_TIMEOUT_SECONDS=$(( DEPLOY_JOB_TIMEOUT_MINUTES * 60 ))
           if [ "$BUDGET" -gt $(( JOB_TIMEOUT_SECONDS - 420 )) ]; then
             echo "::error::DEPLOY_ROLLOUT_BUDGET_SECONDS=${BUDGET}s leaves under 7 minutes of the deploy-ecs job's ${DEPLOY_JOB_TIMEOUT_MINUTES}-minute timeout for the answer probe and the CloudFront invalidation. Raise timeout-minutes on the deploy-ecs job (and DEPLOY_JOB_TIMEOUT_MINUTES here) alongside the budget."
@@ -915,16 +923,29 @@ jobs:
         # the culprit in the first place.)
         #
         # The verdict is "NEED_STREAK consecutive good samples were OBSERVED
-        # somewhere in the window AND the final (post-retry) sample is good".
-        # It was "the LAST 5 samples", and #1791 shows what that cost: two of
+        # somewhere in the window AND the final (post-retry) sample is good
+        # AND it reports this commit AND no more than MAX_NOT_OK samples were
+        # NOT-OK". It was "the LAST 5 samples", and #1791 shows what that
+        # cost: two of
         # the last four main deploys went red on a single transport transient
         # (curl exit 28 at 15.0s; curl exit 35 — a TLS reset — at 25 ms) while
         # prod was already serving the expected version. The "final sample must
         # be good" half is what keeps this fail-closed: a cold-start tail —
         # slow-then-fast, the #1532 shape this step exists for — still fails,
         # because a window that is broken AT THE END fails no matter how
-        # healthy its start was. The 5s ceiling is a client-realistic deadline,
-        # not a generous one: it is below #1436's recorded p99 of 16.8s on
+        # healthy its start was. MAX_NOT_OK is the other half of that: the
+        # observed-streak rule ALONE would tolerate 4 bad samples out of 10
+        # (SAMPLES - NEED_STREAK - 1), so the cap is what keeps "one transient
+        # does not fail a healthy deploy" from becoming "a pockmarked window
+        # passes". Two NOT-OK samples pass with a ::warning; three go red.
+        # ONLY transport-level failures (no HTTP answer at all, http=000 —
+        # connect/DNS/TLS/client timeout) are retried. Anything the app
+        # answered is never retried, INCLUDING a 5xx that was truncated
+        # mid-body (curl exits non-zero there while reporting a real 503):
+        # #1714/#1713's rollout-window 503s have to stay visible.
+        #
+        # The 5s ceiling is a client-realistic deadline, not a generous one:
+        # it is below #1436's recorded p99 of 16.8s on
         # purpose. If this step turns out to be the flakiest thing in the
         # pipeline for reasons OTHER than transport flakes, that is a finding
         # about the app's post-rollout latency (#1309, #1436), not a reason to
@@ -956,8 +977,10 @@ jobs:
           # THIS STEP RUNS against a fake /api/health (transport reset, 5xx,
           # slow 200, wrong version) instead of a paraphrase that drifts.
           # SAMPLES / NEED_STREAK / MAX_SECONDS / INTERVAL / TRANSPORT_RETRIES /
-          # RETRY_PAUSE default to 10 / 5 / 5s / 3s / 2 / 3s inside the script;
-          # they are documented and tested there.
+          # RETRY_PAUSE default to 10 / 5 / 5s / 3s / 2 / 3s inside the script,
+          # alongside MAX_NOT_OK=2 (most NOT-OK samples a passing run may
+          # contain), CURL_MAX_TIME=15s and MAX_TOTAL_SECONDS=300s; they are
+          # documented and tested there.
           bash .github/scripts/post_rollout_probe.sh
 
       - name: Invalidate CloudFront (unhashed SPA entry points only)
