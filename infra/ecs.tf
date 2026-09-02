@@ -79,7 +79,7 @@ data "aws_lb_target_group" "backend" {
   name = "${var.project_name}-backend-tg"
 }
 
-# ── ECS Cluster ────────────────────────────────────────────────────────────
+# ── ECS Cluster ───────────────────────────────────────────────
 
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
@@ -385,7 +385,7 @@ resource "aws_iam_role_policy" "ecs_task_exec_command" {
 #
 # NOT wired into any CI workflow step yet (deploy.yml still only builds/pushes
 # to ECR — the box-pull path from build-chunk 1). This is the IAM
-# groundwork a later chunk's `aws ecs register-task-definition` +
+# groundwork a later chunk's `aws ecs register-task-definition` + 
 # `aws ecs update-service --force-new-deployment` deploy step needs; landing
 # it now means that later chunk needs zero IAM changes of its own.
 
@@ -509,11 +509,18 @@ resource "aws_ecs_task_definition" "backend" {
       # condition = HEALTHY` below — an image-only HEALTHCHECK isn't visible
       # to the ECS agent for container-dependency purposes.
       healthCheck = {
-        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
-        interval    = 30
-        timeout     = 5
-        retries     = 3
-        startPeriod = 30
+        command  = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+        interval = 30
+        timeout  = 5
+        retries  = 3
+        # 90s: must cover request-path warmup (#1713, 60s budget) so ECS
+        # ignores /health failures while uvicorn is not yet listening.
+        # deploy.yml clones the live task-def and does not apply this file;
+        # ecs_rewrite_task_def.py pins the same startPeriod on every CI
+        # deploy so a clone of the 30s live revision cannot leave the
+        # budget outside the grace window. Do not drop this below the
+        # warmup budget. Do not terraform-noop deployment_minimum_healthy_percent.
+        startPeriod = 90
       }
 
       environment = [
@@ -874,7 +881,8 @@ resource "aws_ecs_task_definition" "backend" {
       # 2026-08-20 — the original comment/PR framed this as closing the
       # mode-1 gap; the timeline below shows it cannot have): the old target
       # deregistered 9s after the new task started — long before backend's
-      # own 30s startPeriod could produce a first passing check for ANY
+      # own startPeriod (90s as of #1713; 30s at the time of the incident)
+      # could produce a first passing check for ANY
       # container, let alone before this nginx check's own startPeriod=15
       # (itself gated behind backend+auth reaching HEALTHY, so its earliest
       # possible verdict lands closer to T+45s) could produce a verdict, let
