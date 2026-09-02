@@ -179,6 +179,17 @@ looked at this" can no longer render identically.
   beside an ungraded gate is the same false-confidence shape as the generated
   side — but it is movement on the curated tab and is called out here rather than
   discovered.
+- **Two passport pill colours move, for the same reason.** The Strategy Passport
+  header kept its own two-argument `statusTag` / `statusLabel` — they read
+  `passes_rigor_gate` and never `rigor_gate_status` — so it imported the shared
+  demotion *label* while keeping an unshared *decision*, and a live row with a
+  `pending` or `degenerate` gate painted "Reference only — gate failed" beside
+  that same header's "rigor gate pending" chip. The passport now calls
+  `ui/src/libraryStatus.js` like the Library does. Consequence: `validated` was
+  green on the passport and is `tag-accent` in the shared helper, and an
+  unknown/`candidate` status was `tag-accent` and is `tag-muted`. Green is
+  reachable from one place only — a `live` row with a literal `true` verdict.
+  No graded state's wording changes.
 - **A row can be published with no verdict.** `pending` is a real, reachable,
   non-green state; product copy has to have something to say for it ("Not yet
   graded").

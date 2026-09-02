@@ -320,21 +320,91 @@ test("the pill helpers are imported, not redefined", () => {
 	);
 });
 
-test("the passport imports the demotion label rather than retyping it", () => {
-	// MUTATION: put the literal back in StrategyPassport.jsx. The two surfaces
-	// render the same words for the same row; as two literals, "byte-identical"
-	// was a convention one keystroke could break with nothing to catch it.
+test("the passport renders the Library's pill, not a private two-argument copy", () => {
+	// THE GAP THIS CLOSES. Importing only GATE_FAILED_LABEL — which is all the
+	// passport used to do — bought byte-identical WORDS while leaving the two
+	// surfaces two different DECISIONS about when to say them. The passport's
+	// local pair took `(status, passesRigor)` and never saw `rigor_gate_status`,
+	// so once the Library moved to the four-state the passport was the last
+	// place the fail-closed boolean could still stand in for the verdict: a
+	// live row with a PENDING or DEGENERATE gate has `passes_rigor_gate ===
+	// false`, so its pill read "Reference only — gate failed" beside this same
+	// header's own chip reading "rigor gate pending". One vocabulary, one
+	// module.
+	//
+	// MUTATION: restore `function statusTag(status, passesRigor)` (or
+	// statusLabel) in StrategyPassport.jsx and call it with two arguments —
+	// every assert below reddens.
 	assert.ok(
 		passport.includes(
-			'import { GATE_FAILED_LABEL } from "../libraryStatus.js"',
+			'import { statusTag, statusLabel, statusTitle } from "../libraryStatus.js"',
 		),
-		"StrategyPassport.jsx must import the shared label",
+		"StrategyPassport.jsx must take all three pill helpers from the shared module",
+	);
+	for (const fn of ["statusTag", "statusLabel", "statusTitle"]) {
+		assert.ok(
+			!new RegExp("^function " + fn + "\\(", "m").test(passport),
+			`StrategyPassport.jsx must not carry its own copy of ${fn}`,
+		);
+	}
+	assert.ok(
+		!/statusTag\(s\.status, s\.passes_rigor_gate\)/.test(passport),
+		"no two-argument call may remain — it would silently drop the four-state",
 	);
 	assert.ok(
-		!passport.includes('"Reference only — gate failed"'),
-		"StrategyPassport.jsx must not carry its own copy of the label literal",
+		!/statusLabel\(s\.status, s\.passes_rigor_gate\)/.test(passport),
+		"no two-argument call may remain — it would silently drop the four-state",
 	);
-	assert.ok(passport.includes("return GATE_FAILED_LABEL;"));
+	// Same discipline as the Library: class, words and tooltip derived from one
+	// row's one verdict, so a reviewer sees ONE argument list, not three.
+	const args = "\\(s\\.status, s\\.passes_rigor_gate, s\\.rigor_gate_status\\)";
+	for (const fn of ["statusTag", "statusLabel", "statusTitle"]) {
+		assert.equal(
+			passport.match(new RegExp(fn + args, "g"))?.length,
+			1,
+			`${fn} must be called with the full four-state on the passport pill`,
+		);
+	}
+	// The demotion literal may still appear in PROSE explaining the defect —
+	// what must never come back is a live copy of it. (Same comment-aware scan
+	// this file already uses for the retired `pending_backtest` status.)
+	for (const line of passport.split("\n")) {
+		const code = line.trim();
+		if (code.startsWith("//") || code.startsWith("*")) continue;
+		assert.ok(
+			!code.includes("Reference only"),
+			`StrategyPassport.jsx has a live copy of the demotion label: ${code}`,
+		);
+	}
+});
+
+test("a live passport row whose gate has not graded says pending, never failed", () => {
+	// The exact served shape behind the bug: `rigor_gate_status` is the verdict
+	// and `passes_rigor_gate` is false for BOTH ungraded states, so the tuple
+	// the old two-argument passport helper saw — ("live", false) — is
+	// indistinguishable from a real failure. The four-state tells them apart.
+	// MUTATION: drop the third argument at the passport call site (the helper
+	// then sees rigorGateStatus === undefined, isUngraded falls through to
+	// `passesRigor == null` → false, and the fail arm answers) — these redden.
+	assert.equal(statusLabel("live", false, "pending"), NOT_GRADED_LABEL);
+	assert.equal(statusTag("live", false, "pending"), "tag-muted");
+	assert.equal(statusTitle("live", false, "pending"), NOT_GRADED_TITLE);
+	assert.notEqual(statusLabel("live", false, "pending"), GATE_FAILED_LABEL);
+
+	assert.equal(statusLabel("live", false, "degenerate"), DEGENERATE_LABEL);
+	assert.equal(statusTitle("live", false, "degenerate"), DEGENERATE_TITLE);
+	assert.notEqual(statusLabel("live", false, "degenerate"), GATE_FAILED_LABEL);
+
+	// And the pill still agrees with the rigor chip rendered beside it: the
+	// chip's pending/degenerate arms key on the same field the pill now reads.
+	assert.ok(
+		passport.includes('const rigorPending = s.rigor_gate_status === "pending"'),
+	);
+	assert.ok(
+		passport.includes(
+			'const rigorDegenerate = s.rigor_gate_status === "degenerate"',
+		),
+	);
 });
 
 test("the passport's selection-bias comment no longer claims a 404 is expected", () => {

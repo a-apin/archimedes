@@ -25,7 +25,7 @@ import {
 	UNKNOWN_RIGOR_LABEL,
 	UNKNOWN_RIGOR_TITLE,
 } from "../rigorGateStatus.js";
-import { GATE_FAILED_LABEL } from "../libraryStatus.js";
+import { statusTag, statusLabel, statusTitle } from "../libraryStatus.js";
 import { formatStrategySpec, tokenizeJson } from "../strategySpec.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -281,28 +281,28 @@ function StrategySpecPanel({ spec }) {
 	);
 }
 
-function statusTag(status, passesRigor) {
-	// A "live" admin status combined with a failed rigor verdict shouldn't
-	// render green — the rigor verdict is the truthful signal. Match the
-	// Strategies.jsx pill rule (Issue #387) so the passport doesn't
-	// contradict the library page.
-	if (status === "live" && passesRigor === false) return "tag-muted";
-	if (status === "validated" || status === "live") return "tag-positive";
-	if (status === "rejected" || status === "retired") return "tag-muted";
-	return "tag-accent";
-}
-
-function statusLabel(status, passesRigor) {
-	// The demotion string is imported, not retyped. The Library table renders
-	// the same words for the same row (ui/src/libraryStatus.js); when these were
-	// two literals in two files, "byte-identical" was a convention one keystroke
-	// could break with nothing to catch it.
-	if (status === "live" && passesRigor === false) return GATE_FAILED_LABEL;
-	return (
-		(status || "candidate").charAt(0).toUpperCase() +
-		(status || "candidate").slice(1)
-	);
-}
+// The status pill's class, its words and its tooltip are `../libraryStatus.js`'s
+// — this file defines none of them.
+//
+// Two local two-argument helpers used to live here. They read `status` and
+// `passes_rigor_gate`, and nothing else, which left this surface the last place
+// the BOOLEAN could still stand in for the verdict. The Library moved its pill
+// onto the four-state `rigor_gate_status` (#1747); the passport imported only
+// the shared demotion LABEL and kept its own two-arm logic — so it looked
+// unified and was not. `passes_rigor_gate` is false for a PENDING row and for a
+// DEGENERATE one too, by fail-closed design, so a live row no gate had ever
+// graded painted its pill "Reference only — gate failed" — a graded-and-lost
+// claim — a few pixels from this same header's rigor chip reading "rigor gate
+// pending". One vocabulary, one module: a pill may say "gate failed" only when
+// `rigor_gate_status === "fail"`; pending says "Not yet graded", degenerate
+// says "Unevaluable — flat returns".
+//
+// Two pill COLOURS move as a result, on purpose. `validated` was green here and
+// is accent in the shared helper; an unknown/`candidate` status was accent here
+// and is muted there. Green is reachable from exactly one place now — a `live`
+// row with a literal `true` verdict — which is the whole point of the shared
+// module: a second green door on the passport would re-open the gap this
+// closes. No graded state's WORDS change.
 
 // Derive a brief-specific display title. The unified passport table doesn't
 // persist `strategy_name`, but Pi's #336 fix ensures methodology_summary
@@ -565,8 +565,11 @@ export default function StrategyPassport({
 					{regime && (
 						<span className={`tag ${regime.cls}`}>{regime.label}</span>
 					)}
-					<span className={`tag ${statusTag(s.status, s.passes_rigor_gate)}`}>
-						{statusLabel(s.status, s.passes_rigor_gate)}
+					<span
+						className={`tag ${statusTag(s.status, s.passes_rigor_gate, s.rigor_gate_status)}`}
+						title={statusTitle(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
+					>
+						{statusLabel(s.status, s.passes_rigor_gate, s.rigor_gate_status)}
 					</span>
 					{unknownRigor ? (
 						<span className="tag tag-muted" title={UNKNOWN_RIGOR_TITLE}>
