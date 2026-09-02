@@ -1,7 +1,7 @@
 # ADR: The passport is the rigor verdict of record
 
 > **Audience:** Archimedes team
-> **Status:** **Accepted**
+> **Status:** **Accepted, pending quant sign-off**
 > **Date:** 2026-09-01
 > **Owner:** Dan Browne (quant reviewer of record: Önder Akkaya)
 > **Supersedes:** the read-time-derivation premise of [#868](https://github.com/aprin-labs/archimedes/issues/868) — that a strategy's rigor verdict is computed when it is read. It does **not** supersede [#821](https://github.com/aprin-labs/archimedes/issues/821), whose principle survives tightened; see "What #821 said, and what still holds".
@@ -14,8 +14,13 @@
 **Generation, backtesting and grading are one-time events.** A strategy is graded
 ONCE, at backtest time, by the real gate. That verdict is persisted on the
 strategy passport together with its inputs and its provenance, and **every
-surface reads the stored verdict**. A re-grade is an explicit, versioned event —
-never a silent overwrite, and never a recompute on read.
+surface that shows a badge reads the stored verdict**. A re-grade is an explicit,
+versioned event — never a silent overwrite, and never a recompute on read.
+
+One named exception, stated up front rather than buried: the **deploy ladder**
+(`GET /api/selection-bias/gate/{id}`, and the vault deploy check through it)
+still grades live, so a badge and a deploy answer for one id can differ in
+vintage. See decision 5.
 
 The stored verdict must be written by the **real gate**, never by a fixture and
 never by the generation-time synthesis verdict, and its provenance
@@ -83,10 +88,25 @@ no shared field between the two answers.
    hand-bumped code revision. Its module docstring lists what is in and, just as
    importantly, what is deliberately out (the git SHA; board FDR).
 
-5. **Readers read.** No surface recomputes a verdict. `_passport_rigor_status`
-   — the old read-time derivation — is retained off the request path as the
-   oracle the migration's backfill rule is tested against, and as documentation
-   of what the four states meant before they were stored.
+5. **Readers read.** No surface recomputes the **badge** verdict — the
+   pass/fail/pending/degenerate a user or an agent is shown for a strategy.
+   `_passport_rigor_status` — the old read-time derivation — is retained off the
+   request path as the oracle the migration's backfill rule is tested against,
+   and as documentation of what the four states meant before they were stored.
+
+   One thing still computes live, and this ADR does **not** close it: the
+   **deploy ladder**. `_generated_strategy_rigor`
+   (`backend/archimedes/api/selection_bias_routes.py`) runs `run_rigor_gate` over
+   a generated strategy's persisted returns to answer
+   `GET /api/selection-bias/gate/{id}`, which backs the Strategy Passport's
+   Deploy button, the strictness slider, and — through
+   `vaults_routes._strategy_rigor_status` — the server-side vault deploy check.
+   So a passport badge and a deploy answer for the same id can differ in
+   vintage: the badge is what the gate said when it graded, the ladder is what
+   today's gate says now. That is a **named seam, not a closed one**. Whether
+   deploy admission may read a stored answer at all is a separate decision —
+   admission is the one place where recomputing against the *current* gate is
+   arguably the safer behaviour, and it is deliberately left alone here.
 
 6. **A re-grade is an event.** Re-grading calls the same single writer with a
    fresh `RigorVerdictWrite`, which rewrites all five fields and stamps a new
@@ -114,8 +134,10 @@ looked at this" can no longer render identically.
 ## Consequences
 
 **Good.**
-- One field, one meaning, one writer. The Library row, the detail route and the
-  passport route serve the same four-state for the same id, by construction.
+- One field, one meaning, one writer. For a **generated** id the Library row,
+  the detail route and the passport route serve the same four-state, by
+  construction. Curated ids are not there yet — see "Curated strategies go from
+  a false `fail` to an honest `pending`" below; that is what PR-B is for.
 - A verdict is now dated and attributable. "Which gate said that?" has an answer.
 - The passport list route stopped paying a whole-cohort `get_all_daily_returns`
   per page — a query that projected and deserialized every winning row's
@@ -141,8 +163,22 @@ looked at this" can no longer render identically.
 - **Curated strategies go from a false `fail` to an honest `pending`.** Every
   curated passport row's `passes_rigor_gate` is the #821 placeholder, not a gate
   result. After the migration those rows say "not yet graded", which is true, and
-  the Library's curated tab keeps its live-gate badge (the curated detail route is
-  unchanged in PR-A). Grading them for real is PR-B.
+  the Library's curated tab keeps its live-gate SOURCE (the curated detail route
+  is unchanged in PR-A). Grading them for real is PR-B. The consequence a reader
+  should expect meanwhile: `GET /api/strategies/passports/{id}` answers `pending`
+  for a curated id while `GET /api/strategies/{id}` still answers that id's live
+  verdict, so those two routes disagree for curated ids until PR-B lands. That
+  disagreement is #1746 narrowed, not #1746 closed.
+- **Two curated pill labels change wording, on a tab PR-A does not otherwise
+  touch.** The Library's pill helpers now read the four-state, and they read it
+  for curated rows too. A curated row whose live verdict is `pending` or
+  `degenerate` used to render its store status ("Validated", "Candidate") and now
+  renders "Not yet graded" / "Unevaluable — flat returns"; a `validated` row also
+  drops from `tag-accent` to `tag-muted` in those two states. A curated row with
+  a real `pass` is unchanged. This is intended — a `validated` store status
+  beside an ungraded gate is the same false-confidence shape as the generated
+  side — but it is movement on the curated tab and is called out here rather than
+  discovered.
 - **A row can be published with no verdict.** `pending` is a real, reachable,
   non-green state; product copy has to have something to say for it ("Not yet
   graded").

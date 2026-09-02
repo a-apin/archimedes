@@ -569,7 +569,10 @@ gate — a real on-chain vault does, server-side, before spending any gas.
 
 **The verdict is graded once, not on every read.** A strategy is graded at backtest time by
 the real gate and the answer is persisted on its passport; every route serves that stored
-verdict, so this route and `archimedes_passport` cannot disagree about one id. Read the
+verdict, so for a **generated** strategy this route and `archimedes_passport` cannot
+disagree about one id. A **curated** strategy is the exception until PR-B: its passport row
+still carries the fail-closed placeholder, so `archimedes_passport` answers `pending` for it
+while this route answers its live verdict. Read the
 provenance on the passport (`graded_at`, `gate_version`, `cohort_n`) when you need to know
 *which* grade you are looking at — a `gate_version` of `legacy-derived` means the verdict was
 inferred from older columns by a migration rather than produced by a gate run. See

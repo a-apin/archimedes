@@ -65,11 +65,20 @@ Corrected here, and bumped again for `lambda-generation-offload` on 2026-08-30,
 | [`market-data-sourcing.md`](market-data-sourcing.md) | Accepted | 2026-08-31 | Dan Browne | Why market data is sourced **per surface** — Tiingo (starting on the Free tier, for testing) for backtesting and paid analysis, yfinance for the free, ungated Explore viewer that sells and redistributes nothing. Flags a **Tiingo commercial plan as a mainnet prerequisite** and records that the split is reversible by build (#1218, #1282, #1455) |
 | [`lambda-generation-offload.md`](lambda-generation-offload.md) | **Proposed — verdict DEFER** | 2026-08-30 | Dan Browne | Why generation does **not** move to Lambda yet, measured on a real VPC-attached container built from the production image: no dependency or size blocker, but a **13.6 s** steady-state / **51 s** post-deploy cold start on a ~48 s job. Adopts the lane-agnostic worker entrypoint + the measured-cost model, and corrects the quote seam from `quote()` to `_price()` (#1411, feeds #1217) |
 | [`ipfs-pinning-not-live.md`](ipfs-pinning-not-live.md) | Accepted | 2026-09-01 | Dan Browne | Reasoning-trace reveal is **hash-only** (empty `storagePointer`). The Pinata pin path is removed, not half-wired: `PINATA_JWT` was never in prod ECS secrets, and public copy must not claim IPFS pinning (#1526) |
-| [`rigor-verdict-of-record.md`](rigor-verdict-of-record.md) | Accepted | 2026-09-01 | Dan Browne (quant reviewer: Önder Akkaya) | A strategy is graded **once, at backtest time**, by the real gate; the verdict is persisted on its passport with `graded_at` / `gate_version` / `cohort_n`, and every surface **reads** it. A re-grade is an explicit, versioned event — never a silent overwrite, never a recompute on read. Supersedes #868's read-time-derivation premise; #821's "never a verdict no gate produced" survives tightened (#1746/#1747) |
+| [`rigor-verdict-of-record.md`](rigor-verdict-of-record.md) | **Accepted, pending quant sign-off** | 2026-09-01 | Dan Browne (quant reviewer: Önder Akkaya) | A strategy is graded **once, at backtest time**, by the real gate; the verdict is persisted on its passport with `graded_at` / `gate_version` / `cohort_n`, and every surface **reads** it. A re-grade is an explicit, versioned event — never a silent overwrite, never a recompute on read. Supersedes #868's read-time-derivation premise; #821's "never a verdict no gate produced" survives tightened (#1746/#1747) |
 
 ### Open review debt
 
-None open.
+- **The `rigor-verdict-of-record.md` quant sign-off** — the ADR names Önder Akkaya
+  as quant reviewer of record and that review has not happened, so the record is
+  `Accepted, pending quant sign-off` per the rule above: live in code, awaiting
+  the named lane. Two things specifically want a quant's eye — that
+  `gate_version` covers every input that can move a verdict without the
+  strategy's returns moving (its module docstring lists what is deliberately
+  out), and that the migration's `legacy-derived` backfill rule reproduces what
+  the old read-time derivation meant. Same shape as the
+  `num-trials-self-containment.md` sign-off, which is the precedent for both the
+  status string and this row.
 
 - ~~The `num-trials-self-containment.md` portfolio-math sign-off~~ — **resolved
   2026-08-31**: ratified by Önder Akkaya
