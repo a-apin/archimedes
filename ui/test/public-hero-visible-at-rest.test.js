@@ -1,26 +1,48 @@
 /**
  * Issue #1750 — the landing hero rendered as a solid black void.
  *
- * The hero's children carry no opacity of their own; the only opacity the
- * stylesheet stated was `from { opacity: 0 }` in the `public-arrive` keyframe,
- * and both rules that used it asked for `animation-fill-mode: both`. `both`
- * means "apply the first frame before the animation starts AND the last frame
- * after it ends" — so opacity 0 was the hero's stylesheet-supplied resting
- * value, and whether anyone ever saw the headline depended on the animation
- * running and on a `to` frame the UA had to synthesise because none was
- * written. Over `.public-hero__stage`'s near-black `--public-stage` (#0c0c11),
- * a hero that loses that bet is a black rectangle.
+ * The hero's own rules declare no opacity. The only opacity the stylesheet
+ * ever stated for that content was `from { opacity: 0 }` in the
+ * `public-arrive` entrance, so the headline, lede, CTA row and product
+ * screenshot were visible only as a consequence of that animation running.
+ * Every state that holds an animation's first frame therefore painted the
+ * hero at opacity 0 over `.public-hero__stage`'s near-black `--public-stage`
+ * (#0c0c11) — including the one state that never ends, a play-pending
+ * animation whose start time never resolves.
  *
- * These are source-text checks against ui/src/App.css. They cannot prove what
- * a browser paints; what they pin is the invariant that made the void
- * possible — that the hero must not depend on an animation for its resting
- * appearance:
- *   1. the keyframe states where it ends, and it ends visible;
- *   2. any rule that keeps a forwards fill (`forwards`/`both`) may only do so
- *      while that explicit, visible end frame exists;
- *   3. reduced-motion visitors get `animation: none`, not a shortened fade;
- *   4. no rule that uses the animation writes an at-rest `opacity: 0` back
- *      into the cascade.
+ * No fill mode closes that. `backwards`/`both` are *defined* as applying the
+ * first frame through the before phase, and `none`/`forwards` leave the
+ * zero-delay elements holding active time 0, which is the first frame again.
+ * The fix, and the invariant these checks pin, is structural: **the hero's
+ * opacity is 1 in every state, because no rule and no keyframe that reaches
+ * the hero ever states otherwise.** Pending, before phase, active, finished,
+ * idle, cancelled, reduced motion, a stale bundle, a stylesheet that failed
+ * to load — all opacity 1.
+ *
+ * These are source-text checks over ui/src/App.css. They cannot prove what a
+ * browser paints; what they prove is that the stylesheet never asks for an
+ * invisible hero.
+ *
+ *   1. `@keyframes public-arrive` contains no `opacity` token at all, and
+ *      still animates something (so an emptied keyframe cannot pass it).
+ *   2. No rule targeting the hero hides it — opacity below 1, `visibility:
+ *      hidden`/`collapse`, `display: none`, or `content-visibility`. Checked
+ *      in every context, media queries included, because a rule that hides
+ *      the hero at one viewport width is #1750 at that width.
+ *   3. Every keyframe named by an animation on a hero rule is opacity-free —
+ *      not just `public-arrive`. This is not a passenger of check 1: adding
+ *      `animation: some-other-fade` (whose keyframes fade from 0) to
+ *      `.public-hero__copy > *` reddens 3 alone.
+ *
+ * Each check also asserts that it actually looked at something — that the
+ * keyframe exists, that the hero selectors still match rules, that the two
+ * known animation users are still there. A rename or a deletion makes this
+ * file fail loudly rather than pass over an empty set.
+ *
+ * Not checked, deliberately: reduced motion. The `@media (prefers-reduced-
+ * motion: reduce)` block in App.css is now a motion-preference courtesy, not
+ * a visibility guard — with opacity gone from the entrance, deleting it could
+ * not reintroduce #1750, so asserting on it here would be a passenger.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -28,14 +50,35 @@ import test from "node:test";
 
 const raw = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 
-// Blank comments out (preserving length and newlines, so offsets and line
-// numbers stay true) — prose about `animation` must never read as a rule.
+// Blank comments out, preserving length and newlines so offsets and line
+// numbers stay true — prose about `opacity` must never read as a declaration.
 const css = raw.replace(/\/\*[\s\S]*?\*\//g, (match) =>
 	match.replace(/[^\n]/g, " "),
 );
 
 const NAME = "public-arrive";
-const FILL_KEYWORDS = new Set(["none", "forwards", "backwards", "both"]);
+
+/**
+ * Selectors that carry the hero's visible content. The `(?![\w-])` boundary
+ * keeps `.public-product-frame` from swallowing `.public-product-frame__bar`
+ * (whose chrome legitimately hides a span on narrow screens) while still
+ * matching `.public-product-frame img` and `.public-hero__copy > :nth-child`.
+ */
+const HERO_SELECTORS = [
+	".public-hero",
+	".public-hero__stage",
+	".public-hero__copy",
+	".public-product-frame",
+	// The headline is styled through `.public-hero h1` today and has no rule of
+	// its own, so this one is scanned rather than required — it is here so an
+	// id-targeted rule cannot slip a hide past the scan later.
+	"#public-hero-title",
+];
+
+/** Of those, the ones that must still match a rule or the scan is vacuous. */
+const REQUIRED_SELECTORS = HERO_SELECTORS.filter(
+	(token) => token !== "#public-hero-title",
+);
 
 const lineOf = (index) => css.slice(0, index).split("\n").length;
 
@@ -52,149 +95,181 @@ function blockAt(openIndex) {
 	throw new Error(`src/App.css: unbalanced braces from line ${lineOf(openIndex)}`);
 }
 
-/** Flat `selector { declarations }` pairs inside a block that does not nest. */
-function flatRules(body) {
-	return [...body.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
-		selector: match[1].replace(/\s+/g, " ").trim(),
-		declarations: match[2],
-	}));
+/**
+ * Every leaf rule in the sheet, with the at-rules it nests inside. App.css is
+ * a flat stylesheet (rules and @media/@keyframes blocks, no CSS nesting), so
+ * a leaf block's text is its declaration list.
+ */
+function leafRules() {
+	const rules = [];
+	const stack = [];
+	let buffer = "";
+	for (let i = 0; i < css.length; i += 1) {
+		const char = css[i];
+		if (char === "{") {
+			stack.push({ prelude: buffer.replace(/\s+/g, " ").trim(), at: i });
+			buffer = "";
+		} else if (char === "}") {
+			const frame = stack.pop();
+			assert.ok(frame, `src/App.css:${lineOf(i)}: unbalanced closing brace`);
+			if (buffer.trim()) {
+				rules.push({
+					selector: frame.prelude,
+					context: stack.map((outer) => outer.prelude).join(" / "),
+					declarations: buffer,
+					line: lineOf(frame.at),
+				});
+			}
+			buffer = "";
+		} else buffer += char;
+	}
+	assert.equal(stack.length, 0, "src/App.css: unbalanced braces");
+	return rules;
 }
 
-function keyframesBody(name) {
-	const at = css.search(new RegExp(`@keyframes\\s+${name}\\s*\\{`));
-	assert.notEqual(
-		at,
-		-1,
-		`src/App.css: @keyframes ${name} is gone. If the hero's entrance was ` +
-			`retired, delete this guard in the same change; do not leave it ` +
-			`passing on an animation that no longer exists.`,
-	);
-	return blockAt(css.indexOf("{", at));
-}
+const rules = leafRules();
 
-/** Every rule whose own declarations name the animation. */
-function rulesUsing(name) {
-	const declaration = new RegExp(
-		`animation(?:-name)?\\s*:[^;{}]*\\b${name}\\b[^;{}]*`,
-		"g",
-	);
-	return [...css.matchAll(declaration)].map((match) => {
-		const open = css.lastIndexOf("{", match.index);
-		const start =
-			Math.max(css.lastIndexOf("}", open), css.lastIndexOf("{", open - 1)) + 1;
-		return {
-			selector: css.slice(start, open).replace(/\s+/g, " ").trim(),
-			declarations: blockAt(open),
-			shorthand: match[0].replace(/\s+/g, " ").trim(),
+const keyframes = new Map(
+	[...css.matchAll(/@keyframes\s+([\w-]+)\s*\{/g)].map((match) => [
+		match[1],
+		{
+			body: blockAt(match.index + match[0].length - 1),
 			line: lineOf(match.index),
-		};
-	});
-}
-
-/** The fill mode a rule ends up with: longhand wins, else the shorthand. */
-function fillModeOf(rule) {
-	const longhand = rule.declarations.match(
-		/animation-fill-mode\s*:\s*([a-zA-Z-]+)/,
-	);
-	if (longhand) return longhand[1].toLowerCase();
-	const fromShorthand = rule.shorthand
-		.split(/[\s:]+/)
-		.map((token) => token.toLowerCase())
-		.filter((token) => token !== NAME && FILL_KEYWORDS.has(token));
-	// A CSS shorthand takes the fill mode from its last such keyword.
-	return fromShorthand.at(-1) ?? "none";
-}
-
-const frames = flatRules(keyframesBody(NAME)).map((frame) => ({
-	offsets: frame.selector
-		.split(",")
-		.map((offset) => offset.trim().toLowerCase())
-		.filter(Boolean),
-	declarations: frame.declarations,
-}));
-const endFrame = frames.find(
-	(frame) => frame.offsets.includes("to") || frame.offsets.includes("100%"),
+		},
+	]),
 );
-const endsVisible = Boolean(endFrame) && /opacity\s*:\s*1\b/.test(endFrame.declarations);
-const users = rulesUsing(NAME);
 
-test(`@keyframes ${NAME} states an end frame, and it ends visible`, () => {
-	assert.ok(
-		endFrame,
-		`src/App.css: @keyframes ${NAME} has no \`to\` (or \`100%\`) frame. With ` +
-			`only a \`from { opacity: 0 }\` frame the end state is implicit — the ` +
-			`browser has to synthesise it from the element's underlying style — so ` +
-			`nothing in the stylesheet ever says the hero is visible. Write the ` +
-			`end state: \`to { opacity: 1; transform: none; }\`. (#1750)`,
+const MISSING =
+	`src/App.css: @keyframes ${NAME} is gone. If the hero's entrance was ` +
+	`retired, delete this guard in the same change; do not leave it passing ` +
+	`over an animation that no longer exists. (#1750)`;
+
+const targetsHero = (selector) =>
+	HERO_SELECTORS.some((token) =>
+		new RegExp(`${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(
+			selector,
+		),
 	);
-	assert.ok(
-		endsVisible,
-		`src/App.css: the \`to\` frame of @keyframes ${NAME} does not set ` +
-			`\`opacity: 1\`. The frame the hero finishes on has to be a visible ` +
-			`one. (#1750)`,
+
+const heroRules = rules.filter((rule) => targetsHero(rule.selector));
+
+/** Declarations that make an element, or its text, unpaintable. */
+const HIDING = [
+	{
+		pattern: /opacity\s*:\s*(-?[\d.]+%?)/g,
+		hides: (value) =>
+			Number.parseFloat(value) / (value.endsWith("%") ? 100 : 1) < 1,
+		why: "the hero must never be less than fully opaque — that is #1750",
+	},
+	{
+		pattern: /visibility\s*:\s*(hidden|collapse)\b/g,
+		hides: () => true,
+		why: "a hidden hero is #1750 with a different property",
+	},
+	{
+		pattern: /display\s*:\s*(none)\b/g,
+		hides: () => true,
+		why: "a hero that is not laid out is a hero nobody reads",
+	},
+	{
+		pattern: /content-visibility\s*:\s*(hidden|auto)\b/g,
+		hides: () => true,
+		why: "a skipped subtree paints nothing, which is #1750 by another route",
+	},
+];
+
+test(`@keyframes ${NAME} animates transform only — no opacity anywhere in it`, () => {
+	const frame = keyframes.get(NAME);
+	assert.ok(frame, MISSING);
+	assert.doesNotMatch(
+		frame.body,
+		/\bopacity\b/,
+		`src/App.css:${frame.line}: @keyframes ${NAME} mentions \`opacity\`. The ` +
+			`hero has no opacity of its own, so any opacity in this entrance is ` +
+			`the only opacity the stylesheet states for the headline, lede, CTAs ` +
+			`and screenshot — and a pending or stalled animation holds its first ` +
+			`frame forever, under every fill mode. Animate \`transform\` only, so ` +
+			`a broken entrance leaves the hero 10px low and readable rather than ` +
+			`invisible. (#1750)`,
 	);
 	assert.match(
-		endFrame.declarations,
-		/transform\s*:\s*none\b/,
-		`src/App.css: the \`to\` frame of @keyframes ${NAME} does not reset ` +
-			`\`transform\`, so a forwards fill would leave the hero holding the ` +
-			`10px entrance offset. (#1750)`,
+		frame.body,
+		/\btransform\s*:/,
+		`src/App.css:${frame.line}: @keyframes ${NAME} no longer animates ` +
+			`\`transform\`, so this check would pass over an empty keyframe. If ` +
+			`the entrance changed shape, update this guard deliberately. (#1750)`,
 	);
 });
 
-test("no public-arrive rule keeps a forwards fill without a visible end frame", () => {
-	assert.ok(
-		users.length >= 2,
-		`src/App.css: expected the hero copy and the product frame to use ` +
-			`${NAME}; found ${users.length} rule(s). Update this guard along with ` +
-			`the hero if that changed on purpose.`,
-	);
-	const covered = users.map((rule) => rule.selector).join(" ");
-	assert.match(covered, /public-hero__copy/, "hero copy no longer animates");
-	assert.match(covered, /public-product-frame/, "product frame no longer animates");
-
-	for (const rule of users) {
-		const fill = fillModeOf(rule);
-		if (fill !== "forwards" && fill !== "both") continue;
+test("no rule targeting the hero hides it", () => {
+	for (const token of REQUIRED_SELECTORS) {
 		assert.ok(
-			endsVisible,
-			`src/App.css:${rule.line}: \`${rule.selector}\` uses ` +
-				`\`${rule.shorthand}\` — a \`${fill}\` fill holds the animation's ` +
-				`last frame after it ends — but @keyframes ${NAME} has no \`to\` ` +
-				`frame ending at \`opacity: 1\`. That is exactly #1750: the hero's ` +
-				`resting appearance is supplied by an animation whose end state ` +
-				`nothing states. Either write the end frame, or drop to ` +
-				`\`backwards\` so the element rests on its own cascade.`,
+			heroRules.some((rule) => rule.selector.includes(token)),
+			`src/App.css: no rule matches \`${token}\` any more. This guard scans ` +
+				`the hero by selector; a rename leaves it scanning nothing. Update ` +
+				`HERO_SELECTORS in the same change. (#1750)`,
 		);
+	}
+
+	for (const rule of heroRules) {
+		for (const { pattern, hides, why } of HIDING) {
+			for (const match of rule.declarations.matchAll(pattern)) {
+				assert.ok(
+					!hides(match[1]),
+					`src/App.css:${rule.line}: \`${rule.selector}\`` +
+						(rule.context ? ` (inside ${rule.context})` : "") +
+						` declares \`${match[0].replace(/\s+/g, " ")}\` — ${why}. The ` +
+						`hero sits on a near-black stage; anything that stops it ` +
+						`painting is the black void the issue reports. (#1750)`,
+				);
+			}
+		}
 	}
 });
 
-test("reduced motion turns the hero entrance off rather than shortening it", () => {
-	const reduceBodies = [...css.matchAll(/@media[^{]*\{/g)]
-		.filter((match) => /prefers-reduced-motion\s*:\s*reduce/.test(match[0]))
-		.map((match) => blockAt(match.index + match[0].length - 1));
-	const silenced = reduceBodies
-		.flatMap(flatRules)
-		.filter((rule) => /animation(?:-name)?\s*:\s*none\b/.test(rule.declarations))
-		.map((rule) => rule.selector)
-		.join(" ");
-	const explain =
-		"src/App.css: under `prefers-reduced-motion: reduce` the hero must get " +
-		"`animation: none`. A global `animation-duration: 0.01ms !important` is " +
-		"not the same thing — it still runs an animation, and an animation that " +
-		"has not started yet is an animation holding opacity 0. (#1750)";
-	assert.match(silenced, /public-hero__copy/, explain);
-	assert.match(silenced, /public-product-frame/, explain);
-});
+test("every animation the hero runs comes from an opacity-free keyframe", () => {
+	assert.ok(keyframes.has(NAME), MISSING);
 
-test("no public-arrive rule writes an at-rest opacity: 0 into the cascade", () => {
-	for (const rule of users) {
-		assert.doesNotMatch(
-			rule.declarations,
-			/opacity\s*:\s*0(?![.\d%])/,
-			`src/App.css:${rule.line}: \`${rule.selector}\` declares ` +
-				`\`opacity: 0\` outside the keyframe, which makes invisible the ` +
-				`hero's resting state again no matter what the animation does. (#1750)`,
-		);
+	const animated = heroRules.filter((rule) =>
+		/animation(?:-name)?\s*:/.test(rule.declarations),
+	);
+	const arriveUsers = animated.filter((rule) =>
+		new RegExp(`\\b${NAME}\\b`).test(rule.declarations),
+	);
+	const covered = arriveUsers.map((rule) => rule.selector).join(" ");
+	assert.match(
+		covered,
+		/public-hero__copy/,
+		`src/App.css: no hero-copy rule runs ${NAME} any more; this guard would ` +
+			`have nothing to check. (#1750)`,
+	);
+	assert.match(
+		covered,
+		/public-product-frame/,
+		`src/App.css: the product frame no longer runs ${NAME}; this guard would ` +
+			`have nothing to check. (#1750)`,
+	);
+
+	for (const rule of animated) {
+		const named = [
+			...rule.declarations.matchAll(/animation(?:-name)?\s*:([^;}]*)/g),
+		]
+			.flatMap((match) => match[1].split(/[\s,]+/))
+			.map((token) => token.trim())
+			.filter((token) => keyframes.has(token));
+
+		for (const name of new Set(named)) {
+			assert.doesNotMatch(
+				keyframes.get(name).body,
+				/\bopacity\b/,
+				`src/App.css:${rule.line}: \`${rule.selector}\` runs ` +
+					`@keyframes ${name} (defined at line ${keyframes.get(name).line}), ` +
+					`which animates \`opacity\`. Nothing in the hero declares an ` +
+					`opacity of its own, so that keyframe's first frame becomes the ` +
+					`hero's appearance for as long as the animation is pending — ` +
+					`indefinitely, if its start time never resolves. Animate ` +
+					`\`transform\` only. (#1750)`,
+			);
+		}
 	}
 });
