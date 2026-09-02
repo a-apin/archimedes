@@ -1134,7 +1134,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               signal — DeployabilityChip short-circuits to `null` for every
               row (:14), so every chip silently vanished (#1356). This banner
               is the visible signal that replaces that silence, near the
-              chips it describes. */}
+              chips it describes.
+
+              Scope note (this PR): with ROADMAP_SURFACES_ENABLED off, load()
+              no longer fetches /api/selection-bias/gate at all, so gateError
+              stays null and this banner cannot fire — there are no chips left
+              for it to describe. Banner and chips come back together under
+              VITE_ROADMAP_SURFACES=true. */}
           {gateError && (
             <div className="info-box warning mb-3">
               Deployability status unavailable: {gateError}. Chips below may not reflect the live gate.{' '}
@@ -1277,13 +1283,32 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               verdict appears once there is one. They are <em>not</em> outputs of the
               fusion engine.
             </p>
+            {/* MERGE ORDER — depends on PR #1792 (dbrowneup/verdict-of-record-a).
+                The claim below ("until then it carries no verdict, and an absent
+                verdict is not a failure") is only true once #1792 lands.
+                statusLabel() (defined at :161 on this branch) still returns
+                'Reference only — gate failed' for
+                status === 'live' && passes_rigor_gate === false, and
+                passes_rigor_gate is the FAIL-CLOSED boolean: false for a pending
+                verdict too. #1792 replaces it with a four-state rigor_gate_status
+                and NOT_GRADED_LABEL = "Not yet graded" (ui/src/libraryStatus.js),
+                which is what stops an ungraded curated row from rendering a
+                failure pill. Merged alone, this paragraph contradicts the pill two
+                inches below it, so land this after or with #1792.
+
+                This is an ORDERING constraint, not a conflict one: a 3-way merge
+                against that branch is clean (base=origin/main, git merge-file
+                EXIT=0, zero conflict markers). Do not "fix" it by softening the
+                copy — the copy is the correct end state; #1792 is what makes the
+                rows agree with it. */}
             <p style={{ marginBottom: 6 }}>
               They are <strong>not a scoreboard</strong>. A curated example is graded only
               once a backtest has been run for it here; until then it carries no verdict,
               and an absent verdict is not a failure. The numbers beside them are not all
               measurements either: where a row's metrics trace to a stored fixture snapshot
-              rather than to a backtest run here, the row is marked <strong>fixture</strong>.
-              A strategy's passport is its verdict of record.
+              rather than to a backtest run here, the row is marked <strong>fixture</strong> —
+              or <strong>placeholder</strong>, where only the strategy module's declared
+              constants exist. A strategy's passport is its verdict of record.
             </p>
             <p>
               Generate's curated-library path picks and weights its candidates from this

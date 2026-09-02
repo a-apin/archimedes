@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { metricsSourceNote } from "../src/metricsSource.js";
+import { METRICS_SOURCE_NOTES, metricsSourceNote } from "../src/metricsSource.js";
 
 const strategies = readFileSync(
 	new URL("../src/components/Strategies.jsx", import.meta.url),
@@ -207,5 +207,56 @@ test("no mark claims the number was measured or verified", () => {
 		const { title } = metricsSourceNote(source);
 		assert.doesNotMatch(title, /\bmeasured\b/i);
 		assert.doesNotMatch(title, /\bverified\b/i);
+	}
+});
+
+// ── 6. The mark's vocabulary is the BACKEND's, and stays pinned to it ─────
+//
+// METRICS_SOURCE_NOTES' keys are bare string literals of what
+// `_display_metrics_source` returns. Renaming one there and in its own
+// backend/tests/test_metrics_provenance.py — the normal way such a rename
+// lands — leaves that file at 9 passed and, without this test, the whole UI
+// suite green, while every "fixture" mark silently stops rendering AND the
+// intro's promise that "the row is marked fixture" becomes false: fail-open
+// on the exact honesty signal this change exists to add. Same idiom as
+// ui/test/security-claims.test.js and account-deletion.test.js: read the
+// backend source from the UI suite.
+const routes = readFileSync(
+	new URL("../../backend/archimedes/api/strategies_routes.py", import.meta.url),
+	"utf8",
+);
+
+function displayMetricsSourceStates() {
+	const start = routes.indexOf("def _display_metrics_source(");
+	assert.notEqual(
+		start,
+		-1,
+		"_display_metrics_source not found — the mark's source is gone",
+	);
+	const end = routes.indexOf("\ndef ", start + 1);
+	const body = routes.slice(start, end === -1 ? undefined : end);
+	return new Set([...body.matchAll(/return "([a-z_]+)"/g)].map((m) => m[1]));
+}
+
+test("every marked source is a value the backend actually returns", () => {
+	const returned = displayMetricsSourceStates();
+	// Anti-vacuity: the backend's own four states must be found, or this is
+	// comparing against an empty set and pinning nothing.
+	for (const state of [
+		"strategy_record",
+		"persisted_backtest",
+		"stub_placeholder",
+		"unavailable",
+	]) {
+		assert.ok(
+			returned.has(state),
+			`_display_metrics_source no longer returns "${state}"`,
+		);
+	}
+	for (const key of Object.keys(METRICS_SOURCE_NOTES)) {
+		assert.ok(
+			returned.has(key),
+			`the UI marks "${key}" but no backend branch returns it — the mark is dead`,
+		);
 	}
 });
