@@ -25,6 +25,7 @@ import {
 	UNKNOWN_RIGOR_LABEL,
 	UNKNOWN_RIGOR_TITLE,
 } from "../rigorGateStatus.js";
+import { GATE_FAILED_LABEL } from "../libraryStatus.js";
 import { formatStrategySpec, tokenizeJson } from "../strategySpec.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -292,8 +293,11 @@ function statusTag(status, passesRigor) {
 }
 
 function statusLabel(status, passesRigor) {
-	if (status === "live" && passesRigor === false)
-		return "Reference only — gate failed";
+	// The demotion string is imported, not retyped. The Library table renders
+	// the same words for the same row (ui/src/libraryStatus.js); when these were
+	// two literals in two files, "byte-identical" was a convention one keystroke
+	// could break with nothing to catch it.
+	if (status === "live" && passesRigor === false) return GATE_FAILED_LABEL;
 	return (
 		(status || "candidate").charAt(0).toUpperCase() +
 		(status || "candidate").slice(1)
@@ -405,8 +409,21 @@ export default function StrategyPassport({
 		setGate(null);
 		if (!strategyId) return;
 		// min_passing_level is strictness-independent, so one call (default level)
-		// gives the whole ladder. 404 (generated strategy not in the curated cohort)
-		// is expected — we fall back to the badge boolean below.
+		// gives the whole ladder.
+		//
+		// The old comment here said "404 (generated strategy not in the curated
+		// cohort) is expected — we fall back to the badge boolean below". That
+		// stopped being true when `_generated_strategy_rigor` landed:
+		// `evaluate_strategy_rigor` (backend/archimedes/api/selection_bias_routes.py)
+		// falls through to it and runs `run_rigor_gate` LIVE on a generated row's
+		// own persisted returns, so a generated id gets a 200 with a real ladder.
+		// What this call is, precisely: the DEPLOY ladder (which strictness levels
+		// this strategy clears), computed live, and the same source the vault
+		// deploy gate reads. The BADGE beside it is the stored verdict of record
+		// (docs/adr/rigor-verdict-of-record.md) — graded once, at backtest time.
+		// The two can differ in vintage, and that is a known, named seam: the
+		// badge is the verdict, the ladder is the deploy check. A 404 is still
+		// handled (an id neither path resolves) and still falls back to the badge.
 		fetch(
 			`${API_BASE}/api/selection-bias/gate/${encodeURIComponent(strategyId)}`,
 		)
