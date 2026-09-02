@@ -16,8 +16,16 @@ a trace of the truncation, so the guards below are the substance of this file:
 * **G3** — the stream event carries **no body**. Asserted on the pointer itself and
   end-to-end through the real ``generation_pipeline._llm_pointer_sink`` +
   ``_Emitter`` into a fake job store, including the thread hop.
-* **G4** — ``unbind`` clears the buffer. Nothing is persisted in this PR, so a
-  buffer that outlived its job would be an unasked-for retention surface.
+* **G4** — ``unbind`` clears the buffer, and cannot raise while doing it. Nothing
+  is persisted in this PR, so a buffer that outlived its job would be an
+  unasked-for retention surface; and ``unbind`` runs first in ``run_generation``'s
+  ``finally``, above the cost persistence, so an escaping reset would mask the
+  job's real exception *and* leave the bodies in memory.
+* **G5** — ``run_generation`` actually binds the recorder, the stages beneath it
+  record into *that* recorder, and the binding + buffer are gone afterwards. Every
+  guard above binds a recorder by hand, so without G5 the production wiring is
+  untested: deleting the bind and the unbind from the pipeline leaves the whole
+  suite green — the difference between "records every call" and "records nothing".
 
 Hermetic: no AWS, no network, no Postgres, no Redis. Every provider client is a
 local fake; the two httpx backends have ``httpx.post`` monkeypatched.
@@ -456,6 +464,38 @@ class TestUnbindClearsTheBuffer:
         assert recorder.stats()["recorded"] == 1
         assert recorder.stats()["buffered"] == 0
 
+    def test_unbind_survives_a_stale_token_and_still_clears(self) -> None:
+        """A raising ``unbind`` would mask the job's real exception — and keep the bodies.
+
+        ``unbind`` is the FIRST statement in ``run_generation``'s ``finally``,
+        above ``meter.snapshot()`` / ``merge_result`` / ``_persist_generation_cost``
+        (#1217/#1326). ``ContextVar.reset`` raises on a token from another context
+        (``ValueError``) or one already used (``RuntimeError``); either escaping
+        there masks the primary error, loses the cost row, and skips ``clear()``.
+        Same guard ``cost_meter.unbind`` has, plus the clear must still run.
+        """
+        recorder = LLMTraceRecorder(job_id="job-stale")
+        token = llm_trace.bind(recorder)
+        llm_trace.unbind(token)
+        assert llm_trace.current_recorder() is None
+
+        # Re-bind, buffer a body, then unbind with the ALREADY-USED token.
+        token2 = llm_trace.bind(recorder)
+        try:
+            llm_trace.record_llm_raw(
+                system=SYSTEM,
+                user=USER,
+                model_requested="m",
+                model_served="m",
+                provider_response={"body": SECOND_TEXT},
+                completion_text=FIRST_TEXT,
+            )
+            assert len(recorder.calls()) == 1
+            llm_trace.unbind(token)  # must not raise
+            assert recorder.calls() == [], "a raising reset must not skip the clear"
+        finally:
+            llm_trace.unbind(token2)
+
     def test_overflow_is_counted_not_silent(self) -> None:
         recorder = LLMTraceRecorder(job_id="job-cap", max_calls=2)
         token = llm_trace.bind(recorder)
@@ -476,3 +516,58 @@ class TestUnbindClearsTheBuffer:
             assert [c.seq for c in recorder.calls()] == [4, 5]
         finally:
             llm_trace.unbind(token)
+
+
+# ── G5: the pipeline actually binds it — and clears it ────────────────────
+
+
+class TestPipelineWiring:
+    """The half that makes this PR do anything in production.
+
+    Every guard above binds its own recorder, so deleting the bind and the
+    unbind from `run_generation` leaves the whole suite green — the difference
+    between "records every call" and "records nothing", and between "cleared in
+    the finally" and "full prompts outlive the job". Mirrors
+    `test_generation_cost_meter.py::test_meter_is_unbound_after_the_job_finishes`.
+    """
+
+    async def test_run_generation_binds_the_recorder_and_clears_it_after(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        store = MagicMock()
+        store.update_status = AsyncMock()
+        store.push_event = AsyncMock(return_value=1)
+        store.merge_result = AsyncMock(return_value=True)
+
+        seen: dict[str, Any] = {}
+
+        async def _peek(_brief: Any) -> dict[str, Any]:
+            # A stage running inside the job: what it hands `record_llm_raw`
+            # must land in THIS job's recorder.
+            seen["recorder"] = llm_trace.current_recorder()
+            llm_trace.record_llm_raw(
+                system=SYSTEM,
+                user=USER,
+                model_requested="m",
+                model_served="m",
+                provider_response={"text": SECOND_TEXT},
+                completion_text=FIRST_TEXT,
+            )
+            return {"is_valid": False, "reason": "too vague", "hint": "name an asset class"}
+
+        with (
+            patch.object(generation_pipeline, "_llm_available", return_value=True),
+            patch.object(generation_pipeline, "_validate_brief", new=_peek),
+        ):
+            await generation_pipeline.run_generation(
+                job_id="job-trace",
+                brief=generation_pipeline.GenerateBrief(intent="uh"),
+                store=store,
+            )
+
+        recorder = seen.get("recorder")
+        assert recorder is not None, "run_generation never bound a trace recorder"
+        assert recorder.job_id == "job-trace"
+        assert recorder.stats()["recorded"] == 1, "the stage's call never reached this job's recorder"
+        assert recorder.calls() == [], "buffered prompts + bodies outlived the job"
+        assert llm_trace.current_recorder() is None, "the binding leaked past the job"

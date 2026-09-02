@@ -159,6 +159,11 @@ class LLMCallRecord:
 
     Both digest fields are ``None`` when ``capture_error`` is set: a body we
     failed to serialize is reported as unavailable, never as an empty completion.
+
+    ``model_served`` is a served id only where the provider reports one. The
+    Converse response carries no model id, so on ``bedrock_converse`` — the live
+    backend — it repeats ``model_requested``. Equal values there mean "the
+    provider did not say", not "the requested model ran".
     """
 
     call_id: str
@@ -332,9 +337,11 @@ class LLMTraceRecorder:
         """Counts the reader needs to tell a short trace from a lossy one.
 
         ``recorded`` is every call the recorder saw; ``buffered`` is how many it
-        still holds; ``dropped`` is how many the cap evicted. ``recorded !=
-        buffered + dropped`` is impossible, and ``dropped > 0`` is the only
-        honest way to say "this trace is missing its oldest calls".
+        still holds; ``dropped`` is how many the cap evicted. Until :meth:`clear`
+        runs, ``recorded == buffered + dropped``; after it ``buffered`` falls to 0
+        while the counts stand, so a shortfall means "the buffer was cleared", and
+        ``dropped > 0`` is the only honest way to say "this trace is missing its
+        oldest calls".
         """
         with self._lock:
             return {
@@ -374,9 +381,21 @@ def unbind(token: contextvars.Token) -> None:
     the next PR adds must therefore run *before* this call. Clearing here is
     deliberate: an in-memory buffer of full prompts and completions that
     outlived its job would be a retention surface nobody asked for.
+
+    **Never raises.** This is the first statement in ``run_generation``'s
+    ``finally``, above the cost snapshot and its durable row (#1217/#1326). A
+    ``reset`` that escaped there would mask the job's real exception, skip the
+    cost persistence *and* skip the ``clear()`` below — leaving the bodies in
+    memory, the one outcome this function exists to prevent. So the reset is
+    guarded the way :func:`archimedes.services.cost_meter.unbind` guards its
+    own (``ValueError`` for a token from another context, ``RuntimeError`` for
+    a token already used) and the clear runs either way.
     """
     recorder = _CURRENT.get()
-    _CURRENT.reset(token)
+    try:
+        _CURRENT.reset(token)
+    except (ValueError, RuntimeError):
+        logger.debug("llm-trace: token reset out of context", exc_info=True)
     if recorder is not None:
         recorder.clear()
 
