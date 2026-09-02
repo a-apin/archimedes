@@ -1230,7 +1230,30 @@ def _write_cached_series(session, ticker: str, series: pd.Series, source: str) -
     """Upsert ``series`` (close prices indexed by date) into ``asset_daily_bars``
     for ``ticker``, dialect-agnostic (works on SQLite in tests and Postgres in
     prod) via select-then-add/update rather than a dialect-specific ON
-    CONFLICT clause."""
+    CONFLICT clause.
+
+    **Cross-vendor overwrites clear the rest of the bar (#1798).** This writer
+    knows only ``close``. The row it upserts is keyed ``(symbol, trade_date)``
+    — the table's unique constraint — so it cannot sidestep an existing row by
+    adding a second one, and the row it lands on may have been written by a
+    *different* vendor. Blindly assigning ``close`` + ``source`` there would
+    leave the previous vendor's ``open/high/low/volume`` in place under the new
+    vendor's label: a bar whose Close is Tiingo's and whose OHLV is yfinance's,
+    stamped ``source='tiingo'``. ``_read_cached_ohlcv``'s ``source`` filter
+    cannot catch that — the row now claims to be the vendor being asked for —
+    so ``portfolio_backtester._fetch_price_panel`` (which consumes ``Volume``
+    as well as ``Close``) would grade a silently blended panel. That is the
+    exact failure the seam exists to prevent, reached through the write path
+    instead of the read path.
+
+    So on a vendor change we keep the one column we actually know and NULL the
+    four we do not. The row becomes the honest partial bar it is, which
+    ``_read_cached_ohlcv``'s existing partial-bar guard already treats as a
+    miss — the next OHLCV read re-fetches the whole range from the new vendor
+    and ``_write_cached_ohlcv`` (which writes every column) fills it back in.
+    Cost: one extra vendor round-trip per symbol after a flip, which is the
+    same cold-cache price the ``source`` filter already charges on reads.
+    """
     from archimedes.models.asset_daily_bars import AssetDailyBar
 
     now = datetime.now(UTC)
@@ -1254,9 +1277,21 @@ def _write_cached_series(session, ticker: str, series: pd.Series, source: str) -
         .filter(AssetDailyBar.symbol == ticker, AssetDailyBar.trade_date.in_(dates))
         .all()
     }
+    displaced_vendors: set[str] = set()
+    displaced_rows = 0
     for trade_date, close_f in to_write:
         row = existing.get(trade_date)
         if row is not None:
+            if row.source != source:
+                # A different vendor wrote this row and we only know `close`.
+                # Drop the old vendor's OHLV rather than leave a bar stitched
+                # from two vendors under one `source` label — see the docstring.
+                displaced_vendors.add(row.source)
+                displaced_rows += 1
+                row.open = None
+                row.high = None
+                row.low = None
+                row.volume = None
             row.close = close_f
             row.source = source
             row.fetched_at = now
@@ -1270,6 +1305,19 @@ def _write_cached_series(session, ticker: str, series: pd.Series, source: str) -
                     fetched_at=now,
                 )
             )
+
+    if displaced_vendors:
+        # Loud on purpose: this is the visible half of a vendor flip. It says
+        # which vendor's bars were demoted to close-only and why the next
+        # OHLCV read for this symbol will go back to the network.
+        logger.info(
+            "market data cache: close-only write by %s cleared OHLV previously written by %s "
+            "for %s (%d row(s)); the next OHLCV read re-fetches the full bars",
+            source,
+            ", ".join(sorted(displaced_vendors)),
+            ticker,
+            displaced_rows,
+        )
 
 
 def _read_cached_ohlcv(
@@ -1400,7 +1448,13 @@ def _write_cached_ohlcv(session, ticker: str, df: pd.DataFrame, source: str) -> 
     Open/High/Low/Close/Volume — ``fetch_ohlcv``'s output shape) into
     ``asset_daily_bars`` for ``ticker``. Mirrors ``_write_cached_series`` but
     persists the whole bar, not close-only, so the row is a valid cache entry
-    for ``get_daily_ohlcv`` as well as ``get_daily_close_batch``."""
+    for ``get_daily_ohlcv`` as well as ``get_daily_close_batch``.
+
+    Needs no cross-vendor guard of its own (unlike ``_write_cached_series``,
+    whose docstring explains the hazard): every column is assigned on every
+    update, so landing on another vendor's row REPLACES the whole bar rather
+    than blending it. The ``source`` stamp is therefore always true of all
+    five values."""
     from archimedes.models.asset_daily_bars import AssetDailyBar
 
     def _float_or_none(value: object) -> float | None:

@@ -23,17 +23,30 @@ What this module pins, and the mutation that turns each red:
 * **Tiingo refuses intraday before any network call.** Mutation: give
   ``TiingoProvider.get_series`` a body that fetches → ``TestTiingoIsDailyOnly``
   red on the "transport never touched" assertion.
-* **Every call site names its seam.** Mutation: drop ``seam=`` anywhere →
-  ``TestEveryCallSiteNamesItsSeam`` red (``get_provider`` is keyword-only on
-  ``seam``, so it is a TypeError at runtime too).
+* **Every call site names its seam, and the RIGHT one.** Mutation: drop
+  ``seam=`` anywhere → ``TestEveryCallSiteNamesItsSeam`` red (``get_provider``
+  is keyword-only on ``seam``, so it is a TypeError at runtime too); change a
+  row's seam (``portfolio_backtester``'s ``daily`` → ``intraday``) → the same
+  class red. That second mutation used to pass, because the check was a
+  substring match over ``inspect.getsource`` and the backtester's DOCSTRING
+  quotes its own call — see ``_seams_requested_by``, now ``ast``-based.
+* **A vendor flip never leaves a bar stitched from two vendors.** The
+  close-only universe sweep lands on the previous vendor's ``(symbol,
+  trade_date)`` row; if it overwrote only ``close`` + ``source``, the row would
+  read back as a valid Tiingo bar with yfinance OHLV. Mutation: restore that
+  partial overwrite in ``_write_cached_series`` →
+  ``TestAFlipNeverProducesAMixedVendorBar`` red.
 
 Hermetic: stub providers and an ``httpx.MockTransport`` that fails the test if
-it is ever asked for a request. No network, no DB, no vendor import.
+it is ever asked for a request. No network, no vendor import; the one
+cache-crossing class uses a throwaway SQLite file, never the app's engine.
 """
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from datetime import UTC, datetime
 
 import httpx
@@ -58,6 +71,40 @@ def _clean_market_data_env(monkeypatch):
     """Neither variable leaks in from the developer's shell or another test."""
     monkeypatch.delenv("MARKET_DATA_PROVIDER", raising=False)
     monkeypatch.delenv("MARKET_DATA_DAILY_PROVIDER", raising=False)
+
+
+def _seams_requested_by(func) -> list[str]:
+    """Every ``seam=`` literal passed to a ``get_provider(...)`` call inside
+    ``func``'s own code, parsed with ``ast``.
+
+    **Why parsing and not ``'get_provider(seam="daily")' in getsource(func)``,
+    which is what this module shipped with:** ``inspect.getsource`` returns the
+    DOCSTRING too, and ``portfolio_backtester._fetch_price_panel``'s docstring
+    quotes ``get_provider(seam="daily")`` verbatim to explain itself. That row
+    therefore passed on prose — mutating the real call to ``seam="intraday"``
+    left this whole module green, which is precisely the wrong-seam defect the
+    table exists to catch. Nothing else covered it either: the runtime class
+    below checks two other functions, and at runtime the intraday seam happily
+    serves ``get_daily_ohlcv``, so the backtester would have run on the
+    intraday vendor in silence.
+
+    An ``ast.Call`` node cannot be reached by a docstring, and the fix is
+    structural rather than specific to today's one offending docstring — any
+    row whose function later quotes its own call stays honest.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    seams: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if name != "get_provider":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "seam" and isinstance(kw.value, ast.Constant):
+                seams.append(kw.value.value)
+    return seams
 
 
 class _StubProvider(MarketDataProvider):
@@ -334,8 +381,12 @@ class TestEveryCallSiteNamesItsSeam:
         import importlib
 
         module = importlib.import_module(import_path)
-        source = inspect.getsource(getattr(module, func_name))
-        assert f'get_provider(seam="{seam}")' in source
+        seams = _seams_requested_by(getattr(module, func_name))
+        assert seams, f"{import_path}.{func_name} makes no get_provider(seam=…) call"
+        # A set, so a function is free to ask its seam twice — but asking TWO
+        # seams in one function is the vendor mix inside one run the ADR
+        # forbids, and belongs red here rather than discovered in a panel.
+        assert set(seams) == {seam}, f"{import_path}.{func_name} asks {sorted(set(seams))}, expected [{seam!r}]"
 
     @pytest.mark.parametrize(
         ("method_name", "seam"),
@@ -351,8 +402,9 @@ class TestEveryCallSiteNamesItsSeam:
     def test_oracle_updater_is_entirely_on_the_intraday_seam(self, method_name, seam):
         from archimedes.chain.oracle_updater import OracleUpdater
 
-        source = inspect.getsource(getattr(OracleUpdater, method_name))
-        assert f'get_provider(seam="{seam}")' in source
+        seams = _seams_requested_by(getattr(OracleUpdater, method_name))
+        assert seams, f"OracleUpdater.{method_name} makes no get_provider(seam=…) call"
+        assert set(seams) == {seam}, f"OracleUpdater.{method_name} asks {sorted(set(seams))}, expected [{seam!r}]"
 
     def test_no_backend_call_site_asks_without_a_seam(self):
         """Structural: a ``get_provider(...)`` call anywhere in backend source
@@ -418,3 +470,203 @@ class TestCallSiteSeamsAtRuntime:
 
         assert seen == ["intraday"]
         assert set(out) == {"ma50", "ma200"}
+
+
+# ─── The flip, end to end, through the cache ────────────────────────────
+
+
+class _TwoColumnVendor(MarketDataProvider):
+    """A vendor whose every number is traceable to it by value.
+
+    ``close``/``open``/``volume`` are given per-instance, so an assertion can
+    say WHICH vendor a column came from rather than only that it is populated
+    — which is the whole question when the failure mode is one bar stitched
+    from two vendors."""
+
+    def __init__(self, *, close: float, open_: float, volume: float) -> None:
+        self.close = close
+        self.open = open_
+        self.volume = volume
+        self.close_batch_calls: list[dict[str, str]] = []
+        self.ohlcv_calls: list[tuple[str, str, str]] = []
+
+    @staticmethod
+    def _index() -> pd.DatetimeIndex:
+        return pd.date_range(end=pd.Timestamp.now("UTC").normalize(), periods=10, freq="D")
+
+    def get_daily_close_batch(self, tickers: dict[str, str], period: str) -> dict[str, pd.Series]:
+        self.close_batch_calls.append(dict(tickers))
+        idx = self._index()
+        return {k: pd.Series([self.close] * len(idx), index=idx, name=k) for k in tickers}
+
+    def get_daily_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        self.ohlcv_calls.append((ticker, start, end))
+        idx = self._index()
+        n = len(idx)
+        return pd.DataFrame(
+            {
+                "Open": [self.open] * n,
+                "High": [self.open + 1] * n,
+                "Low": [self.open - 1] * n,
+                "Close": [self.close] * n,
+                "Volume": [self.volume] * n,
+            },
+            index=idx,
+        )
+
+    def get_intraday_quote(self, ticker):  # pragma: no cover - never reached on the daily seam
+        raise AssertionError("the daily seam must never ask for an intraday quote")
+
+    def get_intraday_quotes_batch(self, tickers):  # pragma: no cover - same
+        raise AssertionError("the daily seam must never ask for intraday quotes")
+
+    def get_series(self, ticker, period, interval):  # pragma: no cover - same
+        raise AssertionError("the daily seam must never ask for a series")
+
+
+class TestAFlipNeverProducesAMixedVendorBar:
+    """The write path's half of the vendor seam (#1798).
+
+    ``_read_cached_ohlcv``'s ``source`` filter guards READS: a row stamped
+    ``yfinance`` is not served to a Tiingo caller. What that cannot see is a
+    row whose ``source`` column says ``tiingo`` because the close-only writer
+    stamped it, while ``open/high/low/volume`` are still the yfinance bars
+    nobody overwrote. ``asset_daily_bars`` is unique on
+    ``(symbol, trade_date)``, so the close-only writer lands ON the old
+    vendor's row rather than beside it, and this is the exact sequence prod
+    performs on the first tick after the flip: the universe sweep
+    (``get_daily_close_batch``) runs before the generation panels
+    (``get_daily_ohlcv``) and both are on the daily seam, same tickers.
+
+    Restoring the partial overwrite in ``_write_cached_series`` (assign
+    ``close``/``source`` and leave OHLV alone) turns
+    ``test_the_daily_seam_refetches_from_the_new_vendor`` red.
+
+    Hermetic: two stub vendors and an isolated SQLite file — no network, no
+    real DB, no vendor import.
+    """
+
+    @pytest.fixture()
+    def flip_bench(self, tmp_path, monkeypatch):
+        """Wire ``get_provider`` to two stub vendors and a throwaway SQLite,
+        so the test drives the REAL ``get_provider`` → ``SeamRoutedProvider``
+        → ``CachingMarketDataProvider`` → vendor stack rather than a
+        rehearsal of it."""
+        from archimedes.db import Base
+        from archimedes.services import market_data_provider as mdp
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'seam_flip.db'}", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        factory = sessionmaker(bind=engine)
+        monkeypatch.setattr(mdp, "_default_session_factory", factory)
+
+        yf = _TwoColumnVendor(close=900.0, open_=900.1, volume=11.0)
+        tg = _TwoColumnVendor(close=400.0, open_=400.1, volume=22.0)
+        monkeypatch.setattr(mdp, "_VENDOR_PROVIDERS", {"yfinance": lambda: yf, "tiingo": lambda: tg})
+        return yf, tg
+
+    @staticmethod
+    def _window() -> tuple[str, str]:
+        idx = _TwoColumnVendor._index()
+        return idx[0].date().isoformat(), idx[-1].date().isoformat()
+
+    def test_the_daily_seam_refetches_from_the_new_vendor(self, flip_bench, monkeypatch):
+        yf, tg = flip_bench
+        start, end = self._window()
+
+        # 1. Before the flip: a warm, full-OHLCV yfinance cache (what prod has).
+        get_provider(seam="daily").get_daily_ohlcv("SPY", start, end)
+        assert yf.ohlcv_calls  # cold cache primed from yfinance
+
+        # 2. The flip, then the close-only universe sweep that runs first.
+        monkeypatch.setenv("MARKET_DATA_DAILY_PROVIDER", "tiingo")
+        assert provider_name(DAILY_SEAM) == "tiingo"
+        get_provider(seam="daily").get_daily_close_batch({"sSPY": "SPY"}, period="1mo")
+        assert tg.close_batch_calls  # the sweep really went to Tiingo
+
+        # 3. The generation panel's OHLCV read, on the same seam and ticker.
+        tg.ohlcv_calls.clear()
+        yf.ohlcv_calls.clear()
+        panel = get_provider(seam="daily").get_daily_ohlcv("SPY", start, end)
+
+        assert tg.ohlcv_calls, (
+            "the OHLCV read was served from cache after a vendor flip — the close-only sweep "
+            "left a row stamped source='tiingo' whose OHLV is still yfinance's"
+        )
+        assert yf.ohlcv_calls == []  # and the old vendor was not re-consulted
+        assert panel["Close"].tolist() == [tg.close] * len(panel)
+        assert panel["Open"].tolist() == [tg.open] * len(panel)
+        assert panel["Volume"].tolist() == [tg.volume] * len(panel)
+
+    def test_no_row_survives_the_sweep_with_a_foreign_vendors_ohlv(self, flip_bench, monkeypatch):
+        """The stored row, checked directly: after a cross-vendor close-only
+        write the row is an honest partial bar (close from the new vendor,
+        OHLV NULL), never the old vendor's OHLV under the new vendor's label.
+        ``portfolio_backtester._fetch_price_panel`` consumes ``Volume`` as
+        well as ``Close``, so a blended row reaches graded numbers."""
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+        from archimedes.services import market_data_provider as mdp
+
+        _yf, tg = flip_bench
+        start, end = self._window()
+        get_provider(seam="daily").get_daily_ohlcv("SPY", start, end)
+
+        monkeypatch.setenv("MARKET_DATA_DAILY_PROVIDER", "tiingo")
+        get_provider(seam="daily").get_daily_close_batch({"sSPY": "SPY"}, period="1mo")
+
+        session = mdp._default_session_factory()
+        try:
+            rows = session.query(AssetDailyBar).filter(AssetDailyBar.symbol == "SPY").all()
+        finally:
+            session.close()
+
+        assert rows
+        for row in rows:
+            assert row.source == "tiingo"
+            assert row.close == tg.close
+            assert (row.open, row.high, row.low, row.volume) == (None, None, None, None), (
+                f"MIXED-VENDOR BAR: source={row.source!r} close={row.close!r} but "
+                f"open={row.open!r} volume={row.volume!r} came from another vendor"
+            )
+
+    def test_a_same_vendor_close_write_does_not_clear_the_bar(self, flip_bench):
+        """Anti-vacuity: the clearing is scoped to a vendor CHANGE. The daily
+        refresh loop re-writing yfinance closes over yfinance bars must leave
+        the OHLV alone, or every sweep would evict the OHLCV cache and the
+        next panel read would re-fetch the whole universe."""
+        from archimedes.models.asset_daily_bars import AssetDailyBar
+        from archimedes.services import market_data_provider as mdp
+
+        yf, _tg = flip_bench
+        start, end = self._window()
+        get_provider(seam="daily").get_daily_ohlcv("SPY", start, end)
+        get_provider(seam="daily").get_daily_close_batch({"sSPY": "SPY"}, period="1mo")
+
+        session = mdp._default_session_factory()
+        try:
+            rows = session.query(AssetDailyBar).filter(AssetDailyBar.symbol == "SPY").all()
+        finally:
+            session.close()
+
+        assert rows
+        assert all(r.source == "yfinance" and r.open == yf.open and r.volume == yf.volume for r in rows)
+
+    def test_the_read_filter_still_rejects_the_other_vendors_row(self, flip_bench, monkeypatch):
+        """The read half, confirmed rather than assumed: with a full-OHLCV
+        yfinance cache and NO intervening close-only write, a Tiingo caller
+        still misses and re-fetches. Both halves are load-bearing — the read
+        filter catches an untouched foreign row, the write fix catches a
+        re-stamped one."""
+        yf, tg = flip_bench
+        start, end = self._window()
+        get_provider(seam="daily").get_daily_ohlcv("SPY", start, end)
+
+        monkeypatch.setenv("MARKET_DATA_DAILY_PROVIDER", "tiingo")
+        yf.ohlcv_calls.clear()
+        panel = get_provider(seam="daily").get_daily_ohlcv("SPY", start, end)
+
+        assert tg.ohlcv_calls  # source filter → miss → the new vendor answered
+        assert yf.ohlcv_calls == []
+        assert panel["Close"].tolist() == [tg.close] * len(panel)

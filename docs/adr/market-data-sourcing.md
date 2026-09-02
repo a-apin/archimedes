@@ -108,6 +108,19 @@ stands — the refuse-loudly-on-missing-token rule, and the per-vendor `asset_da
 cache that makes a flip start cold rather than blend two vendors' bars inside one
 backtest panel.
 
+That cache guarantee is enforced on **both** sides of the row, and #1798 is what closed
+the second one. The read side filters on `source`, so a `yfinance` row is never served to
+a Tiingo caller. The write side matters just as much, because `asset_daily_bars` is
+unique on `(symbol, trade_date)`: the close-only writer
+(`get_daily_close_batch` → `_write_cached_series`) lands **on** the previous vendor's row
+rather than beside it, and it knows only `close`. Assigning `close` + `source` there and
+leaving `open/high/low/volume` alone would produce a bar whose Close is Tiingo's and
+whose OHLV is yfinance's, stamped `source='tiingo'` — a blend the read filter cannot see,
+because the row now claims to be the vendor being asked for. So a cross-vendor close-only
+write **clears** the four columns it does not know and logs which vendor it displaced.
+The row becomes the honest partial bar it is, the existing partial-bar guard treats it as
+a miss, and the next OHLCV read refetches the whole range from the new vendor.
+
 **What changed:** different **features** may run on different vendors, and the mechanism
 now says so. Before this amendment there was one variable, `MARKET_DATA_PROVIDER`, read
 by every call site. Since the Tiingo adapter serves daily bars only, flipping that one
@@ -169,6 +182,40 @@ every `source` stamp on an `asset_prices` row, a paper mark or an `asset_daily_b
 stays true. The practical effect is that the pre-#1798 global flip
 (`MARKET_DATA_PROVIDER=tiingo`) now moves daily bars and leaves the live surfaces alone,
 rather than breaking them.
+
+### Proving the flip
+
+The flip is not done when the variable is set; it is done when a pull on the daily seam
+has been shown to come from the new vendor. The backend service runs with
+`enable_execute_command = true` ([`../../infra/ecs.tf`](../../infra/ecs.tf)), and a
+single-symbol read is exactly the "exec is for reading state" case
+([`../runbooks/curated-backtests.md`](../runbooks/curated-backtests.md) § Alternative).
+
+```bash
+CLUSTER=archimedes
+TASK=$(aws ecs list-tasks --cluster "$CLUSTER" --service-name archimedes-backend \
+  --desired-status RUNNING --query 'taskArns[0]' --output text)
+aws ecs execute-command --cluster "$CLUSTER" --task "$TASK" --container backend \
+  --interactive --command /bin/sh
+```
+
+Then, inside the task — one pull through the real seam, printing vendor + row count +
+first/last bar date:
+
+```sh
+python -c "from datetime import date,timedelta; from archimedes.services.market_data_provider import get_provider,provider_name; p=get_provider(seam=\"daily\"); e=date.today(); s=e-timedelta(days=30); d=p.get_daily_ohlcv(\"SPY\",s.isoformat(),e.isoformat()); print(\"vendor:\",provider_name(\"daily\"),\"| rows:\",len(d),\"| first:\",d.index[0].date(),\"| last:\",d.index[-1].date(),\"| last close:\",float(d[\"Close\"].iloc[-1]))"
+```
+
+and the row it wrote, which is the provenance half of the proof:
+
+```sh
+python -c "from archimedes.db import get_session; from archimedes.models.asset_daily_bars import AssetDailyBar as B; s=get_session(); r=s.query(B).filter(B.symbol==\"SPY\").order_by(B.trade_date).all(); print(\"cached rows:\",len(r),\"| sources:\",sorted({x.source for x in r}),\"| first:\",r[0].trade_date,\"| last:\",r[-1].trade_date,\"| newest fetched_at:\",max(x.fetched_at for x in r))"
+```
+
+Paste both outputs on #1798. `vendor: tiingo` with a fresh `fetched_at` and
+`sources: ['tiingo']` is the flip proven; `sources: ['tiingo', 'yfinance']` means the
+sweep has not reached every symbol yet, which is expected mid-rollout and is *not* a
+mixed bar — no single row can hold two vendors' columns (see § What did not change).
 
 ## The mainnet gate, stated explicitly
 
