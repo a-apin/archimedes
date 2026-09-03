@@ -708,6 +708,12 @@ produces. **Exactly one of the two goes on the wire** — when both exist the ke
 client and no cookie is sent, so the server-side precedence rule can never decide which
 account a call acts as. Neither credential is ever logged, returned, or rendered.
 
+**Running a fleet on one machine?** Add `ARCHIMEDES_SESSION_FILE` to that `env` block —
+one path per agent — and pass `archimedes login --session-file` the same path. One session
+file shared between two agents is one identity shared between two agents: the second
+`login` wins and the first agent keeps working, as somebody else
+([#1752](https://github.com/aprin-labs/archimedes/issues/1752)).
+
 **One honest caveat about the key.** Scoped API keys are owner decision **D3** on the same
 PR and are not on `main` at the time of writing, so against production today a bearer key
 `401`s and the cookie is the working lane. The header is written to the agreed shape now so

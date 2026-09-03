@@ -12,11 +12,13 @@ Two ways to authenticate as an account, in this order:
    no change here. Nothing in this file blocks on it: the fallback below carries the
    server until then.
 2. **The CLI session cache** at ``~/.config/archimedes/session.json`` — the cookie
-   ``archimedes login`` writes at mode ``600``. Loaded through
-   ``archimedes_cli.session.load_session``: imported, not reimplemented. Copying that
-   loader would mean two definitions of "is there a usable session", and the copy would be
-   the one that drifts — the exact second-surface failure mode this whole server was
-   scoped to avoid. That cookie is one of *two* names depending on which host issued it —
+   ``archimedes login`` writes at mode ``600``, or wherever ``ARCHIMEDES_SESSION_FILE``
+   points, which is how two agents on one runner keep separate identities (#1752: set it
+   in this server's ``env`` block, one file per agent, and their sessions stop clobbering
+   each other). Loaded through ``archimedes_cli.session.load_session``: imported, not
+   reimplemented. Copying that loader would mean two definitions of "is there a usable
+   session", and the copy would be the one that drifts — the exact second-surface failure
+   mode this whole server was scoped to avoid. That cookie is one of *two* names depending on which host issued it —
    ``__Secure-better-auth.session_token`` in production, the bare
    ``better-auth.session_token`` on local HTTP (``archimedes_cli.session`` picks between
    them; see :func:`~archimedes_cli.session.pick_session_cookie`) — and this module sends

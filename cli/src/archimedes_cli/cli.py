@@ -33,7 +33,15 @@ import click
 import httpx
 
 from . import __version__, exits
-from .session import load_session, pick_session_cookie, save_session
+from .session import (
+    DEFAULT_SESSION_FILE,
+    SESSION_FILE_ENV,
+    load_session,
+    pick_session_cookie,
+    save_session,
+    session_path,
+    set_session_file,
+)
 
 DEFAULT_API_URL = "https://archimedes-arc.com"
 
@@ -51,6 +59,26 @@ _api_url_option = click.option(
     show_default=True,
     metavar="URL",
     help="Base URL of the Archimedes API.",
+)
+
+
+# Which session file this invocation reads and writes. A CLI process is one lane;
+# without this the only lever was $HOME, so two agents sharing a runner shared one
+# identity and the second one's `login` clobbered the first's (#1752). Not declared with
+# click's `envvar=`, deliberately: `archimedes_cli.session.session_path` reads
+# ARCHIMEDES_SESSION_FILE itself — it has to, because `archimedes_mcp.credentials` calls
+# it with no click context anywhere in the process — and a second reader of the same
+# variable is a second place for the precedence rule to drift.
+_session_file_option = click.option(
+    "--session-file",
+    "session_file",
+    default=None,
+    metavar="PATH",
+    help=(
+        f"Read/write the cached session here instead of {DEFAULT_SESSION_FILE}. "
+        f"Also settable as ${SESSION_FILE_ENV}; the flag wins. One file per lane keeps "
+        f"concurrent agents from clobbering each other's identity."
+    ),
 )
 
 
@@ -234,8 +262,9 @@ def main() -> None:
 
 @main.command()
 @_api_url_option
+@_session_file_option
 @_json_option
-def login(api_url: str, as_json: bool) -> None:
+def login(api_url: str, session_file: str | None, as_json: bool) -> None:
     """Sign in and cache the session.
 
     Archimedes accounts are Better Auth (email + password) — there is no wallet
@@ -244,12 +273,14 @@ def login(api_url: str, as_json: bool) -> None:
     answer an interactive prompt); otherwise prompts for them, with the password hidden.
 
     The password is sent once, over this one request (``POST /api/auth/sign-in/email``),
-    and is never stored. What gets cached at ``~/.config/archimedes/session.json``
-    (mode 600) is the session cookie Better Auth issues back, after confirming it round
+    and is never stored. What gets cached at ``~/.config/archimedes/session.json`` —
+    or at ``--session-file``/``$ARCHIMEDES_SESSION_FILE``, one file per lane — at mode 600
+    is the session cookie Better Auth issues back, after confirming it round
     trips against ``GET /api/auth/get-session``. Linking a crypto wallet is a separate,
     optional, later step (for on-chain vault actions) — it does not authenticate you and
     is not part of this command.
     """
+    set_session_file(session_file)
     email = os.environ.get("ARCHIMEDES_EMAIL", "").strip()
     password = os.environ.get("ARCHIMEDES_PASSWORD", "")
     if not email:
@@ -314,7 +345,21 @@ def login(api_url: str, as_json: bool) -> None:
             message="signed in, but the session cookie did not round-trip on GET /api/auth/get-session",
         )
 
-    path = save_session(api_url=api_url, cookies={cookie_name: token}, email=confirmed_email)
+    # `--session-file` is user input, so the write can fail on a path that is a
+    # directory, is read-only, or has an unwritable parent — and it fails HERE, after a
+    # successful sign-in. An uncaught OSError exits 1, which this CLI's exit-code
+    # contract reserves for "the gate returned a failing verdict"; a CI job branching on
+    # 1 would read a mistyped path as a research finding. It is a usage error (2).
+    try:
+        path = save_session(api_url=api_url, cookies={cookie_name: token}, email=confirmed_email)
+    except OSError as exc:
+        _fail(
+            "login",
+            as_json=as_json,
+            exit_code=exits.USAGE,
+            error="session_file_unwritable",
+            message=f"signed in, but the session could not be written to {session_path()}: {exc}",
+        )
 
     if as_json:
         click.echo(json.dumps({"ok": True, "email": confirmed_email}))
@@ -343,8 +388,9 @@ def _render_usage(usage: dict) -> None:
 
 @main.command()
 @_api_url_session_option
+@_session_file_option
 @_json_option
-def meter(api_url: str | None, as_json: bool) -> None:
+def meter(api_url: str | None, session_file: str | None, as_json: bool) -> None:
     """Show what you have used today and what it costs.
 
     ``GET /api/account/usage`` — today's generation count against both the per-user and
@@ -352,6 +398,7 @@ def meter(api_url: str | None, as_json: bool) -> None:
     call the paywall itself reads, so this number and the invoice can never drift apart).
     Requires a cached session; run ``archimedes login`` first.
     """
+    set_session_file(session_file)
     session = load_session()
     if session is None:
         _fail(
@@ -511,8 +558,16 @@ def _render_verify(body: dict) -> None:
     help="Self-attested trial/variant count the DSR deflation is computed against (>= 1).",
 )
 @_api_url_session_option
+@_session_file_option
 @_json_option
-def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, as_json: bool) -> None:
+def verify(
+    returns_csv: str,
+    run_local: bool,
+    trials: int,
+    api_url: str | None,
+    session_file: str | None,
+    as_json: bool,
+) -> None:
     """Run the rigor gate over a returns series.
 
     RETURNS_CSV is a two-column CSV of date and daily return (a header row, if present,
@@ -531,6 +586,7 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     passes and 1 when it fails, which is what makes ``archimedes verify returns.csv``
     usable as a CI check before a deploy.
     """
+    set_session_file(session_file)
     if run_local:
         _unavailable("verify", as_json=as_json)
 
@@ -991,6 +1047,7 @@ def _read_brief_text(brief: str | None, brief_file: str | None) -> str | None:
     help="How long to wait for the job. On expiry the job keeps running server-side and exit is 8.",
 )
 @_api_url_session_option
+@_session_file_option
 @_json_option
 # One parameter per field of the server's brief schema plus the operational flags —
 # the width is the API's, not an accident.
@@ -1004,6 +1061,7 @@ def generate(
     no_stream: bool,
     timeout_seconds: float,
     api_url: str | None,
+    session_file: str | None,
     as_json: bool,
 ) -> None:
     """Generate a rigor-gated strategy from a research brief.
@@ -1032,6 +1090,7 @@ def generate(
     action required (verify email / connect wallet) · 7 the job failed · 8 still running
     when the wait budget ran out.
     """
+    set_session_file(session_file)
     if brief and brief_file:
         _fail(
             "generate",

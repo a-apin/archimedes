@@ -24,7 +24,13 @@ import pytest
 from archimedes_cli import __version__
 from archimedes_cli.cli import main
 from archimedes_cli.exits import AUTH, GATE_FAILED, INCOMPLETE, NOT_IMPLEMENTED, OK, USAGE
-from archimedes_cli.session import SECURE_SESSION_COOKIE_NAME, SESSION_COOKIE_NAME, save_session, session_path
+from archimedes_cli.session import (
+    SECURE_SESSION_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    SESSION_FILE_ENV,
+    save_session,
+    session_path,
+)
 from click.testing import CliRunner
 
 # ── Fixtures & test-only helpers ────────────────────────────────────────
@@ -37,6 +43,9 @@ def runner(tmp_path, monkeypatch):
     from the real environment."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # ARCHIMEDES_SESSION_FILE would override HOME outright (#1752), so an exported one
+    # would point this suite at the developer's own session file.
+    monkeypatch.delenv(SESSION_FILE_ENV, raising=False)
     monkeypatch.delenv("ARCHIMEDES_EMAIL", raising=False)
     monkeypatch.delenv("ARCHIMEDES_PASSWORD", raising=False)
     monkeypatch.delenv("ARCHIMEDES_API_URL", raising=False)
