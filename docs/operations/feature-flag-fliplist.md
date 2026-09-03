@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-01
+> **updated:** 2026-09-03
 > **superseded-by:** —
 
 **Scope:** every feature flag in the tree, what it gates, what the committed
@@ -108,6 +108,7 @@ safe. **Owner is Dan** unless stated; nothing here flips in a drive-by PR.
 | 8 | `VITE_ROADMAP_SURFACES` | `false` in `ui/.env.example`; **no build arg in `nginx/Dockerfile`** → pinned OFF in every built image | see audit finding A1 — needs a Dockerfile `ARG`/`ENV` + a `--build-arg` in `deploy.yml` before it can be flipped at all | [#1266](https://github.com/aprin-labs/archimedes/issues/1266) — vaults (Portfolio + vault-detail), Marketplace (+ market-strategy), Publish, Subscriptions, Learnings return to scope. **Load-bearing while off:** CLAUDE.md's roadmap-tense rule and [`ui/test/roadmap-copy.test.js`](../../ui/test/roadmap-copy.test.js) both depend on this gate holding those surfaces out of the shipped nav. Not a dead flag — a claim-integrity gate. |
 | 9 | `VITE_KNOWLEDGE_GRAPH_TAB` | `false` in `ui/.env.example`; **no build arg** → pinned OFF in every built image | same as row 8 | #1090 (KB pipeline artifact) + #1092 (Postgres backfill). `kg_entities`/`kg_relations` are 0 rows today, so the tab would offer an empty capability. |
 | 10 | `RUNNER_DEPLOY_ENABLED` | GitHub repo variable, unset → both jobs skip | repo variable → `true` | The runner infrastructure must exist first (#1065 step 2 `terraform apply` + step 3 on-chain verify). [`deploy-runners.yml`](../../.github/workflows/deploy-runners.yml) has a third layer of runtime existence checks, so an early flip no-ops loudly rather than erroring — but it is still an early flip. |
+| 11 | `TF_DRIFT_ENABLED` | GitHub repo variable, unset → the [`terraform-drift.yml`](../../.github/workflows/terraform-drift.yml) job skips | repo variable → `true` | Not tied to launch — tied to one AWS operation. The read-only plan role must exist first (`infra/scripts/setup-github-plan-role.sh --apply`), plus the `TF_PLAN_ROLE_ARN` variable and the `TF_VAR_ALARM_EMAIL` secret. Flipping early makes the job red on every `infra/**` PR at the OIDC step, which is how a gate gets ignored. The gate is advisory and never a required check. Full procedure: [`../runbooks/terraform-apply-and-task-definition-ownership.md`](../runbooks/terraform-apply-and-task-definition-ownership.md). |
 
 ---
 

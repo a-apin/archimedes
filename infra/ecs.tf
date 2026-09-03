@@ -940,6 +940,61 @@ resource "aws_ecs_task_definition" "backend" {
   ])
 
   tags = { Project = var.project_name }
+
+  # ── OWNERSHIP SPLIT: container_definitions is PIPELINE-OWNED (#1799) ─────
+  #
+  # Two registrars write revisions of the `archimedes-backend` family:
+  #
+  #   terraform (this resource)  — registers a revision on `terraform apply`,
+  #                                from the jsonencode() above.
+  #   .github/workflows/deploy.yml — registers a revision on EVERY merge to
+  #                                main: it clones the family's LATEST
+  #                                revision (`aws ecs describe-task-definition
+  #                                --task-definition archimedes-backend`,
+  #                                which resolves a bare family name to its
+  #                                latest ACTIVE revision), rewrites it with
+  #                                .github/scripts/ecs_rewrite_task_def.py,
+  #                                and calls register-task-definition.
+  #
+  # Before this block, those two fought. Terraform's state held revision 213
+  # (the last apply); the pipeline had walked the family to 233. Every
+  # attribute of aws_ecs_task_definition is ForceNew, so any edit to the JSON
+  # above — #1778's PAPER_ADVANCE_ENABLED flip was the one that surfaced this
+  # — made a plain `terraform plan` say "must be replaced", and an UNTARGETED
+  # apply would then register a fresh revision built from this file. The
+  # service below does not roll onto it (`ignore_changes = [task_definition]`,
+  # kept deliberately), so nothing breaks that minute. The damage lands on the
+  # NEXT merge: the pipeline clones the family's latest, which is now
+  # terraform's revision, so twenty revisions of pipeline-accumulated
+  # container state — the commit-SHA image tags above all — are silently
+  # rolled back into production by a deploy that looks completely normal.
+  # #1799 is that report; 2026-09-03 the owner picked the pipeline as owner.
+  #
+  # WHY EXACTLY container_definitions AND NOTHING ELSE. Read
+  # `rewrite_registered_task_definition` in ecs_rewrite_task_def.py: the only
+  # keys it writes are inside `containerDefinitions` — the backend / nginx /
+  # auth `image` tags, and the backend container's `PAPER_ADVANCE_ENABLED`
+  # environment pin. Everything else in a registered revision (cpu, memory,
+  # execution_role_arn, task_role_arn, runtime_platform, the corpus-artifact
+  # volume, network_mode, requires_compatibilities) is copied through the
+  # clone untouched, never authored by the pipeline, and so stays
+  # TERRAFORM-owned: a change to any of them still shows up in `plan` and
+  # still needs a deliberate apply. Adding them here would be strictly worse
+  # than the bug — it would hide real drift on attributes nobody else writes.
+  # `tags` is likewise NOT ignored: `describe-task-definition --query
+  # taskDefinition` omits tags entirely, so the pipeline's revisions carry
+  # none, while terraform refreshes the specific revision ARN it registered
+  # (which has them) — no diff to suppress.
+  #
+  # WHAT THIS COSTS. Editing the JSON above no longer reaches production. The
+  # env pins that actually ship live in ecs_rewrite_task_def.py; the block
+  # above is the declared baseline a from-scratch rebuild would register as
+  # revision 1, and the documentation of intent for everything else. To make a
+  # deliberate change to the LIVE task definition, follow
+  # docs/runbooks/terraform-apply-and-task-definition-ownership.md.
+  lifecycle {
+    ignore_changes = [container_definitions]
+  }
 }
 
 # ── ECS Service — behind the existing ALB target group ─────────────────────

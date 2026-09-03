@@ -1380,6 +1380,24 @@ data "archive_file" "deploy_drift" {
   type        = "zip"
   source_dir  = "${path.module}/lambda/deploy_drift"
   output_path = "${path.module}/lambda/deploy_drift.zip"
+
+  # `source_dir` sweeps in WHATEVER is in that directory, and running the
+  # module locally (a REPL import, a pytest collection) leaves a
+  # `__pycache__/` behind. That is not hypothetical: the zip live in Lambda
+  # today (downloaded 2026-09-03 via `aws lambda get-function`) contains
+  # `__pycache__/index.cpython-312.pyc` alongside a byte-identical
+  # `index.py`, so the deployed `source_code_hash` no longer matches what any
+  # clean checkout builds and every `terraform plan` reports the function as
+  # changed. `archive_file` is otherwise deterministic — verified 2026-09-03
+  # that its hash ignores file mtime but DOES track file mode and the file
+  # set — so this exclusion is the whole fix, and it is what keeps the drift
+  # gate (.github/workflows/terraform-drift.yml) from flapping on whether
+  # someone happened to import the module before applying.
+  #
+  # Excluding it does NOT change today's plan: the current diff is
+  # deployed-with-pycache -> repo-without-pycache either way. It goes away on
+  # the next untargeted apply and, with this line, cannot come back.
+  excludes = ["__pycache__"]
 }
 
 resource "aws_iam_role" "deploy_drift" {
