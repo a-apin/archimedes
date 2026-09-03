@@ -122,6 +122,81 @@ engine = create_engine(DATABASE_URL, **_get_engine_kwargs())
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
+# How long a boot schema patch may wait for its lock before it gives up.
+#
+# #1818: a no-op ``ADD COLUMN IF NOT EXISTS`` still takes AccessExclusiveLock on
+# the table for the rest of its transaction, and a *waiting* AccessExclusiveLock
+# request queues every later reader of that table behind it. On 2026-09-03 that
+# turned a boot into a 91-minute hang: the replacement tasks' ``init_db()`` (run
+# at import from ``main.py``) sat in the lock queue behind another process's open
+# transaction, logged nothing, and served no requests until an OOM kill broke the
+# chain. Five seconds is longer than any healthy DDL patch here (all of them are
+# no-ops on a current schema) and short enough that a boot is never held hostage.
+PATCH_LOCK_TIMEOUT = os.getenv("DB_PATCH_LOCK_TIMEOUT", "5s")
+
+
+def _bind_is_postgres(bind) -> bool:
+    """True when this engine speaks Postgres.
+
+    Asked of the DIALECT rather than of the ``DATABASE_URL`` string, because
+    that is the thing ``SET LOCAL lock_timeout`` is a property of — and because
+    it is what makes the SQLite path provably untouched in a test that hands
+    this module a real SQLite engine.
+    """
+    try:
+        return bool(bind.dialect.name == "postgresql")
+    except AttributeError:  # pragma: no cover - a bind with no dialect is not ours
+        return False
+
+
+def _apply_patch_statement(stmt: str, *, context: str) -> bool:
+    """Run ONE boot schema patch in its OWN short transaction. Never raises.
+
+    Two properties, both from #1818, and both load-bearing:
+
+    1. **One statement, one transaction.** The patches used to share a single
+       ``engine.begin()``. The three ``ALTER TABLE papers`` ran first and held
+       AccessExclusiveLock on ``papers`` for the rest of the block, so when the
+       fourth statement (``ALTER TABLE strategy_store``) queued behind another
+       session, every reader of ``papers`` queued behind *us*. Committing each
+       statement on its own means a wait on ``strategy_store`` can never hold
+       ``papers``.
+    2. **A bounded wait.** ``SET LOCAL lock_timeout`` applies to the enclosing
+       transaction only, so it is set inside each patch's own transaction and
+       needs no engine-wide configuration. Postgres only — SQLite has no such
+       statement and no such lock queue.
+
+    A patch that cannot take its lock in time is a WARNING and boot continues:
+    these patches are transitional and already declared non-fatal (Alembic owns
+    Postgres schema, #1028). Returns True when the statement ran.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    try:
+        with engine.begin() as conn:
+            if _bind_is_postgres(engine):
+                # Interpolated, not bound: SET LOCAL takes a literal, and the
+                # value is a module constant, never user input.
+                conn.execute(text(f"SET LOCAL lock_timeout = '{PATCH_LOCK_TIMEOUT}'"))
+            conn.execute(text(stmt))
+    except OperationalError as exc:
+        # The #1818 shape: someone else holds the lock. Do not wait, do not
+        # fail the boot — say so and move on to the next patch.
+        logger.warning(
+            "init_db: %s patch could not take its lock within %s (non-fatal, boot continues): %s — %s",
+            context,
+            PATCH_LOCK_TIMEOUT,
+            stmt,
+            exc,
+        )
+        return False
+    except Exception as exc:
+        logger.warning("init_db: %s patch failed (non-fatal): %s — %s", context, stmt, exc)
+        return False
+    return True
+
+
 def init_db() -> None:
     """Build the schema on SQLite (local dev + hermetic tests); on Postgres,
     Alembic owns schema creation (`alembic upgrade head` — see
@@ -138,6 +213,14 @@ def init_db() -> None:
     changes going forward (issue #1028), and these idempotent ALTERs remain
     only until every column they cover has landed as a proper Alembic
     revision — a follow-up cleanup, not done here.
+
+    Boot safety (#1818): every patch statement runs in its OWN transaction,
+    with ``SET LOCAL lock_timeout`` on Postgres — see
+    :func:`_apply_patch_statement` for the incident that bought that rule. This
+    function is a BOOT step, not a per-cycle one: the only callers that should
+    reach it repeatedly are read paths that need the transitional columns to
+    exist, and the paper-advance tick deliberately no longer calls it at all
+    (``services/paper_trading.py``).
     """
     # Side-effect imports: ensure all ORM models register their tables with
     # Base.metadata before create_all runs. Otherwise the kg_* tables only
@@ -161,8 +244,6 @@ def init_db() -> None:
         logger.info(f"Database tables created at {DATABASE_URL}")
 
     if DATABASE_URL.startswith("postgresql"):
-        from sqlalchemy import text
-
         # Transitional: these predate Alembic (issue #1028) and still run on
         # every Postgres boot. New Postgres schema changes go through an
         # Alembic revision instead (see `migrations/README.md`) — this block
@@ -183,13 +264,15 @@ def init_db() -> None:
             # Pre-existing rows default to FALSE: they were body-supplied, never verified.
             "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE",
         ]
-        try:
-            with engine.begin() as conn:
-                for stmt in added_columns_sql:
-                    conn.execute(text(stmt))
-            logger.info("init_db: papers schema patches applied (idempotent)")
-        except Exception as exc:
-            logger.warning("init_db: papers schema patch failed (non-fatal): %s", exc)
+        # One transaction per statement, each with its own lock_timeout —
+        # see _apply_patch_statement for why (#1818). Never raises, so a
+        # blocked patch cannot stop the ones behind it or the boot.
+        applied = sum(_apply_patch_statement(stmt, context="papers") for stmt in added_columns_sql)
+        logger.info(
+            "init_db: papers schema patches applied (idempotent) — %d/%d statements",
+            applied,
+            len(added_columns_sql),
+        )
 
     _ensure_ownership_columns()
 
@@ -204,9 +287,14 @@ def _ensure_ownership_columns() -> None:
     uses dialect-safe introspection (``sqlalchemy.inspect``) and only ALTERs
     when a column is actually missing — works identically on SQLite and
     Postgres. Non-fatal on failure, matching the patch block above.
+
+    Its DDL goes through :func:`_apply_patch_statement` for the same #1818
+    reason: one transaction per statement, with a ``lock_timeout`` on Postgres.
+    The ``CREATE INDEX IF NOT EXISTS`` at the end is the sharpest case — it
+    takes a lock on ``strategy_store`` too, and it used to share a transaction
+    with the ALTERs above it.
     """
     from sqlalchemy import inspect as sa_inspect
-    from sqlalchemy import text
 
     wanted: dict[str, list[tuple[str, str]]] = {
         "strategy_store": [
@@ -224,24 +312,33 @@ def _ensure_ownership_columns() -> None:
     }
     try:
         inspector = sa_inspect(engine)
-        with engine.begin() as conn:
-            for table, columns in wanted.items():
-                if not inspector.has_table(table):
-                    continue
-                existing = {col["name"] for col in inspector.get_columns(table)}
-                for name, ddl in columns:
-                    if name not in existing:
-                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
-                        logger.info("init_db: added %s.%s", table, name)
-            # The model declares index=True on strategy_store.owner_wallet;
-            # create_all only builds it on fresh DBs, so mirror it here for
-            # ALTERed ones. IF NOT EXISTS is valid on both SQLite and Postgres.
-            if inspector.has_table("strategy_store"):
-                conn.execute(
-                    text("CREATE INDEX IF NOT EXISTS ix_strategy_store_owner_wallet ON strategy_store (owner_wallet)")
+        statements: list[tuple[str, str]] = []
+        for table, columns in wanted.items():
+            if not inspector.has_table(table):
+                continue
+            existing = {col["name"] for col in inspector.get_columns(table)}
+            statements.extend(
+                (f"ALTER TABLE {table} ADD COLUMN {name} {ddl}", f"{table}.{name}")
+                for name, ddl in columns
+                if name not in existing
+            )
+        # The model declares index=True on strategy_store.owner_wallet;
+        # create_all only builds it on fresh DBs, so mirror it here for
+        # ALTERed ones. IF NOT EXISTS is valid on both SQLite and Postgres.
+        if inspector.has_table("strategy_store"):
+            statements.append(
+                (
+                    "CREATE INDEX IF NOT EXISTS ix_strategy_store_owner_wallet ON strategy_store (owner_wallet)",
+                    "ix_strategy_store_owner_wallet",
                 )
+            )
     except Exception as exc:
-        logger.warning("init_db: ownership column patch failed (non-fatal): %s", exc)
+        logger.warning("init_db: ownership column inspection failed (non-fatal): %s", exc)
+        return
+
+    for stmt, label in statements:
+        if _apply_patch_statement(stmt, context="ownership"):
+            logger.info("init_db: applied %s", label)
 
 
 def get_session() -> Session:
