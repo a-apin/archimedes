@@ -97,9 +97,9 @@ This is mechanism items 1 and 2 — the two ends of the DDL lock chain — and n
 
 1. **The paper-advance child never runs DDL.** `paper_advance_loop` no longer imports or calls
    `init_db()`. Schema is the migrate task's job (`alembic upgrade head`, see
-   `migrations/README.md`) plus the web process's single boot-time call; a 24-hourly ticker has
-   no business asserting it. Two guards in
-   `backend/tests/services/test_paper_advance_kill_switch.py`: an AST walk over
+   `migrations/README.md`) plus the web process's boot-time call — and, today, the eleven
+   request handlers listed under P6 below; a 24-hourly ticker has no business asserting it.
+   Two guards in `backend/tests/services/test_paper_advance_kill_switch.py`: an AST walk over
    `paper_advance_loop` (so the docstring can keep explaining *why* without satisfying a
    substring search), and a behavioural one — `archimedes.db.init_db` is armed to raise in the
    shared `_drive_one_tick` harness, which makes every driven tick in that file a standing
@@ -115,13 +115,24 @@ This is mechanism items 1 and 2 — the two ends of the DDL lock chain — and n
    EXISTS` — which takes a lock on `strategy_store` too and used to ride in the same transaction
    as the ALTERs above it.
 
-Together these mean: nothing on a cycle path issues DDL, and the DDL that does run (once, at
-boot, in the web process) can no longer wait longer than five seconds for a lock or hold two
-tables at once. Tests are hermetic — `backend/tests/test_db_boot_patches.py` drives a recording
+   The per-statement timeout is not by itself a bound on the boot: one `init_db()` issues 8
+   patch statements plus up to 5 more from `_ensure_ownership_columns`, and at 5s each a fully
+   contended boot would still burn 45-65s — past the 30s health-check timeout named in the
+   timeline above. So the whole call also shares an aggregate budget
+   (`DB_PATCH_LOCK_BUDGET`, default 10s), checked before each statement; worst case is the
+   budget plus the one statement already in flight, 15s. `DB_PATCH_LOCK_TIMEOUT` is validated
+   before it is interpolated into `SET LOCAL`, because a typo'd value there would be a syntax
+   error swallowed by the same non-fatal arm — which would silently skip *every* patch.
+
+Together these mean: nothing on a cycle path issues DDL, and the DDL that still runs — once at
+boot in the web process, **and again on every request that calls `init_db()`** (P6 below) — can
+no longer wait longer than five seconds for any one lock, hold two tables at once, or spend
+more than the aggregate budget across the call. Tests are hermetic —
+`backend/tests/test_db_boot_patches.py` drives a recording
 fake engine for the Postgres cases (transaction boundaries are not observable through a real
 connection) and a real tmp-file SQLite engine for the unchanged-behaviour case.
 
-## What it does not change (P2–P5, tracked on #1818)
+## What it does not change (P2–P6, tracked on #1818)
 
 - **P2** — the second session opened while the cycle transaction is still open
   (`resolve_paper_hashes` in `services/paper_trace.py`). That is the other half of mechanism
@@ -134,6 +145,18 @@ connection) and a real tmp-file SQLite engine for the unchanged-behaviour case.
 - **P5 (ops)** — there are still no CloudWatch alarms on `UnHealthyHostCount ≥ 1`,
   `HTTPCode_ELB_5XX_Count`, or ECS `MemoryUtilization > 85%`. The owner found out by using the
   site.
+- **P6** — `init_db()` still runs on the SERVING path, not only at boot. Eleven request
+  handlers call it so the transitional columns exist before they read, all of them reached from
+  `async def` endpoints with no threadpool hop, so this DDL executes on the event loop on
+  ordinary API traffic: `api/paper_routes.py:107,146,163,210,227` (POST/GET/DELETE
+  `/api/paper/deployments` and `.../marks`), `api/selection_bias_routes.py:333,736`,
+  `api/leaderboard_routes.py:286`, `api/strategies_routes.py:419` (via `GET /api/strategies/`)
+  and `:1661`, and `services/live_rigor_gate.py:273` (via the vaults routes). The incident's
+  wedge SHAPE therefore survives P1: a web request's DDL can still queue an AccessExclusiveLock
+  behind a long transaction and put every later reader of that table behind it. P1 *bounds*
+  that (5s per statement, 10s per call) rather than removing it. The fix is to hoist these
+  calls into the lifespan — the same argument this PR makes for the ticker — which is a
+  behaviour change to eleven endpoints and does not belong in a P1.
 - The memory ramp under Open questions is not explained or addressed here.
 
 Related: #1632 (the C-abort class, seen again at 15:03:02), #1778 (tourniquet lift), #1802

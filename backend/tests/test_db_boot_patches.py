@@ -83,6 +83,11 @@ class _RecordingConnection:
         sql = str(clause)
         self._statements.append(sql)
         self._engine.events.append(("execute", sql))
+        # ``on_statement`` is how a test makes TIME pass: a real lock timeout
+        # burns five wall-clock seconds, and the aggregate-budget tests need
+        # that without sleeping 45 of them.
+        if self._engine.on_statement is not None:
+            self._engine.on_statement(sql)
         raiser = self._engine.raise_on
         if raiser is not None and raiser[0] in sql:
             raise raiser[1]
@@ -112,11 +117,18 @@ class _RecordingEngine:
     log and obvious in this one.
     """
 
-    def __init__(self, *, dialect_name: str = "postgresql", raise_on: tuple[str, Exception] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        dialect_name: str = "postgresql",
+        raise_on: tuple[str, Exception] | None = None,
+        on_statement=None,
+    ) -> None:
         self.dialect = types.SimpleNamespace(name=dialect_name)
         self.transactions: list[list[str]] = []
         self.events: list[tuple[str, str | None]] = []
         self.raise_on = raise_on
+        self.on_statement = on_statement
 
     def begin(self) -> _Transaction:
         return _Transaction(self)
@@ -201,7 +213,7 @@ class TestInitDbPatchTransactions:
     def _isolate_ownership(self, monkeypatch):
         """``_ensure_ownership_columns`` has its own tests below; stub it here so
         the transaction ledger this class reads is exactly the patch block."""
-        monkeypatch.setattr(db, "_ensure_ownership_columns", lambda: None)
+        monkeypatch.setattr(db, "_ensure_ownership_columns", lambda **_kw: None)
 
     def test_every_patch_gets_its_own_transaction_and_its_own_lock_timeout(self, pg_engine):
         """THE regression test for #1818.
@@ -405,3 +417,230 @@ class TestEnsureOwnershipColumnsOnSqlite:
         db._ensure_ownership_columns()
 
         assert not any(s.startswith("ALTER TABLE") for s in seen), f"re-ALTERed an existing column: {seen}"
+
+
+# ─── The aggregate budget ──────────────────────────────────────────────
+
+
+class _Clock:
+    """A monotonic clock a test can wind forward.
+
+    Installed as ``db.time`` (``db.py`` calls ``time.monotonic()``), so the
+    budget can be tested against thirteen five-second timeouts without spending
+    sixty-five real seconds.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class TestTheAggregateLockBudget:
+    """A per-statement timeout is not a bound on the boot.
+
+    ``lock_timeout`` is per statement, and one ``init_db()`` issues 8 patch
+    statements plus up to 5 more from ``_ensure_ownership_columns`` — 13 on a
+    stale schema. At 5s each, a fully contended boot would burn 45-65s and blow
+    straight past the 30s ALB health-check timeout that the 2026-09-03 timeline
+    names, which is the same "task is up but answers nothing" shape the incident
+    was about. So the whole call shares one deadline.
+    """
+
+    @staticmethod
+    def _contended(clock: _Clock):
+        """An engine where every DDL statement burns its full 5s and times out."""
+
+        def burn(sql: str) -> None:
+            if sql.startswith(("ALTER", "CREATE")):
+                clock.advance(5.0)
+                raise lock_timeout_error(sql)
+
+        return _RecordingEngine(on_statement=burn)
+
+    def test_a_fully_contended_boot_stops_at_the_budget_not_after_every_statement(self, monkeypatch, caplog):
+        """THE regression test for the aggregate case.
+
+        Eight statements that each take their full 5s is 40s of boot. With a
+        10s budget the deadline is checked before each one, so the third never
+        starts and the run ends at 10s.
+        """
+        clock = _Clock()
+        monkeypatch.setattr(db, "time", clock)
+        fake = self._contended(clock)
+        monkeypatch.setattr(db, "engine", fake)
+        monkeypatch.setattr(db, "DATABASE_URL", "postgresql://user:pw@host:5432/archimedes")
+        monkeypatch.setattr(db, "PATCH_LOCK_BUDGET_SECONDS", 10.0)
+        monkeypatch.setattr(db, "_ensure_ownership_columns", lambda **_kw: None)
+
+        with caplog.at_level(logging.WARNING, logger=db.__name__):
+            db.init_db()  # must not raise
+
+        attempted = [s for txn in fake.transactions for s in txn if s.startswith("ALTER")]
+        assert attempted == EXPECTED_PATCH_ORDER[:2], (
+            f"the budget did not stop the run: {len(attempted)} statements attempted, {clock.now}s spent"
+        )
+        assert clock.now == 10.0, f"spent {clock.now}s of a 10s budget"
+
+    def test_the_budget_gives_up_once_and_says_what_it_skipped(self, monkeypatch, caplog):
+        """One WARNING, not one per skipped statement — a boot that gave up
+        should be legible, and #1818 was invisible partly because nothing said
+        anything at all."""
+        clock = _Clock()
+        monkeypatch.setattr(db, "time", clock)
+        fake = self._contended(clock)
+        monkeypatch.setattr(db, "engine", fake)
+        monkeypatch.setattr(db, "DATABASE_URL", "postgresql://user:pw@host:5432/archimedes")
+        monkeypatch.setattr(db, "PATCH_LOCK_BUDGET_SECONDS", 10.0)
+        monkeypatch.setattr(db, "_ensure_ownership_columns", lambda **_kw: None)
+
+        with caplog.at_level(logging.WARNING, logger=db.__name__):
+            db.init_db()
+
+        gave_up = [r.getMessage() for r in caplog.records if "aggregate lock budget" in r.getMessage()]
+        assert len(gave_up) == 1, f"expected exactly one give-up line, got {gave_up}"
+        assert "6 statement(s) skipped" in gave_up[0], gave_up[0]
+        assert "is_example" in gave_up[0], "the give-up line must name what did not land"
+
+    def test_the_ownership_block_shares_the_budget_rather_than_starting_a_fresh_one(self, monkeypatch, caplog):
+        """The whole point of the aggregate bound.
+
+        If ``_ensure_ownership_columns`` took its own 10s, ``init_db()`` would
+        be bounded at 20s + 5s rather than 10s + 5s, and two of those are on
+        the wrong side of the health check. The deadline is threaded through.
+        """
+        clock = _Clock()
+        monkeypatch.setattr(db, "time", clock)
+        fake = self._contended(clock)
+        monkeypatch.setattr(db, "engine", fake)
+        monkeypatch.setattr(db, "DATABASE_URL", "postgresql://user:pw@host:5432/archimedes")
+        monkeypatch.setattr(db, "PATCH_LOCK_BUDGET_SECONDS", 10.0)
+        monkeypatch.setattr(
+            sqlalchemy,
+            "inspect",
+            lambda _bind: _FakeInspector({"strategy_store": ["id"], "strategy_passports": ["id"]}),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=db.__name__):
+            db.init_db()  # papers block alone spends the whole budget
+
+        ownership_ddl = [s for txn in fake.transactions for s in txn if "owner_wallet" in s or "universe_source" in s]
+        assert ownership_ddl == [], f"the ownership block started a fresh budget: {ownership_ddl}"
+        assert clock.now == 10.0, f"init_db spent {clock.now}s, not the 10s budget"
+
+    def test_an_uncontended_boot_still_applies_everything(self, monkeypatch):
+        """The budget must not cost a healthy boot anything. Real patches are
+        no-ops on a current schema and take microseconds; nothing is skipped."""
+        clock = _Clock()
+        monkeypatch.setattr(db, "time", clock)
+        fake = _RecordingEngine()
+        monkeypatch.setattr(db, "engine", fake)
+        monkeypatch.setattr(db, "DATABASE_URL", "postgresql://user:pw@host:5432/archimedes")
+        monkeypatch.setattr(db, "_ensure_ownership_columns", lambda **_kw: None)
+
+        db.init_db()
+
+        ran = [s for txn in fake.transactions for s in txn if s.startswith("ALTER")]
+        assert ran == EXPECTED_PATCH_ORDER
+
+    def test_a_malformed_budget_falls_back_to_ten_seconds(self, caplog):
+        with caplog.at_level(logging.WARNING, logger=db.__name__):
+            assert db._sanitised_lock_budget("abc") == 10.0
+            assert db._sanitised_lock_budget("0") == 10.0
+            assert db._sanitised_lock_budget("-3") == 10.0
+        assert db._sanitised_lock_budget(None) == 10.0, "an unset env var is not a misconfiguration"
+        assert db._sanitised_lock_budget("2.5") == 2.5, "a valid override must survive"
+
+
+# ─── DB_PATCH_LOCK_TIMEOUT is interpolated into SQL, so it is validated ─
+
+
+class TestTheLockTimeoutValueIsValidated:
+    """``SET LOCAL`` takes a literal, not a bind parameter, so this env value
+    reaches Postgres as text. An unvalidated typo is not a cosmetic bug: the
+    ``SET LOCAL`` becomes a syntax error, the deliberately broad non-fatal arm
+    swallows it into a WARNING, and EVERY transitional column is skipped —
+    which is the "``strategy_store.is_example`` is missing, so Generate 500s"
+    failure this whole block exists to avoid.
+    """
+
+    @pytest.mark.parametrize("value", ["5s", "250ms", "2min", "5000", "1h", "30us", "7d"])
+    def test_valid_postgres_intervals_pass_through(self, value):
+        assert db._sanitised_lock_timeout(value) == value
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "5 s",  # the plausible typo: Postgres wants no space here
+            "abc",
+            "",
+            "-5s",
+            "5seconds",
+            "'5s'",  # already-quoted: would close the literal early
+            "5s'; DROP TABLE papers --",
+        ],
+    )
+    def test_a_malformed_value_falls_back_to_five_seconds(self, value, caplog):
+        with caplog.at_level(logging.WARNING, logger=db.__name__):
+            assert db._sanitised_lock_timeout(value) == "5s"
+
+        assert any("not a usable Postgres lock_timeout" in r.getMessage() for r in caplog.records), (
+            f"a bad lock_timeout was accepted silently; records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+    @pytest.mark.parametrize("value", ["0", "0s", "0ms"])
+    def test_zero_is_rejected_because_postgres_reads_it_as_no_timeout(self, value, caplog):
+        """The sharpest well-formed input there is.
+
+        ``lock_timeout = 0`` does not mean "fail immediately" — in Postgres it
+        DISABLES the timeout. It is the 2026-09-03 configuration exactly, and a
+        regex that only checked shape would wave it through.
+        """
+        with caplog.at_level(logging.WARNING, logger=db.__name__):
+            assert db._sanitised_lock_timeout(value) == "5s", f"{value!r} would restore the #1818 unbounded wait"
+
+        assert any("would disable the timeout entirely" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("value", ["2147483648ms", "999999999s", "100d"])
+    def test_values_past_int_max_milliseconds_are_rejected(self, value, caplog):
+        """Well-formed but out of range: Postgres answers "outside the valid
+        range for parameter", the broad non-fatal arm swallows it, and every
+        patch is skipped — the same silent outcome as a syntax error."""
+        with caplog.at_level(logging.WARNING, logger=db.__name__):
+            assert db._sanitised_lock_timeout(value) == "5s"
+
+    @pytest.mark.parametrize("value", ["2147483647ms", "1d"])
+    def test_the_top_of_the_valid_range_is_still_accepted(self, value):
+        """The bound must not be off by one, or an operator widening the window
+        for a real migration gets silently overridden."""
+        assert db._sanitised_lock_timeout(value) == value
+
+    def test_a_malformed_value_cannot_silently_skip_every_patch(self, monkeypatch, caplog):
+        """The consequence, end to end.
+
+        This engine rejects the SQL a RAW ``5 s`` would produce, exactly as
+        Postgres would. If the value reached the string unvalidated, all eight
+        patches would be swallowed as WARNINGs and the columns would never
+        land; with validation the run is clean and every ``SET LOCAL`` is the
+        ``5s`` fallback.
+        """
+        syntax_error = OperationalError("SET LOCAL", {}, Exception('near "SET": syntax error'))
+        fake = _RecordingEngine(raise_on=("'5 s'", syntax_error))
+        monkeypatch.setattr(db, "engine", fake)
+        monkeypatch.setattr(db, "DATABASE_URL", "postgresql://user:pw@host:5432/archimedes")
+        monkeypatch.setattr(db, "_ensure_ownership_columns", lambda **_kw: None)
+        monkeypatch.setattr(db, "PATCH_LOCK_TIMEOUT", "5 s")
+
+        with caplog.at_level(logging.INFO, logger=db.__name__):
+            db.init_db()
+
+        ran = [s for txn in fake.transactions for s in txn if s.startswith("ALTER")]
+        assert ran == EXPECTED_PATCH_ORDER, "a malformed DB_PATCH_LOCK_TIMEOUT skipped the transitional columns"
+        assert {s for txn in fake.transactions for s in txn if s.startswith("SET")} == {LOCK_TIMEOUT_SQL}, (
+            f"the raw value reached the SQL: {fake.transactions[0]}"
+        )
+        assert any("8/8 statements" in r.getMessage() for r in caplog.records)

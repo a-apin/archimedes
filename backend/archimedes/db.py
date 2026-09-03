@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import time
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -131,8 +133,93 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 # at import from ``main.py``) sat in the lock queue behind another process's open
 # transaction, logged nothing, and served no requests until an OOM kill broke the
 # chain. Five seconds is longer than any healthy DDL patch here (all of them are
-# no-ops on a current schema) and short enough that a boot is never held hostage.
-PATCH_LOCK_TIMEOUT = os.getenv("DB_PATCH_LOCK_TIMEOUT", "5s")
+# no-ops on a current schema).
+#
+# That bound is PER STATEMENT, which is not the same as bounding the boot. One
+# ``init_db()`` issues 8 patch statements plus, from ``_ensure_ownership_columns``,
+# up to 4 ALTERs and a ``CREATE INDEX`` — 9 statements on a healthy schema, 13 on
+# a stale one. At 5s each, a fully contended boot would still burn 45-65s, past
+# the 30s ALB health-check timeout that this incident's own timeline names. So the
+# whole of ``init_db()`` also gets an AGGREGATE budget: the deadline is checked
+# before each statement, and once it is past, the remaining statements are skipped
+# with one WARNING. Worst case is the budget plus the one statement already in
+# flight when it expired — 10s + 5s = 15s by default, inside the health check.
+_DEFAULT_PATCH_LOCK_TIMEOUT = "5s"
+_DEFAULT_PATCH_LOCK_BUDGET = 10.0
+
+# Digits and a Postgres time unit, nothing else: no whitespace, no quotes. This
+# value is interpolated into ``SET LOCAL lock_timeout = '<value>'`` because SET
+# LOCAL takes a literal, not a bind parameter. An unvalidated typo — ``5 s``,
+# ``abc``, a stray quote — makes that statement a syntax error, and since the
+# patch arm is deliberately broad and non-fatal, the error is swallowed into a
+# WARNING that skips EVERY patch behind it. That is precisely the silent failure
+# this module exists to prevent (a missing ``strategy_store.is_example`` is a 500
+# on every Generate), so a bad value is rejected at the door instead.
+#
+# Well-formed is not sufficient, so the value is also range-checked. Two
+# well-formed values would each put the outage straight back:
+#   * ``0`` — in Postgres that DISABLES lock_timeout. It is the 2026-09-03
+#     configuration exactly: a boot patch that waits forever.
+#   * anything over INT_MAX milliseconds — Postgres raises "outside the valid
+#     range for parameter", which the same broad arm swallows, and again every
+#     patch is skipped.
+_LOCK_TIMEOUT_RE = re.compile(r"(?P<n>\d+)(?P<unit>us|ms|s|min|h|d)?")
+_UNIT_MS = {None: 1, "us": 0.001, "ms": 1, "s": 1_000, "min": 60_000, "h": 3_600_000, "d": 86_400_000}
+_PG_MAX_LOCK_TIMEOUT_MS = 2_147_483_647  # INT_MAX; lock_timeout is a millisecond GUC
+
+
+def _sanitised_lock_timeout(raw: str) -> str:
+    """Return ``raw`` when it is a safe, in-range Postgres interval, else ``5s``."""
+    match = _LOCK_TIMEOUT_RE.fullmatch(raw or "")
+    if match and 0 < int(match.group("n")) * _UNIT_MS[match.group("unit")] <= _PG_MAX_LOCK_TIMEOUT_MS:
+        return raw
+    logger.warning(
+        "init_db: DB_PATCH_LOCK_TIMEOUT=%r is not a usable Postgres lock_timeout "
+        "(want e.g. 5s, 250ms, 2min; 0 would disable the timeout entirely) — falling back to %s",
+        raw,
+        _DEFAULT_PATCH_LOCK_TIMEOUT,
+    )
+    return _DEFAULT_PATCH_LOCK_TIMEOUT
+
+
+def _sanitised_lock_budget(raw: str | None) -> float:
+    """Seconds the whole of ``init_db()`` may spend waiting on patch locks."""
+    try:
+        budget = float(raw) if raw is not None else _DEFAULT_PATCH_LOCK_BUDGET
+    except (TypeError, ValueError):
+        budget = 0.0
+    if budget <= 0:
+        logger.warning(
+            "init_db: DB_PATCH_LOCK_BUDGET=%r is not a positive number of seconds — falling back to %s",
+            raw,
+            _DEFAULT_PATCH_LOCK_BUDGET,
+        )
+        return _DEFAULT_PATCH_LOCK_BUDGET
+    return budget
+
+
+PATCH_LOCK_TIMEOUT = _sanitised_lock_timeout(os.getenv("DB_PATCH_LOCK_TIMEOUT", _DEFAULT_PATCH_LOCK_TIMEOUT))
+PATCH_LOCK_BUDGET_SECONDS = _sanitised_lock_budget(os.getenv("DB_PATCH_LOCK_BUDGET"))
+
+
+def _patch_budget_exhausted(deadline: float, *, context: str, skipped: list[str]) -> bool:
+    """True when the aggregate patch budget is spent — logs ONE warning and stops.
+
+    Checked BEFORE each statement so an already-running statement is never cut
+    off mid-flight; see the note on the aggregate budget above for the worst
+    case that implies.
+    """
+    if time.monotonic() < deadline:
+        return False
+    logger.warning(
+        "init_db: %s patches gave up after the %ss aggregate lock budget "
+        "(non-fatal, boot continues, #1818) — %d statement(s) skipped: %s",
+        context,
+        PATCH_LOCK_BUDGET_SECONDS,
+        len(skipped),
+        "; ".join(skipped),
+    )
+    return True
 
 
 def _bind_is_postgres(bind) -> bool:
@@ -173,12 +260,17 @@ def _apply_patch_statement(stmt: str, *, context: str) -> bool:
     from sqlalchemy import text
     from sqlalchemy.exc import OperationalError
 
+    # Re-sanitised at the point of use, not merely at import: the value is
+    # interpolated into SQL, so no later assignment to PATCH_LOCK_TIMEOUT — a
+    # different env read, a test monkeypatch, a future edit — can put a syntax
+    # error inside the very transaction that is guarding the DDL.
+    timeout = _sanitised_lock_timeout(PATCH_LOCK_TIMEOUT)
     try:
         with engine.begin() as conn:
             if _bind_is_postgres(engine):
                 # Interpolated, not bound: SET LOCAL takes a literal, and the
-                # value is a module constant, never user input.
-                conn.execute(text(f"SET LOCAL lock_timeout = '{PATCH_LOCK_TIMEOUT}'"))
+                # value has just been validated against _LOCK_TIMEOUT_RE.
+                conn.execute(text(f"SET LOCAL lock_timeout = '{timeout}'"))
             conn.execute(text(stmt))
     except OperationalError as exc:
         # The #1818 shape: someone else holds the lock. Do not wait, do not
@@ -186,7 +278,7 @@ def _apply_patch_statement(stmt: str, *, context: str) -> bool:
         logger.warning(
             "init_db: %s patch could not take its lock within %s (non-fatal, boot continues): %s — %s",
             context,
-            PATCH_LOCK_TIMEOUT,
+            timeout,
             stmt,
             exc,
         )
@@ -216,11 +308,20 @@ def init_db() -> None:
 
     Boot safety (#1818): every patch statement runs in its OWN transaction,
     with ``SET LOCAL lock_timeout`` on Postgres — see
-    :func:`_apply_patch_statement` for the incident that bought that rule. This
-    function is a BOOT step, not a per-cycle one: the only callers that should
-    reach it repeatedly are read paths that need the transitional columns to
-    exist, and the paper-advance tick deliberately no longer calls it at all
-    (``services/paper_trading.py``).
+    :func:`_apply_patch_statement` for the incident that bought that rule — and
+    the call as a whole is bounded by an aggregate budget
+    (``PATCH_LOCK_BUDGET_SECONDS``), so the per-statement timeouts cannot sum
+    past the ALB health check.
+
+    This function is a BOOT step in name, but NOT only at boot in fact: besides
+    ``main.py``'s single call it is invoked from eleven request-handler paths
+    (``api/paper_routes.py``, ``api/selection_bias_routes.py``,
+    ``api/leaderboard_routes.py``, ``api/strategies_routes.py``,
+    ``services/live_rigor_gate.py``) that need the transitional columns to
+    exist, so this DDL still runs on ordinary API traffic, on the event loop.
+    P1 bounds that exposure rather than removing it; hoisting those calls into
+    the lifespan is the tracked follow-up (#1818 P6). The paper-advance tick
+    deliberately no longer calls it at all (``services/paper_trading.py``).
     """
     # Side-effect imports: ensure all ORM models register their tables with
     # Base.metadata before create_all runs. Otherwise the kg_* tables only
@@ -242,6 +343,13 @@ def init_db() -> None:
     if DATABASE_URL.startswith("sqlite"):
         Base.metadata.create_all(bind=engine)
         logger.info(f"Database tables created at {DATABASE_URL}")
+
+    # ONE aggregate deadline for the whole call — the papers block below AND
+    # _ensure_ownership_columns share it, because what has to stay under the
+    # ALB health-check timeout is init_db() as a whole, not any one statement.
+    # Taken here rather than inside the Postgres arm so the SQLite path can
+    # hand the same budget on.
+    deadline = time.monotonic() + PATCH_LOCK_BUDGET_SECONDS
 
     if DATABASE_URL.startswith("postgresql"):
         # Transitional: these predate Alembic (issue #1028) and still run on
@@ -266,18 +374,24 @@ def init_db() -> None:
         ]
         # One transaction per statement, each with its own lock_timeout —
         # see _apply_patch_statement for why (#1818). Never raises, so a
-        # blocked patch cannot stop the ones behind it or the boot.
-        applied = sum(_apply_patch_statement(stmt, context="papers") for stmt in added_columns_sql)
+        # blocked patch cannot stop the ones behind it or the boot. The
+        # aggregate deadline bounds the whole run: 8 statements each waiting
+        # their full 5s would otherwise outlast the health check.
+        applied = 0
+        for i, stmt in enumerate(added_columns_sql):
+            if _patch_budget_exhausted(deadline, context="papers", skipped=added_columns_sql[i:]):
+                break
+            applied += _apply_patch_statement(stmt, context="papers")
         logger.info(
             "init_db: papers schema patches applied (idempotent) — %d/%d statements",
             applied,
             len(added_columns_sql),
         )
 
-    _ensure_ownership_columns()
+    _ensure_ownership_columns(deadline=deadline)
 
 
-def _ensure_ownership_columns() -> None:
+def _ensure_ownership_columns(*, deadline: float | None = None) -> None:
     """Idempotent ADD COLUMN for per-user strategy ownership.
 
     Unlike the Postgres-only ``ADD COLUMN IF NOT EXISTS`` patches above, these
@@ -293,6 +407,10 @@ def _ensure_ownership_columns() -> None:
     The ``CREATE INDEX IF NOT EXISTS`` at the end is the sharpest case — it
     takes a lock on ``strategy_store`` too, and it used to share a transaction
     with the ALTERs above it.
+
+    ``deadline`` is the aggregate patch budget ``init_db()`` already started
+    spending on the papers block; called on its own (tests, a REPL) it starts a
+    fresh one.
     """
     from sqlalchemy import inspect as sa_inspect
 
@@ -336,7 +454,11 @@ def _ensure_ownership_columns() -> None:
         logger.warning("init_db: ownership column inspection failed (non-fatal): %s", exc)
         return
 
-    for stmt, label in statements:
+    if deadline is None:
+        deadline = time.monotonic() + PATCH_LOCK_BUDGET_SECONDS
+    for i, (stmt, label) in enumerate(statements):
+        if _patch_budget_exhausted(deadline, context="ownership", skipped=[s for s, _ in statements[i:]]):
+            break
         if _apply_patch_statement(stmt, context="ownership"):
             logger.info("init_db: applied %s", label)
 

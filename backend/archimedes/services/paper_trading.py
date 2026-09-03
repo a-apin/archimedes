@@ -1191,10 +1191,12 @@ async def paper_advance_loop() -> None:
     reader of that table behind it — including this loop's own trace session,
     which is how two sibling children wedged each other outside PostgreSQL's
     view. Schema is the migrate task's job (``alembic upgrade head``, see
-    ``migrations/README.md``) plus the web process's single boot-time
-    ``init_db()``; a 24-hourly ticker has no business asserting it. If this
-    loop ever needs a column that does not exist, the answer is an Alembic
-    revision, not a patch call from here.
+    ``migrations/README.md``) plus the web process's boot-time ``init_db()``
+    — and, today, eleven request handlers that still call it on the serving
+    path (#1818 P6, listed in the incident doc); a 24-hourly ticker has no
+    business adding itself to that list. If this loop ever needs a column
+    that does not exist, the answer is an Alembic revision, not a patch call
+    from here.
     See ``docs/incidents/2026-09-03-paper-advance-ddl-wedge.md``.
 
     Two independent passes run per cycle, in this order and in separate
