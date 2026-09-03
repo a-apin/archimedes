@@ -67,7 +67,7 @@ recompute on read. Going forward the WRITER stores ``'degenerate'`` as itself
 one-time cost paid by legacy rows only.
 
 Revision ID: b3f19d6c47ae
-Revises: c5e81a4f7b32
+Revises: d4b1f7c8e206
 Create Date: 2026-09-01 19:10:00.000000
 """
 
@@ -79,7 +79,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b3f19d6c47ae"
-down_revision: str | Sequence[str] | None = "c5e81a4f7b32"
+down_revision: str | Sequence[str] | None = "d4b1f7c8e206"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
