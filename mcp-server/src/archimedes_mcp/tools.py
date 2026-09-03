@@ -71,7 +71,7 @@ def archimedes_usage() -> dict[str, Any]:
 # `POST /api/rigor/verify`'s own input bounds (#1803). Mirrored, not imported —
 # this package depends on nothing — and the SERVER stays the authority: these
 # only save a round trip on an invocation that cannot succeed.
-_MIN_RETURN_ROWS = 4  # the deflated Sharpe's sample floor (_rigor_helpers.DSR_MIN_BARS)
+_MIN_RETURN_ROWS = 250  # the minimum evaluation window: one trading year (owner decision, #1803)
 _MAX_RETURN_ROWS = 2600  # ~10 years of daily bars
 _MAX_TRIALS = 10_000
 _MAX_ABS_DAILY_RETURN = 1.0  # |r| <= 1.0, in simple-return units
@@ -168,9 +168,11 @@ def archimedes_rigor_verify(returns: list[dict[str, Any]], trials: int = 1) -> d
     """`returns` is `[{"date": "2026-01-02", "daily_return": 0.001}, ...]`; `trials` is 1..10000.
 
     Dates must be strict `YYYY-MM-DD`, unique and ASCENDING; returns must be finite
-    simple decimals with `|r| <= 1.0`; the series is 4..2600 rows. The server refuses a
+    simple decimals with `|r| <= 1.0`; the series is 250..2600 rows — 250 daily bars, one
+    trading year, is the MINIMUM EVALUATION WINDOW, and under it there is no verdict at
+    all, only a refusal naming `bars_received` and `bars_required`. The server refuses a
     violating body with a 422 whose `detail.reason` is one of `invalid_date`,
-    `duplicate_date`, `unsorted_dates`, `non_finite`, `out_of_range`, `too_short`,
+    `duplicate_date`, `unsorted_dates`, `non_finite`, `out_of_range`, `window_too_short`,
     `too_many_rows`, `trials_out_of_range` — surfaced here as `error` on the failure
     result. It does NOT sort or deduplicate for you: the walk-forward split is
     positional, so re-ordering server-side would grade a series you did not send.
@@ -189,11 +191,10 @@ def archimedes_rigor_verify(returns: list[dict[str, Any]], trials: int = 1) -> d
         )
     if len(returns) < _MIN_RETURN_ROWS:
         return errors.failure(
-            "too_short",
-            f"returns has {len(returns)} rows; the minimum is {_MIN_RETURN_ROWS}.",
-            "Four bars is the deflated Sharpe's own sample floor, and the walk-forward leg needs "
-            "about 70 bars before it can run at all. A series between the two gets an honest "
-            "INCOMPLETE (legs_evaluated < legs_runnable), never a pass — do not read it as one.",
+            "window_too_short",
+            f"returns has {len(returns)} rows; the minimum evaluation window is "
+            f"{_MIN_RETURN_ROWS} daily bars (one trading year).",
+            errors.input_rejected_remedy("window_too_short"),
         )
     if len(returns) > _MAX_RETURN_ROWS:
         return errors.failure(

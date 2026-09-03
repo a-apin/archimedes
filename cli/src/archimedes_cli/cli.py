@@ -191,6 +191,13 @@ _MAX_TRIALS = 10_000
 _MAX_ABS_DAILY_RETURN = 1.0
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# The minimum evaluation window the endpoint publishes: 250 daily bars, one
+# trading year (owner decision, #1803). Mirrored here — unlike the row CEILING,
+# which is an infrastructure number — because it is a product promise printed in
+# `--help`, and making a caller spend one of five requests a minute to be told it
+# helps nobody. The server re-checks it and stays the authority.
+_MIN_RETURN_ROWS = 250
+
 # The reason codes `POST /api/rigor/verify` attaches to an input refusal
 # (`INPUT_REJECTED_CODES` in backend/archimedes/api/rigor_verify_routes.py,
 # #1803). Mirrored here rather than imported for the same reason
@@ -204,9 +211,14 @@ _INPUT_REJECTED_CODES = frozenset(
         "unsorted_dates",
         "non_finite",
         "out_of_range",
-        "too_short",
+        "window_too_short",
         "too_many_rows",
         "trials_out_of_range",
+        # The pre-window spelling of the same refusal, kept because `--api-url`
+        # can point at any host: an older server answers `too_short` on a short
+        # series, and it should still render through the coded path with a
+        # remedy rather than degrading to a generic HTTP error.
+        "too_short",
     }
 )
 
@@ -226,7 +238,12 @@ _INPUT_REJECTED_REMEDY = {
         "Returns are simple decimals, not percentages: +1.3% is 0.013, not 1.3. |r| > 1.0 in one day is "
         "refused because it silently inflates the Sharpe the whole verdict rests on."
     ),
-    "too_short": "Send a longer series. The walk-forward leg needs ~70 bars before it can run at all.",
+    "window_too_short": (
+        "Send at least one trading year of daily bars (250). Below that the endpoint returns a refusal "
+        "rather than a verdict — a short series is not graded and then flagged, it is not graded at all, "
+        "because a `passes` field with a warning next to it gets read as a pass."
+    ),
+    "too_short": "Send a longer series — this host's floor predates the 250-bar evaluation window.",
     "too_many_rows": "Split the series or aggregate to a coarser frequency.",
     "trials_out_of_range": "--trials is the number of variants you actually tried: 1..10000.",
 }
@@ -508,13 +525,21 @@ def _reject_local_input(*, as_json: bool, error: str, reason: str, message: str)
 # deduplicated, dropped or coerced here either — the CLI refuses exactly what
 # the server refuses, and repairs nothing.
 #
-# WHAT IS DELIBERATELY NOT MIRRORED: the row-count floor and ceiling
-# (`too_short` / `too_many_rows`). Those are the gate's own moving policy — the
-# floor IS `DSR_MIN_BARS`, imported from the rigor helpers server-side, and the
-# ceiling tracks the edge's payload budget (#1749). A CLI that hard-coded either
-# would refuse a series a newer server accepts, which is worse than spending one
-# request to be told. `--trials` keeps its local bound because it is an argument
-# THIS tool defines, not a property of the caller's file.
+# THE WINDOW **IS** MIRRORED (owner decision, #1803). 250 daily bars — one
+# trading year — is a published product rule, not the gate's shifting arithmetic:
+# a caller who sends 200 bars is going to be refused, and making them spend a
+# rate-limited round trip (5/minute) to be told a number that is printed in
+# `--help` is a worse answer than saying it here. It is checked FIRST, before any
+# per-row rule, because that is the order the server's own validators run in, so
+# one file gets one code whichever side catches it.
+#
+# WHAT IS STILL NOT MIRRORED: the ceiling (`too_many_rows`). It tracks the edge's
+# payload budget (#1749) rather than a product promise, so a CLI that hard-coded
+# it could refuse a series a newer server accepts. `--trials` keeps its local
+# bound because it is an argument THIS tool defines, not a property of the
+# caller's file. An EMPTY file keeps its own `empty_returns` error rather than
+# being reported as a short window: zero rows almost always means the wrong file
+# or the wrong columns, and that is the more useful thing to say.
 def _parse_returns_csv(source: str, *, as_json: bool) -> list[dict]:
     """Parse ``RETURNS_CSV`` into ``[{"date": ..., "daily_return": ...}, ...]``.
 
@@ -522,12 +547,13 @@ def _parse_returns_csv(source: str, *, as_json: bool) -> list[dict]:
     does not parse as a float — a blank line, a comment) is skipped rather than rejected,
     so both a ``date,daily_return`` header and a bare headerless file work.
 
-    Every row that IS a data row is then held to the endpoint's contract: strict
-    ``YYYY-MM-DD`` calendar dates, unique, ascending, with finite returns inside
-    ``[-1.0, 1.0]``. A violation exits ``USAGE`` with the server's own ``reason``
-    code (see the block above). Row numbers in the messages count DATA rows — the
-    index the server would see — not physical lines, so a skipped header does not
-    shift them.
+    The series is then held to the endpoint's contract, in the server's own order:
+    the row COUNT against the 250-bar evaluation window first, then per-row rules
+    (strict ``YYYY-MM-DD`` calendar dates, finite returns inside ``[-1.0, 1.0]``),
+    then uniqueness, then ordering. A violation exits ``USAGE`` with the server's
+    own ``reason`` code (see the block above). Row numbers in the messages count
+    DATA rows — the index the server would see — not physical lines, so a skipped
+    header does not shift them.
     """
     if source == "-":
         text = click.get_text_stream("stdin").read()
@@ -535,8 +561,11 @@ def _parse_returns_csv(source: str, *, as_json: bool) -> list[dict]:
         with open(source, newline="", encoding="utf-8") as handle:
             text = handle.read()
 
-    rows: list[dict] = []
-    dates: list[_Date] = []
+    # Collect the data rows first so the window can be checked before anything
+    # else, the way the server checks it (`_row_count_bounds` runs `mode="before"`,
+    # ahead of per-row parsing). A file that is both short AND malformed therefore
+    # gets the SAME code from both sides.
+    data_rows: list[tuple[int, str, str, float]] = []
     for row in csv.reader(io.StringIO(text)):
         if len(row) < 2:
             continue
@@ -548,10 +577,27 @@ def _parse_returns_csv(source: str, *, as_json: bool) -> list[dict]:
             value = float(raw_value)
         except ValueError:
             continue
+        data_rows.append((len(data_rows) + 1, date_str, raw_value, value))
 
+    # An empty file keeps its own, more diagnostic `empty_returns` answer (raised
+    # by the caller); 1..249 rows is the window refusal.
+    if data_rows and len(data_rows) < _MIN_RETURN_ROWS:
+        _reject_local_input(
+            as_json=as_json,
+            error="window_too_short_returns",
+            reason="window_too_short",
+            message=(
+                f"{source!r} has {len(data_rows)} data rows; the minimum evaluation window is "
+                f"{_MIN_RETURN_ROWS} daily bars (one trading year). A shorter series is refused, "
+                "not graded with a caveat"
+            ),
+        )
+
+    rows: list[dict] = []
+    dates: list[_Date] = []
+    for number, date_str, raw_value, value in data_rows:
         # Date before value, the order `ReturnPoint` declares its two fields in,
         # so a row that is wrong in both ways is named the same way on both sides.
-        number = len(rows) + 1
         if not _ISO_DATE_RE.match(date_str):
             _reject_local_input(
                 as_json=as_json,
@@ -745,18 +791,21 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     **The input contract is strict, and the server refuses rather than repairs it**
     (#1803). Dates must be ``YYYY-MM-DD``, unique, and in ascending order; returns must
     be finite simple decimals with ``|r| <= 1.0`` (+1.3% is ``0.013``, not ``1.3``); the
-    series must be at least 4 rows (the deflated Sharpe's own sample floor) and at most
-    2,600 (~10 years); ``--trials`` is 1..10000. A refusal comes back as a 422 whose
-    ``reason`` is one of ``invalid_date``, ``duplicate_date``, ``unsorted_dates``,
-    ``non_finite``, ``out_of_range``, ``too_short``, ``too_many_rows``,
+    series must be at least **250 rows — one trading year, the minimum evaluation
+    window** — and at most 2,600 (~10 years); ``--trials`` is 1..10000. Under the window
+    there is no verdict at all: the answer is a refusal naming what it got and what it
+    needs, never a pass or a fail with a warning attached. A refusal comes back as a 422
+    whose ``reason`` is one of ``invalid_date``, ``duplicate_date``, ``unsorted_dates``,
+    ``non_finite``, ``out_of_range``, ``window_too_short``, ``too_many_rows``,
     ``trials_out_of_range`` — printed here, and carried as ``reason`` in ``--json``.
     Note ``unsorted_dates`` in particular: the walk-forward split is positional, so a
     shuffled series could otherwise park its best 30% in the holdout, and the server
     will not silently sort it for you because that would grade a series you did not send.
 
-    A row this CLI can already see is wrong — a non-finite or out-of-range return, a date
-    that is not ``YYYY-MM-DD``, a duplicate, a row out of order — is refused HERE, before
-    the request is sent, carrying the same ``reason`` code the server would have used. The
+    A series this CLI can already see is wrong — shorter than the evaluation window, or
+    carrying a non-finite or out-of-range return, a date that is not ``YYYY-MM-DD``, a
+    duplicate, or a row out of order — is refused HERE, before the request is sent,
+    carrying the same ``reason`` code the server would have used. The
     server re-checks all of it and remains the authority; the local pass only spends fewer
     round trips and keeps a malformed file from ever reaching the JSON encoder.
 

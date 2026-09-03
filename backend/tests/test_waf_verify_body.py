@@ -479,15 +479,22 @@ def test_schema_rejects_one_row_over_the_cap_with_a_message_that_names_the_limit
 def test_length_bounds_are_declared_on_the_field_as_the_backstop():
     """The validator produces the message; min/max_length are the contract in the OpenAPI schema.
 
-    ``minItems`` moved 1 -> ``_MIN_RETURN_ROWS`` with #1803: the endpoint now
-    refuses a series shorter than the DSR's own sample floor instead of
-    answering 200 with every leg ``not_evaluable``, and the published schema
-    has to say so rather than advertise a length the server rejects.
+    ``minItems`` moved 1 -> ``_MIN_RETURN_ROWS`` with #1803: the endpoint
+    refuses a series shorter than the minimum evaluation window (250 daily
+    bars, one trading year — the owner's call) instead of answering 200 with a
+    verdict nothing evaluable stands behind, and the published schema has to
+    say so rather than advertise a length the server rejects.
     """
     schema = RigorVerifyRequest.model_json_schema()
     assert schema["properties"]["returns"]["maxItems"] == _MAX_RETURN_ROWS
     assert schema["properties"]["returns"]["minItems"] == _MIN_RETURN_ROWS
-    assert _MIN_RETURN_ROWS == DSR_MIN_BARS, "the floor is the gate's constant, never a second number"
+    assert _MIN_RETURN_ROWS == 250, "the window is one trading year"
+    assert _MIN_RETURN_ROWS >= DSR_MIN_BARS, (
+        "the product window may sit above the gate's own sample floor, never below it"
+    )
+    # The schema is the contract a generated client sees; the window has to be
+    # legible there, not only in the refusal message.
+    assert "window" in schema["properties"]["returns"]["description"].lower()
 
 
 # ── 5. …and returns a 422 over HTTP, not a truncation or a silent accept ──

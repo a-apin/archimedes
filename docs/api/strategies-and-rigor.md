@@ -270,7 +270,7 @@ request is refused unless *all* of the following hold. Every one of them is a
 | Dates are in **ascending** order | `unsorted_dates` |
 | Every `daily_return` is finite (JSON `NaN`/`Infinity` parse — and are refused) | `non_finite` |
 | `abs(daily_return) <= 1.0`, in simple-return units (+1.3% is `0.013`, not `1.3`) | `out_of_range` |
-| At least **4** rows — the deflated Sharpe's own sample floor (`_rigor_helpers.DSR_MIN_BARS`) | `too_short` |
+| At least **250** rows — one trading year, the minimum evaluation window | `window_too_short` |
 | At most **2,600** rows (~10 years of daily bars) | `too_many_rows` |
 | `1 <= trials <= 10000` | `trials_out_of_range` |
 
@@ -278,6 +278,29 @@ A refusal is a single object, not a validation list:
 `{"detail": {"error": "input_rejected", "reason": "unsorted_dates", "reasons":
 [...], "message": "...", "loc": ["body", "returns"]}}`. Branch on `reason`;
 `message` is the server's own sentence.
+
+**The minimum evaluation window is 250 daily bars — one trading year.** Under
+it there is no verdict: the endpoint answers with a typed refusal and nothing
+else. Not a verdict with a warning attached, either — `passes` is a field
+callers branch on (the CLI exits on it, CI gates on it), and a caveat in prose
+beside it is read by none of them. The refusal names both numbers as fields, so
+a client can decide "fetch more history" without parsing English (real
+response, 249 bars):
+
+```json
+{"detail": {"error": "input_rejected", "reason": "window_too_short",
+            "reasons": ["window_too_short"],
+            "message": "returns has 249 rows; the minimum evaluation window is 250 daily bars (one trading year). …",
+            "loc": ["body", "returns"],
+            "bars_received": 249, "bars_required": 250}}
+```
+
+250 is a **product** floor, deliberately above both arithmetic ones (the DSR is
+computable from 4 bars, the walk-forward split from ~70). What it buys: at 250
+bars both runnable legs actually run, so a series that is merely short can no
+longer come back as a DSR-only INCOMPLETE that a reader might round up to a
+pass. The CLI and the MCP tool mirror this floor and refuse locally, with the
+same `reason` code and no request spent.
 
 Ordering is the load-bearing one. The walk-forward split is **positional** —
 the first 70% of *rows* is the training set and the remainder is the holdout —
@@ -307,11 +330,14 @@ with the decisive reason, and `verdict_capped` is always `true`. `passes` is a
 **quorum over the two runnable legs** — true only when DSR *and* walk-forward
 OOS both ran *and* passed — so it is never a claim that the strategy cleared
 the passport gate, and it can never be earned by a series that was merely too
-short to fail. Below ~70 bars the OOS leg cannot run at all: that shows up as
-`legs_evaluated < legs_runnable`, which — **when no leg failed** — is an
-**incomplete evaluation**, not a pass and not a fail. A leg that did fail is
-still a fail; too few bars does not launder it. `--trials` is unverifiable
-self-attestation, so the DSR is
+short to fail. A leg can still fail to run on the NUMBERS — a zero-variance
+series has no Sharpe to compute — and that shows up as `legs_evaluated <
+legs_runnable`, which, **when no leg failed**, is an **incomplete evaluation**,
+not a pass and not a fail. (Shortness is no longer one of the ways to get
+there: the 250-bar window is above the ~70 the walk-forward split needs, so a
+too-short series is refused rather than partially graded.) A leg that did fail
+is still a fail; an unevaluable second leg does not launder it. `--trials` is
+unverifiable self-attestation, so the DSR is
 only as honest as the number the caller declared. "Archimedes Verified" is not
 obtainable here.
 
@@ -357,26 +383,46 @@ exit=2
 ```
 
 The CLI holds the CSV to the same rules before it builds the request, so a
-non-finite or out-of-range return, a date that is not `YYYY-MM-DD`, a duplicate
-or an out-of-order row is refused locally — same `reason` code, same exit `2`,
-no request spent. (A `nan` in the file used to reach the JSON encoder instead
-and abort with a traceback and exit `1`, which reads as a failing verdict.) It
-is a mirror, not a second opinion: the server re-checks everything, its sentence
-is the one printed when the request does go out, and the row-count bounds are
-left to it entirely.
+series under the 250-bar window, a non-finite or out-of-range return, a date
+that is not `YYYY-MM-DD`, a duplicate or an out-of-order row is refused locally
+— same `reason` code, same exit `2`, no request spent, no session needed to be
+told (real run, 249 bars):
 
-The same series over HTTP (its first four bars — four is the floor, and a body
-of two rows is refused with `too_short`):
-
-```bash
-curl -s -X POST https://archimedes-arc.com/api/rigor/verify \
-  -b /tmp/session.jar -H "Content-Type: application/json" \
-  -d '{"returns": [{"date": "2025-01-02", "daily_return": 0.01078}, {"date": "2025-01-03", "daily_return": -0.00055}, {"date": "2025-01-06", "daily_return": -0.02371}, {"date": "2025-01-07", "daily_return": -0.00077}], "trials": 12}'
+```console
+$ archimedes verify short.csv --json ; echo "exit=$?"
+{"ok": false, "command": "verify", "error": "window_too_short_returns", "message": "'short.csv' has 249 data rows; the minimum evaluation window is 250 daily bars (one trading year). A shorter series is refused, not graded with a caveat", "reason": "window_too_short"}
+exit=2
 ```
 
-Four bars is enough to be *accepted*, not enough to be graded: the OOS leg needs
-~70, so this body answers `legs_evaluated: 1` of 2 and the verdict is INCOMPLETE.
-Send the whole series — the 252-row file above — for the answer shown above it.
+(A `nan` in the file used to reach the JSON encoder instead and abort with a
+traceback and exit `1`, which reads as a failing verdict.) It is a mirror, not a
+second opinion: the server re-checks everything and its sentence is the one
+printed when the request does go out. The row **ceiling** is still left to the
+server entirely — it tracks the edge's payload budget rather than a published
+promise, so hard-coding it here could refuse a series a newer server accepts.
+
+The same series over HTTP. A year of bars is not a body you hand-write, so build
+it from the CSV — and note that a four-row body, the kind of illustrative
+snippet this section used to carry, is now refused with `window_too_short`:
+
+```bash
+python - <<'PY'
+import csv, json
+rows = []
+with open("returns.csv", newline="") as fh:
+    for date, value in csv.reader(fh):
+        try:
+            rows.append({"date": date, "daily_return": float(value)})
+        except ValueError:
+            continue  # the header row
+json.dump({"returns": rows, "trials": 12}, open("body.json", "w"))
+PY
+curl -s -X POST https://archimedes-arc.com/api/rigor/verify \
+  -b /tmp/session.jar -H "Content-Type: application/json" --data-binary @body.json
+```
+
+`archimedes verify returns.csv --trials 12` does exactly this, with the input
+contract checked before the request goes out.
 
 ## Rigor gate status semantics (honesty note)
 

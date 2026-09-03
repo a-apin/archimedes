@@ -94,7 +94,14 @@ _INPUT_REJECTED_REMEDY = {
         "Returns are simple decimals, not percentages: +1.3% is 0.013, not 1.3. |r| > 1.0 in a single "
         "day is refused because it silently inflates the Sharpe the verdict rests on."
     ),
-    "too_short": "Send a longer series — the walk-forward leg needs about 70 bars before it can run at all.",
+    "window_too_short": (
+        "Send at least 250 daily bars — one trading year, the minimum evaluation window. Under it the "
+        "endpoint returns a refusal instead of a verdict: a short series is not graded and flagged, it "
+        "is not graded at all, because a `passes` field with a caveat beside it gets reported as a pass."
+    ),
+    # The pre-window spelling, kept because ARCHIMEDES_API_URL can point at an
+    # older host: its `too_short` should still render a remedy, not the fallback.
+    "too_short": "Send a longer series — this host's floor predates the 250-bar evaluation window.",
     "too_many_rows": "Split the series or aggregate to a coarser frequency; the cap is ~10 years of daily bars.",
     "trials_out_of_range": "trials is 1..10000 — the number of variants you actually tried.",
 }

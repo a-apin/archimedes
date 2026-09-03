@@ -627,20 +627,31 @@ an account session or an `archim_` key. It is also the backend for the CLI's
 `archimedes verify RETURNS_CSV` and the `archimedes_rigor_verify` MCP tool. Full reference:
 [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md).
 
+The body carries **at least 250 daily bars — one trading year, the minimum evaluation
+window** — so build it from your series rather than by hand:
+
 ```bash
+python - <<'PY'
+import csv, json
+rows = []
+with open("returns.csv", newline="") as fh:          # two columns: date, daily_return
+    for date, value in csv.reader(fh):
+        try:
+            rows.append({"date": date, "daily_return": float(value)})
+        except ValueError:
+            continue                                  # the header row
+json.dump({"returns": rows, "trials": 12}, open("body.json", "w"))
+PY
 curl -s -X POST $BASE/api/rigor/verify \
-  -b /tmp/session.jar -H "Content-Type: application/json" \
-  -d '{"returns": [{"date": "2025-01-02", "daily_return": 0.01078},
-                   {"date": "2025-01-03", "daily_return": -0.00055},
-                   {"date": "2025-01-06", "daily_return": -0.02371},
-                   {"date": "2025-01-07", "daily_return": -0.00077}],
-       "trials": 12}'
+  -b /tmp/session.jar -H "Content-Type: application/json" --data-binary @body.json
 ```
 
-Four rows is the minimum the server accepts (`too_short` below it), and it is the minimum
-that runs *anything*: at this length only the DSR leg can run, so the answer is
-`legs_evaluated: 1` of 2 — an INCOMPLETE evaluation, not a pass. The OOS leg needs ~70 bars.
-Send a real series to get a real verdict; this body is here to show the shape.
+Each row is `{"date": "2025-01-02", "daily_return": 0.01078}` — a strict `YYYY-MM-DD` date
+and a simple decimal return, oldest first. **Under 250 bars there is no verdict**: the
+answer is a refusal, `422 {"detail": {"reason": "window_too_short", "bars_received": 249,
+"bars_required": 250, …}}`, and never a `passes` field with a warning beside it. Do not
+retry a short series expecting a caveated answer — fetch more history. At 250 both runnable
+legs can actually run, which is the point of the floor.
 
 **The input contract is strict and the server repairs nothing.** Build the body to these
 rules or it is refused — there is no coercion, no sorting, no deduplication and no
@@ -653,7 +664,7 @@ truncation anywhere in this path:
 | dates ascend | `unsorted_dates` |
 | every `daily_return` is finite (JSON `NaN`/`Infinity` are refused, not ignored) | `non_finite` |
 | `abs(daily_return) <= 1.0` in simple-return units — **+1.3% is `0.013`, not `1.3`** | `out_of_range` |
-| 4 rows minimum (the deflated Sharpe's own sample floor) | `too_short` |
+| 250 rows minimum — one trading year, the minimum evaluation window | `window_too_short` |
 | 2,600 rows maximum (~10 years of daily bars) | `too_many_rows` |
 | `1 <= trials <= 10000` | `trials_out_of_range` |
 
@@ -711,7 +722,7 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 | **422** | `{"detail": "strategy_id is required"}` | `POST /api/paper/deployments` with an empty or missing `strategy_id` | Send `{"strategy_id": "<id from step 8>"}`. |
 | **422** | `{"detail": {"reason": "no_strategy_spec", "message": "This strategy has no machine-readable spec to paper-trade."}}` | The strategy exists but carries no executable spec | Pick a different candidate from step 8. Not every generated row is paper-tradeable. |
 | **422** | `{"detail": {"reason": "invalid_strategy_spec", "message": "Stored spec fails validation: …"}}` | The stored spec failed DSL validation at deploy time | Not caller-fixable — pick another candidate and report the `strategy_id`. |
-| **422** | `{"detail": {"error": "input_rejected", "reason": "unsorted_dates", "message": "…"}}` | `POST /api/rigor/verify` refused the body — one of `invalid_date`, `duplicate_date`, `unsorted_dates`, `non_finite`, `out_of_range`, `too_short`, `too_many_rows`, `trials_out_of_range` | Fix the input and resend. The server does not sort, deduplicate or clip for you; see the section above for what each code means. |
+| **422** | `{"detail": {"error": "input_rejected", "reason": "unsorted_dates", "message": "…"}}` | `POST /api/rigor/verify` refused the body — one of `invalid_date`, `duplicate_date`, `unsorted_dates`, `non_finite`, `out_of_range`, `window_too_short`, `too_many_rows`, `trials_out_of_range` | Fix the input and resend. The server does not sort, deduplicate or clip for you; see the section above for what each code means. |
 | **429** | `{"detail": {"reason": "generation_daily_cap", "scope": "user", "cap": 10, "message": "…"}}` | Daily generation cap hit, per account (`scope: "user"`) or per IP (`scope: "ip"`) | Wait for the daily reset. Call step 5 **before** step 6 to see this coming; the caps it reports are the caps enforced. |
 | **429** | `{"detail": {"reason": "generation_queue_full", "message": "… No payment was taken. …"}}` | The generation wait queue is full | Retry in a few minutes. No payment was taken — admission control runs before the paywall. |
 | **429** | `{"detail": "Rate limit exceeded. Please slow down and try again later."}` + `X-RateLimit-*` | Per-route request-rate limit (`/api/generate/start` 5/min, `/api/paper/deployments` 10/min) | Back off. This is requests-per-minute, distinct from the daily cap above — same status, different `detail` shape, different fix. |

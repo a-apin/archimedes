@@ -66,9 +66,11 @@ real gate's four; ``legs_runnable`` is the two this transport can support.
 route that takes a caller's raw numbers and returns a verdict on them, so the
 series has to be a series before it is graded: strict ``YYYY-MM-DD`` dates,
 unique, strictly ascending, every return finite and within +/-100% for one
-bar, at least ``DSR_MIN_BARS`` rows (the passport gate's OWN floor, imported —
-not a second number invented here) and at most 2,600, with ``trials`` bounded
-at 10,000. Each refusal is a 422 whose ``detail.reason`` is a stable code from
+bar, at least ``_MIN_WINDOW_BARS`` (250, one trading year — the owner's
+minimum evaluation window) and at most 2,600 rows, with ``trials`` bounded
+at 10,000. Below the window the answer is a TYPED REFUSAL naming
+``bars_received`` and ``bars_required`` — never a verdict, and never a verdict
+with a warning attached. Each refusal is a 422 whose ``detail.reason`` is a stable code from
 ``INPUT_REJECTED_CODES``, surfaced by ``archimedes verify`` and the MCP tool. Nothing is sorted, deduplicated, clipped or coerced on the way in: a
 shuffled series is REFUSED rather than repaired, because the walk-forward
 split is positional and sorting it server-side would hand back a verdict on a
@@ -130,21 +132,28 @@ def _input_rejected_response(exc: RequestValidationError) -> JSONResponse:
     coded = [entry for entry in errors if entry.get("type") in INPUT_REJECTED_CODES]
     if coded:
         first = coded[0]
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": {
-                    "error": "input_rejected",
-                    "reason": first.get("type"),
-                    # Pydantic collects every field error in one pass; the first
-                    # is what to fix first, and the full set is here so a caller
-                    # is not made to fix them one round trip at a time.
-                    "reasons": sorted({entry.get("type") for entry in coded}),
-                    "message": first.get("msg", ""),
-                    "loc": [str(part) for part in first.get("loc", ())],
-                }
-            },
-        )
+        detail: dict[str, object] = {
+            "error": "input_rejected",
+            "reason": first.get("type"),
+            # Pydantic collects every field error in one pass; the first
+            # is what to fix first, and the full set is here so a caller
+            # is not made to fix them one round trip at a time.
+            "reasons": sorted({entry.get("type") for entry in coded}),
+            "message": first.get("msg", ""),
+            "loc": [str(part) for part in first.get("loc", ())],
+        }
+        # The window refusal carries its two numbers as FIELDS as well as in the
+        # sentence, so a caller can decide "fetch more history" without parsing
+        # English (owner decision, #1803). These are the only structured values
+        # this renderer emits, and both are integers this route computed — a row
+        # COUNT and a constant — never a value echoed back out of the payload,
+        # so rule 1 above (a NaN in `input` is unserialisable) still holds.
+        ctx = first.get("ctx") or {}
+        for key in ("bars_received", "bars_required"):
+            value = ctx.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                detail[key] = value
+        return JSONResponse(status_code=422, content={"detail": detail})
     return JSONResponse(
         status_code=422,
         content={
@@ -249,11 +258,16 @@ _LOOK_AHEAD_NOT_EVALUABLE_REASON = (
 #     column, not a daily return, and it silently inflates the Sharpe the
 #     whole verdict rests on. A genuinely levered series that exceeds it is
 #     refused loudly rather than graded wrongly.
-#   * `too_short`       — `DSR_MIN_BARS`, imported from `_rigor_helpers`: the
-#     passport gate's own floor, not a second number chosen here. Below it
-#     the DSR cannot run, and neither can OOS (it needs ~70 bars), so every
-#     runnable leg would be `not_evaluable` and the 200 would carry no
-#     evidence at all.
+#   * `window_too_short` — the MINIMUM EVALUATION WINDOW: 250 daily bars, one
+#     trading year (owner decision, #1803). Below it the endpoint returns a
+#     TYPED REFUSAL and nothing else — never a verdict, and never a verdict
+#     with a warning label on it, because a warning beside a `passes` field
+#     is read as a verdict by every consumer that branches on the field. The
+#     refusal names `bars_received` and `bars_required`, in the sentence and
+#     as fields. Note this floor is a PRODUCT rule, strictly above the gate's
+#     arithmetic floors (DSR needs 4 bars, the walk-forward split ~70): at
+#     250 both runnable legs can actually run, so a shortness-driven
+#     INCOMPLETE is no longer reachable through this route at all.
 #   * `too_many_rows`   — the #1749 payload cap, unchanged (see below).
 #   * `trials_out_of_range` — `trials` is self-attested and deflates the DSR.
 #     It had no upper bound, so `trials=10**18` drove the deflation to -inf
@@ -274,7 +288,7 @@ INPUT_REJECTED_CODES: tuple[str, ...] = (
     "unsorted_dates",
     "non_finite",
     "out_of_range",
-    "too_short",
+    "window_too_short",
     "too_many_rows",
     "trials_out_of_range",
 )
@@ -383,10 +397,35 @@ class ReturnPoint(BaseModel):
 # count received and the reason — never a truncation, never a silent accept.
 _MAX_RETURN_ROWS = 2600
 
-# The FLOOR is the passport gate's own DSR sample minimum, imported rather than
-# restated (#1803). Below it every runnable leg is structurally not_evaluable,
-# so a 200 would carry a verdict with no evidence under it.
-_MIN_RETURN_ROWS = DSR_MIN_BARS
+# ── The minimum evaluation window (owner decision, #1803) ───────────────
+#
+# 250 daily bars: one trading year (252 US sessions, less two days of headroom
+# for a holiday-short year or a series that starts mid-week). This is a PRODUCT
+# floor, not an arithmetic one, and it sits well above both arithmetic floors —
+# the DSR is computable from `DSR_MIN_BARS` (4) bars and the walk-forward split
+# from ~70. Those two say when the math CAN run; this says when the answer is
+# worth publishing as a verdict.
+#
+# Below it the endpoint returns a TYPED REFUSAL — 422, `reason:
+# window_too_short`, with `bars_received` and `bars_required` — and never a
+# verdict. Not a verdict with a warning attached, either: `passes` is a field
+# consumers branch on (the CLI exits on it, the MCP tool reports it, CI gates on
+# it), and a warning string beside it is read by exactly none of them. A route
+# that refuses `20240102` as a date rather than guessing must not hand back a
+# graded `passes` on 30 bars with a caveat in prose.
+#
+# What it buys, concretely: at 250 bars BOTH runnable legs can actually run, so
+# the 4..69-bar hole — accepted, DSR-only, `legs_evaluated: 1`, INCOMPLETE — is
+# no longer reachable through this route. (`legs_evaluated < legs_runnable` is
+# still possible on a DEGENERATE series, e.g. zero variance; that is a property
+# of the numbers, not of their count, and it stays honestly reported.)
+_MIN_WINDOW_BARS = 250
+
+# The window floor must never sit BELOW the gate's own DSR sample floor — that
+# would accept a series whose DSR leg cannot run for want of bars. Written as a
+# `max` rather than asserted, so the relationship holds by construction if
+# `DSR_MIN_BARS` is ever raised past 250 rather than being a comment that rots.
+_MIN_RETURN_ROWS = max(_MIN_WINDOW_BARS, DSR_MIN_BARS)
 
 
 class RigorVerifyRequest(BaseModel):
@@ -396,12 +435,27 @@ class RigorVerifyRequest(BaseModel):
     # explicit message and the machine-readable reason code, because pydantic's
     # own length errors ("List should have at most 2600 items after
     # validation") do not tell the caller what to do.
-    # (Note the happy alignment: pydantic's own `min_length` failure is typed
-    # `too_short`, the same code the validator raises, so if the validator is
-    # ever removed the backstop still answers with the RIGHT code — just a
-    # less useful sentence. Its `max_length` failure is typed `too_long`, which
-    # is NOT one of our codes, so that one degrades to the generic list shape.)
-    returns: list[ReturnPoint] = Field(min_length=_MIN_RETURN_ROWS, max_length=_MAX_RETURN_ROWS)
+    # (Pydantic types its own `min_length` failure `too_short` and its
+    # `max_length` failure `too_long`. NEITHER is one of this route's codes —
+    # `too_short` was, until the window floor replaced it with
+    # `window_too_short`, whose message and `bars_*` fields the generic error
+    # cannot produce. So if either validator below is removed the backstop
+    # still REFUSES the body, it just degrades to the generic list shape. The
+    # validators are the primary; the constraints are the fail-closed floor
+    # under them, and they are what lands in the published OpenAPI schema.)
+    returns: list[ReturnPoint] = Field(
+        min_length=_MIN_RETURN_ROWS,
+        max_length=_MAX_RETURN_ROWS,
+        description=(
+            f"The daily return series, oldest bar first. {_MIN_RETURN_ROWS}..{_MAX_RETURN_ROWS} rows: "
+            f"the floor is the minimum evaluation window — one trading year — below which the "
+            f"endpoint returns a typed refusal (422, reason `window_too_short`, with "
+            f"`bars_received`/`bars_required`) rather than a verdict; the ceiling is a payload cap "
+            f"(~10 years of daily bars). Dates must be strict YYYY-MM-DD, unique and strictly "
+            f"ascending — the walk-forward split is positional, so an out-of-order series is "
+            f"refused, never sorted."
+        ),
+    )
     trials: int = Field(
         default=1,
         ge=1,
@@ -416,7 +470,7 @@ class RigorVerifyRequest(BaseModel):
     @field_validator("returns", mode="before")
     @classmethod
     def _row_count_bounds(cls, value: object) -> object:
-        """Reject over-long (#1749) and under-length (#1803) series by row count.
+        """Reject over-long (#1749) and under-window (#1803) series by row count.
 
         Runs before any per-row parsing so the cheapest refusal happens first
         and the message names the limit, the count received and the reason.
@@ -432,14 +486,13 @@ class RigorVerifyRequest(BaseModel):
                 )
             if len(value) < _MIN_RETURN_ROWS:
                 raise PydanticCustomError(
-                    "too_short",
-                    "returns has {n} rows; the minimum is {limit}, the deflated Sharpe ratio's own "
-                    "sample floor (skew and kurtosis are not estimable below it). Shorter series "
-                    "are refused rather than answered with a verdict whose every leg is "
-                    "not_evaluable. Note the walk-forward OOS leg needs ~70 bars on top of that, "
-                    "so a series between {limit} and ~70 rows gets an honest INCOMPLETE, never a "
-                    "pass.",
-                    {"n": len(value), "limit": _MIN_RETURN_ROWS},
+                    "window_too_short",
+                    "returns has {bars_received} rows; the minimum evaluation window is "
+                    "{bars_required} daily bars (one trading year). A shorter series is REFUSED, "
+                    "not graded: this endpoint returns a verdict or a refusal, never a verdict "
+                    "with a warning on it. Send at least {bars_required} bars, or use a longer "
+                    "history — nothing is padded, extrapolated or annualized on your behalf.",
+                    {"bars_received": len(value), "bars_required": _MIN_RETURN_ROWS},
                 )
         return value
 
@@ -690,6 +743,29 @@ async def verify_rigor(
     body: RigorVerifyRequest,
     user: CurrentUser = Depends(require_current_user),  # noqa: ARG001 — auth gate only; verdict is per-request
 ):
+    """Grade a bare daily-return series against the two gate legs it can support.
+
+    The verdict is CAPPED: PBO needs a selection set and the look-ahead audit
+    needs source code, so both are always `not_evaluable` here and
+    `verdict_capped` is always `true`. `passes` is a quorum — true only when
+    DSR **and** walk-forward OOS both ran and both passed.
+
+    **Minimum evaluation window: 250 daily bars (one trading year).** A shorter
+    series is refused with **422** and
+    `{"detail": {"error": "input_rejected", "reason": "window_too_short",
+    "bars_received": N, "bars_required": 250, "message": "…"}}` — a typed
+    refusal, never a verdict and never a warning-labelled verdict. The rest of
+    the input contract is equally strict and repairs nothing: strict
+    `YYYY-MM-DD` dates, unique and strictly ascending (the walk-forward split is
+    positional, so an out-of-order series is refused rather than sorted), finite
+    returns with `abs(r) <= 1.0` in simple-return units, at most 2,600 rows, and
+    `1 <= trials <= 10000`. Every refusal carries a stable `detail.reason`:
+    `invalid_date`, `duplicate_date`, `unsorted_dates`, `non_finite`,
+    `out_of_range`, `window_too_short`, `too_many_rows`, `trials_out_of_range`.
+
+    `trials` is self-attested and unverifiable by construction; it deflates the
+    DSR, and the response echoes it with `self_attested: true`.
+    """
     daily_returns = [pt.daily_return for pt in body.returns]
     # The PARSED dates, re-serialised to canonical `YYYY-MM-DD` — never the
     # caller's raw text (#1803). The schema has already established that they

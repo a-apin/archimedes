@@ -13,8 +13,12 @@ Covers the honesty contract this endpoint exists to enforce:
   4. ``passes`` is true only when EVERY RUNNABLE leg (DSR + OOS consistency)
      actually ran and passed — a quorum, not "no evaluable check failed"
      (#1481). Neither the zero-evaluable case (vacuous truth) nor the
-     one-evaluable case (a 4-bar series where only DSR could run) may read as
-     passing;
+     one-evaluable case (a leg that could not run) may read as passing;
+  4a. the MINIMUM EVALUATION WINDOW is 250 daily bars — one trading year
+     (owner decision, #1803). 249 bars is a TYPED REFUSAL naming
+     ``bars_received`` and ``bars_required``, never a verdict and never a
+     warning-labelled verdict; 250 is graded, and at 250 both runnable legs
+     really do run;
   5. ``trials`` is self-attested, `>= 1` enforced at the schema (0 is a 422,
      not a silently-accepted degenerate deflation);
   6. the ADVERSARIAL demonstration the repo's guard-review rule requires: a
@@ -47,14 +51,29 @@ from fastapi import FastAPI
 
 _STRONG_SERIES = np.random.default_rng(7).normal(0.0015, 0.004, 300).tolist()  # DSR PASS, OOS PASS
 _WEAK_SERIES = np.random.default_rng(11).normal(-0.002, 0.01, 300).tolist()  # DSR FAIL, OOS FAIL
-_SHORT_SERIES = [0.01, -0.02, 0.015]  # T=3: below DSR_MIN_BARS -> refused at the schema (#1803)
-_DEGENERATE_SERIES = [0.0] * 30  # accepted (T>=4) but zero-variance -> both runnable legs not_evaluable
 
-# #1481: the ONE-evaluable window. DSR becomes evaluable at T>=4; the OOS split
+# The minimum evaluation window — one trading year (owner decision, #1803).
+# Read from the module rather than restated, so a change to the constant lands
+# in these tests instead of leaving them green against a number that moved.
+_WINDOW = rigor_verify_routes._MIN_RETURN_ROWS
+
+# Exactly at the floor, and exactly one bar under it. The pair is the whole
+# point: 250 is graded, 249 is REFUSED — not graded with a caveat.
+_AT_WINDOW_SERIES = np.random.default_rng(7).normal(0.0015, 0.004, _WINDOW).tolist()
+_ONE_BAR_SHORT_SERIES = _AT_WINDOW_SERIES[:-1]
+
+_SHORT_SERIES = [0.01, -0.02, 0.015]  # T=3: far under the window -> refused at the schema (#1803)
+# Long enough to be accepted, zero-variance so NEITHER runnable leg can run.
+# Post-window this is the only way to reach `legs_evaluated == 0` through the
+# route: shortness cannot produce it any more, degeneracy still can.
+_DEGENERATE_SERIES = [0.0] * _WINDOW
+
+# #1481: the ONE-evaluable shape. DSR becomes evaluable at T>=4; the OOS split
 # needs >=21 OOS bars, i.e. ~70 total at 70/30. So for 4 <= T < ~70 exactly one
-# runnable leg can run. At T=4 / seed 7 the DSR p-value is 0.6494 >= DSR_P_FLOOR
-# (0.50), so DSR PASSES while OOS is structurally not_evaluable — the precise
-# shape that used to return passes=true on one leg of four.
+# runnable leg could run, and the pre-quorum rule returned `passes: true` on it.
+# The 250-bar window now refuses that body outright (asserted below), so the
+# quorum itself is pinned on a full-length series with the OOS leg forced
+# not_evaluable — the invariant survives the transport that used to reach it.
 _PARTIAL_SERIES = np.random.default_rng(7).normal(0.0015, 0.004, 4).tolist()
 
 
@@ -176,12 +195,14 @@ async def test_zero_evaluable_legs_never_read_as_a_pass(app, monkeypatch):
     """No evaluable check at all — passes must be False by construction
     (vacuous truth is not honesty), not True because nothing failed.
 
-    #1803 changed how this state is reached, not that it must hold. A T=3
-    series is now refused at the schema (``too_short``), so the zero-evaluable
-    case is now a DEGENERATE one: 30 identical bars is long enough to be
-    accepted, zero-variance so the DSR cannot run, and too short for the
-    walk-forward split. Both runnable legs come back ``not_evaluable`` and the
-    verdict must still be False.
+    #1803 changed how this state is reached, not that it must hold. A short
+    series is refused at the schema (``window_too_short``), so the
+    zero-evaluable case is now a DEGENERATE one: a full trading year of
+    IDENTICAL bars is long enough to be accepted, and zero-variance, so neither
+    the DSR nor the walk-forward split can produce a number. Both runnable legs
+    come back ``not_evaluable`` and the verdict must still be False. This is
+    also the proof that the window did not make ``legs_evaluated == 0``
+    unreachable — it made SHORTNESS an unreachable cause of it.
     """
     _sign_in(monkeypatch)
     async with _client(app) as client:
@@ -322,30 +343,64 @@ async def test_empty_returns_rejected_422(app, monkeypatch):
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json={"returns": [], "trials": 1})
     assert resp.status_code == 422
+    # Zero bars is a window refusal like any other count under the floor —
+    # same code, and it still reports what it received.
+    assert _reason(resp) == "window_too_short"
+    assert resp.json()["detail"]["bars_received"] == 0
 
 
 # ── #1481: `passes` is a quorum over runnable legs ──────────────────────
 
 
 @pytest.mark.asyncio
-async def test_four_bar_series_with_passing_dsr_does_not_pass(app, monkeypatch):
-    """#1481 REGRESSION. One evaluable leg of four must not produce a pass.
+async def test_the_four_bar_one_evaluable_body_is_now_refused_outright(app, monkeypatch):
+    """#1481's exact body, after the window (#1803). Four bars is where DSR
+    becomes computable and the OOS split cannot run, so it is the shape that
+    used to return ``passes: true`` on one leg of four. The endpoint no longer
+    grades it at all — it is a `window_too_short` refusal, which is the
+    strongest form of "this must not read as a pass".
 
-    DSR is evaluable at 4 bars and passes here; the OOS split needs ~70 bars so
-    it cannot run; PBO and look-ahead never run on a bare series. The old rule
-    ("no evaluable check failed AND at least one was evaluable") returned
-    ``passes: true`` on this exact body, and ``archimedes verify`` exited 0 on
-    it. Reverting the quorum in ``rigor_verify_routes`` makes this test fail.
+    The quorum itself is still pinned, on a full-length series, by the test
+    below: this one proves the transport can no longer even present the case.
     """
     _sign_in(monkeypatch)
+    # The precondition, asserted rather than assumed: at 4 bars the DSR really
+    # is computable and the OOS split really is not — this IS the one-evaluable
+    # shape, it just can no longer be submitted.
+    assert compute_dsr_hac_and_iid(_PARTIAL_SERIES, 1, average_correlation=0.0)[0] is not None
+    assert compute_oos_sharpe(_PARTIAL_SERIES) is None
+
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json=_returns_body(_PARTIAL_SERIES))
+    assert resp.status_code == 422
+    assert _reason(resp) == "window_too_short"
+    assert resp.json()["detail"]["bars_received"] == 4
+
+
+@pytest.mark.asyncio
+async def test_a_leg_that_could_not_run_never_produces_a_pass(app, monkeypatch):
+    """#1481 REGRESSION, kept reachable after the window closed its old door.
+
+    A full-length series clearing DSR, with the walk-forward leg forced
+    ``not_evaluable`` (a degenerate holdout does this for real — see the
+    zero-variance case above), must still answer ``passes: false``: one leg of
+    four is not a quorum. The old rule ("no evaluable check failed AND at least
+    one was evaluable") returned ``passes: true`` on exactly this leg pattern.
+    Reverting the quorum in ``rigor_verify_routes`` makes this test fail.
+    """
+    _sign_in(monkeypatch)
+    monkeypatch.setattr(
+        rigor_verify_routes,
+        "_evaluate_oos_consistency",
+        lambda *a, **k: rigor_verify_routes.OosConsistencyResult(
+            status="not_evaluable", reason="forced: the walk-forward split could not run"
+        ),
+    )
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_STRONG_SERIES))
     assert resp.status_code == 200
     body = resp.json()
 
-    # The precondition that makes this the one-evaluable case, asserted rather
-    # than assumed — if DSR stopped passing here the test would still be green
-    # for the wrong reason.
     assert body["dsr"]["status"] == "pass"
     assert body["oos_consistency"]["status"] == "not_evaluable"
     assert body["pbo"]["status"] == "not_evaluable"
@@ -418,23 +473,73 @@ def _dated(series: list[float], start: datetime | None = None) -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_reason_code_too_short(app, monkeypatch):
-    """Below the DSR's own sample floor there is no evidence to return."""
+async def test_reason_code_window_too_short(app, monkeypatch):
+    """Under one trading year there is no verdict — only a typed refusal."""
     _sign_in(monkeypatch)
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json=_returns_body(_SHORT_SERIES))
     assert resp.status_code == 422
-    assert _reason(resp) == "too_short"
-    assert str(rigor_verify_routes._MIN_RETURN_ROWS) in json.dumps(resp.json())
+    assert _reason(resp) == "window_too_short"
+    assert str(_WINDOW) in json.dumps(resp.json())
 
 
 @pytest.mark.asyncio
-async def test_the_floor_is_the_passport_gates_own_constant_not_a_new_number():
-    """`_MIN_RETURN_ROWS` must BE `_rigor_helpers.DSR_MIN_BARS`, not a copy of
-    its current value. A second number here is how two floors drift apart."""
-    assert rigor_verify_routes._MIN_RETURN_ROWS is DSR_MIN_BARS
+async def test_one_bar_under_the_window_is_refused_and_names_both_counts(app, monkeypatch):
+    """THE owner decision (#1803), at its boundary. 249 bars is a refusal that
+    states what it got and what it needs — as FIELDS, not only as prose, so a
+    caller can decide "fetch more history" without parsing English.
+
+    The refusal is also all there is: no `passes`, no leg statuses, nothing a
+    consumer branching on `passes` could mistake for a graded answer.
+    """
+    _sign_in(monkeypatch)
+    assert len(_ONE_BAR_SHORT_SERIES) == _WINDOW - 1
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_ONE_BAR_SHORT_SERIES))
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["reason"] == "window_too_short"
+    assert detail["bars_received"] == _WINDOW - 1
+    assert detail["bars_required"] == _WINDOW
+    assert str(_WINDOW - 1) in detail["message"] and str(_WINDOW) in detail["message"]
+    assert "passes" not in resp.json(), "a refusal must not carry a verdict, warning-labelled or otherwise"
+
+
+@pytest.mark.asyncio
+async def test_exactly_the_window_is_accepted_and_both_runnable_legs_actually_run(app, monkeypatch):
+    """The floor is a floor, not a wall — and it is set where the window BUYS
+    something: at exactly 250 bars both runnable legs run, so the graded answer
+    is complete (`legs_evaluated == legs_runnable`). The 4..69-bar hole that
+    produced a DSR-only INCOMPLETE is unreachable through this route now."""
+    _sign_in(monkeypatch)
+    async with _client(app) as client:
+        resp = await client.post("/api/rigor/verify", json=_returns_body(_AT_WINDOW_SERIES))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["n_bars"] == _WINDOW
+    assert body["dsr"]["status"] in {"pass", "fail"}
+    assert body["oos_consistency"]["status"] in {"pass", "fail"}
+    assert body["legs_evaluated"] == body["legs_runnable"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_one_trading_year_and_never_below_the_gates_own_floor():
+    """The floor is now a PRODUCT number (250 = one trading year, owner call),
+    deliberately above the gate's arithmetic floors — but it may never fall
+    BELOW `DSR_MIN_BARS`, or the route would accept a series whose DSR leg
+    cannot run for want of bars. `max()` in the module makes that structural;
+    this pins the value and the relationship."""
+    assert rigor_verify_routes._MIN_WINDOW_BARS == 250
+    assert rigor_verify_routes._MIN_RETURN_ROWS == 250
+    assert rigor_verify_routes._MIN_RETURN_ROWS >= DSR_MIN_BARS
+    # The window really is above BOTH arithmetic floors: the DSR is computable
+    # here (it is not, one bar under `DSR_MIN_BARS`) and so is the OOS split.
     assert compute_dsr_hac_and_iid([0.01, -0.02, 0.015], 1, average_correlation=0.0)[0] is None, (
-        "precondition: the DSR really is un-computable one row below the floor"
+        "precondition: the DSR really is un-computable below the gate's own sample floor"
+    )
+    assert compute_dsr_hac_and_iid(_AT_WINDOW_SERIES, 1, average_correlation=0.0)[0] is not None
+    assert compute_oos_sharpe(_AT_WINDOW_SERIES) is not None, (
+        "the window must be long enough for the walk-forward split to run, or it buys nothing"
     )
 
 
@@ -469,7 +574,7 @@ async def test_reason_code_invalid_date(app, monkeypatch, bad):
     unpadded month are all things pydantic or `date.fromisoformat` would
     otherwise accept or guess at; `2024-02-30` is well-formed and not real."""
     _sign_in(monkeypatch)
-    rows = _dated(_STRONG_SERIES[:80])
+    rows = _dated(_STRONG_SERIES)
     rows[5]["date"] = bad
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json={"returns": rows, "trials": 1})
@@ -480,7 +585,7 @@ async def test_reason_code_invalid_date(app, monkeypatch, bad):
 @pytest.mark.asyncio
 async def test_reason_code_duplicate_date(app, monkeypatch):
     _sign_in(monkeypatch)
-    rows = _dated(_STRONG_SERIES[:80])
+    rows = _dated(_STRONG_SERIES)
     rows[40]["date"] = rows[39]["date"]  # two bars, one calendar day
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json={"returns": rows, "trials": 1})
@@ -492,7 +597,7 @@ async def test_reason_code_duplicate_date(app, monkeypatch):
 @pytest.mark.asyncio
 async def test_reason_code_unsorted_dates(app, monkeypatch):
     _sign_in(monkeypatch)
-    rows = _dated(_STRONG_SERIES[:80])
+    rows = _dated(_STRONG_SERIES)
     rows[10], rows[11] = rows[11], rows[10]  # one adjacent swap is enough
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json={"returns": rows, "trials": 1})
@@ -506,7 +611,7 @@ async def test_reason_code_non_finite(app, monkeypatch, poison):
     """JSON's `NaN`/`Infinity` literals parse into Python floats — `json.dumps`
     emits them and `json.loads` accepts them, so this reaches the schema."""
     _sign_in(monkeypatch)
-    rows = _dated(_STRONG_SERIES[:80])
+    rows = _dated(_STRONG_SERIES)
     rows[3]["daily_return"] = poison
     async with _client(app) as client:
         resp = await client.post(
@@ -525,7 +630,7 @@ async def test_reason_code_out_of_range(app, monkeypatch, bad):
     percentages (5.0 meaning +5%) or annualized figures inflates the Sharpe the
     whole verdict rests on, so it is refused rather than graded."""
     _sign_in(monkeypatch)
-    rows = _dated(_STRONG_SERIES[:80])
+    rows = _dated(_STRONG_SERIES)
     rows[7]["daily_return"] = bad
     async with _client(app) as client:
         resp = await client.post("/api/rigor/verify", json={"returns": rows, "trials": 1})
@@ -538,7 +643,7 @@ async def test_exactly_plus_and_minus_one_are_still_accepted(app, monkeypatch):
     """The boundary is inclusive: -1.0 is a total loss and +1.0 is a doubling,
     both of which really happen. The guard rejects >100%, not 100%."""
     _sign_in(monkeypatch)
-    rows = _dated(_STRONG_SERIES[:80])
+    rows = _dated(_STRONG_SERIES)
     rows[7]["daily_return"] = 1.0
     rows[8]["daily_return"] = -1.0
     async with _client(app) as client:

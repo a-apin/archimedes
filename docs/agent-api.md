@@ -239,19 +239,21 @@ strategy-passport verdict uses. A bare series can only support two of the four c
 
 `passes` is `true` **iff every RUNNABLE leg — DSR *and* walk-forward OOS — actually ran
 and passed**: a quorum, not "no evaluable check failed" (#1481). Neither an
-all-`not_evaluable` request nor a partially-evaluated one (a short series where DSR ran
-and the OOS split could not) may report `passes: true`; the response carries
+all-`not_evaluable` request nor a partially-evaluated one (a degenerate series where DSR
+ran and the OOS split could not) may report `passes: true`; the response carries
 `legs_evaluated` / `legs_runnable` / `legs_total` / `verdict_capped` so the scalar is
 qualifiable without re-deriving the leg statuses. `self_attested: true` is returned to
 keep the caller's declared `trials` count visible as the unverified input it is.
 
 **The request body is validated strictly and nothing is repaired (#1803).** Dates must be
 strict `YYYY-MM-DD`, unique and ascending; returns must be finite with `abs(r) <= 1.0`
-(simple decimals — +1.3% is `0.013`); the series is 4..2,600 rows and `trials` is
-1..10,000. A violation is a 422 carrying `{"detail": {"error": "input_rejected", "reason":
-"<code>", "message": "…"}}` where `<code>` is one of `invalid_date`, `duplicate_date`,
-`unsorted_dates`, `non_finite`, `out_of_range`, `too_short`, `too_many_rows`,
-`trials_out_of_range`. The walk-forward split is positional, so an out-of-order series is
+(simple decimals — +1.3% is `0.013`); the series is 250..2,600 rows and `trials` is
+1..10,000. **250 daily bars — one trading year — is the minimum evaluation window**: under
+it the answer is a typed refusal naming `bars_received` and `bars_required`, never a
+verdict and never a verdict with a warning attached. A violation is a 422 carrying
+`{"detail": {"error": "input_rejected", "reason": "<code>", "message": "…"}}` where
+`<code>` is one of `invalid_date`, `duplicate_date`, `unsorted_dates`, `non_finite`,
+`out_of_range`, `window_too_short`, `too_many_rows`, `trials_out_of_range`. The walk-forward split is positional, so an out-of-order series is
 REFUSED rather than sorted — sorting it would return a verdict on a series you did not
 send. Full table:
 [`api/strategies-and-rigor.md`](api/strategies-and-rigor.md). The response also carries
