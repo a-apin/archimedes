@@ -21,7 +21,7 @@ and then generalises. Today: **#1768 applied**, **#1776 pending**.
 **Live as of 2026-09-03.** Verified read-only, no apply involved:
 
 ```bash
-aws cloudfront get-distribution-config --id E34KG22GWPO075 \
+aws cloudfront get-distribution-config --id "$(cd infra && terraform output -raw cloudfront_distribution_id)" \
   --query 'DistributionConfig.CacheBehaviors.Items[].PathPattern' --output text
 # /health  /health/*  /api/*  /events/*  /assets/*  /static/*  /app/*  /app  /sign-in*  *.js  *.css
 ```
@@ -275,7 +275,7 @@ on the SETS, not the diff hunks:
 Get the "before" list without touching anything:
 
 ```bash
-aws cloudfront get-distribution-config --id E34KG22GWPO075 \
+aws cloudfront get-distribution-config --id "$(cd infra && terraform output -raw cloudfront_distribution_id)" \
   --query 'DistributionConfig.CacheBehaviors.Items[].PathPattern' --output text
 ```
 
