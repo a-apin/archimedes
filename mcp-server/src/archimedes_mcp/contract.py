@@ -179,10 +179,24 @@ TOOLS: tuple[dict, ...] = (
         "cost": COST_FREE,
         "routes": ("GET /api/strategies/passports/{strategy_id}",),
         "description": (
-            "Read one strategy passport — the unified record carrying the gate result, the "
-            "papers it was built from, and its provenance. Free and public. Unpublished "
-            "passports that are not yours answer 404, never 403 (a 403 would confirm the "
-            "id exists). Owner wallet addresses are redacted for anyone but the owner."
+            "Read one strategy passport — the RIGOR VERDICT OF RECORD, the papers the "
+            "strategy was built from, and its provenance. Free and public. The verdict is "
+            "graded once, at backtest time, and stored: this route serves it verbatim and "
+            "never recomputes it, so for a GENERATED strategy it agrees with "
+            "archimedes_strategy for the same id by construction (for a curated strategy it "
+            "does not yet — see below). rigor_gate_status is the same four-state that tool "
+            "documents "
+            "('pass'|'fail'|'pending'|'degenerate'), and passes_rigor_gate is true only for "
+            "'pass'. Three provenance fields say WHICH grade you are reading: graded_at "
+            "(null means never graded, which agrees with 'pending'), gate_version (the gate "
+            "that produced it — the literal 'legacy-derived' means the verdict was inferred "
+            "from older columns by a migration, not produced by a gate run, so treat it as "
+            "un-regraded), and cohort_n (1 = graded against itself alone). Curated "
+            "strategies currently answer 'pending' here: their stored boolean is a "
+            "fail-closed placeholder, not a gate result — read archimedes_strategy for a "
+            "curated strategy's live verdict. Unpublished passports that are not yours "
+            "answer 404, never 403 (a 403 would confirm the id exists). Owner wallet "
+            "addresses are redacted for anyone but the owner."
         ),
     },
     {

@@ -46,4 +46,12 @@ Two earlier refactors collide here, so precision matters:
 
 ## Ratification
 
-Decided; legacy retired (Phase 7, #131) and the dual-signal path live (#662). The deprecated modules remain in `services/_deprecated/` for a release cycle and can be hard-deleted once a full test pass confirms no survivors. This is the regime layer's *execution* surface; regime-aware *rigor* (per-regime Sharpe robustness) is surfaced separately in the rigor gate.
+Decided; legacy retired (Phase 7, #131) and the dual-signal path live (#662). The deprecated modules were kept in `services/_deprecated/` for a release cycle and hard-deleted once a full test pass confirmed no survivors.
+
+> **Note 2026-09-01 (audit P1-1):** the release cycle is over. `kelly_portfolio.py` and the
+> legacy `portfolio_constructor.py` were removed earlier; the last thing left in the folder
+> was an empty `__init__.py`, and that package shell is now deleted too. There is no
+> `services/_deprecated/` in the tree any more — the paragraph above is the historical record
+> of how it got there, not a description of the current layout.
+
+This is the regime layer's *execution* surface; regime-aware *rigor* (per-regime Sharpe robustness) is surfaced separately in the rigor gate.

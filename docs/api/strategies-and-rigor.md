@@ -8,9 +8,16 @@ gate that grades every strategy on DSR (Deflated Sharpe Ratio), PBO
 before it is allowed to be promoted from `candidate` to `validated` or bound
 into a vault's `strategy_ids`. The badge (`passes_rigor_gate` /
 `rigor_gate_status`) and the numeric rigor fields served by `GET
-/api/strategies/` and `GET /api/strategies/{id}` come from the **same live
-gate run** `GET /api/selection-bias/gate` uses — none of these surfaces can
-disagree with another for the same strategy at the same strictness level.
+/api/strategies/` and `GET /api/strategies/{id}` are the **stored verdict of
+record** — graded once at backtest time and persisted on the strategy's
+passport row with its provenance (`gate_version`, `graded_at`, `cohort_n`;
+see the ADR `rigor-verdict-of-record`). `GET /api/selection-bias/gate/{id}`
+is different: it **recomputes** the gate live on every call (it backs the
+Deploy ladder and the vault deploy gate). The two can therefore differ in
+vintage for the same strategy until the row is explicitly re-graded; when
+they do, the passport row is the verdict of record and the live route is a
+fresh opinion. Curated strategies currently serve `pending` on the stored
+path until they are graded (PR-B of the same program).
 
 **Auth model.** Reads are anonymous by default — the library, passports,
 stress testing, and every `/api/selection-bias/*` route are public.
@@ -44,7 +51,14 @@ private-until-published (visible when published, or owned by the caller). |
 **Auth**: account-session
 
 Request: query `limit: int(1..200)=50`.
-Response: `{strategies: [StrategyRecord.to_dict() + can_publish: bool + generation_cost], total: int, degraded: bool=false, degraded_reason: str=""}`.
+Response: `{strategies: [StrategyRecord.to_dict() + can_publish: bool + generation_cost + the rigor verdict of record], total: int, degraded: bool=false, degraded_reason: str=""}`.
+Each row carries the STORED verdict, overlaid from that strategy's `strategy_passports` row in one `IN` query per page:
+`passes_rigor_gate: bool|null`, `rigor_gate_status: "pass"|"fail"|"pending"|"degenerate"`, `graded_at: str|null`, and the
+four rigor numbers the same grading event produced (`deflated_sharpe_ratio`, `dsr_p_value`, `pbo_score`,
+`out_of_sample_sharpe`). A strategy with no passport row has never been graded: `passes_rigor_gate: null`,
+`rigor_gate_status: "pending"`, all four numbers `null` — never `false`, which would claim a gate ran and the strategy
+lost. `rigor_verdict` on the same row is the GENERATION-TIME fusion verdict (the debate record) and is **not** a rigor
+grade; likewise `status`, which is written from it. See [`docs/adr/rigor-verdict-of-record.md`](../adr/rigor-verdict-of-record.md).
 `degraded` is `true` when the strategy store raised (`degraded_reason: "strategy store unavailable"`) — the same
 honest-degradation contract `GET /api/strategies/` carries (#1356 review round 2): a swallowed DB failure used to
 render as a measured `total: 0`, indistinguishable on the wire from a genuinely-empty store.
@@ -98,6 +112,7 @@ private-until-published exactly as `/generated`. | **Auth**: anonymous
 
 Request: query `status: str|null, regime_tag: str|null, limit: int(1..200)=50`.
 Response: `{passports: [dict] (owner_wallet redacted unless caller owns it), total: int, source: "strategy_passports"}`.
+Each dict has the same shape as the single-passport read below, verdict and provenance included.
 Errors: none explicit.
 
 ```bash
@@ -110,7 +125,15 @@ unpublished non-example passports 404 for non-owners, never 403. | **Auth**:
 anonymous
 
 Request: path `strategy_id`.
-Response: dict — passport record's `to_dict()` with `owner_wallet` redacted unless caller owns it.
+Response: dict — passport record's `to_dict()` with `owner_wallet` redacted unless caller owns it. A **pure read** of the
+stored rigor verdict, never a recompute: `passes_rigor_gate: bool`, `rigor_gate_status: "pass"|"fail"|"pending"|"degenerate"`,
+plus its provenance — `graded_at: str|null` (ISO-8601; `null` ⟺ never graded), `gate_version: str|null` (which gate
+produced it; the literal `"legacy-derived"` marks a verdict INFERRED by the verdict-of-record migration from pre-existing
+columns rather than produced by a gate run), `cohort_n: int|null` (cohort size behind the grade's cohort-scoped inputs;
+`1` = graded self-contained). Curated passports currently serve `"pending"` — every curated row's stored
+`passes_rigor_gate` is the #821 fail-closed placeholder, not a gate result, and grading them is tracked separately; the
+curated badge on `GET /api/strategies/{id}` is unaffected and still comes from the live gate.
+See [`docs/adr/rigor-verdict-of-record.md`](../adr/rigor-verdict-of-record.md).
 Errors: 404 `Passport not found` (missing, or not visible to caller).
 
 ```bash
