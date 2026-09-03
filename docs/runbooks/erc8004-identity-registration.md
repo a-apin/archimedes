@@ -77,7 +77,28 @@ reports an agentId, **we are already registered** — skip to step 4. Re-registe
 second identity that cannot be un-minted and permanently splits the reputation surface the
 standard exists to accumulate.
 
+The `scan:` line above the verdict says which blocks were searched. There is no
+owner→agentId lookup on this registry, so discovery is an `eth_getLogs` scan for the mint,
+and Arc's public RPC refuses a range wider than 10,000 blocks:
+
+```
+{"code":-32614,"message":"eth_getLogs is limited to a 10,000 range"}
+```
+
+`--from-block` therefore defaults to `eth_blockNumber - 9,000`, resolved once per run and
+used by both `--verify` and `--execute`. If the wallet's mint is older than that window,
+pass `--from-block <block>` explicitly — or, better, `--verify --agent-id <ID>`, which
+reads `ownerOf` directly and scans nothing.
+
 ## 3. Register (owner only)
+
+A note on retries before you start: the idempotency key for this call is deterministic
+(uuid5 over wallet + contract + function + args), so a resubmission of the *same* call is
+recognised by Circle and answered `HTTP 200` with the existing transaction rather than
+`201` with a new one. That is a success, not a failure. If Circle reports the transaction
+`STUCK`, the signer now fails immediately naming the Circle transaction id — accelerate or
+cancel it in the Circle Console before doing anything else, because a stuck transaction
+blocks every later transaction from the same wallet, the oracle's price pushes included.
 
 Credentials are Circle's — the same three the oracle already runs on. They go in the
 environment, never on the command line, and never into this repo.
@@ -97,7 +118,11 @@ transaction), submits `register(string)` through
 and confirm ownership. Only `action: registered` with a non-null `agentId` is a success.
 
 - `action: submitted` means the transaction went out but the confirming read did not
-  complete. Do not publish anything. Re-run step 2 once the block has settled.
+  complete. Do not publish anything, and **do not re-run `--execute`** — the mint may well
+  have landed. The script prints the recovery: pull the receipt for the transaction hash it
+  gives you and read the `Transfer(0x0, <owner>, tokenId)` log, whose `topics[3]` is the
+  agentId. Then `--verify --agent-id <ID>` and `--print-followup <ID>`. `--allow-second-identity`
+  is never the answer here.
 - `action: refused` means nothing was sent; the `detail` line says why.
 
 Independent confirmation with `cast`:
