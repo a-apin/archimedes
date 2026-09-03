@@ -22,11 +22,42 @@ import {
 } from '../rigorGateStatus.js'
 import { statusTag, statusLabel, statusTitle } from '../libraryStatus.js'
 import { signClass } from '../signClass.js'
+import { metricsSourceNote } from '../metricsSource.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
+import {
+  barName,
+  checkLine,
+  failedChecks,
+  isUnattributed,
+  notComputedChecks,
+  passedChecks,
+  recordedReason,
+  rejectedSectionSummary,
+  showsRejectionReasons,
+} from '../rejectionReasons.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
 function DeployabilityChip({ deploy, level, gatePending }) {
+  // Vaults are out of the MVP cut (#1266) — and EVERY branch below answers a
+  // VAULT question. "deployable" / "needs level N" / "blocked" all grade a
+  // strategy against `/api/selection-bias/gate`, the same verdict the vault
+  // deploy gate reads (`api/vaults_routes.py::_deployable_levels`). With the
+  // roadmap flag off there is no vault to deploy into, so every one of those
+  // chips grades a strategy against a capability the shipped build does not
+  // have. On the Examples tab that is what put a red `blocked` pill on
+  // hand-curated reference implementations.
+  //
+  // Suppressing only the red branch was the other option, and it is worse: it
+  // would leave the green "deployable" claim standing on a surface where
+  // nothing can be deployed — the flattering half of a verdict kept and the
+  // rest hidden. The whole chip belongs to the flag, and comes back intact
+  // (blocked branch included) under VITE_ROADMAP_SURFACES=true.
+  //
+  // The gate FETCH is gated on the same flag in load() below: a hidden
+  // annotation that still costs the page its slowest request is the #1324
+  // defect, not a fix.
+  if (!ROADMAP_SURFACES_ENABLED) return null
   // #1645: the Library now renders rows as soon as the strategy list resolves,
   // without waiting for the (much slower) /api/selection-bias/gate call. During
   // that window there is no entry for this row yet — and a SILENTLY ABSENT chip
@@ -80,6 +111,20 @@ function DeployabilityChip({ deploy, level, gatePending }) {
 }
 
 const STATUS_ORDER = ['live', 'validated', 'candidate', 'retired']
+
+// A one-word provenance mark that rides directly under a row's headline
+// number. `metricsSourceNote` allow-lists only the sources that are NOT a run
+// made here (see ../metricsSource.js), so a real persisted backtest renders
+// unmarked and an unknown/absent value makes no claim in either direction.
+function MetricsSourceTag({ source }) {
+  const note = metricsSourceNote(source)
+  if (!note) return null
+  return (
+    <div style={{ fontSize: '0.68rem', color: 'var(--text-4)' }} title={note.title}>
+      {note.label}
+    </div>
+  )
+}
 
 function downloadStrategy(strategy, format) {
   let content, filename, type
@@ -316,6 +361,11 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
               (DSR conf=<MetricValue metric="dsr_p_value" value={s.dsr_p_value} row={s} surface="Library table" />)
             </div>
           )}
+          {/* Sharpe is the representative field of the whole display block —
+              the backend derives `display_metrics_source` from it because one
+              link of the fallback chain populates all of them — so one mark in
+              this cell describes the row's numbers, not four repeats. */}
+          <MetricsSourceTag source={s.display_metrics_source} />
         </td>
         <td className={`mono ${signClass(s.cagr)}`} style={{ textAlign: 'right' }}>
           <MetricValue metric="cagr" value={s.cagr} row={s} surface="Library table" />
@@ -368,11 +418,85 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   )
 }
 
+// Why THIS strategy was rejected — read off the row, never guessed.
+//
+// The rejected card showed "—" for Sharpe / CAGR / Max DD (a pre-backtest
+// hypothesis has none) and "Gen tokens", and nothing else: the one fact a
+// reader wanted — which rigor check said no — was the one fact absent, while
+// the section above it asserted a population-wide reason nobody had measured.
+//
+// Everything below comes from `s.rigor_reasons`, the additive per-row field
+// GET /api/strategies/generated serves, built from that strategy's OWN stored
+// rigor_verdict against the gate's own thresholds (see
+// backend/archimedes/services/rigor_reasons.py). Failed and not-computed are
+// kept in SEPARATE lines on purpose: a check that ran and found a problem and a
+// check that never ran are different claims, and only one of them may be
+// printed as a failure. With no field on the row — an old payload, a degraded
+// read, a curated row that never had one — the whole block renders nothing: no
+// heading, no bar name, no prose. Scoped to rows the gate turned down
+// (showsRejectionReasons), so a row still awaiting a verdict is never handed
+// one it has not received.
+function RejectionReasons({ s }) {
+  if (!showsRejectionReasons(s)) return null
+  const reason = recordedReason(s)
+  const failed = failedChecks(s)
+  const notComputed = notComputedChecks(s)
+  const passed = passedChecks(s)
+  const bar = barName(s)
+  return (
+    <div className="caption" style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 3, fontSize: '0.78rem' }}>
+      {reason && (
+        <div style={{ color: 'var(--text-3)' }}>
+          <span style={{ color: 'var(--text-4)' }}>Reason on record:</span>{' '}
+          <strong>{reason}</strong>
+        </div>
+      )}
+      {failed.length > 0 && (
+        <div style={{ color: 'var(--text-3)' }}>
+          {/* Colour on a className, not an inline `color:` — the literal
+              var(--positive)/var(--negative) here encodes a boolean check
+              verdict, not the sign of a number, exactly like the rigor-gate
+              check icon in StrategyRow. ui/test/sign-class.test.js polices the
+              inline form so a signed cell can never quietly hard-code green. */}
+          <span className="text-[var(--negative)]" style={{ fontWeight: 700 }}>Failed:</span>{' '}
+          {failed.map(checkLine).join(' · ')}
+        </div>
+      )}
+      {notComputed.length > 0 && (
+        <div style={{ color: 'var(--text-4)' }}>
+          <span style={{ fontWeight: 700 }}>Not computed:</span>{' '}
+          {notComputed.map(checkLine).join(' · ')} — a check with nothing on record does not count as passed.
+        </div>
+      )}
+      {passed.length > 0 && (
+        <div style={{ color: 'var(--text-3)' }}>
+          <span className="text-[var(--positive)]" style={{ fontWeight: 700 }}>Passed:</span>{' '}
+          {passed.map(checkLine).join(' · ')}
+        </div>
+      )}
+      {isUnattributed(s) && (
+        <div style={{ color: 'var(--text-4)' }}>
+          This strategy did not pass, but no check on record falls below the bar
+          quoted here — the stored verdict does not attribute the rejection.
+          Open the passport for the full record.
+        </div>
+      )}
+      {bar && (failed.length > 0 || passed.length > 0) && (
+        <div style={{ color: 'var(--text-4)' }}>Thresholds are the {bar} bar.</div>
+      )}
+    </div>
+  )
+}
+
 // Shared "expanded" detail content — methodology / source paper(s) / rigor
 // metrics / export actions. Used by both the desktop table row's expanded
 // <tr> and the mobile card list's expanded panel, so the two layouts never
 // drift out of sync with each other.
-function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraActions, years, startStr, endStr }) {
+//
+// `hideRejectionReasons` is set by the mobile card, which already renders the
+// same block un-collapsed above the fold — the desktop table row has nowhere
+// else to put it, so there it stays on.
+function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraActions, years, startStr, endStr, hideRejectionReasons }) {
   return (
     <>
       <div className="text-[0.82rem]" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
@@ -487,6 +611,7 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
           )}
         </div>
       </div>
+      {!hideRejectionReasons && <RejectionReasons s={s} />}
       <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {onOpenPassport && (
           <button
@@ -584,11 +709,15 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
         <DeployabilityChip deploy={deploy} level={level} gatePending={gatePending} />
       </div>
       <div className="lib-card-stats">
-        <div><div className="caption">Sharpe</div><div className="mono"><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library card" /></div></div>
+        <div><div className="caption">Sharpe</div><div className="mono"><MetricValue metric="sharpe_ratio" value={s.sharpe_ratio} row={s} surface="Library card" /></div><MetricsSourceTag source={s.display_metrics_source} /></div>
         <div><div className="caption">CAGR</div><div className={`mono ${signClass(s.cagr)}`}><MetricValue metric="cagr" value={s.cagr} row={s} surface="Library card" /></div></div>
         <div><div className="caption">Max DD</div><div className="mono negative"><MetricValue metric="max_drawdown" value={s.max_drawdown} row={s} surface="Library card" /></div></div>
         <div title={genCost.title}><div className="caption">Gen tokens</div><div className={genCost.measured ? 'mono' : 'caption'}>{genCost.label}</div></div>
       </div>
+      {/* The rejected card's missing half. Four "—" tiles and a token count
+          told the reader nothing about the verdict; this names the checks from
+          this strategy's own record, above the fold, without expanding. */}
+      <RejectionReasons s={s} />
       {open && (
         <div className="lib-card-detail" onClick={(e) => e.stopPropagation()}>
           <StrategyDetailContent
@@ -599,6 +728,7 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
             years={years}
             startStr={startStr}
             endStr={endStr}
+            hideRejectionReasons
           />
         </div>
       )}
@@ -808,6 +938,11 @@ function coerceGenerated(row) {
     // Absent for anything generated before the meter — passed through as null so
     // the cost column renders "not measured" rather than a fabricated zero.
     generation_cost: row.generation_cost ?? null,
+    // Per-check rejection reasons for THIS strategy, derived server-side from
+    // its own stored rigor_verdict (backend/archimedes/services/rigor_reasons.py)
+    // and served by /api/strategies/generated. Carried through untouched;
+    // `null` on any payload without the field, which renders as no block at all.
+    rigor_reasons: row.rigor_reasons ?? null,
   }
 }
 
@@ -910,7 +1045,16 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
     // the 2026-08-30 external product review ("0 of 20 examples pass").
     const seedPromise = apiGet('/api/strategies/?limit=100')
     const genPromise = apiGet('/api/strategies/generated')
-    const gatePromise = apiGet('/api/selection-bias/gate')
+    // Deployability is a VAULT question and vaults are out of the MVP cut
+    // (#1266): DeployabilityChip returns null with the flag off, so an
+    // unconditional call here would spend the slowest request on the page
+    // (this route recomputes the whole cohort gate — ~8-10s, and 504-ing
+    // against prod on 2026-08-31) on an annotation nothing renders. Same
+    // ternary shape, and the same reason, as publishedPromise below: gating
+    // the render while still hitting the hidden API every load is the exact
+    // defect #1324 was filed against. The empty payload keeps every consumer
+    // downstream — deployMap, gateLoading, the gateError banner — unchanged.
+    const gatePromise = ROADMAP_SURFACES_ENABLED ? apiGet('/api/selection-bias/gate') : Promise.resolve({ strategies: [] })
     // Kept on one line deliberately: ui/test/routes.test.js's #1324 guard
     // anchors on this exact expression, and reformatting it would silently
     // disarm someone else's regression test rather than break it loudly.
@@ -1101,7 +1245,13 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
               signal — DeployabilityChip short-circuits to `null` for every
               row (:14), so every chip silently vanished (#1356). This banner
               is the visible signal that replaces that silence, near the
-              chips it describes. */}
+              chips it describes.
+
+              Scope note (this PR): with ROADMAP_SURFACES_ENABLED off, load()
+              no longer fetches /api/selection-bias/gate at all, so gateError
+              stays null and this banner cannot fire — there are no chips left
+              for it to describe. Banner and chips come back together under
+              VITE_ROADMAP_SURFACES=true. */}
           {gateError && (
             <div className="info-box warning mb-3">
               Deployability status unavailable: {gateError}. Chips below may not reflect the live gate.{' '}
@@ -1144,12 +1294,21 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                 rejected.length > 0 ? (
                   <div className="card" style={{ padding: 22 }}>
                     <div className="label mb-2">No strategies have passed the rigor gate yet</div>
+                    {/* Same correction as the rejected section's own copy: the
+                        parenthetical here named a single reason for a
+                        population it never counted. The sentence below is
+                        computed from these exact rows and is omitted entirely
+                        when none of them carry that reason. */}
                     <p className="body" style={{ marginBottom: 10 }}>
                       You've generated {rejected.length} {rejected.length === 1 ? 'candidate' : 'candidates'}, but
                       none have cleared the rigor gate yet. Expand the <strong>Rejected</strong> section below
-                      to see the rigor verdicts (most are <code>"return series too short"</code> — a longer
-                      backtest window is needed for DSR / PBO to score them).
+                      to see each candidate's own rigor verdict — the checks it failed, and the ones it passed.
                     </p>
+                    {rejectedSectionSummary(rejected) && (
+                      <p className="body" style={{ marginBottom: 10 }}>
+                        {rejectedSectionSummary(rejected)}
+                      </p>
+                    )}
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
                       This table holds strategies that passed the rigor gate (DSR + PBO +
                       chronological OOS + look-ahead audit) plus candidates still awaiting a
@@ -1191,13 +1350,26 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                   Rejected ({rejected.length}) — did not pass the rigor gate. Click to inspect.
                 </summary>
                 <div style={{ marginTop: 12 }}>
+                  {/* The paragraph that used to sit here named one reason (a
+                      too-short return series) for the whole population and
+                      promised a longer backtest window would unlock them.
+                      Nothing had counted that, and it was false for any
+                      candidate rejected on the numbers instead. Each row now
+                      names its own checks (RejectionReasons), and the only
+                      sentence about the group is the one below, computed from
+                      the rows on screen — null when there is nothing true to
+                      say. ui/test/rejected-reason.test.js keeps the old prose
+                      out. */}
                   <p className="caption mb-3" style={{ color: 'var(--text-3)', fontSize: '0.82rem' }}>
-                    These candidates were generated but failed at least one rigor check (DSR, PBO,
-                    chronological OOS, or look-ahead audit). Most rejections at this stage are
-                    "return series too short" — the agent generated a strategy but there isn't
-                    enough backtest history yet to compute DSR / PBO with statistical confidence.
-                    A longer backtest window typically unlocks them.
+                    These candidates were generated and did not pass the rigor gate (DSR, PBO,
+                    chronological OOS, or look-ahead audit). Each row names the checks it failed,
+                    read from that strategy's own recorded verdict.
                   </p>
+                  {rejectedSectionSummary(rejected) && (
+                    <p className="caption mb-3" style={{ color: 'var(--text-3)', fontSize: '0.82rem' }}>
+                      {rejectedSectionSummary(rejected)}
+                    </p>
+                  )}
                   <StrategyTable
                     strategies={rejected}
                     highlightStrategyId={highlightStrategyId}
@@ -1218,12 +1390,63 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
 
       {activeTab === 'examples' && (
         <>
+          {/* This tab is REFERENCE MATERIAL, and the intro has to say so before
+              the reader starts reading the rows as scores. The previous copy
+              ("see what a rigor-gate verdict looks like") invited exactly the
+              opposite reading, and the rows obliged: 34 hand-curated
+              implementations of published papers, each one carrying a red
+              failure pill next to numbers nobody re-ran here.
+
+              Three claims, each of which has to stay true:
+                1. what they are — reference implementations, to learn the card
+                   format; not fusion-engine output;
+                2. what a missing verdict means — a curated example is graded
+                   only once a backtest has actually been run for it (the live
+                   gate needs persisted returns), so "no verdict" is a state,
+                   not a failure, and the passport is where the verdict lives;
+                3. where the numbers come from — the mark under each row's
+                   Sharpe, driven by the API's own `display_metrics_source`
+                   (see ../metricsSource.js), so this paragraph never has to
+                   generalise about rows it cannot see. */}
           <div className="caption mb-3 text-[var(--text-3)] leading-relaxed">
-            <strong>Example strategies</strong> — hand-curated single-paper implementations
-            from published research. <em>Not</em> outputs of the fusion engine. Included
-            so you can read a strategy card, understand the metrics, and see what a
-            rigor-gate verdict looks like. They're also the candidate pool the curated-library
-            path of Generate picks and weights from.
+            <p style={{ marginBottom: 6 }}>
+              <strong>Example strategies</strong> — hand-curated reference implementations
+              of single published papers. They are here to be read: open one to learn the
+              card format — what each field means, which paper it came from, and where a
+              verdict appears once there is one. They are <em>not</em> outputs of the
+              fusion engine.
+            </p>
+            {/* MERGE ORDER — depends on PR #1792 (dbrowneup/verdict-of-record-a).
+                The claim below ("until then it carries no verdict, and an absent
+                verdict is not a failure") is only true once #1792 lands.
+                statusLabel() (defined at :161 on this branch) still returns
+                'Reference only — gate failed' for
+                status === 'live' && passes_rigor_gate === false, and
+                passes_rigor_gate is the FAIL-CLOSED boolean: false for a pending
+                verdict too. #1792 replaces it with a four-state rigor_gate_status
+                and NOT_GRADED_LABEL = "Not yet graded" (ui/src/libraryStatus.js),
+                which is what stops an ungraded curated row from rendering a
+                failure pill. Merged alone, this paragraph contradicts the pill two
+                inches below it, so land this after or with #1792.
+
+                This is an ORDERING constraint, not a conflict one:
+                `git merge-tree --write-tree --name-only` of this branch against
+                origin/dbrowneup/verdict-of-record-a is EXIT=0 with no conflicted
+                paths. Do not "fix" it by softening the copy — the copy is the
+                correct end state; #1792 is what makes the rows agree with it. */}
+            <p style={{ marginBottom: 6 }}>
+              They are <strong>not a scoreboard</strong>. A curated example is graded only
+              once a backtest has been run for it here; until then it carries no verdict,
+              and an absent verdict is not a failure. The numbers beside them are not all
+              measurements either: where a row's metrics trace to a stored fixture snapshot
+              rather than to a backtest run here, the row is marked <strong>fixture</strong> —
+              or <strong>placeholder</strong>, where only the strategy module's declared
+              constants exist. A strategy's passport is its verdict of record.
+            </p>
+            <p>
+              Generate's curated-library path picks and weights its candidates from this
+              same set.
+            </p>
           </div>
           {loading && <StrategyListSkeleton />}
           {/* Gated on !loadError, matching the Published branch below (#1356
