@@ -306,7 +306,9 @@ class _Session:
         return _Result()
 
 
-db.init_db = lambda *a, **k: None
+# No init_db stub: the loop must not touch schema at all (#1818). If it ever
+# does again, this child hits a real sqlite file and the guard tests in
+# test_paper_advance_kill_switch.py go red.
 db.get_session = lambda *a, **k: _Session()
 paper_trading.advance_all = lambda session: {"deployments": 1, "appended": 1}
 
