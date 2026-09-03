@@ -700,9 +700,9 @@ unevaluable second leg does not launder it (the CLI exits `1` there, not `4`). S
 no longer one of the ways to reach that state: the 250-bar window sits above the ~70 bars
 the walk-forward split needs, so a series too short to grade is **refused** — `422
 window_too_short` from the API, exit `2` from the CLI — rather than partially graded.
-`trials` is self-attested and unverifiable, so the
-DSR is only as honest as the number you declared. Nothing here earns "Archimedes Verified"; the passport gate
-(step 9) is the verdict that does.
+`trials` is self-attested and unverifiable, so the DSR is only as honest as the number you
+declared. Nothing here earns "Archimedes Verified"; the passport gate (step 9) is the
+verdict that does.
 
 ## Error table
 
