@@ -796,7 +796,29 @@ app.middleware("http")(better_auth_session_middleware)
 
 
 # Initialize database (creates any tables the ORM declares but migrations have
-# not yet created — `vault_metadata`, `chat_messages`, …)
+# not yet created — `vault_metadata`, `chat_messages`, …).
+#
+# THIS IS THE ONLY SCHEMA ASSERTION THE WEB PROCESS MAKES (#1818 P6). Until
+# 2026-09-03 eleven request handlers also called `init_db()` so their
+# transitional columns would exist before they read — `paper_routes` (5 sites),
+# `selection_bias_routes` (2), `leaderboard_routes`, `strategies_routes` (2) and
+# `services/live_rigor_gate`. Every one of them was reached from an `async def`
+# endpoint with no threadpool hop, so ordinary API traffic issued
+# `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on the event loop: a page load could
+# queue an AccessExclusiveLock behind a long transaction and put every later
+# reader of that table behind it. That is the wedge shape of the 2026-09-03
+# outage, still reachable after #1819 bounded the wait. Schema now belongs to
+# the migrate task (`alembic upgrade head`) plus this one call, which runs
+# before the first request is served.
+#
+# It stays at IMPORT rather than moving into `lifespan()`, and that is a
+# deliberate non-change, not an oversight: P6 is about removing DDL from the
+# REQUEST path, and relocating the boot call is a separate decision with its own
+# ordering constraint (it has to precede the lifespan's manifest seed, which
+# writes `papers`). What makes the import-time position acceptable today is
+# #1819: every patch statement takes a 5s `lock_timeout` and the whole call a
+# 10s budget, so a contended boot degrades with a WARNING instead of hanging for
+# 91 minutes the way the replacement tasks did on 2026-09-03.
 init_db()
 
 

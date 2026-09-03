@@ -34,10 +34,21 @@ actually running and have produced ledger observations, ranked on realised
 return. Nothing joins the two: there is no blended score anywhere in this
 module, and the anti-fabrication rule for the forward board (no row without
 ledger data) is enforced in exactly one place, ``build_live_paper_leaderboard``.
+
+**Both boards read the database on a worker thread (#1818 P4).** The forward
+board reads ``paper_deployments`` and ``paper_daily_returns`` — the exact two
+tables the paper-advance cycle holds locks on, so it is the endpoint most
+likely to meet the next lock queue. On 2026-09-03 a read that met one on the
+event loop did not make its own endpoint slow, it stopped ``/health`` answering
+and the ALB pulled both tasks out of service. Each route below is a docstring
+plus one ``await asyncio.to_thread(_…_sync, …)``; the blocking body is the
+module-level twin above it. See ``api/strategies_routes`` for why
+``asyncio.to_thread`` rather than a ``def`` handler or a private pool.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -172,33 +183,20 @@ def _own_cohort_responses(caller_wallet: str | None, caller_user_id: str | None)
         return [], True, "owned strategies unavailable"
 
 
-@leaderboard_router.get("", response_model=LeaderboardResponse)
-async def get_leaderboard(
+def _get_leaderboard_sync(
     request: Request,
-    scope: str | None = Query(
-        None,
-        pattern="^(own|curated)$",
-        description=(
-            "'own': the signed-in caller's own strategies, ranked against each "
-            "other (single-user MVP default when signed in). 'curated': the "
-            "curated seed library, shown as reference — never a competing "
-            "cohort (default when anonymous). An anonymous request for 'own' "
-            "is transparently served 'curated' instead — this endpoint never "
-            "401s; check the response's own `scope` field for what was "
-            "actually served."
-        ),
-    ),
-    sort_by: str = Query("conviction_score", pattern=f"^({_SORT_FIELDS})$"),
-    order: str = Query("desc", pattern="^(asc|desc)$"),
-    regime_tag: str | None = Query(None, pattern="^(bull|bear|regime_neutral)$"),
-    min_rigor: bool = Query(False),
-    limit: int = Query(50, ge=1, le=200),
+    scope: str | None,
+    sort_by: str,
+    order: str,
+    regime_tag: str | None,
+    min_rigor: bool,
+    limit: int,
 ) -> LeaderboardResponse:
-    """Single-user (signed in) or curated-reference (anonymous) leaderboard.
+    """Resolve the caller's cohort and score it.
 
-    Fail-safe: if the underlying data source is unavailable, returns an empty
-    board (with the scoring-engine metadata intact) rather than erroring — the
-    page must never hard-fail, for either scope.
+    The blocking half of the route below (#1818 P4): it holds the database
+    reads and the scoring compute, and it runs on a worker thread so a slow or
+    lock-blocked read cannot stop the event loop from answering ``/health``.
     """
     user = get_current_user(request)
     caller_wallet = get_linked_wallet_address(request)
@@ -228,6 +226,37 @@ async def get_leaderboard(
         degraded=degraded,
         degraded_reason=degraded_reason,
     )
+
+
+@leaderboard_router.get("", response_model=LeaderboardResponse)
+async def get_leaderboard(
+    request: Request,
+    scope: str | None = Query(
+        None,
+        pattern="^(own|curated)$",
+        description=(
+            "'own': the signed-in caller's own strategies, ranked against each "
+            "other (single-user MVP default when signed in). 'curated': the "
+            "curated seed library, shown as reference — never a competing "
+            "cohort (default when anonymous). An anonymous request for 'own' "
+            "is transparently served 'curated' instead — this endpoint never "
+            "401s; check the response's own `scope` field for what was "
+            "actually served."
+        ),
+    ),
+    sort_by: str = Query("conviction_score", pattern=f"^({_SORT_FIELDS})$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    regime_tag: str | None = Query(None, pattern="^(bull|bear|regime_neutral)$"),
+    min_rigor: bool = Query(False),
+    limit: int = Query(50, ge=1, le=200),
+) -> LeaderboardResponse:
+    """Single-user (signed in) or curated-reference (anonymous) leaderboard.
+
+    Fail-safe: if the underlying data source is unavailable, returns an empty
+    board (with the scoring-engine metadata intact) rather than erroring — the
+    page must never hard-fail, for either scope.
+    """
+    return await asyncio.to_thread(_get_leaderboard_sync, request, scope, sort_by, order, regime_tag, min_rigor, limit)
 
 
 # ── Live paper board — /api/leaderboard/live-paper (Lane 3.4) ────────────────
@@ -279,11 +308,10 @@ def _live_paper_ledgers(user_id: str) -> tuple[list[LivePaperLedger], bool, str]
     them out here instead would hide the count and put the anti-fabrication
     rule in two places.
     """
-    from archimedes.db import get_session, init_db
+    from archimedes.db import get_session
     from archimedes.models.paper_store import STATUS_ACTIVE, PaperDailyReturn, PaperDeployment
 
     try:
-        init_db()
         with get_session() as session:
             deps = (
                 session.query(PaperDeployment)
@@ -339,6 +367,27 @@ def _live_paper_ledgers(user_id: str) -> tuple[list[LivePaperLedger], bool, str]
         return [], True, "paper deployments unavailable"
 
 
+def _get_live_paper_leaderboard_sync(request: Request, limit: int) -> LivePaperLeaderboardResponse:
+    """Read the caller's active ledgers and rank them.
+
+    The blocking half of the route below (#1818 P4): it holds the database
+    reads and the scoring compute, and it runs on a worker thread so a slow or
+    lock-blocked read cannot stop the event loop from answering ``/health``.
+    """
+    user = get_current_user(request)
+    if user is None:
+        return build_live_paper_leaderboard([], scope="anonymous", limit=limit)
+
+    ledgers, degraded, degraded_reason = _live_paper_ledgers(user.id)
+    return build_live_paper_leaderboard(
+        ledgers,
+        scope="own",
+        limit=limit,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
+    )
+
+
 @leaderboard_router.get("/live-paper", response_model=LivePaperLeaderboardResponse)
 async def get_live_paper_leaderboard(
     request: Request,
@@ -354,15 +403,4 @@ async def get_live_paper_leaderboard(
     (signed in, nothing deployed yet). The UI needs all three to say three
     different true things.
     """
-    user = get_current_user(request)
-    if user is None:
-        return build_live_paper_leaderboard([], scope="anonymous", limit=limit)
-
-    ledgers, degraded, degraded_reason = _live_paper_ledgers(user.id)
-    return build_live_paper_leaderboard(
-        ledgers,
-        scope="own",
-        limit=limit,
-        degraded=degraded,
-        degraded_reason=degraded_reason,
-    )
+    return await asyncio.to_thread(_get_live_paper_leaderboard_sync, request, limit)
