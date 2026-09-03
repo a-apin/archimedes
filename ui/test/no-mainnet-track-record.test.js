@@ -34,6 +34,28 @@
 // is skipped. The marker must be well-formed to count — writing the bare word
 // "exemption" in a comment does not silence the guard (proved below), so the
 // escape hatch costs an owner, a date and an issue rather than a shrug.
+//
+// ── Two holes review found in the first cut of this file, and what closed them
+//
+// 1. THE POSITIVE ASSERTION MATCHED SOURCE, NOT COPY. "the reader is told what
+//    the ledger IS" was satisfiable by a line nobody renders: delete the
+//    sentence from the <p> and write `// NOTE: the ledger is a paper track
+//    record on Arc testnet` above a constant, and the guard went green over a
+//    page that says nothing. It also matched RAW text, so the same sentence
+//    wrapped across a `'…' + \n '…'` concatenation — the exact form #1805
+//    moves this copy into — did not match at all, making the guard's verdict a
+//    function of where the author happened to break the line. `readerText`
+//    below fixes both: comments out, concatenation flattened, wrapping
+//    collapsed. Both properties are pinned by their own fixtures, so a
+//    normaliser that quietly stops normalising fails here.
+//
+// 2. THE ui/src SWEEP LOOKED FOR ONE LITERAL, IN TWO EXTENSIONS. The promise
+//    "the sentence cannot migrate to a fifth file" held only for the exact
+//    words "carries to mainnet" in a .js/.jsx file: `// your paper ledger is
+//    the record that moves to mainnet at cutover.` in Portfolio.jsx was the
+//    same promise, rephrased, and passed. The sweep now also flags any line
+//    that pairs the WORD mainnet with the ledger vocabulary, over every text
+//    extension under ui/src.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -75,6 +97,67 @@ function mainnetMentions(source) {
 		.filter(({ text }) => /mainnet/i.test(text) && !EXEMPTION_RE.test(text));
 }
 
+//: Comments out. Block comments go whole; a `//` counts as a comment only when
+//: it starts a line or follows whitespace, which is what keeps a URL's `://`
+//: (and `https://` inside JSX text) from truncating a line of real copy.
+//: Deliberately used ONLY by the positive assertion — `mainnetMentions` keeps
+//: reading raw source, because a comment promising a mainnet cutover is still
+//: a false claim living in the repo and must stay bannable.
+function stripComments(source) {
+	return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|\s)\/\/.*$/gm, "$1");
+}
+
+/**
+ * The text a reader actually gets, from a source file.
+ *
+ * Comments stripped, `'…' + '…'` concatenation flattened, and every run of
+ * whitespace collapsed to one space, so a phrase check asks "does the copy say
+ * this" instead of "did the author wrap the line where I expected". #1805 moves
+ * this sentence into a multi-line `export const PAPER_SETTLE_CADENCE`, which
+ * splits the phrase across a concatenation boundary; without the flattening
+ * step, whether that branch passes this guard is decided by its formatter.
+ */
+function readerText(source) {
+	return stripComments(source)
+		.replace(/(['"`])\s*\+\s*(['"`])/g, "")
+		.replace(/\s+/g, " ");
+}
+
+//: Which files under ui/src the repo-wide sweeps read. The first cut took
+//: .js/.jsx only, so the same copy in a .ts, .tsx or .json — ui/src already
+//: holds a .json and four .css — would have been invisible to both sweeps.
+const SCANNED_EXTENSIONS = /\.(js|jsx|ts|tsx|mjs|cjs|json|css|scss|svg|html)$/;
+
+//: The vocabulary that makes a mainnet mention a claim about the paper record
+//: rather than an honest negation. "No mainnet money" (PublicLayout.jsx) and
+//: the chain-config cutover comments name mainnet and say nothing about a
+//: track record; the sentence #1807 retracted cannot be written without one of
+//: these words.
+const LEDGER_WORDS = /track record|ledger/i;
+
+/** ui/src, as [relative path, source] pairs, over every text extension. */
+function uiSourceFiles() {
+	const srcRoot = fileURLToPath(repoFile("src"));
+	const files = [];
+	const walk = (dir) => {
+		for (const entry of readdirSync(dir)) {
+			const full = path.join(dir, entry);
+			if (statSync(full).isDirectory()) walk(full);
+			else if (SCANNED_EXTENSIONS.test(entry)) files.push(full);
+		}
+	};
+	walk(srcRoot);
+	return files.map((full) => [path.relative(srcRoot, full), readFileSync(full, "utf8")]);
+}
+
+/** Lines pairing the word mainnet with the ledger vocabulary, unexempted. */
+function ledgerMainnetPairs(source) {
+	return source
+		.split("\n")
+		.map((text, i) => ({ line: i + 1, text }))
+		.filter(({ text }) => /\bmainnet\b/i.test(text) && LEDGER_WORDS.test(text) && !EXEMPTION_RE.test(text));
+}
+
 test("mainnetMentions flags every literal this change removed", () => {
 	for (const [where, literal] of RETRACTED_LITERALS) {
 		assert.ok(
@@ -102,6 +185,58 @@ test("an owner-dated exemption is honoured, and a hand-waved one is not", () => 
 	}
 });
 
+test("readerText reads what ships, not what the source happens to contain", () => {
+	// Fixture 1 is the mutation that found the hole: the visible sentence gone,
+	// a comment left in its place. Green here would mean the "no hole is left"
+	// assertion below can be satisfied by a line nobody renders.
+	const commentOnly = '// NOTE: the ledger is a paper track record on Arc testnet — no real funds.\nconst MARKS_POLL_MS = 900_000';
+	assert.ok(
+		!/paper track record on Arc testnet/.test(readerText(commentOnly)),
+		"a claim that lives only in a comment must not count as copy the reader was shown",
+	);
+	assert.ok(
+		/paper track record on Arc testnet/.test(commentOnly),
+		"fixture is vacuous: the raw text must contain the phrase, or stripping proves nothing",
+	);
+
+	// Fixture 2 is #1805's shape: one sentence, two string literals, a line
+	// break between them. Both wraps below say the same thing to a reader and
+	// must say the same thing to this guard.
+	for (const wrapped of [
+		"export const PAPER_SETTLE_CADENCE =\n\t'…that settled series is a paper ' +\n\t'track record on Arc testnet, with no real funds.'",
+		"export const PAPER_SETTLE_CADENCE =\n\t'…that settled series is ' +\n\t'a paper track record on Arc testnet, with no real funds.'",
+	]) {
+		assert.ok(
+			/paper track record on Arc testnet/.test(readerText(wrapped)),
+			`a sentence wrapped across a concatenation must still read as one sentence: ${wrapped}`,
+		);
+	}
+
+	// And flattening must not invent the phrase where the copy does not say it.
+	assert.ok(
+		!/paper track record on Arc testnet/.test(
+			readerText("export const X =\n\t'that settled series is the track ' +\n\t'record that carries to mainnet.'"),
+		),
+		"the normaliser must not manufacture a match the copy never made",
+	);
+});
+
+test("ledgerMainnetPairs flags a rephrasing that never says \"carries to mainnet\"", () => {
+	// The literal that passed the first cut of the ui/src sweep, in a fifth file.
+	const rephrased = "// Onboarding blurb: your paper ledger is the record that moves to mainnet at cutover.";
+	assert.equal(ledgerMainnetPairs(rephrased).length, 1, "the pair scan is guarding nothing");
+	assert.deepEqual(
+		ledgerMainnetPairs('<span>No mainnet money</span>'),
+		[],
+		"the honest negations name mainnet without claiming anything about the record — they must stay green",
+	);
+	assert.deepEqual(
+		ledgerMainnetPairs(`${rephrased} mainnet-claim-exemption: owner=dbrowneup date=2026-09-03 issue=#1807`),
+		[],
+		"the owner-dated escape hatch applies here too",
+	);
+});
+
 test("no paper-trading surface names mainnet (#1807, cutover cancelled by #1240)", () => {
 	for (const rel of PAPER_SURFACES) {
 		const found = mainnetMentions(readFileSync(repoFile(rel), "utf8"));
@@ -119,34 +254,50 @@ test("no paper-trading surface names mainnet (#1807, cutover cancelled by #1240)
 
 test('no file under ui/src says the ledger "carries to mainnet"', () => {
 	// The narrow phrase, repo-wide across the UI, so the sentence cannot simply
-	// migrate to a fifth file that is not on the list above.
-	const srcRoot = fileURLToPath(repoFile("src"));
-	const offenders = [];
-	const walk = (dir) => {
-		for (const entry of readdirSync(dir)) {
-			const full = path.join(dir, entry);
-			if (statSync(full).isDirectory()) walk(full);
-			else if (/\.(js|jsx)$/.test(entry) && /carries to mainnet/i.test(readFileSync(full, "utf8"))) {
-				offenders.push(path.relative(srcRoot, full));
-			}
-		}
-	};
-	walk(srcRoot);
+	// migrate to a fifth file that is not on the list above. No exemption here
+	// on purpose: this is the retracted sentence itself, and there is no
+	// version of the product in which it is true.
+	const offenders = uiSourceFiles()
+		.filter(([, source]) => /carries to mainnet/i.test(source))
+		.map(([rel]) => rel);
 	assert.deepEqual(offenders, [], `these ui/src files still say "carries to mainnet": ${offenders.join(", ")}`);
+});
+
+test("no file under ui/src pairs mainnet with the paper ledger", () => {
+	// The rephrasing the narrow phrase misses: "the record that moves to
+	// mainnet", "your ledger carries over at cutover". Any line naming mainnet
+	// AND the record is a claim about the cancelled cutover unless an owner
+	// says otherwise, on that line, with a date and an issue.
+	const offenders = [];
+	for (const [rel, source] of uiSourceFiles()) {
+		for (const { line, text } of ledgerMainnetPairs(source)) {
+			offenders.push(`${rel}:${line}: ${text.trim()}`);
+		}
+	}
+	assert.deepEqual(
+		offenders,
+		[],
+		"these ui/src lines pair mainnet with the paper record, which the cancelled cutover (#1240) " +
+			`makes a promise about an unscheduled event: ${offenders.join(" | ")}. Say what is true today, or ` +
+			"add an owner-dated `mainnet-claim-exemption: owner=<name> date=<YYYY-MM-DD> issue=#<n>` on the line.",
+	);
 });
 
 test("the paper-trading copy says what is true instead: Arc testnet, no real funds", () => {
 	// A retraction that leaves a hole is not a fix — the reader still has to be
 	// told what the ledger IS. Checked over PaperTrading.jsx + paperCopy.js
 	// together because the intro copy legitimately lives in either one (#1805
-	// moves it into a pinned constant in paperCopy.js).
+	// moves it into a pinned constant in paperCopy.js), and through `readerText`
+	// so that neither a comment nobody renders nor a line wrap can decide it.
 	//: `assert.ok` rather than `assert.match` on purpose — a failing `assert.match`
 	//: prints the entire file it was handed, which buries the one sentence the
 	//: reader needs to see.
-	const intro =
+	const intro = readerText(
 		readFileSync(repoFile("src/components/PaperTrading.jsx"), "utf8") +
-		readFileSync(repoFile("src/paperCopy.js"), "utf8");
-	const passport = readFileSync(repoFile("src/components/StrategyPassport.jsx"), "utf8");
+			"\n" +
+			readFileSync(repoFile("src/paperCopy.js"), "utf8"),
+	);
+	const passport = readerText(readFileSync(repoFile("src/components/StrategyPassport.jsx"), "utf8"));
 
 	for (const [where, source] of [
 		["PaperTrading.jsx + paperCopy.js", intro],
@@ -157,7 +308,8 @@ test("the paper-trading copy says what is true instead: Arc testnet, no real fun
 				phrase.test(source),
 				`${where} no longer says ${phrase} — the mainnet claim was scrubbed and nothing true ` +
 					"replaced it. A retraction that leaves a hole still leaves the reader guessing what " +
-					"the paper ledger is.",
+					"the paper ledger is. (Checked on rendered copy: comments and line wrapping are " +
+					"normalised away, so a note in a comment does not count.)",
 			);
 		}
 	}
