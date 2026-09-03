@@ -23,6 +23,17 @@ import {
 import { statusTag, statusLabel, statusTitle } from '../libraryStatus.js'
 import { signClass } from '../signClass.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
+import {
+  barName,
+  checkLine,
+  failedChecks,
+  isUnattributed,
+  notComputedChecks,
+  passedChecks,
+  recordedReason,
+  rejectedSectionSummary,
+  showsRejectionReasons,
+} from '../rejectionReasons.js'
 
 // A compact "deployable at your level" chip for a library row, driven by the
 // strategy's min_passing_level (from the live gate) and the user's strictness.
@@ -368,11 +379,85 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
   )
 }
 
+// Why THIS strategy was rejected — read off the row, never guessed.
+//
+// The rejected card showed "—" for Sharpe / CAGR / Max DD (a pre-backtest
+// hypothesis has none) and "Gen tokens", and nothing else: the one fact a
+// reader wanted — which rigor check said no — was the one fact absent, while
+// the section above it asserted a population-wide reason nobody had measured.
+//
+// Everything below comes from `s.rigor_reasons`, the additive per-row field
+// GET /api/strategies/generated serves, built from that strategy's OWN stored
+// rigor_verdict against the gate's own thresholds (see
+// backend/archimedes/services/rigor_reasons.py). Failed and not-computed are
+// kept in SEPARATE lines on purpose: a check that ran and found a problem and a
+// check that never ran are different claims, and only one of them may be
+// printed as a failure. With no field on the row — an old payload, a degraded
+// read, a curated row that never had one — the whole block renders nothing: no
+// heading, no bar name, no prose. Scoped to rows the gate turned down
+// (showsRejectionReasons), so a row still awaiting a verdict is never handed
+// one it has not received.
+function RejectionReasons({ s }) {
+  if (!showsRejectionReasons(s)) return null
+  const reason = recordedReason(s)
+  const failed = failedChecks(s)
+  const notComputed = notComputedChecks(s)
+  const passed = passedChecks(s)
+  const bar = barName(s)
+  return (
+    <div className="caption" style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 3, fontSize: '0.78rem' }}>
+      {reason && (
+        <div style={{ color: 'var(--text-3)' }}>
+          <span style={{ color: 'var(--text-4)' }}>Reason on record:</span>{' '}
+          <strong>{reason}</strong>
+        </div>
+      )}
+      {failed.length > 0 && (
+        <div style={{ color: 'var(--text-3)' }}>
+          {/* Colour on a className, not an inline `color:` — the literal
+              var(--positive)/var(--negative) here encodes a boolean check
+              verdict, not the sign of a number, exactly like the rigor-gate
+              check icon in StrategyRow. ui/test/sign-class.test.js polices the
+              inline form so a signed cell can never quietly hard-code green. */}
+          <span className="text-[var(--negative)]" style={{ fontWeight: 700 }}>Failed:</span>{' '}
+          {failed.map(checkLine).join(' · ')}
+        </div>
+      )}
+      {notComputed.length > 0 && (
+        <div style={{ color: 'var(--text-4)' }}>
+          <span style={{ fontWeight: 700 }}>Not computed:</span>{' '}
+          {notComputed.map(checkLine).join(' · ')} — a check with nothing on record does not count as passed.
+        </div>
+      )}
+      {passed.length > 0 && (
+        <div style={{ color: 'var(--text-3)' }}>
+          <span className="text-[var(--positive)]" style={{ fontWeight: 700 }}>Passed:</span>{' '}
+          {passed.map(checkLine).join(' · ')}
+        </div>
+      )}
+      {isUnattributed(s) && (
+        <div style={{ color: 'var(--text-4)' }}>
+          This strategy did not pass, but no check on record falls below the bar
+          quoted here — the stored verdict does not attribute the rejection.
+          Open the passport for the full record.
+        </div>
+      )}
+      {bar && (failed.length > 0 || passed.length > 0) && (
+        <div style={{ color: 'var(--text-4)' }}>Thresholds are the {bar} bar.</div>
+      )}
+    </div>
+  )
+}
+
 // Shared "expanded" detail content — methodology / source paper(s) / rigor
 // metrics / export actions. Used by both the desktop table row's expanded
 // <tr> and the mobile card list's expanded panel, so the two layouts never
 // drift out of sync with each other.
-function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraActions, years, startStr, endStr }) {
+//
+// `hideRejectionReasons` is set by the mobile card, which already renders the
+// same block un-collapsed above the fold — the desktop table row has nowhere
+// else to put it, so there it stays on.
+function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraActions, years, startStr, endStr, hideRejectionReasons }) {
   return (
     <>
       <div className="text-[0.82rem]" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
@@ -487,6 +572,7 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
           )}
         </div>
       </div>
+      {!hideRejectionReasons && <RejectionReasons s={s} />}
       <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {onOpenPassport && (
           <button
@@ -589,6 +675,10 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
         <div><div className="caption">Max DD</div><div className="mono negative"><MetricValue metric="max_drawdown" value={s.max_drawdown} row={s} surface="Library card" /></div></div>
         <div title={genCost.title}><div className="caption">Gen tokens</div><div className={genCost.measured ? 'mono' : 'caption'}>{genCost.label}</div></div>
       </div>
+      {/* The rejected card's missing half. Four "—" tiles and a token count
+          told the reader nothing about the verdict; this names the checks from
+          this strategy's own record, above the fold, without expanding. */}
+      <RejectionReasons s={s} />
       {open && (
         <div className="lib-card-detail" onClick={(e) => e.stopPropagation()}>
           <StrategyDetailContent
@@ -599,6 +689,7 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
             years={years}
             startStr={startStr}
             endStr={endStr}
+            hideRejectionReasons
           />
         </div>
       )}
@@ -808,6 +899,11 @@ function coerceGenerated(row) {
     // Absent for anything generated before the meter — passed through as null so
     // the cost column renders "not measured" rather than a fabricated zero.
     generation_cost: row.generation_cost ?? null,
+    // Per-check rejection reasons for THIS strategy, derived server-side from
+    // its own stored rigor_verdict (backend/archimedes/services/rigor_reasons.py)
+    // and served by /api/strategies/generated. Carried through untouched;
+    // `null` on any payload without the field, which renders as no block at all.
+    rigor_reasons: row.rigor_reasons ?? null,
   }
 }
 
@@ -1144,12 +1240,21 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                 rejected.length > 0 ? (
                   <div className="card" style={{ padding: 22 }}>
                     <div className="label mb-2">No strategies have passed the rigor gate yet</div>
+                    {/* Same correction as the rejected section's own copy: the
+                        parenthetical here named a single reason for a
+                        population it never counted. The sentence below is
+                        computed from these exact rows and is omitted entirely
+                        when none of them carry that reason. */}
                     <p className="body" style={{ marginBottom: 10 }}>
                       You've generated {rejected.length} {rejected.length === 1 ? 'candidate' : 'candidates'}, but
                       none have cleared the rigor gate yet. Expand the <strong>Rejected</strong> section below
-                      to see the rigor verdicts (most are <code>"return series too short"</code> — a longer
-                      backtest window is needed for DSR / PBO to score them).
+                      to see each candidate's own rigor verdict — the checks it failed, and the ones it passed.
                     </p>
+                    {rejectedSectionSummary(rejected) && (
+                      <p className="body" style={{ marginBottom: 10 }}>
+                        {rejectedSectionSummary(rejected)}
+                      </p>
+                    )}
                     <p className="caption" style={{ color: 'var(--text-3)' }}>
                       This table holds strategies that passed the rigor gate (DSR + PBO +
                       chronological OOS + look-ahead audit) plus candidates still awaiting a
@@ -1191,13 +1296,26 @@ export default function Strategies({ highlightStrategyId, defaultTab, onNavigate
                   Rejected ({rejected.length}) — did not pass the rigor gate. Click to inspect.
                 </summary>
                 <div style={{ marginTop: 12 }}>
+                  {/* The paragraph that used to sit here named one reason (a
+                      too-short return series) for the whole population and
+                      promised a longer backtest window would unlock them.
+                      Nothing had counted that, and it was false for any
+                      candidate rejected on the numbers instead. Each row now
+                      names its own checks (RejectionReasons), and the only
+                      sentence about the group is the one below, computed from
+                      the rows on screen — null when there is nothing true to
+                      say. ui/test/rejected-reason.test.js keeps the old prose
+                      out. */}
                   <p className="caption mb-3" style={{ color: 'var(--text-3)', fontSize: '0.82rem' }}>
-                    These candidates were generated but failed at least one rigor check (DSR, PBO,
-                    chronological OOS, or look-ahead audit). Most rejections at this stage are
-                    "return series too short" — the agent generated a strategy but there isn't
-                    enough backtest history yet to compute DSR / PBO with statistical confidence.
-                    A longer backtest window typically unlocks them.
+                    These candidates were generated and did not pass the rigor gate (DSR, PBO,
+                    chronological OOS, or look-ahead audit). Each row names the checks it failed,
+                    read from that strategy's own recorded verdict.
                   </p>
+                  {rejectedSectionSummary(rejected) && (
+                    <p className="caption mb-3" style={{ color: 'var(--text-3)', fontSize: '0.82rem' }}>
+                      {rejectedSectionSummary(rejected)}
+                    </p>
+                  )}
                   <StrategyTable
                     strategies={rejected}
                     highlightStrategyId={highlightStrategyId}
