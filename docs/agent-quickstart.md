@@ -691,12 +691,16 @@ they are yours or that they happened in that order.
 bare returns series — PBO needs a trial matrix of candidate strategies, and the look-ahead
 audit needs strategy source, which is never uploaded — so both always come back
 `not_evaluable` and `verdict_capped` is always `true`. `passes` is a quorum over the two
-runnable legs: true only when DSR **and** walk-forward OOS both ran and both passed. Below
-about 70 bars the OOS leg cannot run at all, which shows up as `legs_evaluated <
-legs_runnable`. When **no leg actually failed**, that is an **incomplete evaluation** —
-neither a pass nor a fail, and it must not be reported as either. When a leg *did* fail,
-the failure is a real verdict and stands: a short series is not an excuse that erases a
-FAIL (the CLI exits `1` there, not `4`). `trials` is self-attested and unverifiable, so the
+runnable legs: true only when DSR **and** walk-forward OOS both ran and both passed. A leg
+can still fail to *run* on the numbers — a zero-variance series has no Sharpe to compute —
+and that shows up as `legs_evaluated < legs_runnable`. When **no leg actually failed**,
+that is an **incomplete evaluation** — neither a pass nor a fail, and it must not be
+reported as either. When a leg *did* fail, the failure is a real verdict and stands: an
+unevaluable second leg does not launder it (the CLI exits `1` there, not `4`). Shortness is
+no longer one of the ways to reach that state: the 250-bar window sits above the ~70 bars
+the walk-forward split needs, so a series too short to grade is **refused** — `422
+window_too_short` from the API, exit `2` from the CLI — rather than partially graded.
+`trials` is self-attested and unverifiable, so the
 DSR is only as honest as the number you declared. Nothing here earns "Archimedes Verified"; the passport gate
 (step 9) is the verdict that does.
 

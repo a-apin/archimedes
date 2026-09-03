@@ -1,6 +1,6 @@
 # Archimedes backend — floors shared by every consumer (issue #1522).
 #
-# This file is the single owner of the 32 non-torch package floors. Both
+# This file is the single owner of the 33 non-torch package floors. Both
 # `backend/requirements.txt` (Docker / CI) and the `pip:` block of
 # `environment.yml` (local conda dev) pull it in with `-r`, so a Dependabot bump
 # lands here once instead of being mirrored by hand into a second file.

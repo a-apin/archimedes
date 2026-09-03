@@ -873,7 +873,9 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     else:
         _render_verify(body)
     # Not a bare `passes` read (#1481): an incomplete evaluation exits with its
-    # own code so a CI job cannot read "too few bars" as "strategy rejected".
+    # own code so a CI job cannot read "a leg could not run" as "strategy
+    # rejected". Shortness is not one of those cases any more — #1803 refuses a
+    # sub-window series before this point, with USAGE and `window_too_short`.
     _verdict = _verify_verdict(body)
     sys.exit(exits.OK if _verdict == "pass" else exits.GATE_FAILED if _verdict == "fail" else exits.INCOMPLETE)
 

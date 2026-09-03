@@ -368,11 +368,15 @@ is exactly why its Sharpe is implausibly good: it is a rendering example, not
 a result.)
 
 Exit codes: `0` pass, `1` fail, `4` incomplete — **no leg failed** and not every
-runnable leg ran — so a CI job can never read "too few bars" as "strategy
+runnable leg ran — so a CI job can never read "a leg could not run" as "strategy
 rejected". The two are checked in that order: a leg that actually failed is a
-real verdict and exits `1` even when another leg could not run, because a short
-series is not an excuse that erases a FAIL. A rejected body exits `2` and prints
-the `reason` — never `1`, which means only "the gate ran and said no". Re-sending the same 252 bars sorted by
+real verdict and exits `1` even when another leg could not run, because a
+degenerate second leg (a zero-variance stretch with no Sharpe to compute) is not
+an excuse that erases a FAIL. "Too few bars" is not one of the inputs to that
+choice any more: a series under the window never reaches the gate at all — it
+exits `2` with `window_too_short`, like any other rejected body, and prints the
+`reason`. Exit `2` is never `1`, which means only "the gate ran and said no".
+Re-sending the same 252 bars sorted by
 return instead of by date, so the best 30% falls in the holdout:
 
 ```console
