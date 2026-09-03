@@ -145,7 +145,8 @@ which the society's proposer pool calls, and it was published on `/health` as
 inert sentinels — a live-path behaviour change, not a cleanup. **That separate
 decision was taken on 2026-09-02 (deck Q4): the flag is retired and fusion is
 unconditional.** Nothing about the reachability argument changed — that is exactly
-why it went. The OFF branch was deleted rather than defaulted ON, `/health` still
-publishes `fusion_enabled` as a constant `true`, and
+why it went. The OFF branch was deleted rather than defaulted ON, the `/health`
+`fusion_enabled` key was dropped on 2026-09-03 rather than frozen at a constant
+`true` (no consumer was found), and
 [`backend/tests/test_fusion_flag_retired.py`](../../backend/tests/test_fusion_flag_retired.py)
 fails if the switch returns under any name.

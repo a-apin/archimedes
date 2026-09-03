@@ -1631,13 +1631,12 @@ async def health(response: Response):
         "corpus_kg_entities": kg_entity_count,
         "corpus_kg_relations": kg_relation_count,
         "corpus_artifact_present": corpus_artifact_present,
-        # Retired flag, retained key (2026-09-02, deck Q4). Fusion is the
-        # unconditional generation path, so this is a constant, not a
-        # switch reading: ARCHIMEDES_FUSION_ENABLED no longer exists. The
-        # key stays because /health's published field set is a contract
-        # (backend/tests/test_health_always_answers.py) that dashboards and
-        # scripts/check-parity.sh read.
-        "fusion_enabled": True,
+        # `fusion_enabled` was published here until 2026-09-03. It was dropped
+        # by owner decision (deck Q4 follow-up): with ARCHIMEDES_FUSION_ENABLED
+        # retired, the key could only ever be the literal `True`, and a constant
+        # dressed as a health signal is exactly the claim-integrity problem the
+        # fields above exist to avoid. No consumer was found — the field set is
+        # asserted absent in backend/tests/test_health_always_answers.py.
         "llm_provider": llm_provider,
         "llm_backend": llm_backend,
         "llm_model": llm_model,

@@ -3,7 +3,6 @@
 # Verifies the local stack matches production expectations:
 #   - LLM backend is live (not canned)
 #   - Corpus is mounted and non-empty
-#   - Fusion is enabled
 #
 # Usage: ./scripts/check-parity.sh [BASE_URL]
 #   BASE_URL defaults to http://localhost:8000

@@ -212,7 +212,9 @@ the debate society is the sole pipeline and every proposer routes through
 silently return nothing while every deployed environment pinned the flag `true`.
 The reader, the OFF branch and every injection site were deleted;
 `backend/tests/test_fusion_flag_retired.py` fails if a fusion switch comes back
-under any name. `/health` still publishes `fusion_enabled`, now a constant `true`.
+under any name. `/health` no longer publishes `fusion_enabled` either — the key
+was dropped on 2026-09-03 rather than frozen at a constant `true`, since nothing
+consumed it.
 The rest of this section is kept as the historical description of what was removed.
 
 ~~`ARCHIMEDES_FUSION_ENABLED`, default **OFF**.~~ Truthy = `{"1","true","yes","on"}`
