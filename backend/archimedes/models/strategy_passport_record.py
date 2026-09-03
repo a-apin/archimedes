@@ -122,7 +122,45 @@ class StrategyPassportRecord(Base):
     dsr_p_value = Column(Float, nullable=True)
     pbo_score = Column(Float, nullable=True)
     out_of_sample_sharpe = Column(Float, nullable=True)
+    # ── The rigor VERDICT OF RECORD ─────────────────────────────────────
+    # docs/adr/rigor-verdict-of-record.md (owner decision, Dan, 2026-09-01).
+    # A strategy is graded ONCE, at backtest time, by the real gate, and every
+    # surface reads THAT verdict from here. It is never recomputed on read and
+    # never silently overwritten: a re-grade is an explicit, versioned event
+    # that rewrites all five fields below together.
+    #
+    # ``passes_rigor_gate`` and ``rigor_gate_status`` are COUPLED by contract —
+    # ``passes_rigor_gate == (rigor_gate_status == "pass")``. The single writer
+    # is ``passport_loader.ingest_passport(rigor_verdict=RigorVerdictWrite(...))``,
+    # whose ``passes`` is a derived property, so the two cannot be set apart.
+    # Every other caller leaves all five columns alone.
     passes_rigor_gate = Column(Boolean, nullable=False, default=False)
+    # Four-state badge, STORED rather than derived (#1184 defined the states;
+    # this column is where they now live): "pass" | "fail" | "pending" |
+    # "degenerate". NOT NULL with a "pending" server default, so a row that has
+    # never been graded says exactly that instead of presenting a fail-closed
+    # False as if it were a verdict.
+    rigor_gate_status = Column(String(16), nullable=False, default="pending", server_default="pending")
+    # When the grade above was produced. NULL means "never graded" and agrees
+    # with rigor_gate_status == "pending" by construction.
+    graded_at = Column(DateTime, nullable=True)
+    # WHICH gate produced it — ``services.rigor_gate_version.gate_version()``, a
+    # digest of the strictness ladder, the always-on floors, the DSR/rf
+    # convention constants and an explicit hand-bumped code revision (that
+    # module's docstring lists the inputs and, just as importantly, what is
+    # deliberately excluded). Two rows with different ``gate_version`` values
+    # were graded by different gates and are NOT comparable. The literal
+    # ``rigor_gate_version.LEGACY_DERIVED`` marks a verdict the verdict-of-record
+    # migration INFERRED from pre-existing columns rather than one a gate run
+    # produced; PR-C replaces those with a real re-grade.
+    gate_version = Column(String(64), nullable=True)
+    # How many return series were in the cohort that supplied this grade's
+    # cohort-scoped inputs (PBO, average pairwise correlation). 1 means the grade
+    # was self-contained — the strategy graded against itself alone, which is
+    # what the generation path does (``num_trials`` is a separate self-contained
+    # quantity; see docs/adr/num-trials-self-containment.md). NULL means the
+    # cohort size was not recorded.
+    cohort_n = Column(Integer, nullable=True)
     kelly_fraction = Column(Float, nullable=True)
     sharpe_ci_lower = Column(Float, nullable=True)
     sharpe_ci_upper = Column(Float, nullable=True)
@@ -213,7 +251,15 @@ class StrategyPassportRecord(Base):
             "status": self.status,
             "regime_tag": self.regime_tag,
             "owner_wallet": self.owner_wallet,
+            # The verdict of record, served verbatim. This endpoint is a PURE
+            # READ of the stored grade — never a recompute — so the four
+            # provenance fields ship beside it and a reader can tell a real
+            # grade from an ungraded row and from a legacy-derived one.
             "passes_rigor_gate": self.passes_rigor_gate,
+            "rigor_gate_status": self.rigor_gate_status,
+            "graded_at": self.graded_at.isoformat() if self.graded_at else None,
+            "gate_version": self.gate_version,
+            "cohort_n": self.cohort_n,
             "sharpe_ratio": self.sharpe_ratio,
             "sortino_ratio": self.sortino_ratio,
             "max_drawdown": self.max_drawdown,

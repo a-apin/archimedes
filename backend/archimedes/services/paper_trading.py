@@ -1183,6 +1183,22 @@ async def paper_advance_loop() -> None:
     ledger's uniqueness constraint would abort the loser's whole transaction,
     discarding rows it had already appended for unrelated deployments.
 
+    NO SCHEMA WORK IN THIS LOOP (#1818). This cycle must never run DDL. It
+    used to call ``init_db()`` on every tick, in both ECS tasks at once, and on
+    2026-09-03 that cost 94 minutes of production: a no-op ``ADD COLUMN IF NOT
+    EXISTS`` takes AccessExclusiveLock on ``papers`` for the rest of its
+    transaction, and a *waiting* exclusive-lock request queues every later
+    reader of that table behind it — including this loop's own trace session,
+    which is how two sibling children wedged each other outside PostgreSQL's
+    view. Schema is the migrate task's job (``alembic upgrade head``, see
+    ``migrations/README.md``) plus the web process's boot-time ``init_db()``
+    — and, today, eleven request handlers that still call it on the serving
+    path (#1818 P6, listed in the incident doc); a 24-hourly ticker has no
+    business adding itself to that list. If this loop ever needs a column
+    that does not exist, the answer is an Alembic revision, not a patch call
+    from here.
+    See ``docs/incidents/2026-09-03-paper-advance-ddl-wedge.md``.
+
     Two independent passes run per cycle, in this order and in separate
     try/excepts (#1410):
 
@@ -1196,7 +1212,7 @@ async def paper_advance_loop() -> None:
     import asyncio
     import contextlib
 
-    from archimedes.db import get_session, init_db
+    from archimedes.db import get_session
 
     delay = float(os.getenv("PAPER_ADVANCE_STARTUP_DELAY_S", "240"))
     interval_s = float(os.getenv("PAPER_ADVANCE_INTERVAL_HOURS", "24")) * 3600.0
@@ -1226,7 +1242,7 @@ async def paper_advance_loop() -> None:
                         "(#1632 break-glass switch is pulled; ledgers do not advance until it is flipped back)"
                     )
                 else:
-                    init_db()
+                    # No init_db() here, ever (#1818). See the docstring.
                     contended = not try_take_paper_advance_lock(cycle.enter_context(get_session()))
                     if contended:
                         # INFO, not WARNING: a second task standing down is the
@@ -1257,11 +1273,13 @@ async def paper_advance_loop() -> None:
             # lock's scope whenever the lock was ASKED for: a cycle that lost
             # it stands down whole, or the lock would only be buying half of
             # what it claims. It is NOT locked when we never asked — with the
-            # kill switch off, or if init_db()/get_session() raised before the
-            # ask, `contended` stays False and this pass runs unlocked in every
-            # task, exactly as it did before the lock existed. That is the
-            # pre-existing behaviour, kept deliberately: gating the agent tick
-            # on PAPER_ADVANCE_ENABLED too is a separate call, not made here.
+            # kill switch off, or if get_session() raised before the ask (the
+            # only other statement left ahead of it since #1818 removed the
+            # per-cycle schema call), `contended` stays False and this pass
+            # runs unlocked in every task, exactly as it did before the lock
+            # existed. That is the pre-existing behaviour, kept deliberately:
+            # gating the agent tick on PAPER_ADVANCE_ENABLED too is a separate
+            # call, not made here.
             if not contended:
                 try:
                     from archimedes.services.paper_agent_execution import advance_agent_execution
