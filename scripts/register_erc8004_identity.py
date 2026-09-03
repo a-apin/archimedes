@@ -63,6 +63,13 @@ THE LOG-SCAN WINDOW
     BOTH the pre-flight read and the confirming read. Pass ``--from-block`` explicitly to
     override it; the value is then used verbatim.
 
+    A bounded window can be too NARROW as well as too wide: an identity minted before it
+    is invisible to the scan. That is why ``find_agent_id`` RAISES when ``balanceOf`` says
+    the wallet holds something the window cannot name, rather than answering "no identity
+    found" — ``--verify`` prints ``status: undetermined`` and exits non-zero, and
+    ``--execute`` refuses. ``--verify --agent-id <ID>`` reads ``ownerOf`` and scans nothing,
+    so it is immune to the window entirely.
+
 AFTER A SUCCESSFUL --execute
     The script prints the minted agentId and the exact follow-up: set ``ERC8004_AGENT_ID``
     and ``ERC8004_OWNER_ADDRESS`` in the deployment environment, and land the
@@ -379,7 +386,20 @@ def verify(args: argparse.Namespace) -> int:
         # -32614 traceback the moment there is an identity to find.
         from_block, note = resolve_from_block(args.from_block, args.rpc)
         print(f"scan:       {note}")
-        found, detail = asyncio.run(erc8004.find_agent_id(owner, from_block=from_block))
+        try:
+            found, detail = asyncio.run(erc8004.find_agent_id(owner, from_block=from_block))
+        except Exception as exc:
+            # "I could not look" is not "there is nothing there". find_agent_id raises for
+            # a refused range AND for the balanceOf > 0 / nothing-in-this-window case, and
+            # neither may be printed as registration_pending: that line is what step 2 of
+            # the runbook reads as "step 3 (--execute) is safe", and --execute on a wallet
+            # that already holds an identity mints a second one that cannot be un-minted.
+            print(f"discovery:  could not look ({type(exc).__name__}: {exc})")
+            print("status:     undetermined  \u2014 NOT 'no identity found'. Nothing was proved either way.")
+            print("            Re-run as --verify --agent-id <ID> (reads ownerOf directly, scans no logs),")
+            print("            or widen the scan with --from-block <block below the mint>.")
+            print("            Do NOT run --execute off this answer.")
+            return 1
         print(f"discovery:  {detail}")
         if found is None:
             print("status:     registration_pending (no identity found for this wallet)")

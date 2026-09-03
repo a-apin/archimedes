@@ -52,6 +52,14 @@ _MAX_POLLS = 60  # 2 minutes max
 # expected shape of any retry, not a rarity. Treating 200 as a failure told the operator a
 # transaction that had succeeded had failed, and the tempting next move after that is to
 # force a second one.
+#
+# KNOWN DIVERGENCE, deliberate: oracle_updater.py does NOT come through this method — it
+# POSTs to the same endpoint itself — and it fixed this identical defect first, under #1525
+# ("Circle API error for sBTC (200): {'state': 'COMPLETE'}" every cycle for a push that had
+# landed). Its fix grades on the PAYLOAD (a usable id whose state is not a failure state);
+# this one grades on the STATUS and then requires a usable id below. Same outcome for the
+# shapes Circle actually returns, two implementations, one seam apart. Converging them is
+# its own change; until then, a fix here is not a fix there.
 _SUBMIT_ACCEPTED = frozenset({200, 201})
 
 # Bounded wall-clock ceiling on the wallet-address lookup (#1412). This runs
@@ -272,7 +280,18 @@ class CircleSigner:
                 body = await resp.json()
                 if resp.status not in _SUBMIT_ACCEPTED:
                     raise RuntimeError(f"Circle contract execution failed ({resp.status}): {body}")
-                circle_tx_id = body["data"]["id"]
+                # A 2xx is not automatically a usable answer. ``body["data"]["id"]`` was an
+                # unguarded double subscript: a malformed success — an error envelope, a
+                # proxy's HTML, a 200 with no ``data`` — surfaced as ``KeyError: 'data'``
+                # from inside the signer instead of the RuntimeError every caller here is
+                # written to handle. Newly reachable now that 200 is accepted at all.
+                data = body.get("data") if isinstance(body, dict) else None
+                circle_tx_id = data.get("id") if isinstance(data, dict) else None
+                if not circle_tx_id:
+                    raise RuntimeError(
+                        f"Circle accepted the contract execution ({resp.status}) but the response carries "
+                        f"no transaction id to poll, so nothing can be confirmed: {body}"
+                    )
                 if resp.status == 200:
                     # Not a new transaction — Circle recognised the idempotency key and
                     # handed back the one it already has. Logged as such so a reader of

@@ -1,9 +1,21 @@
 """``CircleSigner.execute_contract`` — the two answers from Circle we used to mishandle.
 
 WHAT IS UNDER TEST
-    ``archimedes.chain.circle_signer`` — the seam every state-changing on-chain call in
-    this repo goes through (the oracle's price pushes, strategy/trace publication, and the
-    ERC-8004 identity mint of #1527).
+    ``CircleSigner.execute_contract`` in ``archimedes.chain.circle_signer``. Its callers,
+    enumerated rather than gestured at, because the blast radius of a change here is the
+    list: ``TracePublisher.publish`` / ``.commit`` / ``.reveal``, ``StrategyPublisher.anchor``,
+    ``ChainExecutor.execute_trades`` / ``.create_vault`` / ``._send_vault_admin_tx`` /
+    ``.set_token_oracles`` / ``.set_target_allocations``, ``scripts/bootstrap_vaults.py``
+    (14 sites), ``scripts/deploy_contracts.py``, ``services/amm_bootstrap.py``,
+    ``api/marketplace_routes.py``, and ``erc8004_identity.register_identity`` (#1527).
+
+    NOT the oracle. ``oracle_updater`` POSTs to Circle's contract-execution endpoint itself
+    (``oracle_updater.py``, in ``push_prices_on_chain``) and polls with its own ``_poll_circle_tx``,
+    so nothing in this file constrains it. It also got there first: the identical
+    200-vs-201 defect was fixed for the oracle under **#1525**, on the payload rather than
+    the status. See the ``_SUBMIT_ACCEPTED`` comment in the module under test — the two
+    implementations are a known divergence, not an accident, and ``_poll_circle_tx`` still
+    has no ``STUCK`` case.
 
 THE TWO DEFECTS, BOTH GROUNDED IN CIRCLE'S OWN DOCS
     1. **HTTP 200 on submit was raised as a failure.** Circle's contract-execution
@@ -94,10 +106,20 @@ class FakeCircleAPI:
     route and 404s its sibling would let a change of endpoint pass unnoticed.
     """
 
-    def __init__(self, public_pem: str, *, submit_status: int = 201, states: tuple[str, ...] = ("COMPLETE",)):
+    def __init__(
+        self,
+        public_pem: str,
+        *,
+        submit_status: int = 201,
+        states: tuple[str, ...] = ("COMPLETE",),
+        submit_body: dict | None = None,
+    ):
         self._pem = public_pem
         self._submit_status = submit_status
         self._states = states
+        # ``submit_body`` overrides the well-formed answer, for the malformed-2xx cases.
+        # ``None`` means "use the real shape"; ``{}`` is itself a case under test.
+        self._submit_body = submit_body
         self.submits: list[dict] = []
         self.polls = 0
         self.unexpected: list[str] = []
@@ -119,6 +141,8 @@ class FakeCircleAPI:
     def post(self, url: str, *_a, json: dict | None = None, **_kw):
         if url.endswith("/developer/transactions/contractExecution"):
             self.submits.append(json or {})
+            if self._submit_body is not None:
+                return _Resp(self._submit_status, self._submit_body)
             body = (
                 {"data": {"id": CIRCLE_TX_ID, "state": "INITIATED"}}
                 if self._submit_status in (200, 201)
@@ -216,6 +240,30 @@ async def test_every_other_status_is_still_a_failure(signer, status):
     with pytest.raises(RuntimeError, match=f"Circle contract execution failed \\({status}\\)"):
         await _register(s)
     assert api.polls == 0, "polled for a transaction the submit never created"
+
+
+@pytest.mark.parametrize("status", [200, 201])
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"data": None}, {"data": {}}, {"data": {"state": "INITIATED"}}, {"code": 156000, "message": "no."}],
+    ids=["empty", "null-data", "data-without-id", "state-but-no-id", "error-envelope-under-2xx"],
+)
+async def test_an_accepted_status_with_no_transaction_id_is_a_clean_error(signer, status, body):
+    """An accepted STATUS is not an accepted ANSWER.
+
+    ``circle_tx_id = body["data"]["id"]`` was an unguarded double subscript. A 2xx without
+    a ``data`` envelope — an error body a proxy stamped 200 on, a shape change — came out
+    as ``KeyError: 'data'`` from inside the signer, which no caller on this seam catches:
+    ``register_identity`` turns a ``RuntimeError`` into ``action: refused`` and would turn
+    a ``KeyError`` into a traceback. Widening to 200 made the case newly reachable, so the
+    guard ships with the widening.
+    """
+    s, api = signer(submit_status=status, submit_body=body)
+
+    with pytest.raises(RuntimeError, match="no transaction id to poll"):
+        await _register(s)
+
+    assert api.polls == 0, "polled for a transaction id that was never returned"
 
 
 # ── STUCK ────────────────────────────────────────────────────────────────────

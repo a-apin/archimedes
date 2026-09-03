@@ -72,10 +72,19 @@ ERC8004_OWNER_ADDRESS=0x<PLATFORM_WALLET> \
   python scripts/register_erc8004_identity.py --verify
 ```
 
-`registration_pending (no identity found for this wallet)` means step 3 is safe. If it
-reports an agentId, **we are already registered** — skip to step 4. Re-registering mints a
-second identity that cannot be un-minted and permanently splits the reputation surface the
-standard exists to accumulate.
+There are **three** answers here, not two:
+
+| `status:` | what it means | what to do |
+| --- | --- | --- |
+| `registration_pending (no identity found for this wallet)` | `balanceOf == 0` — the chain says this wallet holds nothing | step 3 is safe |
+| an agentId + `registered` | **we are already registered** | skip to step 4 |
+| `undetermined` (exit 1) | the scan could not look: the range was refused, or `balanceOf > 0` and the window named nothing | **stop** — see below |
+
+Re-registering mints a second identity that cannot be un-minted and permanently splits the
+reputation surface the standard exists to accumulate, so `undetermined` is never a licence
+to run step 3. Re-run as `--verify --agent-id <ID>` (reads `ownerOf` directly and scans no
+logs) or widen `--from-block`. `--execute` refuses on its own in that state — `action:
+refused`, nothing sent — but do not lean on it: get a real answer first.
 
 The `scan:` line above the verdict says which blocks were searched. There is no
 owner→agentId lookup on this registry, so discovery is an `eth_getLogs` scan for the mint,
@@ -89,6 +98,14 @@ and Arc's public RPC refuses a range wider than 10,000 blocks:
 used by both `--verify` and `--execute`. If the wallet's mint is older than that window,
 pass `--from-block <block>` explicitly — or, better, `--verify --agent-id <ID>`, which
 reads `ownerOf` directly and scans nothing.
+
+A bounded window can be too **narrow** as well as too wide, and that direction is the
+dangerous one: an identity minted more than 9,000 blocks ago (~77 minutes at Arc's measured
+0.515 s/block) is outside it. The discovery scan therefore refuses to answer at all in that
+state rather than reporting "no identity found" — `balanceOf > 0` with nothing nameable in
+range raises, `--verify` prints `undetermined`, and `--execute` returns `action: refused`.
+"I could not look" and "there is nothing there" must never arrive as the same answer, because
+the second one is what makes the next command mint.
 
 ## 3. Register (owner only)
 

@@ -25,11 +25,14 @@ THE DEFECT
     find, which is exactly when it is needed.
 
 HERMETIC
-    :class:`RangeCappedRPC` is the fake that makes this real: it enforces the SAME 10,000
-    block cap the live RPC does, over both transports the code uses — the script's plain
-    ``httpx`` JSON-RPC and the backend's web3 ``get_logs``. Every "bounded window works"
-    test in here is paired with a sibling proving that the unbounded scan the fix replaced
-    is refused by that same fake. No network, no credentials, no key material.
+    :class:`RangeCappedRPC` serves both transports the code uses — the script's plain
+    ``httpx`` JSON-RPC (``eth_blockNumber``, which is how the window is resolved) and the
+    backend's web3 ``get_logs`` (the scan itself). The 10,000-block cap is enforced on the
+    ``get_logs`` side, which is the only one that scans; the httpx side answers the height
+    and rejects everything else. Every "bounded window works" test in here is paired with a
+    sibling proving the opposite input is refused by that same fake — the unbounded scan
+    the fix replaced, and the too-narrow window the fix introduced. No network, no
+    credentials, no key material.
 """
 
 from __future__ import annotations
@@ -183,10 +186,39 @@ class FakeChainClient:
         return address
 
 
-@pytest.fixture
-def wired(monkeypatch):
+class CountingSigner:
+    """``CircleSigner``'s surface, with the submissions counted. The count IS the assertion.
+
+    ``execute_contract`` is the only method: if the register path ever reaches for
+    ``sign_and_broadcast`` instead, this fake raises ``AttributeError`` rather than letting
+    a permissive double absorb the change. A submit optionally mints into the registry and
+    drops the mint log inside the window, so the confirming scan behaves like a real one.
+    """
+
+    is_configured = True
+
+    def __init__(
+        self,
+        registry: FakeRegistry | None = None,
+        rpc: RangeCappedRPC | None = None,
+        token_id: int = 7,
+    ):
+        self.submits: list[tuple] = []
+        self._registry = registry
+        self._rpc = rpc
+        self._token_id = token_id
+
+    async def execute_contract(self, *, contract_address, abi_function, abi_params, fee_level="MEDIUM"):
+        self.submits.append((contract_address, abi_function, tuple(abi_params)))
+        if self._registry is not None and self._rpc is not None:
+            self._registry.tokens[self._token_id] = (OURS, abi_params[0])
+            self._rpc.token_id = self._token_id
+            self._rpc.mint_block = self._rpc.head - 1
+        return TX_HASH
+
+
+def _install(monkeypatch, rpc: RangeCappedRPC) -> tuple[RangeCappedRPC, FakeRegistry]:
     """Install the capped RPC everywhere the register path can reach a chain, and hand it back."""
-    rpc = RangeCappedRPC()
     registry = FakeRegistry({rpc.token_id: (OURS, AGENT_URI)})
 
     from archimedes.chain.contracts import ContractLoader
@@ -207,6 +239,24 @@ def wired(monkeypatch):
     monkeypatch.setenv("ERC8004_OWNER_ADDRESS", OURS)
     monkeypatch.delenv("ERC8004_AGENT_ID", raising=False)
     return rpc, registry
+
+
+@pytest.fixture
+def wired(monkeypatch):
+    """The mint is 120 blocks back — comfortably inside the default window."""
+    return _install(monkeypatch, RangeCappedRPC())
+
+
+@pytest.fixture
+def aged(monkeypatch):
+    """The same wiring, but the mint is 50,000 blocks old — OUTSIDE the default window.
+
+    This is what every wallet looks like ~77 minutes after its mint (Arc's block time
+    measured live at 0.515 s/block on 2026-09-03, so 9,000 blocks is 77 minutes), and it is
+    the state in which the bounded window can lie: the scan succeeds, the cap is never hit,
+    and it names nothing — while ``balanceOf`` says an identity is right there.
+    """
+    return _install(monkeypatch, RangeCappedRPC(mint_block=HEAD - 50_000))
 
 
 def _run(monkeypatch, *argv: str) -> int:
@@ -415,3 +465,130 @@ def test_a_submitted_mint_still_prints_the_recovery_and_the_follow_up(wired, mon
 def test_the_transfer_topic_the_recovery_prints_is_the_one_the_scanner_matches(wired):
     """Two spellings of the same event is how a recovery instruction goes quietly wrong."""
     assert mod.topic(mod.TRANSFER_EVENT_SIG) == erc8004._TRANSFER_TOPIC
+
+
+# ── the window that is too NARROW: "I could not look" must not read as "nothing there" ──
+#
+# The bounded window fixes a scan that was always refused. It also introduces the opposite
+# failure, and that one is silent: a mint older than the window leaves the scan SUCCEEDING
+# and naming nothing. If that were reported as "no identity found", the register path's
+# whole idempotency check would invert — its "refusing to mint blind" fail-safe would
+# become a fail-OPEN double mint, on a token that cannot be un-minted. So the scan raises.
+
+
+async def test_a_balance_the_window_cannot_name_raises_instead_of_answering_no(aged):
+    """THE FIX: ``balanceOf > 0`` + nothing in range is an error, not a verdict."""
+    rpc, _registry = aged
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await erc8004.find_agent_id(OURS, FakeChainClient(rpc), from_block=HEAD - 9_000)
+
+    assert "balanceOf" in str(excinfo.value)
+    assert "pass the agentId explicitly" in str(excinfo.value)
+    # The cap was never hit: this scan was ACCEPTED and simply could not see far enough
+    # back. That is what makes the case reachable in the first place.
+    assert rpc.ranges == [(HEAD - 9_000, HEAD)]
+
+
+async def test_a_zero_balance_is_still_a_plain_no_identity_found(wired):
+    """THE PAIRED PROOF: the raise did not swallow the one fact that legitimately means "no".
+
+    ``balanceOf == 0`` is the chain saying this wallet holds nothing — the only input that
+    may license a mint. Without this test the fix above could be "raise on everything",
+    which would make a first registration impossible.
+    """
+    rpc, registry = wired
+    registry.tokens.clear()
+
+    found, detail = await erc8004.find_agent_id(OURS, FakeChainClient(rpc), from_block=HEAD - 9_000)
+
+    assert found is None
+    assert "== 0" in detail
+    assert rpc.ranges == [], "balanceOf == 0 short-circuits before the scan"
+
+
+async def test_register_refuses_rather_than_minting_a_second_identity_it_cannot_see(aged):
+    """THE FIX, at the only place it costs money: no submit for a wallet that already holds one.
+
+    ``--execute`` on a wallet whose mint has aged out of the window is the exact production
+    sequence — register once, come back 77 minutes later, re-run. The assertion that matters
+    is ``signer.submits == []``.
+    """
+    rpc, registry = aged
+    signer = CountingSigner()
+
+    result = await erc8004.register_identity(
+        agent_uri=AGENT_URI,
+        expected_owner=OURS,
+        signer=signer,
+        client=FakeChainClient(rpc),
+        from_block=HEAD - 9_000,
+    )
+
+    assert signer.submits == [], (
+        f"DOUBLE MINT: register() was submitted for a wallet already holding agentId {rpc.token_id}"
+    )
+    assert result.action == "refused"
+    assert result.agent_id is None
+    assert result.tx_hash is None
+    assert "refusing to mint blind" in result.detail
+    assert "pass the agentId explicitly" in result.detail, "the refusal does not say how to get unstuck"
+    assert registry.tokens == {rpc.token_id: (OURS, AGENT_URI)}, "the registry gained a token"
+
+
+async def test_an_empty_wallet_still_mints_exactly_once(wired):
+    """THE PAIRED PROOF: the refusal above is not "refuse always".
+
+    A wallet the chain says is empty still registers, once, and the confirming scan — same
+    bounded window — names what it minted.
+    """
+    rpc, registry = wired
+    registry.tokens.clear()
+    signer = CountingSigner(registry, rpc, token_id=7)
+
+    result = await erc8004.register_identity(
+        agent_uri=AGENT_URI,
+        expected_owner=OURS,
+        signer=signer,
+        client=FakeChainClient(rpc),
+        from_block=HEAD - 9_000,
+    )
+
+    assert len(signer.submits) == 1, "an empty wallet did not register"
+    assert signer.submits[0][1] == erc8004.REGISTER_SIGNATURE
+    assert result.action == "registered"
+    assert result.agent_id == 7
+    assert result.tx_hash == TX_HASH
+
+
+def test_verify_says_undetermined_not_pending_when_the_window_could_not_look(aged, monkeypatch, capsys):
+    """THE FIX on the read-only surface: exit 1 and a different word, not a cheerful zero.
+
+    ``registration_pending (no identity found for this wallet)`` is what step 2 of the
+    runbook reads as "step 3 is safe". Printing it for a wallet that demonstrably holds an
+    identity is how an operator is talked into the double mint by hand.
+    """
+    _rpc, _registry = aged
+
+    rc = _run(monkeypatch, "--verify")
+    out = capsys.readouterr().out
+
+    assert rc != 0, "an undetermined read exited 0"
+    assert "registration_pending" not in out, "an unlookable wallet was reported as pending"
+    assert "status:     undetermined" in out
+    assert "could not look" in out
+    assert "--verify --agent-id <ID>" in out, "the way out is not printed"
+    assert "Do NOT run --execute off this answer." in out
+
+
+def test_verify_still_reports_pending_for_a_wallet_that_really_holds_nothing(wired, monkeypatch, capsys):
+    """THE PAIRED PROOF: ``undetermined`` did not eat the honest ``pending``."""
+    _rpc, registry = wired
+    registry.tokens.clear()
+
+    rc = _run(monkeypatch, "--verify")
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "status:     registration_pending (no identity found for this wallet)" in out
+    assert "undetermined" not in out
