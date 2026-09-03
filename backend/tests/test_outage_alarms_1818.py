@@ -11,14 +11,14 @@ times UTC):
 * 15:06:46 unhealthy-hosts ALARM → OK, one more delivered
 
 Two alarms fired and six emails were delivered to a confirmed subscriber, the
-first 9m47s into a 94-minute outage — and the owner still found it by loading
+first 9m46s into a 94-minute outage — and the owner still found it by loading
 the site. So P5 is three gaps, of which Terraform owns two:
 
 1. **Detection shape.** Nothing watched what was already abnormal ten hours
    earlier (Aurora connections flat at 33 from 03:33; ECS memory ramping).
    The alarms guarded below close that; ``aurora_connections_wedge`` fires at
    ~03:48 and is the only reason this set is worth applying.
-2. **Detection latency.** 9m47s is the 5-of-5-minute window plus lag. The
+2. **Detection latency.** 9m46s is the 5-of-5-minute window plus lag. The
    unhealthy-hosts retune to 2-of-2 buys back ~6 minutes.
 3. **The page did not reach the owner.** Nothing in Terraform fixes that. What
    the code can do is refuse to leave the destination unchosen —
@@ -312,7 +312,7 @@ class TestThePagingDestinationIsChosenDeliberately:
 
         Its ``count`` gate is a real landmine (a bare apply without
         ``TF_VAR_alarm_email`` unsubscribes the only destination the topic has
-        ever delivered to), but that landmine predates #1818 P5 and closing it
+        subscription this topic has), but that landmine predates #1818 P5 and closing it
         means capturing the applied address in ``terraform.tfvars`` — the
         owner's to do. What this PR must not do is *widen* it: adding another
         term to the condition would make a plain apply destroy the working

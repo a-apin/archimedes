@@ -45,7 +45,7 @@ history + AWS/SNS metrics, all times UTC):
 | 15:06:46 | `archimedes-alb-unhealthy-hosts` **ALARM → OK** (1 more delivered) |
 
 Two alarms fired. Six emails were delivered, with zero failures, to a
-confirmed subscriber — the first of them 9m47s into a 94-minute outage, 84
+confirmed subscriber — the first of them 9m46s into a 94-minute outage, 84
 minutes before it ended. The owner still discovered it by loading the site.
 
 Re-derive any of that yourself:
@@ -67,7 +67,7 @@ aws cloudwatch get-metric-statistics --namespace AWS/SNS \
 1. **Detection shape.** Nothing watched the signals that were already abnormal
    ten hours earlier — Aurora connections flat at 33 from 03:33, ECS memory
    ramping. Fixed below: the new connections alarm fires at ~03:48.
-2. **Detection latency.** 9m47s is the 5-of-5-minute window plus evaluation
+2. **Detection latency.** 9m46s is the 5-of-5-minute window plus evaluation
    lag. `-alb-unhealthy-hosts` is retuned to 2-of-2, worth about six minutes.
 3. **The page did not reach the owner.** Six delivered emails and it still had
    to be found by hand. **No Terraform change fixes this.** What the code can

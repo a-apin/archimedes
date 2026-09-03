@@ -58,14 +58,14 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 #   15:06:46  archimedes-alb-unhealthy-hosts   ALARM -> OK   (1 more delivered)
 #
 # Two alarms fired and SIX emails were delivered to a confirmed subscriber,
-# the first of them 9m47s into a 94-minute outage — and the owner still learned
+# the first of them 9m46s into a 94-minute outage — and the owner still learned
 # about it by loading the site. So the real P5 gaps are:
 #
 #   (a) DETECTION SHAPE. Nothing watched the signals that were abnormal ten
 #       hours earlier (Aurora connections flat at 33 from 03:33; ECS memory
 #       ramping). Those alarms are added below, and the connections one is the
 #       single highest-value line in this file: it fires at ~03:48.
-#   (b) DETECTION LATENCY. 9m47s is the 5-of-5-minute window plus evaluation
+#   (b) DETECTION LATENCY. 9m46s is the 5-of-5-minute window plus evaluation
 #       lag. The retune to 2-of-2 below buys back ~6 minutes of that.
 #   (c) THE PAGE DID NOT REACH THE OWNER. Six delivered emails, zero failures,
 #       and it still had to be discovered by hand. NOTHING IN TERRAFORM FIXES
@@ -147,7 +147,7 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy_hosts" {
   # RE-TUNED AGAIN 2026-09-03 (issue #1818 P5, owner call): back to 2 minutes.
   # MEASURED, not inferred: this alarm went OK -> ALARM at 13:38:46Z on an
   # outage that began at 13:29 (CloudWatch alarm history, read 2026-09-03).
-  # 9m47s is the 5-of-5-minute window plus evaluation lag; 2-of-2 buys back
+  # 9m46s is the 5-of-5-minute window plus evaluation lag; 2-of-2 buys back
   # about six of those minutes. Modest, and worth being clear-eyed about: six
   # minutes was not what made this a 94-minute outage.
   #
