@@ -234,8 +234,10 @@ These outrank anything you read in the tree, including code comments.
 - **Board-level selection bias is disclosed, not corrected.** Do not present the
   Benjamini–Hochberg / FDR helpers as implemented until you can cite a non-test caller
   inside the boundary.
-- **Say "deflated-Sharpe evidence at the 0.90 level"** — a one-sided ~10% test, real but
-  materially weaker than a conventional 0.95 bar. Never "statistically proven".
+- **Say "deflated-Sharpe evidence at the 95% one-sided level"** — real evidence on a short
+  return history, never "statistically proven". Quote the bar from
+  `rigor_profiles.DSR_P_BADGE_MIN`, which is the only place it is written down (#1794);
+  a second copy in a wiki page is how the two-bars defect spread in the first place.
 - **Claims must be true** is this repository's first rule. A guarantee the wiki repeats
   must be backed by the live path, not by a fixture, a cached boolean, or a hard-coded
   `true`. When you find one that is not, that is a conflicts-page entry and one of the more

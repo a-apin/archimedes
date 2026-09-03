@@ -199,8 +199,9 @@ test("each rigor panel states its own limit, and the deck names all four verdict
 	// quoted from the code that computes them, so both get pinned here.
 	//
 	// Every `limit` below is traceable: DSR → rigor_profiles.py's own
-	// "'deflated-Sharpe evidence at the 0.90 level', not 'statistically proven'"
-	// note (level-1 dsr_p_min = 0.90); PBO → compute_pbo's "Known limitations"
+	// "'deflated-Sharpe evidence at the 95% one-sided level', not 'statistically
+	// proven'" note (level-1 dsr_p_min IS DSR_P_BADGE_MIN, #1794); PBO →
+	// compute_pbo's "Known limitations"
 	// (a selection-set property, a neighbour can flip it); OOS →
 	// compute_oos_sharpe's "a single chronological hold-out, NOT a rolling
 	// walk-forward re-estimation ... no purge/embargo gap"; LEAK → the
@@ -215,7 +216,7 @@ test("each rigor panel states its own limit, and the deck names all four verdict
 		4,
 		"every one of the four rejection checks must carry its own honest limit",
 	);
-	assert.match(criteria, /0\.90 level/);
+	assert.match(criteria, /95% one-sided level/);
 	assert.match(criteria, /selection set, not one strategy/);
 	assert.match(criteria, /not a rolling refit/);
 	assert.match(criteria, /proven to read only the current bar and earlier/);

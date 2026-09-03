@@ -107,8 +107,16 @@ _PASS_COUNT = re.compile(
 # ── Conflict 2 — the reversed `num_trials` convention, in code form ─────────
 _LIBRARY_SIZED_NUM_TRIALS = re.compile(r"num_trials\s*=\s*len\s*\(", re.IGNORECASE)
 
-# ── Conflict 3 — the pre-#901 bar stated as a gate condition ────────────────
-_STALE_095_BAR = re.compile(r"p\s*(?:≥|>=)\s*0\.95")
+# ── Conflict 3 — a RETIRED bar stated as a gate condition ──────────────────
+# This guard has been inverted once already, which is the whole lesson. It was
+# written to forbid `p ≥ 0.95` because PR #901 had lowered the bar; #1794 found
+# that the Generate path and every public rigor page had gone on saying 0.95 the
+# whole time, and the owner's call was 0.95 everywhere. So the forbidden string is
+# now `p ≥ 0.90`. To make a second inversion impossible to miss,
+# `test_the_retired_bar_guard_is_not_the_live_bar` asserts this pattern does NOT
+# match the live constant — move the bar in rigor_profiles and this file fails
+# until the guard is re-aimed.
+_RETIRED_BAR = re.compile(r"p\s*(?:≥|>=)\s*0\.90?(?![\d])")
 
 # ── Conflict 5 — 0.612 is a DSR p-value; it is not any kind of Sharpe ───────
 _SHARPE_0612 = re.compile(r"Sharpe[^\n]{0,40}0\.612", re.IGNORECASE)
@@ -173,7 +181,7 @@ class TestForbiddenClaims:
             "The corrected pass count is unestablished.",
             # A decimal that must not read as a count (conflict 5's own prose).
             "an always-on floor of `> 0` and a cliff of `OOS/IS ≥ 0.5` — and 0.930 clears both",
-            "the `num_trials = 22` row at p = 0.941 clears 0.90",
+            "the `num_trials = 22` row at p = 0.941 clears the lower bar",
         ],
     )
     def test_pass_count_guard_admits_correct_prose(self, line: str):
@@ -201,23 +209,67 @@ class TestForbiddenClaims:
             "num-trials-self-containment.md:\n  " + "\n  ".join(hits)
         )
 
-    def test_no_stale_095_gate_bar(self):
-        """The DSR bar has been 0.90 since PR #901; `p ≥ 0.95` states a gate condition.
+    def test_no_retired_gate_bar(self):
+        """The DSR bar is `DSR_P_BADGE_MIN`; PR #901's lower bar is retired (#1794).
 
-        Historical *narration* of the old bar is fine and necessary — the findings
+        Historical *narration* of a retired bar is fine and necessary — the findings
         notes need it to explain their own vintage — which is why this matches the
         threshold-expression form and not the digits.
         """
-        hits = _hits(_STALE_095_BAR)
+        hits = _hits(_RETIRED_BAR)
         assert not hits, (
-            "A `p ≥ 0.95` gate condition survives in docs/quant/. The bar is 0.90 "
-            "(PR #901); narrate the old bar, do not state it as a condition:\n  " + "\n  ".join(hits)
+            "A retired `p ≥ 0.90` gate condition survives in docs/quant/. The bar is "
+            f"{rigor_profiles.DSR_P_BADGE_MIN} (#1794); narrate the old bar, do not "
+            "state it as a condition:\n  " + "\n  ".join(hits)
         )
+
+    def test_the_retired_bar_guard_is_not_the_live_bar(self):
+        """The guard must forbid a RETIRED bar, never the live one.
+
+        #1794's root cause in miniature: this pattern was aimed at 0.95 while the
+        live bar was 0.90, and when the owner moved the bar back the guard would
+        have started rejecting correct prose. Bind it to the constant instead.
+        """
+        live = f"p ≥ {rigor_profiles.DSR_P_BADGE_MIN:.2f}"
+        assert not _RETIRED_BAR.search(live), (
+            f"_RETIRED_BAR matches the LIVE bar ({live}). The bar moved in "
+            "rigor_profiles and this guard was not re-aimed — it now forbids docs "
+            "from stating the truth."
+        )
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "the gate admits a strategy at `p >= 0.90`",
+            "Admission is `p ≥ 0.90` at level 1.",
+            "DSR `p ≥ 0.9`, PBO `< 0.5`",
+        ],
+    )
+    def test_retired_bar_guard_rejects_the_forbidden_form(self, line: str):
+        """Shown red on the input it must reject, not assumed to be (CLAUDE.md rule 4)."""
+        assert _RETIRED_BAR.search(line), f"_RETIRED_BAR misses a retired gate condition: {line!r}"
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # Narration of the retired bar — the correction style this module requires.
+            "PR #901 briefly lowered the bar; #1794 retired that path.",
+            "the 0.90 bar PR #901 briefly used",
+            # The live bar, stated as a condition. Must NOT trip the guard.
+            "Admission requires `dsr_p_value ≥ 0.95`.",
+            "DSR `p ≥ 0.95`, PBO `< 0.5`",
+            # A p-value that merely starts with 0.90-ish digits is not a bar.
+            "the `num_trials = 22` row at p = 0.941",
+            "Faber's `dsr_p_value` is p ≥ 0.9012 on that pull",
+        ],
+    )
+    def test_retired_bar_guard_admits_correct_prose(self, line: str):
+        assert not _RETIRED_BAR.search(line), f"_RETIRED_BAR false-positives on correct prose: {line!r}"
 
     def test_0612_is_never_called_a_sharpe(self):
         """0.612 is Faber's DSR p-value. Its OOS Sharpe on the same pull is 0.930.
 
-        Two passages explained a failure as an OOS Sharpe of 0.612 "under the 0.90
+        Two passages explained a failure as an OOS Sharpe of 0.612 "under the DSR
         gate" — comparing a Sharpe ratio to a probability. The OOS Sharpe's own
         thresholds are an always-on floor of > 0 and a cliff of OOS/IS >= 0.5, and
         0.930 clears both; the failure is on criterion 1.
@@ -225,7 +277,7 @@ class TestForbiddenClaims:
         hits = _hits(_SHARPE_0612)
         assert not hits, (
             "docs/quant/ attributes 0.612 to a Sharpe ratio. It is a DSR p-value "
-            "(docs/analysis/faber-dsr-finding.md); 0.90 is a probability bar, not "
+            "(docs/analysis/faber-dsr-finding.md); the DSR bar is a probability, not "
             "an OOS-Sharpe bar:\n  " + "\n  ".join(hits)
         )
 

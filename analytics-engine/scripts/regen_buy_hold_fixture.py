@@ -20,6 +20,15 @@ import numpy as np
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+# The DSR bar has exactly one definition, in the backend's rigor_profiles
+# (#1794). This script re-grades fixtures against the live gate, so it imports
+# that constant rather than restating the number — a fixture regenerated against
+# a stale local literal is how the two-bars bug got into the fixtures in the
+# first place. rigor_profiles is dependency-free (dataclasses only), so this
+# costs nothing at import time.
+sys.path.insert(0, str(ROOT.parent / "backend"))
+
+from archimedes.services.rigor_profiles import DSR_P_BADGE_MIN
 
 # NOTE: the heavy data/engine imports (yfinance, backtrader) are deliberately
 # deferred into main() so this module can be imported for its numpy-only DSR
@@ -206,7 +215,7 @@ def _compute_passes_rigor_gate(
     Mirrors BacktestResult.passes_rigor_gate criteria 1–6:
       1. Base validation passes (Sharpe/DD/CAGR/trade-count).
       2. DSR value, p-value, and num_trials all populated.
-      3. DSR p-value >= 0.95.
+      3. DSR p-value >= DSR_P_BADGE_MIN (the badge bar, rigor_profiles).
       4. PBO score populated and < 0.5 (strictly; >= 0.5 fails).
       5. Look-ahead audit passed.
       6. OOS Sharpe populated; if full Sharpe > 0, OOS/full >= 0.5.
@@ -219,7 +228,7 @@ def _compute_passes_rigor_gate(
         return False
     if dsr is None or dsr_p is None or num_trials is None:
         return False
-    if dsr_p < 0.95:
+    if dsr_p < DSR_P_BADGE_MIN:
         return False
     if pbo_score is None or pbo_score >= 0.5:
         return False
