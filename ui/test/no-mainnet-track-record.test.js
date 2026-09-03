@@ -55,7 +55,10 @@
 //    the record that moves to mainnet at cutover.` in Portfolio.jsx was the
 //    same promise, rephrased, and passed. The sweep now also flags any line
 //    that pairs the WORD mainnet with the ledger vocabulary, over every text
-//    extension under ui/src.
+//    extension under ui/src — and, because proving that fix on the #1805 merge
+//    showed a line-by-line scan cannot see `'…is the track ' + \n 'record that
+//    carries to mainnet…'`, a second sentence-wide pass over the same
+//    normalised copy `readerText` produces.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -133,7 +136,7 @@ const SCANNED_EXTENSIONS = /\.(js|jsx|ts|tsx|mjs|cjs|json|css|scss|svg|html)$/;
 //: the chain-config cutover comments name mainnet and say nothing about a
 //: track record; the sentence #1807 retracted cannot be written without one of
 //: these words.
-const LEDGER_WORDS = /track record|ledger/i;
+const LEDGER_WORDS = /\b(?:track record|ledger)\b/i;
 
 /** ui/src, as [relative path, source] pairs, over every text extension. */
 function uiSourceFiles() {
@@ -156,6 +159,29 @@ function ledgerMainnetPairs(source) {
 		.split("\n")
 		.map((text, i) => ({ line: i + 1, text }))
 		.filter(({ text }) => /\bmainnet\b/i.test(text) && LEDGER_WORDS.test(text) && !EXEMPTION_RE.test(text));
+}
+
+//: The same pairing, one sentence wide, over `readerText` rather than raw lines.
+//: The line scan above cannot see a claim the author wrapped: on the #1805 merge
+//: the constant reads `'…is the track ' + \n 'record that carries to mainnet…'`,
+//: and neither line holds both halves. Sentence-bounded (`[^.!?]`) so this stays a
+//: claim-shaped match and not "this file says mainnet somewhere and ledger
+//: somewhere". The window stops at `<>{}` as well as at `.!?`, so a tag or a JSX
+//: expression between the two halves ends the sentence — that is what keeps the
+//: honesty table in Architecture.jsx (`<td>Mainnet, real funds</td>` two rows
+//: below a `<LedgerStatus>`) from reading as one claim. `\b` on both halves is
+//: what keeps the component name `LedgerStatus` from counting as the word
+//: "ledger". Comments are gone by the time `readerText` is done, which is both
+//: why exemptions need no special case here (an exempted comment is not copy) and
+//: why this scan is about the rendered page only — the raw line scan is what
+//: covers comments.
+const SENTENCE_PAIR_RE =
+	/\bmainnet\b[^.!?<>{}]{0,140}\b(?:track record|ledger)\b|\b(?:track record|ledger)\b[^.!?<>{}]{0,140}\bmainnet\b/i;
+
+/** The claim a line-by-line scan cannot see, or null. */
+function wrappedLedgerMainnetClaim(source) {
+	const match = SENTENCE_PAIR_RE.exec(readerText(source));
+	return match ? match[0] : null;
 }
 
 test("mainnetMentions flags every literal this change removed", () => {
@@ -235,6 +261,21 @@ test("ledgerMainnetPairs flags a rephrasing that never says \"carries to mainnet
 		[],
 		"the owner-dated escape hatch applies here too",
 	);
+
+	// The wrap that defeats a line-by-line scan: #1805's own constant, as it
+	// merges. Neither line holds both halves of the claim; the sentence does.
+	const wrapped =
+		"export const PAPER_SETTLE_CADENCE =\n\t'…that settled series is the track ' +\n\t'record that carries to mainnet.'";
+	assert.deepEqual(ledgerMainnetPairs(wrapped), [], "fixture is vacuous: no single line may hold both halves");
+	assert.ok(
+		wrappedLedgerMainnetClaim(wrapped),
+		"a claim split across a line wrap must still be caught — the line scan provably cannot see this one",
+	);
+	assert.equal(
+		wrappedLedgerMainnetClaim("<span>No mainnet money</span>\n<p>Your paper ledger is append-only.</p>"),
+		null,
+		"two unrelated sentences in one file are not a claim — this scan is sentence-bounded on purpose",
+	);
 });
 
 test("no paper-trading surface names mainnet (#1807, cutover cancelled by #1240)", () => {
@@ -258,7 +299,7 @@ test('no file under ui/src says the ledger "carries to mainnet"', () => {
 	// on purpose: this is the retracted sentence itself, and there is no
 	// version of the product in which it is true.
 	const offenders = uiSourceFiles()
-		.filter(([, source]) => /carries to mainnet/i.test(source))
+		.filter(([, source]) => /carries to mainnet/i.test(source) || /carries to mainnet/i.test(readerText(source)))
 		.map(([rel]) => rel);
 	assert.deepEqual(offenders, [], `these ui/src files still say "carries to mainnet": ${offenders.join(", ")}`);
 });
@@ -272,6 +313,14 @@ test("no file under ui/src pairs mainnet with the paper ledger", () => {
 	for (const [rel, source] of uiSourceFiles()) {
 		for (const { line, text } of ledgerMainnetPairs(source)) {
 			offenders.push(`${rel}:${line}: ${text.trim()}`);
+		}
+		//: Second pass, sentence-wide over the rendered copy, because the scan
+		//: above is line-by-line and #1805's constant splits this exact claim
+		//: across a `' + \n '` boundary. No line number to give here — the claim
+		//: does not live on one.
+		const wrapped = wrappedLedgerMainnetClaim(source);
+		if (wrapped && !offenders.some((o) => o.startsWith(`${rel}:`))) {
+			offenders.push(`${rel} (wrapped across lines): ${wrapped.trim()}`);
 		}
 	}
 	assert.deepEqual(
