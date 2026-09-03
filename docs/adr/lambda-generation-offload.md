@@ -401,6 +401,16 @@ Why:
   `services/generation_cost_rollup.py`, which aggregates its estimates for the admin-only
   `GET /api/metrics/private/cost` dashboard. That is a report, not a charge: the quote seam
   is untouched and the customer price is still flat.
+  **Correction (2026-09-03, [#1793](https://github.com/aprin-labs/archimedes/issues/1793)):**
+  "neither is on a payment path" was wrong in the direction that costs a payer money.
+  `run_generation_job.py` still has no importer in the serving path, but the *generation it
+  runs* has already spent a credit at enqueue time, and the `finally` that hands that credit
+  back when the run delivers nothing lived inside `generate_routes._run_with_cleanup` — which
+  this entrypoint never enters. Any lane built on it (Lambda, `RunTask`, a worker process)
+  would have kept a payer charged for every thin-corpus, crashed, cancelled or timed-out run.
+  The refunds now live in one seam, `generate_routes.release_entitlements_if_undelivered`,
+  which both run paths call, and a test discovers every `_release_*_if_undelivered` helper and
+  fails if one of them is not reached through it. The offload verdict is unchanged.
 - The entrypoint is lane-agnostic on purpose. Whichever lane wins — Lambda, `RunTask`, or
   a worker process — it is a deployment decision on top of the same function, not a fork
   of the pipeline.

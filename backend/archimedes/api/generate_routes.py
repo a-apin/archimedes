@@ -713,6 +713,41 @@ async def _release_credit_if_undelivered(job_id: str, store) -> None:
         logger.exception("could not evaluate credit release for job %s", sanitize_log_value(job_id))
 
 
+async def release_entitlements_if_undelivered(job_id: str, store) -> None:
+    """Every refund an undelivered run owes, in ONE place both run paths call.
+
+    Two code paths run a generation, and only one of them used to clean up:
+
+    * ``_run_with_cleanup`` — the serving task's background coroutine, spawned
+      by ``POST /api/generate/start``;
+    * ``scripts/run_generation_job.run_job`` — the out-of-process entrypoint
+      that ``docs/adr/lambda-generation-offload.md`` ADOPTED (an
+      ``ecs:RunTask``, a Lambda invocation, or an operator's ``python -m``).
+
+    The enqueue spends the caller's entitlements *before* either of them
+    starts, so both owe the same refunds when the run then delivers nothing.
+    The refunds lived inside ``_run_with_cleanup``'s ``finally``, which the
+    script never enters, so on that path every post-enqueue failure — thin
+    corpus, crash, cancel, timeout — kept the credit spent (#1793).
+
+    **A new release goes HERE, not into a caller's ``finally``.** That is the
+    whole point of the seam, and it is enforced rather than asked for:
+    ``test_run_generation_job.py::TestBothRunPathsReleaseTheSameThings``
+    discovers every ``_release_*_if_undelivered`` coroutine in this module and
+    fails if one of them is not reached through this function. #1785 adds
+    ``_release_free_slot_if_undelivered`` (the free tier's equivalent); when it
+    lands, that call belongs on the next line, not beside the caller's.
+
+    ``store`` is a parameter rather than a ``get_job_store()`` call because the
+    offload worker binds its store from the environment *as it is at run time*
+    — ``get_job_store()``'s singleton reads a ``REDIS_URL`` frozen at import,
+    which for that worker is the localhost default. See
+    ``run_generation_job``'s module docstring for why no import ordering can
+    win that race.
+    """
+    await _release_credit_if_undelivered(job_id, store)
+
+
 async def _run_with_cleanup(
     job_id: str,
     brief: GenerateBrief,
@@ -810,7 +845,7 @@ async def _run_with_cleanup(
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
-        await _release_credit_if_undelivered(job_id, store)
+        await release_entitlements_if_undelivered(job_id, store)
 
 
 @generate_router.get("/stream/{job_id}")

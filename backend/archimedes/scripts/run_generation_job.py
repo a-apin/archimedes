@@ -12,7 +12,11 @@ production job store, so:
 * events still land in the SAME Redis event log the SSE route reads, which is
   what keeps ``GET /api/generate/stream`` unchanged by an offload;
 * persistence, the rigor gate, the cost meter and the credit ledger all run on
-  their normal code paths — nothing here re-implements a pipeline step.
+  their normal code paths — nothing here re-implements a pipeline step;
+* a run that ends without delivering hands back what the enqueue spent, through
+  the same ``generate_routes.release_entitlements_if_undelivered`` the serving
+  path calls (#1793) — this entrypoint used to skip it entirely, because that
+  cleanup lived inside ``_run_with_cleanup``'s ``finally``.
 
 Nothing in the serving path imports this module. It is an *entrypoint*, peer to
 ``run_kb_pipeline.py``: the offload decision itself is recorded in
@@ -181,10 +185,28 @@ async def run_job(event: dict[str, Any]) -> dict[str, Any]:
     escapes it is an *infrastructure* failure (no Redis, no DB, bad config) —
     precisely the class an offloaded worker must surface to its invoker as a
     failed invocation rather than absorb into a job that looks merely unlucky.
+
+    **The cleanup is not optional on this path either (#1793).** The caller's
+    entitlements were spent by the enqueue, before this function was reached,
+    and the serving path hands them back from ``_run_with_cleanup``'s
+    ``finally`` — which this entrypoint never enters. So the awaited call is
+    wrapped in the same ``finally``, calling the same
+    :func:`~archimedes.api.generate_routes.release_entitlements_if_undelivered`
+    the serving path calls. ``finally``, not ``except``: the silent shape of
+    this bug is the insufficient-corpus branch, which writes an ``error``
+    status and *returns* rather than raising, so a handler keyed on exceptions
+    would miss the very failure that surfaced the defect. The refund is
+    evaluated from the job's terminal status, so a delivered run keeps paying.
     """
     bootstrap_environment()
 
     from archimedes.agents.generation_pipeline import run_generation
+
+    # Deferred with the rest of the heavy imports (see the module docstring's
+    # ordering rule), and read as a module attribute at call time so the seam
+    # stays patchable and stays SHARED — resolving it here rather than copying
+    # the release logic is what keeps this path from drifting from the route's.
+    from archimedes.api.generate_routes import release_entitlements_if_undelivered
 
     job_id = str(event.get("job_id") or "").strip()
     if not job_id:
@@ -193,17 +215,24 @@ async def run_job(event: dict[str, Any]) -> dict[str, Any]:
 
     store = _bind_job_store(event.get("store"))
     started = time.monotonic()
-    await run_generation(
-        job_id=job_id,
-        brief=brief,
-        n_candidates=int(event.get("n_candidates") or 1),
-        store=store,
-        mode=event.get("mode"),
-        model=event.get("model"),
-        owner_wallet=event.get("owner_wallet"),
-        owner_user_id=event.get("owner_user_id"),
-        dual_regime=bool(event.get("dual_regime", True)),
-    )
+    try:
+        await run_generation(
+            job_id=job_id,
+            brief=brief,
+            n_candidates=int(event.get("n_candidates") or 1),
+            store=store,
+            mode=event.get("mode"),
+            model=event.get("model"),
+            owner_wallet=event.get("owner_wallet"),
+            owner_user_id=event.get("owner_user_id"),
+            dual_regime=bool(event.get("dual_regime", True)),
+        )
+    finally:
+        # The store this worker BOUND, never `get_job_store()`: the singleton
+        # reads the import-time `REDIS_URL`, which in a worker that leans on
+        # the SSM loader is the localhost default. A refund decided from an
+        # empty localhost store would read every delivered run as undelivered.
+        await release_entitlements_if_undelivered(job_id, store)
     elapsed = time.monotonic() - started
 
     record = await store.get(job_id) or {}
