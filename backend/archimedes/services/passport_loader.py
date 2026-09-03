@@ -397,6 +397,74 @@ def get_passport(session: Session, strategy_id: str) -> StrategyPassportRecord |
     return session.query(StrategyPassportRecord).filter_by(id=strategy_id).first()
 
 
+#: The verdict a surface serves for a strategy ``strategy_passports`` has never
+#: heard of, and the fail-closed answer when the read itself breaks.
+#:
+#: ``passes_rigor_gate`` is ``None``, never ``False``: ``False`` is a VERDICT
+#: ("the gate ran and this lost") and no gate ran. That is the same distinction
+#: ``rigor_gate_status == "pending"`` makes in words, and the same one
+#: ``strategies_routes._UNGRADED_VERDICT_FIELDS`` makes for the Library page —
+#: ``backend/tests/test_paper_deploy_verdict.py`` pins the two agree on the
+#: three keys they share, so the paper surface and the library surface can never
+#: start describing an ungraded row differently.
+UNGRADED_RIGOR_VERDICT: dict = {
+    "passes_rigor_gate": None,
+    "rigor_gate_status": STATUS_PENDING,
+    "graded_at": None,
+    "gate_version": None,
+}
+
+
+def stored_rigor_verdict(session: Session, strategy_id: str) -> dict:
+    """The STORED rigor verdict for one strategy, as JSON-ready fields.
+
+    A pure read of ``strategy_passports`` — the verdict of record
+    (``docs/adr/rigor-verdict-of-record.md``). It never runs the gate, never
+    touches a return series, and never derives a verdict from metrics: a
+    strategy is graded once, at backtest time, and every surface reads THAT
+    row. A read-time recompute here would be a second gate answering the same
+    question, which is exactly the split #1746/#1747 closed.
+
+    ``passes_rigor_gate`` is derived from the stored four-state rather than
+    copied from the stored boolean — the same rule
+    ``strategies_routes._passport_verdicts_for`` follows, so a legacy row whose
+    two columns were written apart cannot be served apart.
+
+    ``gate_version`` rides along because a stored verdict is only comparable to
+    another one graded by the same gate; the literal
+    ``rigor_gate_version.LEGACY_DERIVED`` means the verdict was INFERRED by the
+    verdict-of-record migration rather than produced by a gate run.
+
+    Fails CLOSED and never raises: a missing row or a DB-level failure returns
+    :data:`UNGRADED_RIGOR_VERDICT`. This feeds read paths that must keep serving
+    the ledger they already have (``GET /api/paper/deployments``); degrading to
+    "not graded" is honest, while 500ing would take a correct track record down
+    with it. What is never produced on the failure path is a ``pass``.
+    """
+    try:
+        row = get_passport(session, strategy_id)
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        logger.warning(
+            "passport verdict read failed for strategy %s (%s) — reported as ungraded, never as a pass",
+            strategy_id,
+            type(exc).__name__,
+        )
+        try:
+            session.rollback()
+        except Exception:
+            logger.debug("rollback after a failed passport verdict read also failed", exc_info=True)
+        return dict(UNGRADED_RIGOR_VERDICT)
+    if row is None:
+        return dict(UNGRADED_RIGOR_VERDICT)
+    status = row.rigor_gate_status or STATUS_PENDING
+    return {
+        "passes_rigor_gate": status == STATUS_PASS,
+        "rigor_gate_status": status,
+        "graded_at": row.graded_at.isoformat() if row.graded_at else None,
+        "gate_version": row.gate_version,
+    }
+
+
 def list_passports(
     session: Session,
     *,
