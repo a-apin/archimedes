@@ -144,7 +144,7 @@ deletion to be irreversible about** — if a future revision ever does delete
 an orphan, its downgrade cannot restore it, and that must be said there.
 
 Revision ID: d3a71f5c9e28
-Revises: c5e81a4f7b32
+Revises: d4b1f7c8e206
 Create Date: 2026-09-02 09:00:00.000000
 
 """
@@ -159,7 +159,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d3a71f5c9e28"
-down_revision: str | Sequence[str] | None = "c5e81a4f7b32"
+down_revision: str | Sequence[str] | None = "d4b1f7c8e206"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
