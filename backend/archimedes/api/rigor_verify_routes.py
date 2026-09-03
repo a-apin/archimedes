@@ -72,7 +72,7 @@ import math
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from archimedes.api.account_auth import CurrentUser, require_current_user
 from archimedes.api.limiter import limiter
@@ -121,9 +121,55 @@ class ReturnPoint(BaseModel):
     daily_return: float
 
 
+# #1749: the size ceiling on a verify payload belongs to the APPLICATION, at a
+# row count we chose, instead of being set implicitly by whatever byte count the
+# edge happens to enforce.
+#
+# Until this cap existed, `returns` had `min_length=1` and no upper bound, so the
+# only ceiling anywhere in the path was AWS WAF's `SizeRestrictions_BODY` —
+# 8,192 bytes on a REGIONAL web ACL fronting an ALB. Measured (dogfood
+# 2026-09-01, agent-cli): 160 rows = 8,076 B -> 200; 165 rows = 8,326 B -> 403.
+# That is 50.5 bytes per serialised row including the envelope, so the limit is
+# crossed at ~163 rows and one trading year (252 bars, ~12.7 KB extrapolated)
+# 403'd at the edge with an `awselb/2.0` HTML body the CLI could only report as
+# a generic http_error. See infra/waf.tf for the scoped edge fix.
+#
+# 2,600 rows is a decade of daily bars (10 x 252 = 2,520, plus headroom for
+# leap-year/exchange-calendar variation). A full-cap payload measures ~122 KB of
+# JSON with 6-decimal returns and extrapolates to ~131 KB at the 50.5 B/row seen
+# in production — well under nginx's implicit 1 MB `client_max_body_size`
+# default (nginx/nginx.conf sets none; nginx is the ALB target, infra/ecs.tf),
+# which with the WAF exception in place is now the only BYTE ceiling on this
+# path. Note this is a ROW cap: FastAPI buffers and json-parses the entire body
+# before dependencies or field validation run, so an over-cap — or
+# unauthenticated — request is still parsed in full first. It is also small
+# enough that the DSR/OOS math stays sub-second.
+#
+# Fail-closed: over the cap is a 422 with a message that names the limit, the
+# count received and the reason — never a truncation, never a silent accept.
+_MAX_RETURN_ROWS = 2600
+
+
 class RigorVerifyRequest(BaseModel):
-    returns: list[ReturnPoint] = Field(min_length=1)
+    # `max_length` is the declarative contract (it lands in the OpenAPI schema
+    # and is the backstop if the validator below is ever removed); the
+    # mode="before" validator runs first and is what produces the explicit
+    # message, because pydantic's own max_length error ("List should have at
+    # most 2600 items after validation") does not tell the caller what to do.
+    returns: list[ReturnPoint] = Field(min_length=1, max_length=_MAX_RETURN_ROWS)
     trials: int = Field(default=1, ge=1, description="Self-attested trial count for the DSR deflation.")
+
+    @field_validator("returns", mode="before")
+    @classmethod
+    def _cap_returns(cls, value: object) -> object:
+        """Reject over-long series with a message that names the limit (#1749)."""
+        if isinstance(value, list) and len(value) > _MAX_RETURN_ROWS:
+            raise ValueError(
+                f"returns has {len(value)} rows; the maximum is {_MAX_RETURN_ROWS} "
+                f"(~10 years of daily bars). This is a payload cap, not a statistical "
+                f"one: split the series or aggregate to a coarser frequency."
+            )
+        return value
 
 
 class RigorCheck(BaseModel):

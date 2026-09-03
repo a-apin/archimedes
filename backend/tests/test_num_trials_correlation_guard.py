@@ -56,15 +56,15 @@ def test_guard_allows_the_real_num_trials_one_cohort_case():
     """Today's actual usage at all three call sites: num_trials=1 with a
     real, nonzero cohort-wide correlation. Must never raise — this is the
     documented-safe combination (E[max_N]=0 makes the correlation inert)."""
-    assert_self_contained_cohort_correlation(1, 0.73) is None
-    assert_self_contained_cohort_correlation(1, 0.0) is None
+    assert assert_self_contained_cohort_correlation(1, 0.73) is None
+    assert assert_self_contained_cohort_correlation(1, 0.0) is None
 
 
 def test_guard_allows_genuinely_self_contained_multi_trial_with_zero_correlation():
     """A strategy's OWN N-candidate generation pool or parameter-variant grid
     legitimately passes num_trials>1 — the guard must not block that, only
     the COMBINATION with a nonzero (cohort) correlation."""
-    assert_self_contained_cohort_correlation(35, 0.0) is None
+    assert assert_self_contained_cohort_correlation(35, 0.0) is None
 
 
 # ── 3. Wiring: all three call sites actually invoke the guard ──────────────
