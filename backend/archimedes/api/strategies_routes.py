@@ -918,9 +918,17 @@ async def list_generated_strategies(
                 [p.get("arxiv_id") for d in page for p in (d.get("source_papers") or []) if isinstance(p, dict)],
                 session,
             )
+            # Each row's OWN rejection reasons, derived from the rigor_verdict
+            # blob `to_dict()` already decoded above — a pure function, zero
+            # extra queries, so the page cost is unchanged (the Library's
+            # "Rejected — did not pass the rigor gate" cards used to share one
+            # paragraph of guessed prose because this field did not exist).
+            from archimedes.services.rigor_reasons import rigor_reasons_for_verdict
+
             rows = []
             for d in page:
                 d["source_papers"] = _resolve_source_papers(d.get("source_papers"), corpus_meta)
+                d["rigor_reasons"] = rigor_reasons_for_verdict(d.get("rigor_verdict"))
                 rows.append(_redact_owner_wallet(d, caller))
     except Exception as exc:
         # Full exception detail is logged server-side only — never echoed to

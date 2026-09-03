@@ -281,25 +281,19 @@ def _debate_can_run(brief: GenerateBrief) -> bool:
     (which would cause every proposer call to return ``insufficient_corpus``).
     Never raises — any failure degrades to ``False`` so ``run_generation`` emits
     ``GENERATION_UNAVAILABLE`` honestly rather than crashing.
-    """
-    try:
-        from archimedes.agents.strategy_fusion import (
-            MIN_PAPERS,
-            FusionBrief,
-            load_corpus,
-            select_candidates,
-        )
 
-        fb = FusionBrief(
-            asset_classes=list(brief.asset_classes or []),
-            risk_appetite=brief.risk_appetite,
-            strategic_direction=brief.intent or "",
-            max_papers=brief.max_papers,
-        )
-        return len(select_candidates(fb, load_corpus())) >= MIN_PAPERS
-    except Exception:
-        logger.debug("debate viability precheck failed; treating as not runnable", exc_info=True)
-        return False
+    The retrieval itself lives in ``corpus_viability.assess_corpus_viability``,
+    which returns the same verdict PLUS the count it measured and the
+    corpus-derived ways forward. This wrapper keeps the long-standing bool
+    contract (every caller and test binds to it) while guaranteeing that the
+    gate and the failure explanation can never be computed by two different
+    implementations. They remain two INVOCATIONS over a corpus that can move
+    between them, so ``generation_pipeline`` guards the case where the second
+    one comes back viable after this gate has already said no.
+    """
+    from archimedes.agents.corpus_viability import assess_corpus_viability
+
+    return assess_corpus_viability(brief).can_run
 
 
 # ── Step 1 — proposer pool ────────────────────────────────────────────────────
