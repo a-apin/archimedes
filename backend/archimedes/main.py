@@ -1028,6 +1028,311 @@ def _probe_error_fields(prefix: str, exc: BaseException) -> dict[str, object]:
 _LLM_PROBE_BUDGET_SECONDS = 1.0
 
 
+def _paper_rag_read():
+    """The paper-RAG probe's read.
+
+    Module scope, not a closure inside ``health``, because ``/health`` and
+    ``/health/ready`` both run it (#1818 P3) and they have to run the SAME read
+    — two copies would drift and then disagree about the same task.
+
+    Imported INSIDE the worker thread, not at module import, so a cold
+    sentence-transformer import is inside the budget too — the import is the
+    slow part on a fresh task. Tests keep patching
+    ``services.paper_rag.paper_rag_health`` exactly as they do today.
+    """
+    from archimedes.services.paper_rag import paper_rag_health as _prag_health
+
+    return _prag_health()
+
+
+def _regime_read():
+    """The GMM regime-detector probe's read (late import: see _paper_rag_read)."""
+    from archimedes.services.gmm_regime_detector import gmm_regime_health
+
+    return gmm_regime_health()
+
+
+def _risk_data_read():
+    """The risk-data probe's read (late import: see _paper_rag_read)."""
+    from archimedes.api.risk_routes import risk_data_health
+
+    return risk_data_health()
+
+
+# ─────────────────────────── READINESS (#1818 P3) ───────────────────────────
+#
+# INCIDENT 2026-09-03. Two paper-advance children ran ``init_db()``'s DDL
+# patches concurrently; one child's ``AccessExclusiveLock`` request queued
+# behind its sibling's open cycle transaction, and every later reader of
+# ``papers`` / ``strategy_store`` queued behind THAT. From 03:32Z to 13:28Z
+# ``/health`` answered 200 in ~1.05s on both tasks — correctly, by its own
+# contract: it reports what it knows, and what it knew was a set of
+# ``stale_cached`` readings, each honestly labelled, whose age reached 35,797s.
+# ECS and the ALB stayed green for ten hours over a fleet that could not read
+# its own database. Liveness was TRUE the whole time (the loop was turning).
+# Readiness was false and was represented nowhere, so nothing could act on it.
+#
+# This is the missing half, and it is deliberately a SECOND endpoint rather
+# than a status code on the first:
+#
+#   /health        ALB target-group check (infra/alb.tf: path /health,
+#                  matcher "200") + the human/monitor payload. UNCHANGED —
+#                  still always 200, still carrying the labelled stale state,
+#                  now also publishing the readiness verdict as data. The ALB
+#                  check acts on EVERY target at once, so a shared transient
+#                  (an Aurora failover, an RPC blip) must not be able to route
+#                  through it; that is the N2 argument in the chain block below
+#                  and it is unchanged here.
+#   /health/ready  the CONTAINER health check (backend/Dockerfile HEALTHCHECK,
+#                  mirrored in infra/ecs.tf so the ECS agent can see it). 503
+#                  when this task has been serving cached DB readings for
+#                  longer than HEALTH_STALE_UNREADY_S.
+#
+# Why the container check and not the ALB check. Failing the ALB check pulls a
+# target out of rotation IMMEDIATELY, and a shared cause pulls all of them at
+# once — that is literally the 13:29Z line of the incident (HealthyHostCount=0,
+# 504s to the only user of the day). Failing the container check hands the task
+# to the ECS scheduler, which is bound by
+# `deployment_minimum_healthy_percent = 100` (infra/ecs.tf): it brings a
+# replacement up and healthy BEFORE draining the wedged one. Same verdict, and
+# the response to it is proportionate instead of fleet-wide.
+#
+# The two consumers therefore keep their existing semantics and only the
+# container check gains the new verdict.
+
+# The probes whose staleness means "this task can no longer read its database".
+# Four are literal DB reads: ``count_corpus_papers`` and ``get_paper_count`` are
+# scalar COUNTs on ``papers`` — the very table the incident's lock chain wedged —
+# ``get_corpus_meta`` is a single-row read, and ``risk_data_health`` goes through
+# the strategy provider's persisted-backtest load. ``paper_rag_health`` is NOT a
+# DB read (process state plus a weights stat) and is in the set anyway, on the
+# incident's own evidence: it went ``stale_cached`` in the same 03:32:08-03:32:19
+# window as the other three, because the shared probe executor filled with
+# blocked DB reads — so its staleness is a second, independent witness to the
+# same wedge.
+#
+# ``regime_detector`` and the two outbound probes (chain, oracle) are NOT here.
+# A dark Arc RPC is not a reason to destroy a task that is serving pages, and
+# the GMM probe reads a fitted artifact off disk — neither one says anything
+# about whether this process can still reach Postgres.
+#
+# The value is each probe's ``absent`` — what /health reports when the probe
+# misses AND nothing was ever cached. Restated here (identically) rather than
+# left to the two call sites to keep in step, because both endpoints write the
+# SAME shared memo: a divergent ``absent`` would mean the reading a task serves
+# depends on which endpoint last filled the cache.
+_READINESS_ABSENT: dict[str, object] = {
+    _CORPUS_PROBE: 0,
+    _CORPUS_DB_PROBE: 0,
+    _CORPUS_META_PROBE: None,
+    _PAPER_RAG_PROBE: None,
+    _RISK_DATA_PROBE: None,
+}
+_READINESS_PROBES = tuple(_READINESS_ABSENT)
+
+# 900s = 30 consecutive misses of the ALB's 30s /health poll. Sized to be
+# unreachable by anything transient: every probe in the set above is a bounded
+# LOCAL read with a 0.8s budget (_LOCAL_PROBE_BUDGET_SECONDS), so a quarter of
+# an hour of them never once completing is not a slow dependency — it is a task
+# that has stopped being able to read. In the incident the last completed reads
+# were at ~03:32Z, so this bar would have been passed at ~03:47Z — 9h41m before
+# the first user request of the day at 13:28Z, and ~11h15m before the OOM kill
+# that actually broke the wedge.
+_DEFAULT_STALE_UNREADY_SECONDS = 900.0
+
+_STALE_UNREADY_ENV = "HEALTH_STALE_UNREADY_S"
+
+
+def _stale_unready_threshold_s() -> float:
+    """Seconds of continuous ``stale_cached`` before this task calls itself unready.
+
+    Read per request, not memoised at import, so the value follows a task
+    restart with a different env instead of requiring a build.
+
+    ``HEALTH_STALE_UNREADY_S=0`` (or negative) DISABLES the rule: the endpoint
+    then always answers 200 and reports the same labelled states /health does.
+    That escape hatch is not decoration. The cost of getting this threshold
+    wrong is a task replaced once per threshold-length interval, forever, and an
+    operator has to be able to stop that with an env change and a restart rather
+    than a code change and an image build. A value that will not parse falls
+    back to the default and says so — silently disabling a safety rule because
+    someone typo'd a number is the worse failure.
+    """
+    raw = os.getenv(_STALE_UNREADY_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_STALE_UNREADY_SECONDS
+    try:
+        parsed = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number — falling back to the %.0fs default",
+            _STALE_UNREADY_ENV,
+            raw,
+            _DEFAULT_STALE_UNREADY_SECONDS,
+        )
+        return _DEFAULT_STALE_UNREADY_SECONDS
+    return max(0.0, parsed)
+
+
+def _stale_unready_probes(outcomes: dict[str, object], threshold_s: float) -> list[tuple[str, float]]:
+    """``(name, age_s)`` for every readiness probe serving a reading older than the threshold.
+
+    ANY of them, not all of them. These five share one database and one probe
+    executor, so in the incident they did go stale together — but the rule has
+    to fire when only the DB-backed half does. Requiring unanimity would let a
+    wedged database hide behind ``paper_rag``, the one member of the set that
+    can keep answering with Postgres gone.
+
+    The cost of ANY, stated plainly: one permanently stuck probe replaces this
+    task roughly once per threshold interval, forever. That is loud in the ECS
+    event log, every replacement logs HEALTH_READINESS_STALE naming the probe,
+    and an operator stops it with ``HEALTH_STALE_UNREADY_S=0``. The cost of ALL
+    is another ten-hour outage nobody is told about.
+
+    Only ``stale_cached`` counts, and that is a deliberate line:
+
+    * ``probe_timeout`` — the probe missed and nothing was EVER cached. That is
+      the COLD-START shape (the cache is process-local and empty at boot), and
+      replacing a task for not yet having completed its first read turns a slow
+      boot into a replacement loop. A task that has never read is handled by
+      the container check's ``startPeriod``, not by this rule.
+    * ``probe_error`` — the probe RAISED. That is a defect in the probe, not a
+      verdict about the database (services/health_cache.py draws the same line
+      for the same reason), and a broken probe must not be able to take the
+      fleet down.
+    * ``live`` — a completed read. Whatever else is wrong, this task can read.
+
+    ``threshold_s <= 0`` disables the rule entirely (see
+    ``_stale_unready_threshold_s``).
+    """
+    if threshold_s <= 0:
+        return []
+    stale: list[tuple[str, float]] = []
+    for name in _READINESS_PROBES:
+        outcome = outcomes.get(name)
+        if isinstance(outcome, BaseException) or outcome is None:
+            continue
+        if getattr(outcome, "state", None) != "stale_cached":
+            continue
+        age_s = getattr(outcome, "age_s", None)
+        if age_s is None or age_s <= threshold_s:
+            continue
+        stale.append((name, float(age_s)))
+    return stale
+
+
+async def _readiness_probe_outcomes() -> dict[str, object]:
+    """Run exactly the readiness probes, through the cache ``/health`` already uses.
+
+    This endpoint drives its OWN probes rather than reading the cache another
+    endpoint fills. A read-only readiness check has the mirror-image failure of
+    the incident: with nobody polling /health the recorded ages keep growing
+    while nothing is ever attempted, and a perfectly healthy idle task gets
+    replaced for being idle.
+
+    Same singleton cache, same budgets, same ``absent`` values as /health, so
+    the two endpoints can never disagree about how old a reading is, and this
+    one inherits /health's "answers, never waits" contract (#1592/#1594): the
+    whole set costs ``max(budget)``, not ``sum(budget)``.
+    """
+    from archimedes.services.corpus_service import count_corpus_papers, get_corpus_meta, get_paper_count
+    from archimedes.services.health_cache import health_probe_cache
+
+    # Imported here, not at module scope, so the tests that patch these module
+    # attributes keep working — same reason the three ``*_read`` helpers above
+    # import inside their own bodies.
+    reads = {
+        _CORPUS_PROBE: count_corpus_papers,
+        _CORPUS_DB_PROBE: get_paper_count,
+        _CORPUS_META_PROBE: get_corpus_meta,
+        _PAPER_RAG_PROBE: _paper_rag_read,
+        _RISK_DATA_PROBE: _risk_data_read,
+    }
+    # Iterated and zipped back over the SAME sequence, so reordering
+    # _READINESS_PROBES can never silently attach one probe's age to another
+    # probe's name — which would be a lie of exactly the kind this endpoint is
+    # here to stop.
+    outcomes = await asyncio.gather(
+        *(
+            health_probe_cache.probe(
+                name,
+                _bounded_local_read(reads[name]),
+                budget_seconds=_LOCAL_PROBE_BUDGET_SECONDS,
+                absent=_READINESS_ABSENT[name],
+            )
+            for name in _READINESS_PROBES
+        ),
+        return_exceptions=True,
+    )
+    return dict(zip(_READINESS_PROBES, outcomes, strict=True))
+
+
+def _readiness_probe_payload(outcomes: dict[str, object]) -> dict[str, dict[str, object]]:
+    """Per-probe ``state``/``age_s``/``reason``, so a 503 says WHICH read went dark."""
+    payload: dict[str, dict[str, object]] = {}
+    for name in _READINESS_PROBES:
+        outcome = outcomes.get(name)
+        if isinstance(outcome, BaseException):
+            payload[name] = {
+                "state": "probe_error",
+                "age_s": None,
+                "reason": f"{name} probe_error: {outcome}",
+            }
+            continue
+        payload[name] = {
+            "state": getattr(outcome, "state", "probe_error"),
+            "age_s": getattr(outcome, "age_s", None),
+            "reason": getattr(outcome, "reason", ""),
+        }
+    return payload
+
+
+@app.get("/health/ready")
+@app.get("/api/health/ready")
+@limiter.exempt
+async def health_ready(response: Response):
+    """READINESS — 503 when this task has been reading from cache too long (#1818 P3).
+
+    Wired to the CONTAINER health check (backend/Dockerfile ``HEALTHCHECK``,
+    mirrored in ``infra/ecs.tf``), never to the ALB target group. See the
+    READINESS block above for why those two consumers are kept apart.
+
+    Liveness is unchanged and is still ``/health``'s job: this endpoint answers
+    under the same bounded-probe contract, so "the process is alive" is proved
+    by it returning at all, and 503 is a statement about READINESS only —
+    "alive, and unable to read its database since ``age_s`` seconds ago".
+    """
+    _no_store(response)
+
+    outcomes = await _readiness_probe_outcomes()
+    threshold_s = _stale_unready_threshold_s()
+    stale = _stale_unready_probes(outcomes, threshold_s)
+
+    if stale:
+        # 503, not 500: the task is alive and answering, it just must not be
+        # kept in service. Also a loud, greppable literal for a CloudWatch
+        # metric filter, in the shape of HEALTH_CHAIN_DISCONNECTED and
+        # HEALTH_ORACLE_STALE in the /health handler below. (The alarm itself is
+        # #1818 P5; this is the log line it will key on.)
+        response.status_code = 503
+        logger.error(
+            "HEALTH_READINESS_STALE: unready — %s stale beyond %.0fs; container health check fails",
+            ", ".join(f"{name}={age_s:.0f}s" for name, age_s in stale),
+            threshold_s,
+        )
+
+    return {
+        "ready": not stale,
+        "service": "archimedes-backend",
+        "version": os.getenv("ARCHIMEDES_GIT_SHA", "dev"),
+        # 0.0 means the rule is switched off by env; publishing it is how an
+        # operator sees that a 200 here is a verdict and not a switched-off rule.
+        "stale_unready_threshold_s": threshold_s,
+        "stale_probes": [{"probe": name, "age_s": age_s} for name, age_s in stale],
+        "probes": _readiness_probe_payload(outcomes),
+    }
+
+
 @app.get("/health")
 @app.get("/api/health")
 @limiter.exempt
@@ -1057,25 +1362,6 @@ async def health(response: Response):
         from archimedes.services.oracle_health import oracle_health as _oracle_health_probe
 
         return await _oracle_health_probe(budget_seconds=_ORACLE_INNER_BUDGET_SECONDS)
-
-    def _paper_rag_read():
-        # Imported INSIDE the worker thread, not at handler scope, so a cold
-        # sentence-transformer import is inside the budget too — the import is
-        # the slow part on a fresh task. Tests keep patching
-        # ``services.paper_rag.paper_rag_health`` exactly as they do today.
-        from archimedes.services.paper_rag import paper_rag_health as _prag_health
-
-        return _prag_health()
-
-    def _regime_read():
-        from archimedes.services.gmm_regime_detector import gmm_regime_health
-
-        return gmm_regime_health()
-
-    def _risk_data_read():
-        from archimedes.api.risk_routes import risk_data_health
-
-        return risk_data_health()
 
     def _llm_read() -> tuple[bool, str, str, str | None]:
         """Resolve the LLM backend off the loop, on the dedicated probe pool (#1044).
@@ -1583,6 +1869,25 @@ async def health(response: Response):
     except Exception:
         logger.debug("reveal reconciliation counts read failed", exc_info=True)
 
+    # Readiness verdict (#1818 P3), published as DATA and never as this
+    # endpoint's status code. /health is the ALB's check and stays 200 by
+    # contract; these three fields are how an operator reading the body — or a
+    # monitor scraping it — sees the same verdict the container health check at
+    # /health/ready is acting on, computed from the very outcomes above rather
+    # than from a second set of probes. See the READINESS block above main's
+    # /health handler for why the status code lives on the other endpoint.
+    _readiness_threshold_s = _stale_unready_threshold_s()
+    _stale_unready = _stale_unready_probes(
+        {
+            _CORPUS_PROBE: corpus_outcome,
+            _CORPUS_DB_PROBE: corpus_db_outcome,
+            _CORPUS_META_PROBE: corpus_meta_outcome,
+            _PAPER_RAG_PROBE: paper_rag_outcome,
+            _RISK_DATA_PROBE: risk_data_outcome,
+        },
+        _readiness_threshold_s,
+    )
+
     return {
         # "ok" requires BOTH a connected chain and a LIVE reading of it (#1592).
         # A cached `connected: true` served because the fresh probe timed out is
@@ -1681,6 +1986,17 @@ async def health(response: Response):
         # Nothing consumes either field yet; see the block above the return.
         "reveal_reconcile_pending": reveal_reconcile_pending,
         "reveal_reconcile_terminal": reveal_reconcile_terminal,
+        # Readiness (#1818 P3). `ready: false` means the DB-backed probes above
+        # have been serving cached readings for longer than
+        # stale_unready_threshold_s, i.e. this task is alive but can no longer
+        # read — the state that sat behind a green /health for ten hours on
+        # 2026-09-03. The STATUS CODE here is deliberately still 200; the 503
+        # that gets the task replaced is /health/ready's, which the container
+        # health check polls. `stale_unready_threshold_s: 0` means the rule is
+        # switched off by env, so `ready: true` under it is not a verdict.
+        "ready": not _stale_unready,
+        "stale_unready_probes": [{"probe": name, "age_s": age_s} for name, age_s in _stale_unready],
+        "stale_unready_threshold_s": _readiness_threshold_s,
     }
 
 

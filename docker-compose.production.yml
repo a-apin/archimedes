@@ -136,6 +136,13 @@ services:
       - archimedes-corpus-artifact:/app/data/corpus-artifact
     # Health gate so nginx (and the ALB behind it) only routes to a ready
     # backend. Mirrors the ALB health check path GET /health.
+    #
+    # Deliberately NOT /health/ready (#1818 P3), unlike backend/Dockerfile's
+    # HEALTHCHECK and infra/ecs.tf's mirror of it. Readiness exists so a
+    # SCHEDULER replaces a wedged task; this tier has none — compose evaluates
+    # `depends_on: service_healthy` at startup only and never re-routes, so a
+    # 503 here would take the replica out with no replacement behind it. That is
+    # the fleet-wide shape P3 is avoiding, not the one it wants.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
       interval: 15s

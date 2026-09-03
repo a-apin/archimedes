@@ -508,8 +508,27 @@ resource "aws_ecs_task_definition" "backend" {
       # lets ECS track this container's health for nginx's `dependsOn
       # condition = HEALTHY` below — an image-only HEALTHCHECK isn't visible
       # to the ECS agent for container-dependency purposes.
+      #
+      # /health/ready, NOT /health (#1818 P3). This is the READINESS probe: it
+      # answers 200 while the task can still read its database and 503 once the
+      # DB-backed /health probes have been serving cached readings for longer
+      # than HEALTH_STALE_UNREADY_S (default 900s). On 2026-09-03 two
+      # paper-advance children wedged Postgres on a DDL lock chain and /health
+      # went on answering 200 in ~1.05s from `stale_cached` values for TEN
+      # HOURS — liveness was true, readiness was represented nowhere, and ECS
+      # had nothing to act on until an OOM kill broke the wedge.
+      #
+      # Why here and not on the ALB target group: failing infra/alb.tf's check
+      # pulls a target out of rotation IMMEDIATELY and a shared cause pulls all
+      # of them at once (the incident's 13:29Z line: HealthyHostCount=0, 504s).
+      # Failing THIS check hands the task to the ECS scheduler, which is bound
+      # by `deployment_minimum_healthy_percent = 100` below — it brings a
+      # replacement up healthy before draining the wedged one. So the target
+      # group keeps polling /health (still unconditionally 200 — the N2 argument
+      # in main.py's chain block) and only the container check acts on
+      # staleness. 3 retries x 30s => ~90s of continuous 503 before ECS acts.
       healthCheck = {
-        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')\" || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -524,6 +543,14 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "PUBLIC_DOMAIN", value = "https://${var.domain_name}" },
         { name = "BETTER_AUTH_INTERNAL_URL", value = "http://127.0.0.1:3000" },
         { name = "APP_ENV", value = "production" },
+        # Readiness threshold for the /health/ready container check above
+        # (#1818 P3). Stated here at its code default rather than left implicit
+        # so the knob is visible where the check that uses it is: seconds of
+        # continuous `stale_cached` DB probes before this task reports 503 and
+        # ECS replaces it. Set to "0" to DISABLE the rule — the pull-back if it
+        # ever starts replacing healthy tasks — which is a task-def change and a
+        # restart, not a code change.
+        { name = "HEALTH_STALE_UNREADY_S", value = "900" },
         { name = "FEATURE_QUANT", value = "false" },
         { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },
         # Runtime env-parity fix (PR #1041 correctness pass, 2026-07-07): the
