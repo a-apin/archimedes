@@ -769,6 +769,68 @@ async def list_strategies(
     )
 
 
+# What a generated row carries when strategy_passports has never heard of it:
+# the strategy exists, no gate has graded it. `passes_rigor_gate` is None rather
+# than False because False is a VERDICT ("the gate ran and it lost") and no gate
+# ran — the same distinction rigor_gate_status="pending" makes in words.
+_UNGRADED_VERDICT_FIELDS: dict = {
+    "passes_rigor_gate": None,
+    "rigor_gate_status": "pending",
+    "graded_at": None,
+    "deflated_sharpe_ratio": None,
+    "dsr_p_value": None,
+    "pbo_score": None,
+    "out_of_sample_sharpe": None,
+}
+
+
+def _passport_verdicts_for(session, strategy_ids: list[str]) -> dict[str, dict]:
+    """Stored rigor verdicts for a page of generated strategies — ONE query.
+
+    Reads ``strategy_passports``: the verdict of record and the four rigor
+    numbers the SAME grading event produced (docs/adr/rigor-verdict-of-record.md).
+    The numbers travel with the verdict deliberately — a badge from the passport
+    beside DSR/PBO from ``StrategyRecord.rigor_verdict`` would put two different
+    gates' answers on one row, which is the shape #1187/#1340 removed from the
+    curated path.
+
+    ``passes_rigor_gate`` is derived from the stored four-state, not copied from
+    the stored boolean, so the read side cannot serve the two apart even if a row
+    predating the coupling has them apart.
+
+    Non-fatal: a DB failure returns ``{}`` and every row degrades to ungraded —
+    fail-closed, never a fabricated pass.
+    """
+    if not strategy_ids:
+        return {}
+    try:
+        from archimedes.models.strategy_passport_record import StrategyPassportRecord
+
+        rows = session.query(StrategyPassportRecord).filter(StrategyPassportRecord.id.in_(strategy_ids)).all()
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "passport verdict read failed for the generated page (%s) — every row degrades to ungraded",
+            type(exc).__name__,
+        )
+        _rollback_quietly(session)
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        status = row.rigor_gate_status or "pending"
+        out[row.id] = {
+            "passes_rigor_gate": status == "pass",
+            "rigor_gate_status": status,
+            "graded_at": row.graded_at.isoformat() if row.graded_at else None,
+            "deflated_sharpe_ratio": row.deflated_sharpe_ratio,
+            "dsr_p_value": row.dsr_p_value,
+            "pbo_score": row.pbo_score,
+            "out_of_sample_sharpe": row.out_of_sample_sharpe,
+        }
+    return out
+
+
 @strategies_router.get("/generated")
 async def list_generated_strategies(
     request: Request,
@@ -824,11 +886,27 @@ async def list_generated_strategies(
             # One IN query for the whole page's publish rights (#1663), same
             # shape as the generation-cost read directly above.
             publishable = _publishable_strategy_ids(session, [r.id for r in records], caller, is_example=False)
+            # ONE IN-query for the whole page's stored rigor verdicts, same shape
+            # as the two reads above (#1747). Before this the Library's Generated
+            # tab was the only surface that never looked at strategy_passports at
+            # all: it served StrategyRecord.to_dict(), whose `status` and
+            # `rigor_verdict` are BOTH written from the generation-time fusion
+            # verdict and never rewritten after a backtest. So the tab's own
+            # honesty guard — demote when status=="live" but the gate failed —
+            # was structurally unreachable, because the two halves of that
+            # condition came from the same blob. Twenty-one rows read "Live ✓"
+            # in the Library while their own passports read "Reference only —
+            # gate failed".
+            verdicts = _passport_verdicts_for(session, [r.id for r in records])
             page = []
             for r in records:
                 d = r.to_dict()
                 d["can_publish"] = r.id in publishable
                 d["generation_cost"] = costs.get(r.id)
+                # The verdict of record, overlaid onto the store row. A strategy
+                # with no passport row has never been graded — None / "pending",
+                # never a boolean, and never green.
+                d.update(verdicts.get(r.id, _UNGRADED_VERDICT_FIELDS))
                 page.append(d)
             # Citation truth: ``StrategyRecord.to_dict()`` returns source_papers
             # exactly as stored — arxiv_id, no title — so the Library card had no
@@ -1212,6 +1290,12 @@ def _generation_cost_for(strategy_id: str, session) -> dict | None:
         import logging as _logging
 
         _logging.getLogger(__name__).warning("generation cost lookup failed for %s: %s", strategy_id, exc)
+        # Postgres aborts the whole transaction on a failed statement — see
+        # _rollback_quietly. This is now the FIRST swallowed DB read on the
+        # passport path (the cohort returns read that used to hold that spot is
+        # gone), so without this every later read in the request fails on
+        # Postgres and succeeds on sqlite.
+        _rollback_quietly(session)
         return None
 
 
@@ -1244,6 +1328,7 @@ def _num_trials_for_passport(strategy_id: str, session) -> tuple[int | None, str
         import logging as _logging
 
         _logging.getLogger(__name__).warning("num_trials provenance lookup failed for %s: %s", strategy_id, exc)
+        _rollback_quietly(session)  # same transaction-abort hazard as above
         return None, "unspecified"
 
 
@@ -1291,12 +1376,6 @@ def _strategy_spec_for_passport(strategy_id: str, session) -> dict | None:
         return None
 
 
-# Sentinel distinguishing "no returns were prefetched for this call" from "the
-# prefetch ran and this strategy genuinely has no persisted series". The two
-# must not collapse: the first means we do not know, the second is a fact.
-_RETURNS_NOT_PREFETCHED = object()
-
-
 def _rollback_quietly(session) -> None:
     """Roll back after a swallowed read so the transaction is usable again.
 
@@ -1312,7 +1391,20 @@ def _rollback_quietly(session) -> None:
 
 
 def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, bool]:
-    """Tri-state + degenerate status for a generated/fusion passport row.
+    """The OLD read-time derivation of a passport row's four-state badge.
+
+    **No longer on any serving path.** The rigor verdict is now graded once, at
+    backtest time, and stored on ``strategy_passports.rigor_gate_status``; every
+    surface reads that column (``docs/adr/rigor-verdict-of-record.md``). This
+    function is kept for exactly two jobs, both of them off the request path:
+
+    1. It is the ORACLE the verdict-of-record migration's backfill rule was
+       written from — "derive exactly as today's read path did" — so
+       ``test_rigor_verdict_of_record`` can assert the migration and this
+       function agree on the same inputs, instead of restating the rule in prose
+       and hoping.
+    2. It documents what the four states meant before they were stored, which is
+       what a reader of a ``legacy-derived`` ``gate_version`` needs to know.
 
     Returns ``(status, is_placeholder)``.
 
@@ -1320,9 +1412,9 @@ def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, boo
     series apart from an ungraded one. Both leave ``record.sharpe_ratio`` NULL,
     so reading the aggregate by itself reported a flat, broken, or zero-trade
     backtest as ``"pending"`` — "we have not graded this yet", which is a claim,
-    and a false one. The curated path already answers this correctly via
-    ``_verdict_from_result``; this is the same predicate applied to the persisted
-    series the passport path had never loaded.
+    and a false one. That distinction is now made by the WRITER
+    (``verdict_from_returns`` stores ``degenerate`` as itself), which is why the
+    read no longer has to re-derive it from the series.
 
     ``daily_returns`` empty means no persisted series was found, which is the
     genuine "not graded yet" case — the aggregate three-way is then correct.
@@ -1346,7 +1438,7 @@ def _passport_rigor_status(record, daily_returns: list[float]) -> tuple[str, boo
     return ("pass" if bool(record.passes_rigor_gate) else "fail"), False
 
 
-def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_NOT_PREFETCHED) -> StrategyResponse:
+def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     """Reshape a StrategyPassportRecord (fusion/architect output) into the
     StrategyResponse schema that StrategyPassport.jsx expects. Curated
     strategies still flow through LocalStrategyProvider above; this is the
@@ -1358,13 +1450,16 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
     the UI can display a human-readable title instead of a bare arxiv id.
     Falls back to the arxiv_id string when the corpus has no matching row.
 
-    ``daily_returns`` — this strategy's persisted daily-return series, when the
-    caller has already bulk-loaded it for a whole page of rows. List callers
-    pass it so the degenerate check below costs one cohort read per request
-    instead of one per row; the single-row detail path leaves it unset and this
-    function loads its own. Left unset with no ``session`` either, the
-    degenerate check is skipped and the status falls back to the stored
-    aggregate — see ``_passport_rigor_status``.
+    **The rigor verdict is READ, not derived.** ``rigor_gate_status`` and
+    ``passes_rigor_gate`` come straight off the row, where the post-backtest
+    grade wrote them (``docs/adr/rigor-verdict-of-record.md``). This function
+    used to load the strategy's persisted return series and re-derive the
+    four-state badge on every request — which is why it took a ``daily_returns``
+    parameter, and why ``_passport_responses`` paid a whole-cohort
+    ``get_all_daily_returns`` per page. Both are gone: a verdict recomputed on
+    read is a second gate run whose answer can differ from the stored one, which
+    is the disagreement #1746/#1747 are made of. The degenerate state has not
+    been lost — the WRITER stores it (see ``_refresh_passport_real_metrics``).
     """
     from archimedes.api.schemas import PaperRefResponse
     from archimedes.services.return_source_classifier import (
@@ -1379,31 +1474,14 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
     generation_cost = _generation_cost_for(record.id, session)
     num_trials_in_selection, num_trials_scope = _num_trials_for_passport(record.id, session)
 
-    # #1184: resolve this row's persisted return series so the rigor status
-    # below can tell a zero-variance (degenerate) series apart from an ungraded
-    # one. Prefetched by list callers; self-loaded on the single-row path.
-    if daily_returns is _RETURNS_NOT_PREFETCHED:
-        _returns: list[float] = []
-        if session is not None:
-            try:
-                from archimedes.services.backtest_repository import get_daily_returns
-
-                _returns = get_daily_returns(session, record.id) or []
-            except Exception as exc:  # pragma: no cover — defensive; DB-level failure
-                import logging as _logging
-
-                _logging.getLogger(__name__).warning(
-                    "persisted-returns read failed for %s (%s) — rigor status falls back to the stored aggregate",
-                    record.id,
-                    type(exc).__name__,
-                )
-                # See _passport_responses: without this, everything later in the
-                # request fails on Postgres and succeeds on sqlite.
-                _rollback_quietly(session)
-    else:
-        _returns = list(daily_returns or [])
-
-    _rigor_status, _is_placeholder = _passport_rigor_status(record, _returns)
+    # The verdict of record, read verbatim. NOT NULL with a "pending" server
+    # default, so the ``or`` is belt-and-braces for a row an in-memory test
+    # built without going through the loader.
+    _rigor_status = record.rigor_gate_status or "pending"
+    # "Placeholder" means: nothing has been graded here yet. That is exactly the
+    # pending state now, and only the pending state — a `degenerate` row HAS a
+    # backtest (its returns are just flat), and a `fail` row certainly does.
+    _is_placeholder = _rigor_status == "pending"
 
     refs = list(record.paper_refs or [])
     first = refs[0] if refs else None
@@ -1461,7 +1539,15 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
             asset_universe=tuple(asset_universe),
             deflated_sharpe_ratio=record.deflated_sharpe_ratio,
             dsr_p_value=record.dsr_p_value,
-            passes_rigor_gate=bool(record.passes_rigor_gate),
+            # The SAME derivation the badge uses twenty lines below, not the raw
+            # column. The comment there says deriving from the status "removes
+            # the last place the two could be served apart" — this was that
+            # place: one function reading the stored boolean here and the stored
+            # four-state there is precisely the two-sources-for-one-fact shape
+            # this ADR exists to remove. They agree today because the migration
+            # and the loader couple them; reading one field means they cannot
+            # stop agreeing.
+            passes_rigor_gate=_rigor_status == "pass",
         )
     )
 
@@ -1504,15 +1590,15 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
         # Generated/fusion strategies carry a PERSISTED live-gate verdict written by
         # the generation pipeline (strategy_passports.passes_rigor_gate) — a stored
         # *live* verdict, not a fixture boolean — so it is a legitimate badge source
-        # per #821 ("read a persisted live-gate verdict"). Map it to the tri-state:
-        # a passport with no real backtest (sharpe_ratio is None) is "pending".
-        # A degenerate row is never a pass, whatever the stored boolean says.
-        passes_rigor_gate=bool(record.passes_rigor_gate) and _rigor_status != "degenerate",
-        # #1184: four-state, derived from this passport's OWN persisted series
-        # (see _passport_rigor_status). The stored aggregate alone cannot
-        # separate a zero-variance series from an ungraded one — both leave
-        # sharpe_ratio NULL — so reading it by itself reported broken data as
-        # "pending", which is a claim ("not graded yet"), and a false one.
+        # per #821 ("read a persisted live-gate verdict").
+        # Coupled to the four-state below by construction, on the READ side too:
+        # `passes` is `status == "pass"` and nothing else. The row's own
+        # `passes_rigor_gate` column says the same thing (passport_loader writes
+        # the two together), so deriving it from the status here costs nothing
+        # and removes the last place the two could be served apart.
+        passes_rigor_gate=_rigor_status == "pass",
+        # THE STORED VERDICT. Graded once, at backtest time, by the real gate;
+        # served here without a recompute (docs/adr/rigor-verdict-of-record.md).
         rigor_gate_status=_rigor_status,
         is_backtest_placeholder=_is_placeholder,
         sharpe_ci_lower=None,
@@ -1537,50 +1623,22 @@ def _passport_to_strategy_response(record, session=None, daily_returns=_RETURNS_
 
 
 def _passport_responses(records, session) -> list[StrategyResponse]:
-    """Map passport rows to responses, bulk-loading their persisted returns once.
+    """Map passport rows to responses.
 
-    #1184 made ``_passport_to_strategy_response`` consult each row's persisted
-    daily-return series so a zero-variance one reports ``degenerate`` instead of
-    ``pending``. This routes that through ``get_all_daily_returns`` — the same DB
-    boundary ``live_rigor_gate`` and the selection-bias route already read
-    through, and the one the suite mocks — then hands each row its own slice.
+    **The whole-cohort returns read is gone.** This used to call
+    ``get_all_daily_returns`` for every page so ``_passport_to_strategy_response``
+    could re-derive each row's four-state badge from its persisted series — one
+    windowed query whose BYTES still scaled with the generated corpus, because it
+    projected and deserialized every winning row's ``artifact_json`` to find a
+    ``daily_returns`` list, on a route (``list_passports``) that has no LIMIT.
 
-    **Cost, stated honestly (updated by #1662).** This used to read "N indexed
-    single-row reads, not one batched query" — true when ``get_all_daily_returns``
-    was a Python loop over ``get_daily_returns``. It is now ONE windowed query
-    for the whole cohort, so the round trips no longer scale with the number of
-    records. What did NOT change is the bytes: the query still projects each
-    winning row's ``artifact_json``, and each is deserialized to find its
-    ``daily_returns``, so the transfer + parse cost still scales with the
-    generated corpus and ``list_passports`` still has no LIMIT. Making the
-    degenerate answer genuinely cheap needs ``daily_returns`` persisted at write
-    time rather than re-derived on read — tracked separately; do not paper over
-    it here by skipping rows, because which rows you skip is exactly the claim
-    at stake.
+    The verdict is now graded once and stored (see
+    ``docs/adr/rigor-verdict-of-record.md``), so the read needs no return series
+    at all. The degenerate state is not lost: the writer stores it. What is lost
+    is a per-request recompute that could disagree with the stored answer — which
+    was the point, and the cost saving is a consequence, not the motive.
     """
-    if not records:
-        return []
-    try:
-        from archimedes.services.backtest_repository import get_all_daily_returns
-
-        returns_by_id = get_all_daily_returns(session, [r.id for r in records]) or {}
-    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
-        import logging as _logging
-
-        _logging.getLogger(__name__).warning(
-            "cohort persisted-returns read failed (%s) — falling back to a per-row read",
-            type(exc).__name__,
-        )
-        # A failed statement aborts the surrounding Postgres transaction, so
-        # every later read in this request would raise InFailedSqlTransaction.
-        # sqlite tolerates it, which is why no test can see this.
-        _rollback_quietly(session)
-        # NOT ``{}``: an empty map would hand every row [] — "the read found no
-        # series" — when the truth is "we do not know". That collapse is what
-        # sends a flat series back to "pending", the exact false claim #1184 is
-        # about. The sentinel makes each row decide for itself instead.
-        return [_passport_to_strategy_response(r, session) for r in records]
-    return [_passport_to_strategy_response(r, session, returns_by_id.get(r.id, [])) for r in records]
+    return [_passport_to_strategy_response(r, session) for r in records]
 
 
 def _generated_strategy_responses(

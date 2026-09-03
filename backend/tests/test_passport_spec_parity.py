@@ -272,6 +272,14 @@ def test_the_post_backtest_rebuild_repairs_a_stale_card(_tmp_db):
     and an update that writes nothing cannot disturb it) — the scenario has to
     start from the wrong value for the repair to be observable.
 
+    Since #1792 this same call is ALSO the grading event: it takes a ``verdict``
+    the real gate produced over the real persisted series and writes the rigor
+    verdict of record. So the gate is run here for real — handing the refresh a
+    hand-built verdict object, or the old ``passes_rigor_gate=False`` boolean,
+    would stub out exactly the behaviour #1792 added — and the assertions cover
+    both halves of the one ``_update_record`` branch: the card fields this issue
+    is about, and the verdict/metric columns that have to travel with them.
+
     MUTATION: delete the ``record.position_sizing`` /
     ``record.rebalance_frequency`` writes from
     ``passport_loader._update_record`` — the row stays ``weekly`` /
@@ -280,6 +288,7 @@ def test_the_post_backtest_rebuild_repairs_a_stale_card(_tmp_db):
     from archimedes.agents.generation_pipeline import _refresh_passport_real_metrics
     from archimedes.db import get_session
     from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.services.live_rigor_gate import verdict_from_returns
 
     sid = "parity-rebuild-repairs"
     _seed_disagreeing_row(sid)
@@ -292,6 +301,7 @@ def test_the_post_backtest_rebuild_repairs_a_stale_card(_tmp_db):
         max_drawdown = 0.12
         calmar_ratio = 0.6
         correlation_to_spy = 0.4
+        win_rate = 0.55
         total_trades = 20
         backtest_start = None
         backtest_end = None
@@ -301,8 +311,15 @@ def test_the_post_backtest_rebuild_repairs_a_stale_card(_tmp_db):
         pbo_score = 0.3
         out_of_sample_sharpe = 0.2
 
+    # Long enough and varied enough for the gate to actually run (a series under
+    # ``_MIN_RETURNS_FOR_GATE``, or a flat one, returns pending/degenerate and
+    # the assertions below would be pinning the fallback, not the grade).
+    returns = [0.001 * ((i % 11) - 5) for i in range(400)]
+    verdict = verdict_from_returns(sid, returns)
+    assert verdict.status == "fail", f"fixture guard: gradeable and weak, got {verdict.status}"
+
     with get_session() as session:
-        _refresh_passport_real_metrics(session, c, sid, _Result(), passes_rigor_gate=False, n_obs=500)
+        _refresh_passport_real_metrics(session, c, sid, _Result(), verdict=verdict, n_obs=len(returns))
         session.commit()
 
     with get_session() as session:
@@ -311,6 +328,15 @@ def test_the_post_backtest_rebuild_repairs_a_stale_card(_tmp_db):
         assert row.rebalance_frequency == "monthly"
         assert row.position_sizing == "full_invested_when_in_market"
         assert json.loads(row.asset_universe) == SPEC_UNIVERSE
+        # The seeded row was written before the grade; the refresh is what grades
+        # it (#1792). A card repaired onto a row whose verdict never landed would
+        # be this same defect moved one column over.
+        assert row.rigor_gate_status == "fail"
+        assert row.passes_rigor_gate is False
+        assert row.graded_at is not None
+        assert row.cohort_n == 1, "the generation path grades a strategy against itself alone"
+        assert row.win_rate == 0.55
+        assert row.n_obs_daily == len(returns)
 
 
 def test_every_passport_writer_derives_its_card_fields_from_the_spec():

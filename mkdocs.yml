@@ -168,6 +168,11 @@ nav:
       - runbooks/t3.2-contract-redeploy.md
       - runbooks/docs-site-setup.md
       - runbooks/email-verification-validation.md
+      - runbooks/ses-suppression.md
+      - runbooks/curated-backtests.md
+      # Incidents are evidence rather than procedure (docs/CONVENTIONS.md § 1),
+      # but an operator looking for "what went wrong last time" looks here.
+      - incidents/2026-09-03-paper-advance-ddl-wedge.md
 
   - Decisions (ADRs):
       - adr/README.md
@@ -190,6 +195,7 @@ nav:
       - adr/num-trials-self-containment.md
       - adr/aurora-postgres-alembic-datastore.md
       - adr/ipfs-pinning-not-live.md
+      - adr/backtests-are-frozen-evidence.md
 
   - Plans and roadmaps:
       - account-authentication.md

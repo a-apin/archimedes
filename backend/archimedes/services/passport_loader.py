@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -24,8 +25,79 @@ from archimedes.models.strategy_passport_record import (
     PassportPaperRef,
     StrategyPassportRecord,
 )
+from archimedes.services.rigor_gate_version import gate_version as _gate_version
 
 logger = logging.getLogger(__name__)
+
+# The four-state badge as it is STORED. Same vocabulary as
+# ``services.live_rigor_gate`` (PASS/FAIL/PENDING/DEGENERATE) and as
+# ``ui/src/rigorGateStatus.js`` — one word list, three surfaces.
+STATUS_PASS = "pass"
+STATUS_FAIL = "fail"
+STATUS_PENDING = "pending"
+STATUS_DEGENERATE = "degenerate"
+RIGOR_GATE_STATES = (STATUS_PASS, STATUS_FAIL, STATUS_PENDING, STATUS_DEGENERATE)
+
+
+@dataclass(frozen=True)
+class RigorVerdictWrite:
+    """The verdict of record, as a single indivisible write.
+
+    ``docs/adr/rigor-verdict-of-record.md``: a strategy is graded ONCE, at
+    backtest time, by the real gate, and that verdict is persisted on the
+    passport with its provenance. This dataclass is the ONLY thing
+    :func:`ingest_passport` will accept as a verdict, which is what makes the
+    single-writer rule structural rather than a convention:
+
+    * ``passes`` is a **derived property**, not a field. It is impossible to
+      construct a ``RigorVerdictWrite`` whose boolean disagrees with its
+      four-state ``status``, so the two columns cannot drift apart. (Before
+      this, ``passes_rigor_gate=True`` beside a ``pending`` read-time status was
+      a reachable pair — the generation-time fusion verdict wrote the boolean
+      while nothing wrote a status at all.)
+    * ``gate_version`` defaults to the CURRENT gate's digest
+      (``rigor_gate_version.gate_version()``), so a stored verdict always names
+      the gate that produced it. A caller cannot forget it.
+    * ``graded_at`` defaults to now, for the same reason.
+
+    ``cohort_n`` is the number of return series in the cohort that supplied the
+    grade's cohort-scoped inputs (PBO, average pairwise correlation). The
+    generation path grades a strategy against itself alone, so it passes 1.
+    ``None`` means the cohort size was not recorded — never a guessed 1.
+    """
+
+    status: str
+    graded_at: datetime | None = None
+    gate_version: str | None = None
+    cohort_n: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in RIGOR_GATE_STATES:
+            raise ValueError(f"rigor_gate_status must be one of {RIGOR_GATE_STATES}, got {self.status!r}")
+        # Fill the provenance a caller left blank. Done here (rather than with a
+        # default_factory) so ``from_verdict`` and a hand-built instance behave
+        # identically, and so a stored verdict can never carry a NULL gate.
+        if self.graded_at is None:
+            object.__setattr__(self, "graded_at", datetime.now(UTC))
+        if self.gate_version is None:
+            object.__setattr__(self, "gate_version", _gate_version())
+
+    @property
+    def passes(self) -> bool:
+        """The fail-closed boolean. True for ``pass`` and nothing else."""
+        return self.status == STATUS_PASS
+
+    @classmethod
+    def from_verdict(cls, verdict, *, cohort_n: int | None = None, graded_at: datetime | None = None):
+        """Build from a live :class:`~archimedes.services.live_rigor_gate.RigorGateVerdict`.
+
+        This is the intended construction path: the argument is the object
+        ``verdict_from_returns`` returns after actually running ``run_rigor_gate``
+        over a persisted return series. Anything else — a generation-time fusion
+        dict, a fixture row, a hand-typed boolean — has to name a four-state
+        string deliberately, in code, in a diff a reviewer reads.
+        """
+        return cls(status=verdict.status, cohort_n=cohort_n, graded_at=graded_at)
 
 
 def _compute_content_hash(passport: StrategyPassport) -> str:
@@ -75,11 +147,34 @@ def ingest_passport(
     force_update: bool = False,
     owner_wallet: str | None = None,
     owner_user_id: str | None = None,
+    rigor_verdict: RigorVerdictWrite | None = None,
 ) -> StrategyPassportRecord:
     """Ingest a StrategyPassport dataclass into the unified Postgres table.
 
     Idempotent: if a record with the same content hash exists, returns it
     (optionally updating fields if ``force_update=True``).
+
+    **The rigor verdict does not travel on the passport dataclass.**
+    ``passport.passes_rigor_gate`` is deliberately NOT read here. The five
+    verdict-of-record columns (``passes_rigor_gate``, ``rigor_gate_status``,
+    ``graded_at``, ``gate_version``, ``cohort_n``) are written only from an
+    explicit ``rigor_verdict=RigorVerdictWrite(...)`` argument — see
+    ``docs/adr/rigor-verdict-of-record.md``. Without one:
+
+    * a NEW row is inserted **ungraded** — ``rigor_gate_status="pending"``,
+      ``passes_rigor_gate=False``, no ``graded_at``, no ``gate_version``. That is
+      the honest state of a strategy whose backtest has not run.
+    * an EXISTING row keeps the verdict it already has. A ``force_update``
+      refresh that does not carry a grade must not erase one, and must not
+      silently overwrite one either: a re-grade is an explicit event that
+      supplies its own ``RigorVerdictWrite``.
+
+    This is what removes the mixed-vintage column #1746/#1747 were about. The
+    generation-time fusion verdict used to reach this table through
+    ``passport.passes_rigor_gate`` and sit there as the strategy's badge until
+    (and only if) the post-backtest re-grade happened to run. It now stays where
+    it belongs — on ``StrategyRecord.rigor_verdict``, as the debate record —
+    and the passport carries only what a gate run produced.
 
     Args:
         session: SQLAlchemy session (caller manages commit/rollback).
@@ -89,6 +184,7 @@ def ingest_passport(
         owner_wallet: Optional verified-wallet provenance, lowercase.
         owner_user_id: Canonical Better Auth user. Both owner fields only
             backfill missing values and are never reassigned.
+        rigor_verdict: The graded verdict of record, when this call IS the grade.
 
     Returns:
         The persisted StrategyPassportRecord.
@@ -103,8 +199,11 @@ def ingest_passport(
         return existing
 
     if existing and force_update:
-        # Update in place
+        # Update in place. _update_record touches no verdict column; a grade is
+        # applied only when this call carries one (see the docstring).
         _update_record(existing, passport, generation_method, content_hash)
+        if rigor_verdict is not None:
+            _apply_rigor_verdict(existing, rigor_verdict)
         if owner_user_id and not existing.owner_user_id:
             existing.owner_user_id = owner_user_id
         if owner_wallet and not existing.owner_wallet:
@@ -170,7 +269,10 @@ def ingest_passport(
         dsr_p_value=passport.dsr_p_value,
         pbo_score=passport.pbo_score,
         out_of_sample_sharpe=passport.out_of_sample_sharpe,
-        passes_rigor_gate=passport.passes_rigor_gate,
+        # Verdict of record: a new row starts UNGRADED. ``passport.passes_rigor_gate``
+        # is not read — see the docstring and _apply_rigor_verdict below.
+        passes_rigor_gate=False,
+        rigor_gate_status=STATUS_PENDING,
         kelly_fraction=passport.kelly_fraction,
         sharpe_ci_lower=passport.sharpe_ci_lower,
         sharpe_ci_upper=passport.sharpe_ci_upper,
@@ -179,6 +281,8 @@ def ingest_passport(
         created_at=passport.created_at or datetime.now(UTC),
         updated_at=passport.updated_at or datetime.now(UTC),
     )
+    if rigor_verdict is not None:
+        _apply_rigor_verdict(record, rigor_verdict)
     record.paper_refs = _build_paper_refs(passport.id, passport.papers)
     session.add(record)
     session.flush()
@@ -192,13 +296,38 @@ def ingest_passport(
     return record
 
 
+def _apply_rigor_verdict(record: StrategyPassportRecord, verdict: RigorVerdictWrite) -> None:
+    """Write the five verdict-of-record columns, together, from one grade.
+
+    The ONLY place any of these five columns is assigned. All five move as a
+    unit — that is what makes ``passes_rigor_gate == (rigor_gate_status ==
+    "pass")`` an invariant of the table rather than a hope, and what makes
+    ``gate_version``/``graded_at`` real provenance: a verdict without them
+    cannot be written, because ``RigorVerdictWrite`` fills them in its
+    ``__post_init__``.
+
+    A re-grade calls this again with a fresh ``RigorVerdictWrite``. That is the
+    explicit, versioned event the ADR permits; a silent overwrite is prevented
+    by nothing else calling it.
+    """
+    record.rigor_gate_status = verdict.status
+    record.passes_rigor_gate = verdict.passes
+    record.graded_at = verdict.graded_at
+    record.gate_version = verdict.gate_version
+    record.cohort_n = verdict.cohort_n
+
+
 def _update_record(
     record: StrategyPassportRecord,
     passport: StrategyPassport,
     generation_method: str,
     content_hash: str,
 ) -> None:
-    """Update an existing record's fields from a passport."""
+    """Update an existing record's fields from a passport.
+
+    Writes the descriptive/backtest columns only. The verdict of record is NOT
+    among them — see :func:`_apply_rigor_verdict`.
+    """
     record.content_hash = content_hash
     record.generation_method = generation_method
     record.methodology_summary = passport.methodology_summary or ""
@@ -231,11 +360,34 @@ def _update_record(
     )
     record.status = passport.status.value if hasattr(passport.status, "value") else str(passport.status)
     record.regime_tag = passport.regime_tag or "regime_neutral"
-    record.passes_rigor_gate = passport.passes_rigor_gate
+    # NOTE: passes_rigor_gate is NOT written here any more. It used to be copied
+    # straight off the passport dataclass, which is how the generation-time
+    # fusion verdict became the badge for every strategy whose post-backtest
+    # re-grade never ran (#1747) — the mixed-vintage column. The verdict of
+    # record now moves only through _apply_rigor_verdict.
     record.sharpe_ratio = passport.real_sharpe
     record.sortino_ratio = passport.real_sortino
     record.max_drawdown = passport.real_max_dd
     record.cagr = passport.real_cagr
+    # The rest of the real_* block. These eight were missing from the
+    # force_update path entirely (they were only ever written by the INSERT
+    # branch above), so on any refreshed row they stayed frozen at the value the
+    # very first ingest happened to carry — usually NULL — while
+    # `_refresh_passport_real_metrics` set them on the dataclass every time and
+    # `_passport_to_strategy_response` served them. Same defect class as the
+    # dsr_p_value note below, eight columns wider. Written unconditionally, like
+    # their four siblings above, because they describe ONE backtest run: writing
+    # some of a run's metrics and keeping others from a previous run would make
+    # the row describe no run at all.
+    record.win_rate = passport.real_win_rate
+    record.calmar_ratio = passport.real_calmar
+    record.correlation_to_spy = passport.real_corr_spy
+    record.total_trades = passport.real_total_trades
+    record.backtest_start = passport.real_backtest_start
+    record.backtest_end = passport.real_backtest_end
+    record.n_obs_daily = passport.n_obs_daily
+    record.sharpe_ci_lower = passport.sharpe_ci_lower
+    record.sharpe_ci_upper = passport.sharpe_ci_upper
     record.deflated_sharpe_ratio = passport.deflated_sharpe_ratio
     # dsr_p_value was not updated by _update_record (#passport-honesty): the
     # _refresh_passport_real_metrics call from _persist_real_returns sets it on
