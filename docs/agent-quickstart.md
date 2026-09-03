@@ -170,6 +170,13 @@ host you asked*:
 > honest case for many agents — the wallet path is the whole answer, and the free tier is
 > not something to wait for.
 >
+> **A run that delivers nothing does not cost a free generation.** The slot is claimed at
+> step 6 and handed back if the job then fails without persisting a strategy — the corpus
+> being too thin to fuse, a crash, a cancel. So a failed generation is not a spent one, and
+> step 5 is where you find out: re-read it after a failure rather than decrementing your own
+> counter. (A run that DID persist a strategy keeps its slot even if it errored afterwards —
+> the strategy is in your library.)
+>
 > This **reverses** the 2026-08-19 directive that earlier revisions of this page
 > documented ("a wallet is required before the first generation"); the verification
 > condition is the owner's 2026-08-31 amendment to it. Read your remaining allowance and
@@ -567,6 +574,17 @@ is four-state and each state means something different:
 `fail` as a soft yes.** Paper trading (step 10) is simulated and does not enforce this
 gate — a real on-chain vault does, server-side, before spending any gas.
 
+**The verdict is graded once, not on every read.** A strategy is graded at backtest time by
+the real gate and the answer is persisted on its passport; every route serves that stored
+verdict, so for a **generated** strategy this route and `archimedes_passport` cannot
+disagree about one id. A **curated** strategy is the exception until PR-B: its passport row
+still carries the fail-closed placeholder, so `archimedes_passport` answers `pending` for it
+while this route answers its live verdict. Read the
+provenance on the passport (`graded_at`, `gate_version`, `cohort_n`) when you need to know
+*which* grade you are looking at — a `gate_version` of `legacy-derived` means the verdict was
+inferred from older columns by a migration rather than produced by a gate run. See
+[`docs/adr/rigor-verdict-of-record.md`](adr/rigor-verdict-of-record.md).
+
 ### 10. Paper-deploy — simulated, free, no chain, no funds
 
 ```bash
@@ -712,7 +730,7 @@ nothing changes here on the day that merges.
 | `archimedes_generate_start` | `POST /api/generate/start` (step 6) | yes | **charges — see step 1** |
 | `archimedes_generate_status` | `GET /api/generate/jobs/{job_id}` (step 7b) | yes | free |
 | `archimedes_strategy` | `GET /api/strategies/{strategy_id}` (step 9) | no | free |
-| `archimedes_passport` | `GET /api/strategies/passports/{strategy_id}` | no | free |
+| `archimedes_passport` | `GET /api/strategies/passports/{strategy_id}` | no | free — the stored verdict + its provenance |
 | `archimedes_leaderboard` | `GET /api/leaderboard` | no | free |
 | `archimedes_corpus_search` | `GET /api/papers/` | no | free |
 
