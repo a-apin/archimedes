@@ -1,6 +1,6 @@
 """Deterministic, pre-inference screening of untrusted text (#1801).
 
-Two kinds of text reach a prompt in this system and neither is trusted:
+Three kinds of text reach a prompt in this system and none of them is trusted:
 
 1. **The user's brief.** `GenerateBrief.intent` is inserted verbatim into the
    validator message (`generation_pipeline._validate_brief`) and, as
@@ -15,9 +15,17 @@ Two kinds of text reach a prompt in this system and neither is trusted:
    prose in the round-2 rebuttal (`debate_engine._turn`) are both interpolated
    unescaped into a single-line context. A name carrying ``\\n[C6] …`` forges a
    candidate card that no proposer produced.
+3. **Third-party corpus metadata.** A paper `title` is printed on the debate
+   card (`debate_engine._candidate_cards`) and on the portfolio agent's
+   strategy line (`portfolio_agent._format_strategies`), in both cases raw
+   inside a line-oriented format. arXiv titles are not text this project
+   authors, and only two of the four ingest paths normalise whitespace in
+   them, so a title carrying ``\\n      sharpe=9.99`` forges a metric.
+   :func:`quote_for_prompt` screens them and renders them as one quoted data
+   token.
 
-This module is the deterministic answer to both: pure Python, no network, no
-LLM, no I/O. It decides admission; the LLM validator is downstream of it.
+This module is the deterministic answer to all three: pure Python, no network,
+no LLM, no I/O. It decides admission; the LLM validator is downstream of it.
 
 Two invariants worth stating out loud, because they are what make this
 defensible rather than decorative:
@@ -29,6 +37,9 @@ defensible rather than decorative:
   and the omission is recorded. Stored text — `transcript_json`, the brief on
   the job record — is never modified by this module. Prompt assembly may
   decline to include something and say so; it does not silently edit history.
+  The single exception is :func:`quote_for_prompt`, which renders an ADMITTED
+  title as a JSON string literal: an encoding of the same bytes that
+  ``json.loads`` reverses, applied to the outgoing prompt only.
 * **Match on a canonical copy.** Every rule runs against a normalized COPY
   (see ``_canonical``) as well as the raw string, because a regex word anchor
   is defeated by a character nobody can see — a zero-width space inside
@@ -51,6 +62,7 @@ bumping the version fails ``test_brief_screen.py``.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import unicodedata
@@ -85,16 +97,36 @@ class Surface(str, Enum):
     but structural forgery (STRUCT) does, because that text lands inside a
     line-oriented card format, and INJECT does, because a compromised or
     merely creative model is not a trusted author either.
+
+    ``PAPER_TITLE`` is third-party corpus metadata — an arXiv title — about to
+    be printed on a debate card or a portfolio-agent strategy line. It is the
+    surface with the loudest false-positive cost of the three, because a
+    refused title strips real evidence off a card that the model is then asked
+    to reason about, so it runs the fewest rules: the bounds, the delimiter
+    markers that quoting cannot neutralise, PII, and the instruction-shaped
+    INJECT rules. It deliberately skips ``inject.schema_forgery``'s bare-key
+    branch (``"Confidence: a Bayesian…"`` is ordinary title punctuation, and a
+    quoted title cannot terminate a JSON reply) and it skips the newline rule,
+    because a line break in a title is an ingestion artefact — two of the four
+    ingest paths only ``.strip()`` — and :func:`quote_for_prompt` escapes it
+    rather than dropping the paper.
     """
 
     BRIEF = "brief"
     MODEL_TEXT = "model_text"
+    PAPER_TITLE = "paper_title"
 
 
 #: Upper bound for one model-produced string interpolated into a prompt.
 #: A strategy name is ~40 chars and a claim ~200; 1,000 is generous headroom
 #: while still bounding what one turn can inject into the next one's prompt.
 MODEL_TEXT_MAX_CHARS = 1000
+
+#: Upper bound for one paper title printed on a prompt card. arXiv's longest
+#: titles run to ~250 characters; 300 is headroom over the real distribution
+#: while still bounding what a single hostile corpus row can spend of the
+#: debate's prompt budget (five cards × N cited papers per card).
+PAPER_TITLE_MAX_CHARS = 300
 
 
 # ── Verdict ───────────────────────────────────────────────────────────────
@@ -413,6 +445,161 @@ def _shape_rules_model(text: str, _canon: str) -> Verdict:
     return _ALLOW
 
 
+def _shape_rules_title(text: str, _canon: str) -> Verdict:
+    """Paper title: the bounds, and nothing about emptiness or language.
+
+    An empty title is not a refusal — both call sites already fall back to the
+    bare ``arXiv:<id>`` when there is no title to print — and a title is not
+    judged for "words" or mash, because a corpus row may legitimately be a
+    formula, a non-English phrase or an acronym string.
+
+    Whitespace is collapsed before the control-character test, exactly as
+    ``_shape_rules_brief`` does it and unlike ``_shape_rules_model``: a tab or
+    a newline inside a stored title is an ingestion artefact (only two of the
+    four ingest paths normalise it), and ``quote_for_prompt`` escapes it into
+    a ``\\n`` that cannot open a line. NUL, ESC and DEL still refuse.
+    """
+    if len(text) > PAPER_TITLE_MAX_CHARS:
+        return _reject(
+            "shape.too_long",
+            f"paper title longer than {PAPER_TITLE_MAX_CHARS} characters",
+            "This is an internal bound; the title was left off the card.",
+        )
+    if CONTROL_CHARS.search(re.sub(r"\s+", " ", text)):
+        return _reject(
+            "shape.control_chars",
+            "paper title contained control characters",
+            "This is an internal bound; the title was left off the card.",
+        )
+    return _ALLOW
+
+
+# ── PII — secrets and identity numbers a brief never needs ────────────────
+#
+# The brief lands verbatim in a third-party model's prompt, is billed, and is
+# persisted on the job record and in the raw-completion trace. Anything a user
+# pastes into it that identifies them or authenticates them is therefore
+# copied to a provider and stored — so the cheapest correct answer is to
+# refuse it BEFORE any of that happens and tell the user which shape tripped.
+#
+# Every rule below needs a shape that is unambiguous on its own. A brief is a
+# sentence about a portfolio: it contains numbers, tickers and percentages, so
+# the discipline that governs INJECT governs this family twice over, because
+# these rules read DIGITS and a finance brief is full of them. Hence: the
+# email rule needs a real ``local@host.tld``; the credential rules need a
+# vendor prefix or an explicit credential noun followed by a long value; the
+# identity rule uses the issuing authority's own validity ranges; and the card
+# rule needs a plausible network prefix AND a Luhn checksum, which alone
+# throws out nine of every ten random digit runs.
+#
+# Phone numbers are deliberately absent — "+1 415 555 0132" and "allocate
+# 1 415 555 0132 across the sleeve" are the same digits, and refusing a paying
+# user for writing a number is worse than the leak. Postal addresses and IBANs
+# are absent for the same reason. See docs/brief-guidelines.md § 3.1.
+
+_PII_HINT = (
+    "Remove the personal or account detail and describe the portfolio instead. "
+    "A brief never needs an email address, a key, an identity number or a card number."
+)
+
+#: ``local@host.tld``. No ``\b`` anchor at the head: ``%`` and ``+`` are legal
+#: in a local part and are not word characters, so a word boundary would miss
+#: exactly the addresses most likely to be a real one.
+_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9](?:[A-Za-z0-9.\-]*[A-Za-z0-9])?\.[A-Za-z]{2,}")
+
+#: Credential shapes. The first eight are vendor prefixes — a token that can
+#: only be a token. The ninth is the generic form, and it is the one that
+#: needs care: the noun must be an explicit credential noun (never a bare
+#: "secret" or "token", which appear in ordinary prose), it must be followed
+#: immediately by ``:`` or ``=``, and the value must be a long unbroken run
+#: CONTAINING A DIGIT — so "my secret: momentum-and-carry" is not a key and
+#: "api_key: sk_live_9f2a…" is.
+_CREDENTIAL = (
+    re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_\-]{16,}"),  # OpenAI / Anthropic secret keys
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"),  # GitHub tokens
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),  # AWS access key ids
+    re.compile(r"\bxox[abeoprsu]-[A-Za-z0-9\-]{10,}"),  # Slack
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"),  # Google API keys
+    re.compile(r"-----BEGIN[ A-Z]{0,32}PRIVATE KEY-----"),  # PEM private key block
+    re.compile(r"\b(?:Bearer|Basic)\s+[A-Za-z0-9_\-.=+/]{20,}"),  # an Authorization header value
+    re.compile(
+        r"\b(?:api[_\- ]?keys?|access[_\- ]?keys?|secret[_\- ]?(?:access[_\- ]?)?keys?|"
+        r"auth[_\- ]?tokens?|access[_\- ]?tokens?|refresh[_\- ]?tokens?|bearer[_\- ]?tokens?|"
+        r"client[_\- ]?secrets?|private[_\- ]?keys?|passwords?|passphrases?|seed[_\- ]?phrases?)"
+        r"\s*[:=]\s*(?=\S*\d)\S{12,}",
+        re.IGNORECASE,
+    ),
+)
+
+#: A US Social Security number, using the SSA's own validity rules rather than
+#: a bare ``\d{3}-\d{2}-\d{4}``: area is never 000, 666 or 900–999, group is
+#: never 00, serial is never 0000. The separator is captured and back-
+#: referenced so it must be the SAME on both sides — "123-45 6789" is not a
+#: number anyone writes, but "10-20 3040" is a range someone might.
+_NATIONAL_ID = re.compile(r"(?<![\d\-])(?!000|666|9\d\d)\d{3}([\- ])(?!00)\d{2}\1(?!0000)\d{4}(?![\d\-])")
+
+#: A run of 12–19 digits, optionally grouped by single spaces or hyphens. This
+#: only PROPOSES a candidate; ``_looks_like_card`` decides. The lookarounds
+#: exclude a decimal point on either side so "1.4111111111111111" — a ratio a
+#: brief could plausibly carry — is never read as an account number.
+_CARD_CANDIDATE = re.compile(r"(?<![\d.])\d(?:[ \-]?\d){11,18}(?![\d.])")
+
+#: Visa (4), Mastercard/Diners/JCB (3, 5), Discover/UnionPay (6). Every
+#: consumer network begins with one of these; requiring it discards ~60% of
+#: random digit runs before the checksum even runs.
+_CARD_PREFIXES = frozenset("3456")
+
+
+def _luhn_ok(digits: str) -> bool:
+    """The mod-10 checksum every payment card carries.
+
+    Roughly one random digit run in ten passes it, which is what turns "a long
+    number" into "an account number" with enough confidence to refuse a brief
+    over it.
+    """
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = ord(ch) - 48
+        if i % 2:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _looks_like_card(run: str) -> bool:
+    """Is this candidate run actually shaped like a payment card number?"""
+    digits = run.replace(" ", "").replace("-", "")
+    if not 13 <= len(digits) <= 19:
+        return False
+    if digits[0] not in _CARD_PREFIXES:
+        return False
+    if len(set(digits)) == 1:
+        return False  # "4444444444444444" is padding, not a PAN
+    return _luhn_ok(digits)
+
+
+def _pii_rules(text: str, canon: str) -> Verdict:
+    """``pii.*`` — an identifier or a secret that has no business in a prompt.
+
+    Runs against the raw string and the canonical copy like every other
+    family, so an address hollowed out with a zero-width space or spelled with
+    a Cyrillic homoglyph is still an address.
+    """
+    if _hits(_EMAIL, text, canon):
+        return _reject("pii.email", "it contained an email address", _PII_HINT)
+    if any(_hits(p, text, canon) for p in _CREDENTIAL):
+        return _reject("pii.credential", "it contained something shaped like a key, token or password", _PII_HINT)
+    if _hits(_NATIONAL_ID, text, canon):
+        return _reject("pii.national_id", "it contained something shaped like a government id number", _PII_HINT)
+    for run in (*_CARD_CANDIDATE.findall(text), *_CARD_CANDIDATE.findall(canon)):
+        if _looks_like_card(run):
+            return _reject("pii.payment_card", "it contained something shaped like a payment card number", _PII_HINT)
+    return _ALLOW
+
+
 # ── INJECT ────────────────────────────────────────────────────────────────
 #
 # Every pattern below is written to need POSITIVE evidence of an instruction
@@ -554,48 +741,72 @@ _B64_RUN = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9
 _HEX_RUN = re.compile(r"(?<![A-Za-z0-9])(?:[0-9a-f]{2}){16,}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
-def _inject_rules(text: str, canon: str) -> Verdict:
+def _inject_rules(text: str, canon: str, *, skip: frozenset[str] = frozenset()) -> Verdict:
     """Instructions aimed at the model rather than a description of a portfolio.
 
     Every pattern is tried against the raw string and against its canonical
     copy (:func:`_hits`), so an invisible character or a homoglyph changes what
     the payload looks like without changing what it matches.
+
+    ``skip`` names codes this surface does not run. It exists for exactly one
+    caller — :data:`Surface.PAPER_TITLE`, which skips ``inject.schema_forgery``
+    — and it is a per-surface subtraction, never a per-string exemption: no
+    input can talk the screen out of a rule.
     """
-    if _hits(_OVERRIDE_DIRECTIVE, text, canon):
+    if _hits(_OVERRIDE_DIRECTIVE, text, canon) and "inject.override_directive" not in skip:
         return _reject(
             "inject.override_directive",
             "it tried to override the system's instructions",
             _INJECT_HINT,
         )
-    if any(_hits(p, text, canon) for p in _ROLE_FORGERY):
+    if any(_hits(p, text, canon) for p in _ROLE_FORGERY) and "inject.role_forgery" not in skip:
         return _reject(
             "inject.role_forgery",
             "it tried to reassign the model's role",
             _INJECT_HINT,
         )
-    if _hits(_PROMPT_LEAK, text, canon):
+    if _hits(_PROMPT_LEAK, text, canon) and "inject.prompt_leak" not in skip:
         return _reject(
             "inject.prompt_leak",
             "it asked the system to repeat its own instructions",
             _INJECT_HINT,
         )
-    if _hits(_SCHEMA_FORGERY, text, canon):
+    if _hits(_SCHEMA_FORGERY, text, canon) and "inject.schema_forgery" not in skip:
         return _reject(
             "inject.schema_forgery",
             "it contained a forged machine reply",
             _INJECT_HINT,
         )
-    if _hits(_CODE_FENCE, text, canon) or _hits(_INDENTED_CODE, text, canon) or _hits(_HTML_COMMENT, text, canon):
+    if (
+        _hits(_CODE_FENCE, text, canon) or _hits(_INDENTED_CODE, text, canon) or _hits(_HTML_COMMENT, text, canon)
+    ) and "inject.code_fence" not in skip:
         return _reject("inject.code_fence", "it contained a code block", _INJECT_HINT)
-    if _hits(_URL, text, canon):
+    if _hits(_URL, text, canon) and "inject.url" not in skip:
         return _reject("inject.url", "it contained a link", _INJECT_HINT)
-    for run in (*_B64_RUN.findall(text), *_B64_RUN.findall(canon)):
-        if any(c.isdigit() for c in run) and any(c.islower() for c in run) and any(c.isupper() for c in run):
-            return _reject("inject.base64_blob", "it contained encoded data", _INJECT_HINT)
-    for run in (*_HEX_RUN.findall(text), *_HEX_RUN.findall(canon)):
-        if any(c.isdigit() for c in run) and any(c.isalpha() for c in run):
-            return _reject("inject.base64_blob", "it contained encoded data", _INJECT_HINT)
+    if "inject.base64_blob" not in skip:
+        for run in (*_B64_RUN.findall(text), *_B64_RUN.findall(canon)):
+            if any(c.isdigit() for c in run) and any(c.islower() for c in run) and any(c.isupper() for c in run):
+                return _reject("inject.base64_blob", "it contained encoded data", _INJECT_HINT)
+        for run in (*_HEX_RUN.findall(text), *_HEX_RUN.findall(canon)):
+            if any(c.isdigit() for c in run) and any(c.isalpha() for c in run):
+                return _reject("inject.base64_blob", "it contained encoded data", _INJECT_HINT)
     return _ALLOW
+
+
+#: The one code :data:`Surface.PAPER_TITLE` does not run, and why. A real
+#: arXiv title is very often ``Noun: subtitle`` — "Confidence: a Bayesian
+#: treatment of…" — and ``_SCHEMA_FORGERY``'s bare-key branch fires on
+#: thirteen nouns immediately followed by a colon, three of which
+#: (``verdict``, ``confidence``, ``claim``) are ordinary English. On a brief
+#: that trade is right; on a title it would silently strip real evidence off a
+#: card, and the quoting :func:`quote_for_prompt` applies means a title cannot
+#: terminate a JSON reply the way an unquoted brief fragment could.
+_TITLE_INJECT_SKIP = frozenset({"inject.schema_forgery"})
+
+
+def _title_inject_rules(text: str, canon: str) -> Verdict:
+    """INJECT for a corpus title — see :data:`_TITLE_INJECT_SKIP`."""
+    return _inject_rules(text, canon, skip=_TITLE_INJECT_SKIP)
 
 
 # ── STRUCT — model text re-entering a prompt ──────────────────────────────
@@ -612,6 +823,23 @@ _CITES_MARKER = re.compile(r"[—-]\s*cites\b", re.IGNORECASE)
 _REPLY_MARKER = re.compile(r"\breply\s+with\s+one\s+json\b", re.IGNORECASE)
 
 
+def _delimiter_rules(text: str, canon: str) -> Verdict:
+    """``struct.delimiter_forgery`` — a marker that quoting cannot neutralise.
+
+    Split out of :func:`_struct_rules` so :data:`Surface.PAPER_TITLE` can run
+    it without the newline rule. Escaping turns a line break into two harmless
+    characters; it does nothing at all to a literal ``[C6]``, which reads as a
+    card label wherever it lands.
+    """
+    if _hits(_CARD_MARKER, text, canon) or _hits(_CITES_MARKER, text, canon) or _hits(_REPLY_MARKER, text, canon):
+        return _reject(
+            "struct.delimiter_forgery",
+            "untrusted text forged a prompt delimiter",
+            "This is an internal bound; the text was left out of the next prompt.",
+        )
+    return _ALLOW
+
+
 def _struct_rules(text: str, canon: str) -> Verdict:
     """``struct.newline_in_card_field`` / ``struct.delimiter_forgery``.
 
@@ -625,24 +853,24 @@ def _struct_rules(text: str, canon: str) -> Verdict:
             "model text contained a line break in a single-line prompt field",
             "This is an internal bound; the text was left out of the next prompt.",
         )
-    if _hits(_CARD_MARKER, text, canon) or _hits(_CITES_MARKER, text, canon) or _hits(_REPLY_MARKER, text, canon):
-        return _reject(
-            "struct.delimiter_forgery",
-            "model text forged a prompt delimiter",
-            "This is an internal bound; the text was left out of the next prompt.",
-        )
-    return _ALLOW
+    return _delimiter_rules(text, canon)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────
 
 _SURFACE_RULES = {
-    # SHAPE → INJECT → LANG. INJECT runs before LANG so a jailbreak attempt
-    # reports as a jailbreak rather than as mash.
-    Surface.BRIEF: (_shape_rules_brief, _inject_rules, _lang_rules),
+    # SHAPE → PII → INJECT → LANG. PII runs before INJECT so a pasted
+    # credential reports as a credential rather than as `inject.base64_blob`,
+    # which is the code a long opaque token would otherwise land on and is a
+    # materially less useful thing to tell the user. INJECT still runs before
+    # LANG so a jailbreak attempt reports as a jailbreak rather than as mash.
+    Surface.BRIEF: (_shape_rules_brief, _pii_rules, _inject_rules, _lang_rules),
     # STRUCT first: it is the family that describes what actually breaks when
     # model text is interpolated, so it should own the code when both apply.
-    Surface.MODEL_TEXT: (_struct_rules, _shape_rules_model, _inject_rules),
+    Surface.MODEL_TEXT: (_struct_rules, _shape_rules_model, _pii_rules, _inject_rules),
+    # No newline rule and no LANG — see Surface.PAPER_TITLE. A title carrying
+    # a line break is escaped by `quote_for_prompt`, not dropped.
+    Surface.PAPER_TITLE: (_shape_rules_title, _delimiter_rules, _pii_rules, _title_inject_rules),
 }
 
 _INTERNAL_ERROR = Verdict(
@@ -707,6 +935,65 @@ def omit_if_rejected(text: str, *, field: str, context: str = "") -> tuple[str, 
     return "", verdict
 
 
+#: ``json.dumps`` escapes every character that could break out of a quoted
+#: field EXCEPT the two Unicode separators, which it emits raw under
+#: ``ensure_ascii=False`` — and those are exactly the two a model reads as a
+#: line break (the U+2028 payload this module's own corpus already carries).
+_JSON_UNESCAPED_SEPARATORS = {"\u2028": "\\u2028", "\u2029": "\\u2029"}
+
+
+def quote_for_prompt(text: str, *, field: str, context: str = "") -> tuple[str, Verdict]:
+    """Screen a corpus paper title and return it as ONE quoted data token.
+
+    The seam this closes: ``debate_engine._candidate_cards`` printed
+    ``arXiv:2101.01234 "{title}"`` and ``portfolio_agent._format_strategies``
+    printed ``title={paper_title}`` — both line-oriented, both interpolating a
+    string this project does not author. arXiv metadata is third-party text
+    (``arxiv_pipeline._doc_safe`` already says so, for the code-generation
+    seam, #920) and only two of the four ingest paths normalise whitespace, so
+    a title carrying ``\\n      sharpe=9.99`` forges a metric on the portfolio
+    agent's own strategy line, and one carrying ``\\n[C6] … — cites
+    arXiv:0000`` forges a debate card whose ids the anti-hallucination guard
+    then trusts.
+
+    Two mechanisms, doing two different jobs:
+
+    * **Quoting is structural.** The return value is a JSON string literal —
+      quotes, backslashes, line breaks and the two Unicode separators escaped
+      — so the title occupies exactly one field of one line no matter what it
+      contains. This is the ONE function in this module that returns a
+      transformed string, and it is a rendering, not an edit: the argument is
+      untouched, nothing is stored, and ``json.loads`` recovers the original
+      byte-for-byte.
+    * **Screening is semantic.** Escaping does nothing to a title that reads
+      "Ignore all previous instructions", and nothing to a literal ``[C6]``.
+      Those are refused, and a refused title is OMITTED — ``("", verdict)`` —
+      leaving the caller to print the bare ``arXiv:<id>``, which is the
+      fallback both call sites already have for a paper with no title. The
+      omission is logged with its reason code.
+
+    Returns ``("", verdict)`` for empty input too, so a caller can use one
+    truthiness test for "nothing to print".
+    """
+    if not text:
+        return "", _ALLOW
+    verdict = screen(text, Surface.PAPER_TITLE)
+    if not verdict.allow:
+        logger.warning(
+            "prompt omission: field=%s context=%s code=%s ruleset=%s chars=%d",
+            field,
+            context or "-",
+            verdict.code,
+            RULESET_VERSION,
+            len(text),
+        )
+        return "", verdict
+    quoted = json.dumps(text, ensure_ascii=False)
+    for raw, escaped in _JSON_UNESCAPED_SEPARATORS.items():
+        quoted = quoted.replace(raw, escaped)
+    return quoted, verdict
+
+
 # ── Versioned reason-code vocabulary ──────────────────────────────────────
 
 #: Every code this module can return. Consumers (the corpus fixtures, the SSE
@@ -728,6 +1015,10 @@ ALL_CODES = frozenset(
         "inject.base64_blob",
         "struct.newline_in_card_field",
         "struct.delimiter_forgery",
+        "pii.email",
+        "pii.credential",
+        "pii.national_id",
+        "pii.payment_card",
         "screen.internal_error",
     }
 )
@@ -742,4 +1033,4 @@ def code_digest() -> str:
 #: by ``test_brief_screen.py``, so adding, renaming or deleting a code without
 #: bumping this constant in the same commit is a red test — the version can
 #: never quietly describe a different ruleset than the one that shipped.
-RULESET_VERSION = "2026-09-02.37df7771"
+RULESET_VERSION = "2026-09-03.76bdba0a"

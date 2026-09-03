@@ -60,7 +60,7 @@ from archimedes.agents.generation_pipeline import (
 from archimedes.models.debate_transcript import sanitize_transcript
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
-from archimedes.services.brief_screen import omit_if_rejected
+from archimedes.services.brief_screen import omit_if_rejected, quote_for_prompt
 from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -471,8 +471,19 @@ def _candidate_cards(pool: list[Any], evidence_by_id: dict[str, dict[str, str]])
         name = screened or f"Candidate {i}"
         cites: list[str] = []
         for arxiv_id in getattr(p, "source_arxiv_ids", None) or []:
+            # The paper title is THIRD-PARTY text — arXiv metadata, which
+            # `arxiv_pipeline._doc_safe` already treats as attacker-controlled
+            # for the code-generation seam (#920) — and it lands on the same
+            # line-oriented card as the strategy name. Two of the four ingest
+            # paths only `.strip()` it, so a title carrying "\n[C6] … — cites
+            # arXiv:0000" forges a card whose ids `_turn`'s anti-hallucination
+            # guard then trusts. `quote_for_prompt` (#1801) screens it and
+            # returns it as ONE quoted JSON token; a refused title is omitted
+            # and the card keeps the bare id, exactly as it already does for a
+            # paper with no title at all. The stored corpus row is untouched.
             title = (evidence_by_id.get(str(arxiv_id)) or {}).get("title", "").strip()
-            cites.append(f'arXiv:{arxiv_id} "{title}"' if title else f"arXiv:{arxiv_id}")
+            quoted, _ = quote_for_prompt(title, field="paper_title", context=f"card C{i} arXiv:{arxiv_id}")
+            cites.append(f"arXiv:{arxiv_id} {quoted}" if quoted else f"arXiv:{arxiv_id}")
         suffix = f" — cites {'; '.join(cites)}" if cites else " — cites no listed paper"
         lines.append(f"[C{i}] {name}{suffix}")
     return "\n".join(lines)

@@ -39,3 +39,18 @@
 {"id": "adv-green-fx-carry", "surface": "brief", "text": "Cross-sectional carry on G10 FX, beta-neutral to the S&P 500", "note": "L10 — an ampersand and a bare number"}
 {"id": "adv-green-cyrillic-sentence", "surface": "brief", "text": "инвестиции в российские акции с низкой волатильностью", "note": "the homoglyph table folds letters out of real Cyrillic too — it must not turn a Russian brief into mash"}
 {"id": "adv-green-confidence-colon-free", "surface": "brief", "text": "size positions by signal confidence and cap each at 20%", "note": "schema words in prose, with no colon, are still just words"}
+{"id": "green-at-price", "surface": "brief", "text": "buy SPY @ 450 and hold through the drawdown", "note": "an @ with no host after it is a price, not an address"}
+{"id": "green-secret-sauce", "surface": "brief", "text": "my secret sauce: a momentum-and-carry blend across G10 FX", "note": "the credential rule needs an explicit credential noun immediately before the colon"}
+{"id": "green-password-prose", "surface": "brief", "text": "no password protection needed, just a conservative bond ladder", "note": "a credential noun with no assignment after it is ordinary prose"}
+{"id": "green-vintage-years", "surface": "brief", "text": "weight the 2020 2021 2022 2023 vintages equally in the growth sleeve", "note": "four grouped years form a 16-digit run; the card prefix test discards them"}
+{"id": "green-long-number", "surface": "brief", "text": "size the sleeve at 1234567890123452 basis points of the book", "note": "a 16-digit run that PASSES Luhn but starts with 1: no consumer card network begins there, and the prefix test is the only thing standing between this line and a refused paying user"}
+{"id": "green-luhn-fails", "surface": "brief", "text": "reference number 4111111111111112 on the custody account", "note": "Visa prefix and 16 digits, but the Luhn checksum fails"}
+{"id": "green-ssn-invalid-area", "surface": "brief", "text": "split the ladder 999-45-6789 across the three maturities", "note": "area 9xx is never issued; the rule uses the SSA's own ranges"}
+{"id": "green-ratio-decimal", "surface": "brief", "text": "target a 1.4111111111111111 information ratio on the overlay", "note": "a decimal is not an account number; the card rule excludes a leading dot"}
+{"id": "green-title-plain", "surface": "paper_title", "text": "Momentum Everywhere", "note": "the ordinary case: a title is admitted and quoted"}
+{"id": "green-title-colon", "surface": "paper_title", "text": "Confidence: A Bayesian Treatment of Factor Timing", "note": "Noun: subtitle is ordinary title punctuation, which is why PAPER_TITLE skips inject.schema_forgery"}
+{"id": "green-title-verdict-colon", "surface": "paper_title", "text": "Verdict: Do Hedge Funds Deliver Alpha After Fees?", "note": "a second schema key that is also an English word at the head of a title"}
+{"id": "green-title-quotes", "surface": "paper_title", "text": "Deep Hedging of \"Exotic\" Derivatives", "note": "quotes inside a title are escaped by quote_for_prompt, not refused"}
+{"id": "green-title-newline", "surface": "paper_title", "text": "Momentum\n  Everywhere", "note": "two of the four ingest paths only strip; a line break is escaped, never a dropped paper"}
+{"id": "green-title-unicode", "surface": "paper_title", "text": "Mömentum über alles: Zeitreihen-Momentum in europäischen Aktien", "note": "non-English titles are admitted and stay readable in the prompt"}
+{"id": "green-title-math", "surface": "paper_title", "text": "On the $\\alpha$-Stable Behaviour of 5-Minute Returns", "note": "TeX in a title is not a code fence and not an encoded blob"}

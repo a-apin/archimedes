@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-02
+> **updated:** 2026-09-03
 > **superseded-by:** —
 
 This is the **rules** page for the Generate brief: the limits, what is refused, why, and
@@ -70,12 +70,47 @@ the 422 and on the SSE `error` event), and what actually trips it.
 | `inject.code_fence` | code blocks in any of markdown's forms, and HTML comments | ` ``` `, `~~~`, a four-space indented block, `<!-- … -->` |
 | `inject.url` | links — a scheme, a `www.` host, or a host with a path or a query | `https://example.com/spec`, `evil-site.xyz/payload.txt`, `example.com?q=…` |
 | `inject.base64_blob` | long encoded runs, base64 or hex | a 40+ character base64 string, a 32+ character hex string |
+| `pii.email` | an email address | `dan.browne@example.com`, `quant+alerts@mail.example.co.uk` |
+| `pii.credential` | a key, token or password | `sk-…`, `sk-ant-…`, `AKIA…`, `ghp_…`, `xoxb-…`, `AIza…`, a PEM `PRIVATE KEY` header, `Bearer …`, or `api_key=<long value with a digit>` |
+| `pii.national_id` | a US Social Security number | `123-45-6789`, `078 05 1120` |
+| `pii.payment_card` | a payment card number | `4111 1111 1111 1111`, `3782-822463-10005` |
 | `screen.internal_error` | the screen itself failed | refused, never admitted — see § 7 |
 
 Two families exist that you cannot trip, because they apply to **model** output rather
 than your text: `struct.newline_in_card_field` and `struct.delimiter_forgery` screen the
 strategy names and debate claims that re-enter a later prompt. § 6 explains what happens
 there.
+
+### 3.1 Why the `pii.*` family exists, and where it stops
+
+Your brief is sent to a third-party model, billed, and stored on the job record and in the
+raw-completion trace. Anything in it that identifies you or authenticates you is therefore
+copied to a provider and kept. Refusing it deterministically, before any of that happens,
+is cheaper for you than any amount of cleanup afterwards — and nothing here is redacted or
+silently rewritten, because a brief that quietly said something other than what you typed
+would be worse than a refusal.
+
+Each rule needs a shape that is unambiguous on its own, because a portfolio brief is made
+of numbers:
+
+- **Email** needs a real `local@host.tld`. `"buy SPY @ 450"` is a price.
+- **Credentials** need a vendor prefix (`sk-`, `AKIA`, `ghp_`, `xox…`, `AIza`, a PEM
+  header) *or* an explicit credential noun immediately followed by `:`/`=` and a long
+  unbroken value **containing a digit**. `"my secret sauce: a momentum-and-carry blend"`
+  is not a key; `"no password protection needed"` is not a key.
+- **The identity number** uses the Social Security Administration's own validity ranges —
+  area is never `000`, `666` or `9xx`, group is never `00`, serial is never `0000` — and
+  the separator must be the same on both sides. `"999-45-6789"` passes.
+- **The card number** needs a consumer network prefix (3, 4, 5 or 6) **and** a valid Luhn
+  checksum. `"the 2020 2021 2022 2023 vintages"` is a 16-digit run and passes;
+  `"4111111111111112"` has the right prefix and length and passes, because the checksum
+  fails.
+
+**Deliberately not refused:** phone numbers, postal addresses and IBANs. `"+1 415 555
+0132"` and `"allocate 1 415 555 0132 across the sleeve"` are the same digits, and this
+screen runs before the payment gate, so refusing a real brief costs more than the leak it
+would prevent. Do not paste them anyway — nothing here is a promise that we caught
+everything, and § 5's closing paragraph applies to this family as much as to `inject.*`.
 
 ## 4. What is explicitly still allowed
 
@@ -131,7 +166,7 @@ brief should be treated as an instruction. This is a deterministic filter on sha
 phrasing, not a judge of intent — the INJECT table is a floor, not a boundary, and the
 model validator downstream of it is still the thing that reads for meaning.
 
-## 6. Model text is screened too
+## 6. Model text and paper titles are screened too
 
 The debate round prints one line per candidate —
 `[C1] Name — cites arXiv:2101.01234 "Title"` — and round 2 feeds each researcher the
@@ -143,6 +178,30 @@ the omission is logged** — the card falls back to its positional label, or the
 clause simply drops that claim. Nothing is rewritten and nothing is redacted: the name and
 the claim stay exactly as the model produced them in the transcript you can read. Prompt
 assembly may decline to carry a string; it never edits the record of what was said.
+
+### 6.1 Paper titles are data, not prompt structure
+
+The `"Title"` on that card, and the `title=` field on the portfolio agent's strategy line,
+are **third-party arXiv metadata** — text this project does not author, on a line whose
+very next field is a metric. Two of the four corpus ingest paths only `.strip()` a title,
+so a line break can reach the prompt from an ordinary row, not just a hostile one. Both
+seams now go through one function, and it does two different jobs:
+
+- **Quoting is structural.** The title is rendered as a single JSON string literal, so
+  quotes, backslashes, line breaks and the two Unicode separators are escaped and the
+  title occupies exactly one field of one line whatever it contains. This is an encoding,
+  not an edit: `json.loads` recovers the stored row byte-for-byte, and a clean title
+  renders exactly as it always did.
+- **Screening is semantic.** Escaping does nothing to a title that reads *"Ignore all
+  previous instructions"*, and nothing to a literal `[C6]`. Those are refused, and a
+  refused title is left off the card — which prints the bare `arXiv:2101.01234`, the same
+  fallback a paper with no title already had. The paper is still cited; only its title is
+  withheld.
+
+The title surface runs the fewest rules of the three, because dropping a title costs real
+evidence: it skips `inject.schema_forgery`'s bare-key branch, since
+*"Confidence: A Bayesian Treatment of…"* is ordinary title punctuation, and it skips the
+line-break rule, since escaping already answers that.
 
 ## 7. What you see when a brief is refused
 
@@ -162,7 +221,7 @@ assembly may decline to carry a string; it never edits the record of what was sa
 ## 8. Reason codes are versioned
 
 `brief_screen.RULESET_VERSION` carries a date and a digest of the code vocabulary
-(`2026-09-02.37df7771` at the time of writing). Adding, renaming or removing a reason code
+(`2026-09-03.76bdba0a` at the time of writing). Adding, renaming or removing a reason code
 changes the digest, and a test fails until the constant is bumped in the same commit — so a
 `reason_code` in a log or a support ticket can always be tied back to the exact ruleset
 that produced it.
