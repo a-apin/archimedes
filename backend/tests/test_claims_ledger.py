@@ -119,6 +119,10 @@ _SYMBOL_PINS: tuple[tuple[str, str], ...] = (
     ("infra/ecs.tf", '{ name = "GENERATION_PAYMENT_REQUIRED", value = "true" }'),
     ("infra/ecs.tf", '{ name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" }'),
     ("ui/test/roadmap-copy.test.js", "EXECUTION_CLAIM_PATTERN"),
+    # Paper-trading row (2026-09-03, #1807). The ledger says the "carries to mainnet"
+    # retraction is guarded by a word-level ban over four named files; PAPER_SURFACES is
+    # that list. Renaming or deleting it leaves the row asserting a guard that is gone.
+    ("ui/test/no-mainnet-track-record.test.js", "const PAPER_SURFACES"),
 )
 
 # The ledger records that board-level FDR MOVED to the leaderboard (#1564/#1580), so the
