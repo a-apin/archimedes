@@ -74,6 +74,7 @@ dependencies:
       - pytest-asyncio>=0.24
       - pytest-cov>=5.0
       - "fakeredis[lua]>=2.26.0"         # Test double for Redis in marketplace unit tests (test_state.py); dev-only, not in prod requirements.txt
+      - pathspec>=0.12                # gitignore-style matching, the library mkdocs compiles `exclude_docs`/`not_in_nav` with. Required by the docs publication guards (test_docs_default_deny.py, test_mkdocs_exclude_docs_matches.py) so they assert what the site build actually does; dev/test-only, not in prod requirements.txt. Mirrored in .github/workflows/quality-gate.yml's two pip install lines.
       - mypy>=1.11
       - "pip-audit>=2.7"              # Supply-chain CVE scanner — run `pip-audit` to check installed deps against the PyPI vulnerability DB. Not yet a CI gate; advisory only.
 

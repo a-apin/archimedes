@@ -10,12 +10,25 @@
 # asserts the product's Docs links point at the same host.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# THE NAV IS CURATED, AND `exclude_docs` IS WHAT UNPUBLISHES A PAGE.
+# THE NAV IS THE ALLOW-LIST. PUBLICATION IS DEFAULT-DENY (#1751).
 #
-# Removing a page from the nav does NOT take it off the site: six pages with no
-# nav entry were verified returning HTTP 200 on 2026-09-01, and /robots.txt is
-# 404, so all of it is crawlable. A page that should not be public goes in the
-# `exclude_docs` block at the bottom of this file, not merely out of the nav.
+# Removing a page from the nav used not to take it off the site: six pages with
+# no nav entry were verified returning HTTP 200 on 2026-09-01, and /robots.txt
+# is 404, so all of it was crawlable. `exclude_docs` fixed that page by page —
+# a deny-list, which only ever catches the files someone already thought of, so
+# a NEW docs/runbooks/*.md or docs/api/*.md published the day it was committed.
+#
+# It is inverted now. `.github/scripts/mkdocs_hooks.py` (`deny_unlisted`) keeps a
+# file under docs/ only if THIS nav names it or `not_in_nav` allow-lists it, and
+# marks everything else excluded — off the site — with a WARNING that
+# `mkdocs build --strict` fails on. So the three publication controls are:
+#
+#   nav:           publishes a page, and lists it.
+#   not_in_nav:    publishes a file without a nav entry (the site's own assets).
+#   exclude_docs:  states that a file is internal — it is never built.
+#
+# A file in none of the three does not publish, and turns the build red until
+# somebody says which of the three it is.
 #
 # Nav LABELS are the product's language; the PATHS under them are unchanged.
 # docs/CONVENTIONS.md § 2 — "The slug is a stable identifier — other docs, ADRs,
@@ -368,8 +381,12 @@ nav:
 # whose test is "would we be comfortable if a competitor read this?".
 # docs/archive/README.md records the 2026-08-19 precedent for that port.
 #
-# `not_in_nav` is deliberately NOT used: with this block there are no
-# built-but-unlisted pages left for it to suppress.
+# This block is no longer the only thing between a file and the public site —
+# `deny_unlisted` is (see the banner at the top of this file). It stays, and
+# stays exact, because "off the site" and "recorded as internal" are different
+# claims: a page that is merely absent from the nav is one careless nav row away
+# from being public again, and a reviewer reading this block can see what was
+# decided about each one.
 # ═══════════════════════════════════════════════════════════════════════════
 exclude_docs: |
   # The site's own pinned toolchain. It lives under docs/ so the workflow and
@@ -459,3 +476,37 @@ exclude_docs: |
   agent-operations.md
   api/admin-private.md
   database-relations.md
+
+# ═══════════════════════════════════════════════════════════════════════════
+# not_in_nav — the explicit allow-list for files that publish WITHOUT a nav row.
+#
+# Under default-deny (#1751) this is the only other way onto the site, so it is
+# deliberately short and deliberately extension-scoped: these are the site's own
+# assets, referenced from inside pages (the logo, the favicon, the two rendered
+# diagrams and the mermaid source one of them is generated from). A `**` glob
+# here would re-open the hole this closes — `reference/**` would silently
+# publish a future `docs/reference/internal-notes.md` with no nav entry and no
+# review — so every pattern names a non-page file type.
+#
+# mkdocs' own use of this key is narrower (it suppresses the "exists but is not
+# in the nav" message for documentation pages, and media files never produce
+# that message). `deny_unlisted` reads the same patterns, which is what makes
+# them an allow-list rather than a comment.
+# ═══════════════════════════════════════════════════════════════════════════
+not_in_nav: |
+  assets/*.png
+  assets/*.svg
+  reference/*.svg
+  reference/*.mmd
+
+# The backstop for "somebody deleted the hook". `deny_unlisted` normally marks an
+# unlisted page excluded before mkdocs ever looks at the nav, so this level is not
+# what fires day to day. Without the hook it is: mkdocs logs every documentation
+# page that is in no nav and no `not_in_nav` at this level, and the docs-site
+# workflow builds with `--strict`, which fails on WARNING. `warn` is the strictest
+# value mkdocs accepts here (mkdocs/config/defaults.py `_LogLevel`: warn/info/
+# ignore); the default is `info`, which --strict ignores — that default is half
+# the reason a page could be published by nobody in the first place.
+validation:
+  nav:
+    omitted_files: warn

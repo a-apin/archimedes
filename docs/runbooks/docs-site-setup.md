@@ -191,6 +191,33 @@ default, so `mkdocs.yml` adds `watch: [openwiki]` to pick up wiki edits too.
 Editing the hook itself still needs a **restart**, not just a save: mkdocs
 `lru_cache`s hook modules for the life of the process.
 
+## Adding a page: publication is default-deny
+
+A file under `docs/` does **not** publish because it exists. Since #1751 the
+build keeps it only if [`../../mkdocs.yml`](../../mkdocs.yml) says so, in one
+of three ways:
+
+| Put it in | Effect |
+|---|---|
+| `nav:` | Published, and listed in the left rail. This is the normal answer. |
+| `not_in_nav:` | Published with no nav entry. The site's own assets only — the patterns name file types (`assets/*.svg`), never directories, so it cannot admit a page. |
+| `exclude_docs:` | Never built. Records that the file is internal; port it to the private docs repo first ([`../CONVENTIONS.md`](../CONVENTIONS.md) § Content routing). |
+
+A file in none of the three is off the site, and two things say so out loud:
+`backend/tests/test_docs_default_deny.py` fails on every PR, and
+[`../../.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py)'s
+`deny_unlisted` logs a `WARNING` that `--strict` turns into a failed build.
+
+It reads backwards from how mkdocs works, and that is the point. Nav removal
+never unpublished anything: `/team/`, `/runbooks/cost-kill-switch/` and
+`/api/admin-private/` were all live with no nav entry on 2026-09-01, and
+`exclude_docs` on its own is a deny-list — it can only catch the pages someone
+already thought of, so a new runbook was public the day it was committed.
+
+**To publish a new page:** add the file, add one nav row in the same commit,
+and run `mkdocs build --strict` (below). The row is the review step — a page
+goes in front of readers because a person put it there.
+
 ## `mkdocs --strict` is the gate
 
 `mkdocs build --strict` is what `docs-site.yml` runs, and it is clean. Run it
@@ -250,11 +277,12 @@ to `warn` is the change that would force it.
 |---|---|
 | [`../../mkdocs.yml`](../../mkdocs.yml) | Site config: theme, nav, repo/site URLs, hooks. `site_url` is the canonical host, and `ui/test/docs-link.test.js` holds the UI links to it. |
 | [`../../docs-site/infra/main.tf`](../../docs-site/infra/main.tf) | The bucket, OAC, CloudFront distribution + directory-index function, ACM cert and Route 53 alias. Standalone root, own state key. |
-| [`../../.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py) | Mounts `openwiki/` into the build, stamps its provenance banner, and repoints out-of-`docs_dir` links at GitHub. |
+| [`../../.github/scripts/mkdocs_hooks.py`](../../.github/scripts/mkdocs_hooks.py) | Mounts `openwiki/` into the build, enforces default-deny publication (`deny_unlisted`), stamps the provenance banner, and repoints out-of-`docs_dir` links at GitHub. |
 | [`../../.github/workflows/docs-site.yml`](../../.github/workflows/docs-site.yml) | Build + publish workflow. The build always runs; the publish no-ops until the terraform is applied. |
 | [`../../.github/workflows/infra-gate.yml`](../../.github/workflows/infra-gate.yml) | `terraform fmt` + `validate` over every root, including `docs-site/infra`. |
 | [`../../infra/scripts/setup-github-oidc.sh`](../../infra/scripts/setup-github-oidc.sh) | The CI role and its permissions, including the docs-site publish grants. |
 | [`../agent-wiki.md`](../agent-wiki.md) | Provenance note for the agent-generated section, and the section's index page. |
 | [`../../backend/tests/test_docs_site.py`](../../backend/tests/test_docs_site.py) | Drift guard: nav ↔ tree, the provenance label, the workflow's `paths:` filter and `--strict` flag, the link rewriter, and that the site is still served from our own infra. |
-| [`../CONVENTIONS.md`](../CONVENTIONS.md) | Where a new doc goes — the site just publishes what's already there. |
+| [`../CONVENTIONS.md`](../CONVENTIONS.md) | Where a new doc goes in the repository, and the public/internal routing rule the `exclude_docs` block applies. |
+| [`../../backend/tests/test_docs_default_deny.py`](../../backend/tests/test_docs_default_deny.py) | Publication guard: every file under `docs/` must be in the nav, `not_in_nav` or `exclude_docs`, and the hook must actually deny the rest. |
 | [`../../.github/workflows/docs-gate.yml`](../../.github/workflows/docs-gate.yml) | The blocking link/index checker this runbook defers to for `docs/**`'s real (in-repo) links. |

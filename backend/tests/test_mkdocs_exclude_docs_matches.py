@@ -5,12 +5,24 @@ matches nothing is silent — `mkdocs build --strict` stays green while the
 page it meant to hide keeps publishing. That already happened once (the
 audit's block carried trailing `# comments` inside the patterns, so `team.md`
 was still live). This guard turns a dead pattern into a red test.
+
+`pathspec` is imported outright rather than through `pytest.importorskip`. It is
+the library mkdocs itself matches these patterns with (`mkdocs/structure/files.py`
+compiles `exclude_docs` into a `pathspec.GitIgnoreSpec`), so it is the only way
+for this test to mean the same thing the build means — and it was NOT installed
+in the backend unit-test job (`pip show pathspec` → required by mkdocs and mypy,
+neither of which that job installs), so every case here silently skipped in CI.
+`backend/tests/test_env_requirements_alignment.py` names that failure mode: "a
+guard that can only run when an undeclared transitive import happens to be
+present is not a guard". It is a declared test dependency now — `environment.yml`
+and the two `pip install` lines in `.github/workflows/quality-gate.yml`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import pathspec
 import pytest
 import yaml
 
@@ -38,7 +50,6 @@ def test_the_block_is_not_empty():
 
 @pytest.mark.parametrize("pattern", _exclude_patterns())
 def test_every_exclude_pattern_matches_a_real_file(pattern: str):
-    pathspec = pytest.importorskip("pathspec")
     spec = pathspec.GitIgnoreSpec.from_lines([pattern])
     files = [str(p.relative_to(DOCS)) for p in DOCS.rglob("*") if p.is_file()]
     hits = [f for f in files if spec.match_file(f)]
