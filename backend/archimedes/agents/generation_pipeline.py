@@ -1056,6 +1056,84 @@ def _passport_paper_refs(c: _CandidateResult) -> list[Any]:
     return refs
 
 
+def _paper_attribution_entry(c: _CandidateResult) -> dict[str, Any] | None:
+    """The ONE paper-attribution entry for a candidate, or ``None`` when there is
+    nothing to attribute.
+
+    Extracted out of :func:`_transcript_with_paper_record` because this entry
+    now has TWO consumers, and its summary sentence must exist in exactly one
+    place or they drift into two different claims about the same run:
+
+    * :func:`_transcript_with_paper_record` appends it to the persisted
+      ``debate_transcripts.transcript_json`` list, which is what the passport
+      reads back through ``GET /api/strategies/{id}/debate``;
+    * ``debate_engine._run_debate_leaderboard`` pushes it onto the live SSE
+      stream as ``debate_attribution``, so a user watching a generation sees
+      the per-paper record while it happens rather than only afterwards.
+
+    Callers on the SSE path MUST run it through
+    ``models.debate_transcript.sanitize_transcript`` themselves: both new keys
+    carry model prose (``fusion_reasoning`` directly, each ``paper_verdicts``
+    row's ``discard_reasons`` by way of ``_aggregate_paper_verdicts``), and only
+    the DB writer scrubs on the way in.
+    """
+    verdicts = c.debate_paper_verdicts or []
+    reasoning = (c.fusion_reasoning or "").strip()
+    if not verdicts and not reasoning:
+        return None
+    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
+    summary = (
+        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
+        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
+        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
+    )
+    return {
+        "role": "attribution",
+        "round": None,
+        "verdict": summary,
+        "paper_verdicts": verdicts,
+        "fusion_reasoning": reasoning,
+    }
+
+
+def _passport_spec_fields(c: _CandidateResult) -> dict[str, Any]:
+    """The passport's three executable card fields, derived from the DSL spec (#1769).
+
+    ``**``-spread into every ``StrategyPassport(...)`` construction below, for
+    the same reason ``_passport_paper_refs`` is shared: the three writers
+    (``_persist_candidate`` and the two real-metric rebuilds) each re-declare the
+    passport from scratch, and a field only one of them sets is a field the next
+    rebuild silently reverts.
+
+    Before this, all three passed ``asset_universe=c.asset_universe or []`` and
+    passed NEITHER ``rebalance_frequency`` NOR ``position_sizing`` — so every
+    generated row in ``strategy_passports`` took the column defaults, ``weekly``
+    and ``equal_weight``, whatever its spec said. The card then described a
+    strategy nobody had backtested. Owner dogfood 2026-09-01 caught it on a spec
+    saying ``monthly`` / ``full_invested_when_in_market``.
+
+    Falls back to the candidate's own universe (and the dataclass defaults for
+    the other two) when there is no validating spec — the fixture /
+    buy-and-hold path has none, and inventing a cadence for it would be the same
+    defect with the sign flipped.
+    """
+    from archimedes.models.strategy import PositionSizing, RebalanceFrequency
+    from archimedes.services.passport_spec_parity import card_fields_from_spec
+
+    derived = card_fields_from_spec(c.strategy_spec, strategy_id=c.candidate_id)
+    if derived is None:
+        return {"asset_universe": c.asset_universe or []}
+    return {
+        "asset_universe": derived["asset_universe"],
+        # Both enums are supersets of the DSL's closed vocabulary (see
+        # PositionSizing's docstring), and `card_fields_from_spec` returns only
+        # values `validate_strategy_spec` admitted — so these constructions
+        # cannot raise on a spec that reached here.
+        "rebalance_frequency": RebalanceFrequency(derived["rebalance_frequency"]),
+        "position_sizing": PositionSizing(derived["position_sizing"]),
+    }
+
+
 def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     """The candidate's transcript plus one trailing paper-attribution entry (#1739).
 
@@ -1081,26 +1159,8 @@ def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     safe, whoever wrote the row.
     """
     transcript = list(c.debate_transcript or [])
-    verdicts = c.debate_paper_verdicts or []
-    reasoning = (c.fusion_reasoning or "").strip()
-    if not verdicts and not reasoning:
-        return transcript
-    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
-    summary = (
-        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
-        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
-        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
-    )
-    return [
-        *transcript,
-        {
-            "role": "attribution",
-            "round": None,
-            "verdict": summary,
-            "paper_verdicts": verdicts,
-            "fusion_reasoning": reasoning,
-        },
-    ]
+    entry = _paper_attribution_entry(c)
+    return transcript if entry is None else [*transcript, entry]
 
 
 async def _persist_debate_transcripts(
@@ -1843,7 +1903,10 @@ async def _persist_candidate(
                     id=record.id,
                     papers=papers,
                     methodology_summary=c.thesis or "",
-                    asset_universe=c.asset_universe or [],
+                    # asset_universe / rebalance_frequency / position_sizing —
+                    # the three executable card fields, from the validated spec
+                    # (#1769). See `_passport_spec_fields`.
+                    **_passport_spec_fields(c),
                     universe_source=c.universe_source,
                     status=StrategyStatus(record.status) if record.status else StrategyStatus.CANDIDATE,
                     regime_tag=_regime_tag,
@@ -1982,7 +2045,11 @@ def _refresh_passport_real_metrics(
         id=strategy_id,
         papers=papers,
         methodology_summary=c.thesis or "",
-        asset_universe=c.asset_universe or [],
+        # Same three spec-derived card fields the initial persist writes
+        # (#1769) — this rebuild replaces the row in place, so omitting them
+        # here would revert the card to the ``weekly``/``equal_weight`` column
+        # defaults the moment real metrics land.
+        **_passport_spec_fields(c),
         universe_source=c.universe_source,
         status=status_val,
         regime_tag=regime_tag,
@@ -2345,7 +2412,9 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 id=strategy_id,
                 papers=papers,
                 methodology_summary=c.thesis or "",
-                asset_universe=c.asset_universe or [],
+                # Same three spec-derived card fields as the other two writers
+                # (#1769) — this is an in-place `force_update` rebuild.
+                **_passport_spec_fields(c),
                 status=status_val,
                 regime_tag=_regime_tag,
                 # Real backtest fields — the whole point of this function

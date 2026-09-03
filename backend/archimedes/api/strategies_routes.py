@@ -40,6 +40,7 @@ from archimedes.api.selection_bias_routes import (
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
 from archimedes.services.live_rigor_gate import RigorGateVerdict
+from archimedes.services.passport_spec_parity import reconcile_card_fields
 from archimedes.services.rigor_evaluator import RigorGateResult
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,14 @@ def _to_strategy_response(
     served_status = s.status.value
     if s.status == StrategyStatus.CANDIDATE and verdict.passes:
         served_status = StrategyStatus.VALIDATED.value
+
+    # No spec reconciliation on this path (#1769). `strategy_provider` never
+    # sets `strategy_spec` on a curated `Strategy`, so the call would be a
+    # provable no-op today — dead code with a comment claiming an invariant it
+    # does not enforce. The curated card's source of truth is the YAML's
+    # POSITION_SIZING / REBALANCE_FREQUENCY metadata, and it gains DSL parity
+    # for free the day `strategy_provider` writes a spec: this function reads
+    # the same fields the generated path does.
 
     # Build papers list from passport
     papers_list = [
@@ -1323,6 +1332,50 @@ def _num_trials_for_passport(strategy_id: str, session) -> tuple[int | None, str
         return None, "unspecified"
 
 
+def _strategy_spec_for_passport(strategy_id: str, session) -> dict | None:
+    """The validated DSL spec stored for a generated row, or ``None`` (#1769).
+
+    The spec column lives on ``StrategyRecord`` (``strategy_store``), not on the
+    ``strategy_passports`` row this module reshapes — so reading it costs one
+    primary-key lookup, the same shape and the same per-row cost as
+    ``_generation_cost_for`` and ``_num_trials_for_passport`` immediately above.
+    It does not change the complexity class of the list path.
+
+    **The spec itself does not go on the wire.** It is REASONING under #1557 and
+    stays owner-gated at the detail route; what comes back out of
+    ``reconcile_card_fields`` is three fields the passport row already serves
+    publicly to every caller — a rebalance cadence, a sizing rule and a ticker
+    list.
+
+    Their *values* do change, and that is a real disclosure delta the owner
+    signed off on rather than an argument this docstring can win. Before #1769
+    every generated row served the same ``weekly`` / ``equal_weight`` column
+    defaults, which carried no information about the strategy at all. It now
+    serves the true cadence, the true sizing rule and the spec's universe —
+    three of the seven fields of an artifact #1557 gates. The judgement is that
+    a card is *for* saying what the strategy does, and that a card which lies
+    about it is worth less than the secrecy it buys; the entry rule, the exit
+    rule, the indicator parameters and the condition tree — the parts that make
+    the spec reproducible — remain gated.
+
+    Fails soft: a lookup failure means the card keeps its stored values, which is
+    exactly today's behaviour, and never takes down a strategy read.
+    """
+    if session is None or not strategy_id:
+        return None
+    try:
+        from archimedes.models.strategy_store import StrategyRecord
+
+        row = session.query(StrategyRecord).filter_by(id=strategy_id).first()
+        return row.decoded_strategy_spec() if row is not None else None
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning("strategy_spec lookup failed for %s: %s", strategy_id, exc)
+        _rollback_quietly(session)
+        return None
+
+
 def _rollback_quietly(session) -> None:
     """Roll back after a swallowed read so the transaction is usable again.
 
@@ -1458,7 +1511,23 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         for r in refs
     ]
 
-    asset_universe = json.loads(record.asset_universe) if record.asset_universe else []
+    # The three executable card fields, reconciled against the validated DSL
+    # spec (#1769). The generation path now derives them at WRITE time, but the
+    # rows written before that fix are still in the table and the table is
+    # append-only — a read that trusted them would keep serving the card that
+    # contradicts its own backtest. The spec wins and the disagreement is logged
+    # naming this id, ONCE per id per process — this function is the per-row
+    # mapper for Library and the public leaderboard and it repairs the response,
+    # not the row, so a per-call line would repeat on every request forever. The
+    # dedupe lives in services/passport_spec_parity.py (`_LOGGED_DISAGREEMENTS`).
+    _card = reconcile_card_fields(
+        record.id,
+        _strategy_spec_for_passport(record.id, session),
+        asset_universe=json.loads(record.asset_universe) if record.asset_universe else [],
+        rebalance_frequency=record.rebalance_frequency or "weekly",
+        position_sizing=record.position_sizing or "equal_weight",
+    )
+    asset_universe = _card["asset_universe"]
 
     # The enriched first-paper title (may have been filled from corpus above).
     first_title = papers_list[0].title if papers_list else (first.title if first else "")
@@ -1495,8 +1564,8 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         methodology_summary=record.methodology_summary or "",
         asset_universe=asset_universe,
         universe_source=record.universe_source,
-        position_sizing=record.position_sizing or "equal_weight",
-        rebalance_frequency=record.rebalance_frequency or "weekly",
+        position_sizing=_card["position_sizing"],
+        rebalance_frequency=_card["rebalance_frequency"],
         status=record.status or "candidate",
         methodology_hash=record.methodology_hash,
         extraction_llm=record.extraction_llm,
