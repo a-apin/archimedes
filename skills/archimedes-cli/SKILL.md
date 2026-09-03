@@ -185,15 +185,17 @@ the CPCV-honesty pattern documented in `skills/verdict-api/SKILL.md` (lands with
 honestly reported as `NOT_RUN`, not silently absent") — same principle, applied
 here to PBO and look-ahead.
 
-**The pass rule accounts for this:** `passes` is `True` **iff no evaluable
-check failed AND at least one check was evaluable**
-(rigor_verify_routes.py:202-204). A request where every check comes back
-`not_evaluable` (e.g. a series too short for either DSR or OOS to run) must
-**not** read as passing by vacuous truth — it renders 4×`[N/A]`, zero
-`[PASS]`/`[FAIL]`, and `FAILS`/exit 1
-(`test_not_evaluable_rendering_when_nothing_could_run`, test_cli.py:513-525;
-backend-side: `test_too_short_series_neither_evaluable_check_runs_and_passes_is_false`,
-[`backend/tests/test_rigor_verify_routes.py`](../../backend/tests/test_rigor_verify_routes.py):161).
+**The pass rule accounts for this:** `passes` is `True` **iff every RUNNABLE
+leg — DSR *and* walk-forward OOS — actually ran and passed**: a quorum, not
+"no evaluable check failed" (#1481, `rigor_verify_routes.py:803`). A request
+where every check comes back `not_evaluable` (a zero-variance series, say —
+since #1803 a series too SHORT to grade is refused outright with
+`window_too_short` rather than answered) must **not** read as passing by
+vacuous truth — it renders 4×`[N/A]`, zero `[PASS]`/`[FAIL]`, and
+`FAILS`/exit 1 (`test_not_evaluable_rendering_when_nothing_could_run`,
+cli/tests/test_cli.py:663; backend-side:
+`test_zero_evaluable_legs_never_read_as_a_pass`,
+[`backend/tests/test_rigor_verify_routes.py`](../../backend/tests/test_rigor_verify_routes.py):194).
 
 DSR and OOS reuse the **exact same functions and threshold constants**
 (`compute_dsr_hac_and_iid`, `compute_oos_sharpe`, `DSR_P_FLOOR`,
