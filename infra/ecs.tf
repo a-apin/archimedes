@@ -581,43 +581,54 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" },
         { name = "PAPER_TRADING", value = "true" },
         # ------------------------------------------------------------------
-        # TEMPORARY #1632 MITIGATION — THIS MUST GO BACK TO "true".
+        # PAPER-ADVANCE TICK: ARMED (2026-09-01, #1778 — the #1632 lift).
         #
-        # The paper-advance tick is killing web-tier tasks. The faulthandler
-        # traceback on #1632 shows the container dying with "Fatal Python
-        # error: Aborted" inside psycopg2 do_executemany, on the OHLCV cache
-        # write in services/market_data_provider.py, reached from the replay
-        # (paper_trading.replay_spec_with_decisions -> fetch_real_panel). It is
-        # a C-level abort, so the loop's fail-soft except arm cannot catch it:
-        # the task dies rather than logging. First tick lands at
-        # PAPER_ADVANCE_STARTUP_DELAY_S (240s) after boot, so every replacement
-        # task dies ~4 minutes in — a cold-fleet spiral, which is why this is
-        # set from the deploy path and not left to a code default. Proven on
-        # task-def :211 (#1725 image, fc884113): deploy.yml cloned last-good,
-        # PAPER_ADVANCE_ENABLED was absent, the old code default ON started
-        # the tick, /health 502'd at 240s. The code default is now also
-        # false; this pin and the CI rewrite remain so a future default-flip
-        # cannot tick through a cloned task-def.
+        # "true" means paper ledgers advance again: one appended bar per active
+        # deployment per day, replayed on the graded engine. That is a live
+        # product claim — a track record that moves with time — switched back
+        # on, not a dormant knob. It was pulled on 2026-08-31 when web-tier
+        # tasks were dying with "Fatal Python error: Aborted" and this tick was
+        # the suspect.
         #
-        # THIS FILE IS NOT THE PATH THAT SHIPS. deploy.yml clones the
-        # currently registered task definition and retags images; it does
-        # not apply terraform. The load-bearing pin is
+        # WHY IT IS DEFENSIBLE TO ARM, stated exactly. The tick runs ONLY in a
+        # child interpreter: arm_paper_advance_for_web_tier (#1728) refuses to
+        # schedule paper_advance_loop in the web process and spawns
+        # `python -m archimedes.services.paper_trading` instead. A C-level
+        # abort on the tick therefore kills that child, and /health — which
+        # lives in the parent — keeps answering. The process boundary is the
+        # whole protection.
+        #
+        # It is NOT a claim that the tick's own frame is clean. #1632's
+        # faulthandler mechanism turned out to be two /health corpus-probe
+        # threads racing in SQLAlchemy session teardown inside load_corpus,
+        # caught on prod rev 214 WITH THIS FLAG OFF and fixed by #1740 (the
+        # dual-OpenSSL hypothesis was falsified by the same traceback). The
+        # replay's own OHLCV cache write in services/market_data_provider.py
+        # was never the proven cause and was never cleared either.
+        #
+        # THIS FILE IS NOT THE PATH THAT SHIPS. deploy.yml clones the currently
+        # registered task definition and retags images; it does not apply
+        # terraform. The load-bearing pin is
         # .github/scripts/ecs_rewrite_task_def.py, invoked from deploy.yml.
-        # Keep this line false as well so a future terraform apply cannot
-        # undo the CI pin. terraform apply is still required for other
-        # ecs.tf drift; this flag must not depend on it.
+        # This line is its documentation twin — keep the two equal so a future
+        # terraform apply cannot silently disagree with what CI ships.
         #
-        # The cost of this line, stated plainly: paper ledgers DO NOT ADVANCE
-        # while it is "false". Track records freeze. That is a real product
-        # claim suspended to keep the API up, not a free win.
+        # TO PULL IT BACK (break glass — no terraform apply required):
+        #   1. PAPER_ADVANCE_VALUE = "false" in
+        #      .github/scripts/ecs_rewrite_task_def.py. That is the pin the
+        #      next deploy actually registers.
+        #   2. This line to "false", so the twin agrees.
+        #   3. Deploy. Editing only this line is overwritten by the next CI
+        #      deploy, and a terraform apply alone is overwritten the same way.
+        # The cost while pulled, stated plainly: paper ledgers DO NOT ADVANCE.
+        # Track records freeze and the deployment payload keeps serving its
+        # last mark. That is a real product claim suspended, not a free win.
         #
-        # Flip back to "true" is this file AND the deploy.yml rewrite pin,
-        # after #1632 has a proven cause and a fix. Removing only this line
-        # is overwritten by the next GitHub deploy. Reader: advance_enabled()
-        # in services/paper_trading.py; row in
-        # docs/operations/feature-flag-fliplist.md.
+        # Reader: advance_enabled() in services/paper_trading.py; row in
+        # docs/operations/feature-flag-fliplist.md; guard in
+        # backend/tests/services/test_paper_advance_kill_switch.py.
         # ------------------------------------------------------------------
-        { name = "PAPER_ADVANCE_ENABLED", value = "false" },
+        { name = "PAPER_ADVANCE_ENABLED", value = "true" },
         # Daily generation caps (services/generation_quota.py, #1194 rev a).
         # Plumbed here EXPLICITLY: a cap that silently falls back to its
         # code default because it was never added to the task definition is a

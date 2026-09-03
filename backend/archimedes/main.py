@@ -590,48 +590,52 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     except Exception as exc:
         _logger.warning("startup: publisher rehydration failed (non-fatal): %s", exc)
 
-    # 4. Arm the in-app backtest refresh scheduler (no operator-invoked CLI
-    # runs — see services/backtest_scheduler.py). MUST live in this lifespan:
+    # 4. Arm the paper-trading advance scheduler. MUST live in this lifespan:
     # passing a custom lifespan= makes Starlette silently skip any
     # @app.on_event("startup") handlers, so anything not started here does
-    # not start at all. Disabled under TESTING / BACKTEST_REFRESH_ENABLED=0;
-    # fail-soft: never blocks startup.
+    # not start at all. Fail-soft: never blocks startup.
+    #
+    # There is deliberately NO backtest refresh here. A backtest is a frozen
+    # artifact of evidence against a stated data window, produced once — at
+    # generation for a generated strategy, by an explicit operator run for a
+    # curated one (docs/runbooks/curated-backtests.md). The in-app
+    # staleness/age-driven refresh loop that used to be armed on this line was
+    # deleted with #1760: it re-ran the whole curated library in the serving
+    # process at +180s on EVERY cold boot, pegged the 1-vCPU task, and got
+    # tasks killed by their own container health check during the 2026-09-01
+    # deploy. Do not reintroduce a clock or a boot hook here — the policy is
+    # docs/adr/backtests-are-frozen-evidence.md and the guard is
+    # backend/tests/test_backtests_are_frozen.py.
     try:
-        from archimedes.services.backtest_scheduler import backtest_refresh_loop, refresh_enabled
+        # Paper-trading ledgers advance daily: one appended bar per deployment
+        # per day, replayed on the graded engine (services/paper_trading.py).
+        # MUST NOT be create_task(paper_advance_loop()) in this process — a C
+        # abort in psycopg2/web3 on that tick (#1632) kills the interpreter
+        # that serves /health. Isolation is arm_paper_advance_for_web_tier:
+        # spawn a child, or refuse. It reads PAPER_ADVANCE_ENABLED itself, so
+        # arming it here is unconditional.
+        #
+        # Hold a reference (RUF006): a fire-and-forget task can be garbage-
+        # collected mid-run. Parked on app.state so it lives for the app's
+        # lifetime instead of being reaped once this function returns.
+        from archimedes.services.paper_trading import arm_paper_advance_for_web_tier
 
-        if refresh_enabled():
-            # Hold a reference (RUF006): a fire-and-forget task can be garbage-
-            # collected mid-run. Parked on app.state so it lives for the app's
-            # lifetime instead of being reaped once this function returns.
-            _app.state.backtest_refresh_task = asyncio.create_task(backtest_refresh_loop())
-            _logger.info("startup: backtest refresh scheduler armed")
-            # Paper-trading ledgers advance on the same cadence family: one
-            # appended bar per deployment per day, replayed on the graded
-            # engine (services/paper_trading.py). MUST NOT be
-            # create_task(paper_advance_loop()) in this process — a C abort
-            # in psycopg2/web3 on that tick (#1632) kills the interpreter
-            # that serves /health. Isolation is arm_paper_advance_for_web_tier:
-            # spawn a child, or refuse. Same RUF006 reference rule.
-            from archimedes.services.paper_trading import arm_paper_advance_for_web_tier
+        _app.state.paper_advance_task = asyncio.create_task(arm_paper_advance_for_web_tier())
+        _logger.info("startup: paper-trading advance scheduler armed (isolated child; in-process loop refused)")
+        # Trace coverage is a claim the product makes ("auditable reasoning
+        # behind every move"), so publishing being off is announced once at
+        # boot rather than only discovered per-deployment (#1575 §7).
+        from archimedes.services.paper_trace import publishing_enabled
 
-            _app.state.paper_advance_task = asyncio.create_task(arm_paper_advance_for_web_tier())
-            _logger.info("startup: paper-trading advance scheduler armed (isolated child; in-process loop refused)")
-            # Trace coverage is a claim the product makes ("auditable reasoning
-            # behind every move"), so publishing being off is announced once at
-            # boot rather than only discovered per-deployment (#1575 §7).
-            from archimedes.services.paper_trace import publishing_enabled
-
-            if not publishing_enabled():
-                _logger.error(
-                    "startup: PAPER_TRACE_PUBLISH is OFF — paper deployments will make decisions with "
-                    "NO published reasoning trace. Every such decision is recorded as a durable gap and "
-                    "surfaced as trace_coverage.status='disabled'; the product's provenance claim does "
-                    "not hold while this is off."
-                )
-        else:
-            _logger.info("startup: backtest refresh scheduler disabled")
+        if not publishing_enabled():
+            _logger.error(
+                "startup: PAPER_TRACE_PUBLISH is OFF — paper deployments will make decisions with "
+                "NO published reasoning trace. Every such decision is recorded as a durable gap and "
+                "surfaced as trace_coverage.status='disabled'; the product's provenance claim does "
+                "not hold while this is off."
+            )
     except Exception as exc:
-        _logger.warning("startup: backtest scheduler failed to arm (non-fatal): %s", exc)
+        _logger.warning("startup: paper-advance scheduler failed to arm (non-fatal): %s", exc)
 
     # Platform revenue sweep (services/revenue_sweep.py): opt-in Gateway →
     # DCW-token withdrawal loop. Money-switch convention: only the literal
@@ -651,6 +655,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     yield  # ── app is now running ────────────────────────────────────────
 
     # ── SHUTDOWN ─────────────────────────────────────────────────────────
+    # Stop the paper-advance arming task FIRST, because it owns a child
+    # interpreter and a child is not reaped by this process's SIGTERM. Without
+    # this cancel, a task draining out of a deploy leaves its paper-advance
+    # child ticking against the same ledger rows the replacement task's child
+    # is starting on. stop_paper_advance_task tolerates None and never raises.
+    try:
+        from archimedes.services.paper_trading import stop_paper_advance_task
+
+        await stop_paper_advance_task(getattr(_app.state, "paper_advance_task", None))
+    except Exception as exc:  # shutdown must not raise
+        _logger.warning("shutdown: paper-advance task did not stop cleanly (%s: %s)", type(exc).__name__, exc)
+
     market = getattr(_app.state, "market", None)
     if market is not None:
         market._stop.set()

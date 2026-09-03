@@ -60,7 +60,7 @@ one-time bearer sign-in credential), and no error MESSAGE — only the AWS SDK
 error's NAME, a fixed vocabulary that cannot carry an address or a token.
 
 Revision ID: d4b1f7c8e206
-Revises: c5e81a4f7b32
+Revises: b3f19d6c47ae
 Create Date: 2026-09-01 23:20:00.000000
 """
 
@@ -72,7 +72,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d4b1f7c8e206"
-down_revision: str | Sequence[str] | None = "c5e81a4f7b32"
+down_revision: str | Sequence[str] | None = "b3f19d6c47ae"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
