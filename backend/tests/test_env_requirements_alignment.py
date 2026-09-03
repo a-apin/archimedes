@@ -197,10 +197,9 @@ def test_the_shared_base_is_reached_through_the_include() -> None:
 
     The floors themselves are asserted elsewhere; this pins the *mechanism*. If
     `backend/requirements.txt` stopped including the base, the Docker image would
-    ship without every package the base file owns, and every other test here would
-    still pass —
-    `torch` and `sentence-transformers` would be the whole shared set, and they
-    do agree.
+    ship missing every package the base file owns, and every other test here
+    would still pass — `torch` and `sentence-transformers` would be the whole
+    shared set, and they do agree.
     """
     assert REQUIREMENTS_BASE_TXT.exists(), f"{REQUIREMENTS_BASE_TXT} is missing; both files include it"
 
