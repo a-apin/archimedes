@@ -46,8 +46,18 @@ from typing import TYPE_CHECKING, Any
 from archimedes.agents.generation_pipeline import (
     FusionUnavailable,
     _CandidateResult,
+    _paper_attribution_entry,
     _society_num_trials,
 )
+
+# The WRITE-time scrubber, imported here because the SSE path never touches
+# `record_debate_transcript` (which is where it normally runs). A debate turn
+# pushed onto the stream is the same paid model text that lands in
+# `debate_transcripts.transcript_json`; skipping the scrub would re-open the
+# exact leak `_sanitize_claim` / `_sanitize_paper_verdict` exist to close, one
+# transport to the left. No import cycle: models.debate_transcript imports only
+# models.chat.
+from archimedes.models.debate_transcript import sanitize_transcript
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
 from archimedes.services.brief_screen import omit_if_rejected
@@ -627,6 +637,95 @@ def _aggregate_paper_verdicts(
     return out
 
 
+#: Human nouns for the two debate roles and the two rounds. The stream used to
+#: carry the debate as four ``tool_called`` markers whose ``args_summary`` was
+#: ``cards[:120]`` — a truncated evidence card, never the turn — so a user
+#: watching a generation saw that a "tool" named ``debate_bear_r2`` had been
+#: called and nothing about what either researcher actually argued.
+_ROLE_NOUNS = {"bull": "Bull researcher", "bear": "Bear researcher"}
+_ROUND_NOUNS = {1: "opening argument", 2: "rebuttal"}
+
+
+def _turn_headline(turn: dict[str, Any]) -> str:
+    """One human sentence for a finished debate turn — server-written copy.
+
+    Built from the SANITIZED turn (see :func:`_emit_debate_turn`), so the
+    verdict it quotes is the scrubbed one, not the raw model string.
+
+    Counts rather than adjectives: how many claims the researcher made, how
+    many of them were grounded in a paper it was actually shown, and how many
+    papers it threw out. "2 of 3 claims grounded in a named paper" is checkable
+    against the claim list rendered underneath it; "a well-argued case" is not.
+
+    A turn whose backend output could not be parsed degrades to
+    ``{verdict: "n/a", claims: [], discard: []}``; that says so plainly instead
+    of rendering an empty card, because an unreadable answer IS the record.
+    """
+    role = str(turn.get("role") or "")
+    who = _ROLE_NOUNS.get(role, "Researcher")
+    rnd = turn.get("round")
+    stage = _ROUND_NOUNS.get(rnd if isinstance(rnd, int) else None, "argument")
+    claims = list(turn.get("claims") or [])
+    discards = list(turn.get("discard") or [])
+    verdict = str(turn.get("verdict") or "").strip()
+    has_verdict = bool(verdict) and verdict.lower() != "n/a"
+
+    if not claims and not discards and not has_verdict:
+        return f"{who}, {stage} — no argument recorded (the researcher's answer could not be read)."
+
+    parts = [f"{who}, {stage}"]
+    if has_verdict:
+        parts.append(f"verdict: {verdict}")
+    head = " — ".join(parts)
+
+    tail: list[str] = []
+    if claims:
+        grounded = sum(1 for c in claims if isinstance(c, dict) and (c.get("arxiv_ids") or []))
+        tail.append(f"{len(claims)} claim{'' if len(claims) == 1 else 's'}, {grounded} grounded in a named paper")
+    else:
+        tail.append("no claims recorded")
+    if discards:
+        tail.append(f"{len(discards)} paper{'' if len(discards) == 1 else 's'} set aside")
+    return f"{head}. {'; '.join(tail)}."
+
+
+async def _emit_debate_turn(emit: _Emitter, candidate_id: str, turn: dict[str, Any]) -> None:
+    """Push ONE finished debate turn onto the SSE stream — sanitized, never raw.
+
+    Called immediately after the turn is appended to the transcript, so the
+    stream is 1:1 with what gets stored: what the user watched is what was
+    written. The payload carries the turn itself (``role``/``round``/
+    ``verdict``/``claims``/``discard``) plus a server-written ``headline``, and
+    nothing else — the whole transcript is never re-sent per turn.
+
+    ``sanitize_transcript`` is mandatory here and is the reason this helper
+    exists at all. It normally runs inside ``record_debate_transcript``, on the
+    way into ``debate_transcripts``; the SSE path bypasses the DB entirely, so
+    without this call the raw model text would reach a browser through a
+    transport the write-time scrubber never sees. Best-effort like the rest of
+    the debate round: a failure here drops the EVENT, never the turn, and never
+    falls back to emitting the unsanitized dict.
+    """
+    try:
+        safe = sanitize_transcript([turn])
+    except Exception:
+        logger.debug("debate: could not sanitize a turn for the stream — event dropped", exc_info=True)
+        return
+    if not safe:
+        return
+    payload = safe[0]
+    await emit.emit(
+        "debate_turn",
+        candidate_id=candidate_id,
+        role=payload.get("role"),
+        round=payload.get("round"),
+        verdict=payload.get("verdict"),
+        claims=payload.get("claims") or [],
+        discard=payload.get("discard") or [],
+        headline=_turn_headline(payload),
+    )
+
+
 async def _debate_round(
     pool: list[Any],
     model: str | None,
@@ -683,12 +782,17 @@ async def _debate_round(
         except Exception:
             return {"role": role, "round": rnd, "verdict": "n/a", "claims": [], "discard": []}
 
-    # Round 1 — initial positions (fixed bull→bear order).
+    # Round 1 — initial positions (fixed bull→bear order). Each finished turn
+    # is pushed onto the stream as it lands (`_emit_debate_turn`), so the four
+    # `tool_called` markers below are no longer the only trace of the debate a
+    # watching user ever sees.
     for role in ("bull", "bear"):
         await emit.emit(
             "tool_called", candidate_id=candidate_id, tool_name=f"debate_{role}_r1", args_summary=cards[:120]
         )
-        transcript.append(await asyncio.to_thread(_turn, role, 1, []))
+        turn = await asyncio.to_thread(_turn, role, 1, [])
+        transcript.append(turn)
+        await _emit_debate_turn(emit, candidate_id, turn)
 
     # Round 2 — visible rebuttal: each researcher sees the other's round-1 claims.
     claims_by_role = {t["role"]: t["claims"] for t in transcript}
@@ -696,7 +800,9 @@ async def _debate_round(
         await emit.emit(
             "tool_called", candidate_id=candidate_id, tool_name=f"debate_{role}_r2", args_summary="rebuttal"
         )
-        transcript.append(await asyncio.to_thread(_turn, role, 2, claims_by_role.get(opponent, [])))
+        turn = await asyncio.to_thread(_turn, role, 2, claims_by_role.get(opponent, []))
+        transcript.append(turn)
+        await _emit_debate_turn(emit, candidate_id, turn)
 
     return transcript
 
@@ -1219,6 +1325,39 @@ async def _run_debate_leaderboard(
             else f"leader={leader.strategy_name} dsr={leader.rigor_verdict.get('dsr')} of {len(leaderboard)} entries"
         ),
     )
+
+    # The SAME paper-attribution entry `_persist_debate_transcripts` will append
+    # to this run's transcript row (#1739), pushed onto the live stream while
+    # the user is still watching instead of only being readable afterwards on
+    # the passport. Built by the one shared helper — the summary sentence lives
+    # in `_paper_attribution_entry` and nowhere else, or the stream and the
+    # passport would drift into two different claims about the same run.
+    #
+    # Sanitized here for the reason `_emit_debate_turn` documents: the SSE path
+    # never reaches `record_debate_transcript`, and both of this entry's new
+    # keys carry model prose.
+    #
+    # Gated on `transcript` for the same reason `paper_verdicts` is above: with
+    # no LLM backend the debate never ran, and "the papers accounted for by
+    # this debate" is not a thing that exists when there was no debate. The
+    # PERSISTED entry keeps its own #1739 rule (it also rides on
+    # `fusion_reasoning` alone) — this gate narrows the event, not the row.
+    if transcript:
+        attribution = _paper_attribution_entry(leader)
+        if attribution is not None:
+            # Built as ONE dict rather than spread into keyword arguments: a
+            # `**sanitized` spread makes every key of the attribution entry a
+            # kwarg, so the day `_paper_attribution_entry` grows a
+            # `candidate_id` the call dies with "got multiple values for
+            # keyword argument". Merging instead lets the entry's own keys land
+            # and keeps the three stream-only fields authoritative.
+            payload = {
+                **sanitize_transcript([attribution])[0],
+                "candidate_id": candidate_id,
+                "papers_offered": leader.papers_offered,
+                "distinct_mechanism_papers": leader.distinct_mechanism_papers,
+            }
+            await emit.emit("debate_attribution", **payload)
     return leaderboard
 
 
