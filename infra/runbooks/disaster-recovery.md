@@ -68,7 +68,11 @@ aws cloudwatch get-metric-statistics --namespace AWS/SNS \
    ten hours earlier — Aurora connections flat at 33 from 03:33, ECS memory
    ramping. Fixed below: the new connections alarm fires at ~03:48.
 2. **Detection latency.** 9m46s is the 5-of-5-minute window plus evaluation
-   lag. `-alb-unhealthy-hosts` is retuned to 2-of-2, worth about six minutes.
+   lag. `-alb-unhealthy-hosts` is retuned to 2-of-2, which drops three of the
+   five one-minute datapoints and so fires about **three** minutes earlier.
+   (Measured: `UnHealthyHostCount` read 0 through 13:30Z, first read 2 at
+   13:31Z, and the 5-of-5 alarm transitioned at 13:38:46Z — a 2m46s evaluation
+   lag on top of the window, which the retune does not remove.)
 3. **The page did not reach the owner.** Six delivered emails and it still had
    to be found by hand. **No Terraform change fixes this.** What the code can
    do is refuse to let the question go unanswered: `var.owner_alert_email` has
@@ -83,6 +87,15 @@ address.** SNS keys a subscription by (topic, protocol, endpoint), so both
 resources would hold one `SubscriptionArn`, and any later apply that dropped
 either would `Unsubscribe` the one the other still claims — zero subscribers,
 with state saying there is one. The precondition blocks it.
+
+> **Before your next incident, populate `infra/terraform.tfvars`.**
+> `owner_alert_email` is deliberately defaultless, so **every** Terraform
+> invocation in `infra/` — including the emergency `-target`ed recreates in
+> §1 (host loss) and §4 (NAT down) below — now fails with
+> `Error: No value for required variable` until it has a value. `-target` does
+> **not** exempt root-module variables. The error text says nothing about why
+> an unrelated recreate is blocked, so set this now rather than discovering it
+> at 03:00 with the site down.
 
 **Check the subscription is confirmed** after any change (an unconfirmed one
 looks identical to a working one from Terraform's side):
@@ -99,8 +112,8 @@ A `SubscriptionArn` of `PendingConfirmation` means no page will be delivered.
 
 | Alarm | Fires when | Why this number |
 |---|---|---|
-| `archimedes-alb-unhealthy-hosts` | `UnHealthyHostCount >= 1` for **2 min** | Retuned from 5 min. Measured: it fired at 13:38:46 on an outage that began at 13:29. 2-of-2 buys back ~6 min. Costs some deploy-time flapping — revert `datapoints_to_alarm` if that trade goes the other way. |
-| `archimedes-alb-elb-5xx-high` | `HTTPCode_ELB_5XX_Count >= 5` in 5 min | The **balancer's own** 5xx (504 = no healthy target). `-alb-target-5xx-high` counts 5xx the backend produced, and it never fired on 2026-09-03 — the backend produced nothing at all. |
+| `archimedes-alb-unhealthy-hosts` | `UnHealthyHostCount >= 1` for **2 min** | Retuned from 5 min. Measured: the ALB first saw an unhealthy target at 13:31Z and this alarm fired at 13:38:46Z. Dropping three of five one-minute datapoints buys back ~3 min (not the ~6 an earlier draft claimed — the 2m46s evaluation lag stays). Costs some deploy-time flapping — revert `datapoints_to_alarm` if that trade goes the other way. |
+| `archimedes-alb-elb-5xx-high` | `HTTPCode_ELB_5XX_Count >= 5` in 5 min | The **balancer's own** 5xx (504 = no healthy target), which nothing watched before. **Not a 2026-09-03 detector** — the ELB-side metric published *no datapoints at all* that day. General cover for a real recurring signal: 1,254 ELB-side 5xx on UTC day 2026-08-20, 306 on 2026-09-01. |
 | `archimedes-ecs-backend-memory-high` | `MemoryUtilization` **max** > 85% for 5 min | The wedged tasks ramped 39% → 100% over 90 min. `max`, not average — fresh replacement tasks sat near idle and would have averaged it away. |
 | `archimedes-ecs-backend-cpu-high` | `CPUUtilization` avg > 90% for 10 min | General saturation cover: average, because the autoscaling policy tracks average against a 60% target, so it means "the autoscaler is out of room". **Would not have fired on 2026-09-03** — CPU was 3%. |
 | `archimedes-aurora-connections-elevated` | `DatabaseConnections` > 30 for 15 min | Connections went 16 → 33 and sat **flat** at 33 for 11.5 h at 4% CPU — sessions parked on a lock, not load. 30 sits just under the observed wedge; the `>80` alarm is a pool-pressure alarm, and it never fired. |
@@ -108,11 +121,14 @@ A `SubscriptionArn` of `PendingConfirmation` means no page will be delivered.
 Replayed against the timeline, three of the five would have fired and two would
 not: `-aurora-connections-elevated` at **~03:48** — nearly ten hours before the
 first alarm that actually fired that day, and the single reason this set is
-worth applying — `-alb-unhealthy-hosts` at ~13:32, and
+worth applying — `-alb-unhealthy-hosts` at ~13:36, and
 `-ecs-backend-memory-high` at ~14:39 (70 minutes into a 94-minute outage; a
-real detector, not early warning). `-alb-elb-5xx-high` saw four 504s against a
-threshold of five and `-ecs-backend-cpu-high` never left single digits. Do not
-read "five alarms" as five nets under this failure.
+real detector, not early warning). `-alb-elb-5xx-high` would **not** have
+fired: the ELB-side metric had no datapoints at all on 2026-09-03 (the only
+5xx that day were four *target*-side responses at 13:31–13:33Z, which is what
+put `-alb-5xx-rate-high` into ALARM at 13:39:16Z). `-ecs-backend-cpu-high`
+never left single digits. Do not read "five alarms" as five nets under this
+failure.
 
 #### Applying them
 
@@ -167,6 +183,16 @@ alarm (see `infra/cloudwatch.tf`), or `https://archimedes-arc.com/` 502/503.
    cd infra && terraform plan -target=aws_instance.archimedes
    terraform apply -target=aws_instance.archimedes
    ```
+   > **Two caveats, both verified 2026-09-03.** (a) `aws_instance.archimedes`
+   > **no longer exists in the configuration** — commit `652225b8` removed it
+   > with the EC2 decommission, and the web tier is Fargate now, so this recipe
+   > and the `archimedes-ec2-status-check-failed` alarm named above are both
+   > stale. Rewriting §1 for the ECS topology is out of scope here (#1818 P5 is
+   > observability); it is flagged so nobody follows it mid-incident.
+   > (b) Whatever replaces it will need `owner_alert_email` set in
+   > `terraform.tfvars` — `-target` does **not** exempt root-module variables.
+   > See § Paging.
+
    `user-data.sh` re-bootstraps Docker + pulls the stack on first boot. The ALB
    target group re-attaches via `aws_lb_target_group_attachment.backend`.
 
@@ -232,6 +258,9 @@ outage (ECS/ALB keep routing to the healthy AZ's tasks).
    cd infra && terraform plan -target='aws_instance.nat[0]'   # or [1] for the other AZ
    terraform apply -target='aws_instance.nat[0]'
    ```
+   (Needs `owner_alert_email` in `terraform.tfvars` — `-target` does not
+   exempt root-module variables. See § Paging.)
+
    `aws_route.private_nat` (`vpc.tf`) points at
    `aws_instance.nat[*].primary_network_interface_id` — a NEW instance gets a
    NEW ENI, so this targeted apply also updates the affected private route
