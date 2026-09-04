@@ -234,10 +234,26 @@ test("a gated deep link survives the round trip through sign-in (#1753)", () => 
 		postAuthPath("?next=%2Fapp%2Fstrategy%2Falpha%3Ftab%3Dbrief"),
 		"/app/strategy/alpha?tab=brief",
 	);
+	// The assertion above encodes `?tab=brief` INSIDE `next`, which is not the
+	// shape production emits: `return 302 /sign-in?next=$uri&$args` puts the
+	// deep link's args alongside `next` as SIBLING params, and a different
+	// branch of postAuthPath reassembles them onto the destination. That branch
+	// was reachable by no assertion here — deleting it whole left this test
+	// green — so the nginx shape is pinned literally.
+	assert.equal(
+		postAuthPath("?next=%2Fapp%2Fstrategy%2Fabc123&tab=brief&ref=twitter"),
+		"/app/strategy/abc123?tab=brief&ref=twitter",
+	);
 	assert.equal(postAuthPath("?next=%2Fapp%2Fleaderboard"), "/app/leaderboard");
 	// An off-site `next` is still refused — gating a page must not turn the
 	// sign-in redirect into an open redirect.
 	assert.equal(postAuthPath("?next=https%3A%2F%2Fevil.example%2Fapp"), "/app");
+	// ...and a refused `next` takes its sibling args down with it, rather than
+	// grafting an attacker's query onto the fallback destination.
+	assert.equal(
+		postAuthPath("?next=https%3A%2F%2Fevil.example%2Fapp&tab=x"),
+		"/app",
+	);
 });
 
 test("auth-required pages stay auth-required", () => {

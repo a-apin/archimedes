@@ -1,6 +1,6 @@
 # Archimedes backend — the Docker / CI install set.
 #
-# The 32 shared floors live in `requirements-base.txt` and are included below,
+# The 33 shared floors live in `requirements-base.txt` and are included below,
 # so `environment.yml` can include the same file instead of restating them
 # (issue #1522). Everything spelled out in *this* file is here because the
 # CPU-only torch wheel must not reach local dev.
