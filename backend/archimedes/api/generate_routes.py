@@ -997,6 +997,10 @@ async def _run_with_cleanup(
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
+        # ONE seam, both run paths (#1793). A new refund goes INSIDE
+        # `release_entitlements_if_undelivered`, never on the next line here:
+        # a release added to this `finally` is a release the offload
+        # entrypoint does not get. That is how #1785 arrived.
         await release_entitlements_if_undelivered(job_id, store)
 
 
