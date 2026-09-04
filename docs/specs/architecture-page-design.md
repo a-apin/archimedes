@@ -21,7 +21,7 @@
 > `docs/architecture/` if it is to be maintained as the description of the live page, or to
 > `docs/archive/` with an `ARCHIVED` banner if `architecture.md` and the page itself become
 > the authority. Use `git mv` and update
-> [`../README.md`](../README.md) in the same commit.
+> [`../doc-index.md`](../doc-index.md) in the same commit.
 
 > Voice: confident, precise, honest. Claim-integrity is the #1 rule — nothing below claims
 > what the live path doesn't do. Draft copy is final-quality and ready to lift into JSX.
