@@ -14,7 +14,8 @@ Two things this inventory is **not**. It is not the user messages — most of th
 so there is no template to version; only the user messages that carry prose are listed.
 And it is not a claim about what the model *does* with a prompt — only about what we send.
 
-`version` is a monotonic integer per id, bumped in the same commit that changes `text`.
+`version` is a monotonic integer per id, bumped in the same commit that changes what the
+provider receives — the template `text`, or the block a caller renders into a placeholder.
 It is what a trace row stamps, so an unbumped edit would silently re-label old traces.
 
 ## Summary
@@ -22,7 +23,7 @@ It is what a trace row stamps, so an unbumped edit would silently re-label old t
 | id | v | role | placeholders | call sites |
 |---|---|---|---|---|
 | [`brief_validation.system`](#brief_validationsystem) | 1 | system | — | `archimedes.agents.generation_pipeline._validate_brief` |
-| [`debate.rebuttal_preamble`](#debaterebuttal_preamble) | 1 | fragment | `${opponent_claims}` | `archimedes.agents.debate_engine._debate_round` |
+| [`debate.rebuttal_preamble`](#debaterebuttal_preamble) | 1 | fragment | `${opponent_claims}` | `archimedes.agents.debate_engine._rebuttal_clause` |
 | [`debate.stance.bear`](#debatestancebear) | 1 | fragment | — | `archimedes.agents.debate_engine._debate_round` |
 | [`debate.stance.bull`](#debatestancebull) | 1 | fragment | — | `archimedes.agents.debate_engine._debate_round` |
 | [`debate.turn.system`](#debateturnsystem) | 1 | system | `${rebuttal}`, `${rnd}`, `${role}`, `${stance}` | `archimedes.agents.debate_engine._debate_round` |
@@ -31,7 +32,7 @@ It is what a trace row stamps, so an unbumped edit would silently re-label old t
 | [`fusion.spec_repair.system`](#fusionspec_repairsystem) | 1 | system | — | `archimedes.agents.strategy_fusion._repair_spec` |
 | [`paper_passport.synth.system`](#paper_passportsynthsystem) | 1 | system | — | `archimedes.services.arxiv_pipeline.synthesize_passport` |
 | [`portfolio.construction.system`](#portfolioconstructionsystem) | 1 | system | — | `archimedes.agents.portfolio_agent.PortfolioAgent.propose_portfolio` |
-| [`portfolio.construction.user`](#portfolioconstructionuser) | 1 | user | `${market_scan}`, `${regime}`, `${regime_confidence}`, `${risk_profile}`, `${strategies}`, `${synth_budget}`, `${usdc_floor}`, `${universe}` | `archimedes.agents.portfolio_agent.PortfolioAgent.propose_portfolio` |
+| [`portfolio.construction.user`](#portfolioconstructionuser) | 2 | user | `${market_scan}`, `${regime}`, `${regime_confidence}`, `${risk_profile}`, `${strategies}`, `${synth_budget}`, `${usdc_floor}`, `${universe}` | `archimedes.agents.portfolio_agent.PortfolioAgent.propose_portfolio` |
 
 ## Templates
 
@@ -74,10 +75,10 @@ but wrote "100x leverage on memecoins"); otherwise echo the stated value.
 - **version:** 1
 - **role:** fragment — never sent alone — substituted into or concatenated onto another entry
 - **placeholders:** `${opponent_claims}`
-- **call sites:** `archimedes.agents.debate_engine._debate_round`
+- **call sites:** `archimedes.agents.debate_engine._rebuttal_clause`
 - **embedded in:** `debate.turn.system`
 
-Round-2 only: the opposing researcher's round-1 claims, joined with '; ', substituted into debate.turn.system's ${rebuttal}. Round 1 substitutes ''.
+Round-2 only: the opposing researcher's round-1 claims, screened by _rebuttal_clause (#1801) and joined with '; ', substituted into debate.turn.system's ${rebuttal}. Round 1 substitutes ''.
 
 ````text
 The opposing researcher argued: ${opponent_claims}. Directly rebut their strongest point. 
@@ -280,7 +281,7 @@ Return ONLY a JSON object, nothing else (no prose before or after). Schema:
 
 ### portfolio.construction.user
 
-- **version:** 1
+- **version:** 2
 - **role:** user — sent as the `user` argument to `LLMBackend.complete`
 - **placeholders:** `${market_scan}`, `${regime}`, `${regime_confidence}`, `${risk_profile}`, `${strategies}`, `${synth_budget}`, `${usdc_floor}`, `${universe}`
 - **call sites:** `archimedes.agents.portfolio_agent.PortfolioAgent.propose_portfolio`

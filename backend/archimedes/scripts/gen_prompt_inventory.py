@@ -63,7 +63,8 @@ def _header() -> list[str]:
         "so there is no template to version; only the user messages that carry prose are listed.",
         "And it is not a claim about what the model *does* with a prompt — only about what we send.",
         "",
-        "`version` is a monotonic integer per id, bumped in the same commit that changes `text`.",
+        "`version` is a monotonic integer per id, bumped in the same commit that changes what the",
+        "provider receives — the template `text`, or the block a caller renders into a placeholder.",
         "It is what a trace row stamps, so an unbumped edit would silently re-label old traces.",
         "",
     ]

@@ -16,6 +16,15 @@ merely moved.
 A diff here is therefore never noise. It means a prompt changed, and a prompt
 change is legitimate only with a deliberate ``version`` bump in
 ``agents/prompts.py`` and a re-captured golden in the same commit.
+
+One key is re-captured from THIS tree rather than from ``9cb868eb``:
+``portfolio.construction.user``, because #1835 made the portfolio agent quote
+paper titles as data. A re-captured key is recorded in the fixture's
+``_meta.changed_since_capture`` with the version it landed as and why, and it
+stops claiming the pre-registry provenance the rest of the fixture claims. The
+provenance test holds those rows to the same standard as the goldens: an
+exemption whose bytes actually DO reproduce from the pinned commit, or whose
+version was never bumped, fails.
 """
 
 from __future__ import annotations
@@ -45,9 +54,25 @@ def _repo_root() -> Path:
     return Path(archimedes.__file__).resolve().parents[2]
 
 
+def _payload() -> dict:
+    return json.loads((Path(__file__).parent / "fixtures" / "prompt_goldens.json").read_text(encoding="utf-8"))
+
+
 def _goldens() -> dict[str, str]:
-    payload = json.loads((Path(__file__).parent / "fixtures" / "prompt_goldens.json").read_text(encoding="utf-8"))
-    return payload["prompts"]
+    return _payload()["prompts"]
+
+
+def _changed_since_capture() -> dict[str, dict]:
+    """Capture keys the fixture deliberately no longer reproduces from the pinned commit.
+
+    A prompt is allowed to change after #1800 — that is the whole point of carrying a
+    ``version``. What is not allowed is for the fixture to quietly stop being what it says
+    it is. Each key listed here names the registry prompt it belongs to, the version that
+    change landed as, and why; the provenance test below checks the exemption is REAL (the
+    pre-registry tree must actually render different bytes) and that the version really was
+    bumped, so a stale or invented row fails just as loudly as an unrecorded edit.
+    """
+    return _payload()["_meta"].get("changed_since_capture", {})
 
 
 def test_every_live_prompt_is_byte_identical_to_the_pre_registry_capture() -> None:
@@ -266,10 +291,40 @@ def test_goldens_reproduce_from_the_pinned_pre_registry_commit(tmp_path: Path) -
         encoding="utf-8",
     )
     assert proc.returncode == 0, f"capture against {PRE_REGISTRY_COMMIT[:8]} failed:\n{proc.stderr}"
-    assert json.loads(proc.stdout) == _goldens(), (
-        "backend/tests/fixtures/prompt_goldens.json does not match a fresh capture from "
-        f"{PRE_REGISTRY_COMMIT[:8]} — the fixture's provenance claim is false."
+    fresh = json.loads(proc.stdout)
+    committed = _goldens()
+    changed = _changed_since_capture()
+    assert sorted(fresh) == sorted(committed), (
+        "the set of captured prompts differs from the pre-registry tree — a call site was added, "
+        f"removed or renamed. only-pinned={sorted(set(fresh) - set(committed))} "
+        f"only-fixture={sorted(set(committed) - set(fresh))}"
     )
+    assert set(changed) <= set(committed), (
+        f"_meta.changed_since_capture names keys that are not captured: {sorted(set(changed) - set(committed))}"
+    )
+    for key in sorted(committed):
+        if key in changed:
+            entry = changed[key]
+            assert fresh[key] != committed[key], (
+                f"{key} is exempted in _meta.changed_since_capture but still reproduces "
+                f"byte-for-byte from {PRE_REGISTRY_COMMIT[:8]} — drop the row rather than "
+                "carry an exemption that hides nothing."
+            )
+            prompt = PROMPTS.get(entry["prompt_id"])
+            assert prompt is not None, f"{key}: changed_since_capture names an unknown prompt {entry['prompt_id']!r}"
+            assert prompt.version == entry["version"] > 1, (
+                f"{key}: changed_since_capture claims {entry['prompt_id']} is at version "
+                f"{entry['version']}, the registry says {prompt.version}. A recorded prompt "
+                "change must carry the version bump it claims."
+            )
+            assert entry.get("why", "").strip(), f"{key}: changed_since_capture must say why the bytes changed"
+            continue
+        assert fresh[key] == committed[key], (
+            f"backend/tests/fixtures/prompt_goldens.json[{key}] does not match a fresh capture "
+            f"from {PRE_REGISTRY_COMMIT[:8]} — the fixture's provenance claim is false. A prompt "
+            "that legitimately changed since then belongs in _meta.changed_since_capture with its "
+            "version bump."
+        )
 
 
 def test_prompt_dataclass_is_frozen() -> None:

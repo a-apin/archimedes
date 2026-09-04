@@ -42,7 +42,7 @@ dependencies:
   # Python deps installed via pip — pinned loosely; tighten in pyproject.toml as the project firms up.
   - pip:
       # --- Shared backend floors ---
-      # Included, not restated. backend/requirements-base.txt owns the 32
+      # Included, not restated. backend/requirements-base.txt owns the 33
       # floors that local dev and Docker/CI both need, so a Dependabot bump
       # lands in one file instead of being mirrored here by hand (issue #1522;
       # when the guard in #1493 landed, 18 of 34 shared floors had already

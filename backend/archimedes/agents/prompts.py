@@ -35,9 +35,11 @@ Downstream contracts that depend on this module:
   re-captured and the ``version`` bumped.
 
 **Versioning.** ``version`` starts at 1 for every prompt and is a plain
-monotonic integer. Bump it in the SAME commit that changes ``text`` — the
-version is what a trace row stamps (``prompt_id``/``prompt_version``), so an
-unbumped edit silently re-labels old traces as the new prompt.
+monotonic integer. Bump it in the SAME commit that changes what the provider
+receives — normally ``text``, but also a caller changing the block it renders
+into a placeholder (``portfolio.construction.user`` v2 is exactly that case).
+The version is what a trace row stamps (``prompt_id``/``prompt_version``), so
+an unbumped edit silently re-labels old traces as the new prompt.
 """
 
 from __future__ import annotations
@@ -379,11 +381,12 @@ _ENTRIES: tuple[Prompt, ...] = (
         role="fragment",
         text=_DEBATE_REBUTTAL_PREAMBLE_TEXT,
         placeholders=("opponent_claims",),
-        call_sites=("archimedes.agents.debate_engine._debate_round",),
+        call_sites=("archimedes.agents.debate_engine._rebuttal_clause",),
         embedded_in=("debate.turn.system",),
         summary=(
-            "Round-2 only: the opposing researcher's round-1 claims, joined with '; ', "
-            "substituted into debate.turn.system's ${rebuttal}. Round 1 substitutes ''."
+            "Round-2 only: the opposing researcher's round-1 claims, screened by "
+            "_rebuttal_clause (#1801) and joined with '; ', substituted into "
+            "debate.turn.system's ${rebuttal}. Round 1 substitutes ''."
         ),
     ),
     Prompt(
@@ -478,7 +481,14 @@ _ENTRIES: tuple[Prompt, ...] = (
     ),
     Prompt(
         id="portfolio.construction.user",
-        version=1,
+        # v2 (#1835): `text` is byte-for-byte v1 — what changed is the ${strategies} block
+        # `portfolio_agent._format_strategies` renders into it. A paper title used to be
+        # interpolated bare (`title=Faber 2007 …`) into a line that carries `sharpe=` and
+        # `rigor=` on its next line; it is now screened and emitted as one quoted JSON token
+        # (`title="Faber 2007 …"`). The bytes the provider receives changed, so the version
+        # a trace row stamps has to change with them — an unbumped edit would label the
+        # pre-#1835 traces and the post-#1835 traces with the same number.
+        version=2,
         role="user",
         text=_PORTFOLIO_USER_TEXT,
         placeholders=(

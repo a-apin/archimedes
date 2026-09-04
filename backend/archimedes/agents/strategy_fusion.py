@@ -1,8 +1,8 @@
 """Strategy fusion — multi-paper, user-steered, novelty-seeking synthesis.
 
-A NEW, feature-flagged primitive that originally sat *beside* the interactive
-Strategy Architect (retired — issue #1064; the debate society is now the sole
-strategy-generation path). The architect used to select + weight pre-curated
+A primitive that originally sat *beside* the interactive Strategy Architect
+(retired — issue #1064; the debate society is now the sole strategy-generation
+path), behind a feature flag that was itself retired on 2026-09-02 (deck Q4). The architect used to select + weight pre-curated
 single-paper library strategies (the verified-library path that fed the
 strategy-passport / reasoning-trace data flow). Fusion does the
 opposite-direction thing: synthesizes a *new* strategy hypothesis by fusing
@@ -10,11 +10,17 @@ opposite-direction thing: synthesizes a *new* strategy hypothesis by fusing
 (McLean & Pontiff 2016: published alpha decays — the un-decayed edge is
 combinations not yet in the literature).
 
-Why a separate, flagged module (owner-decided HARD constraint):
+Why a separate module (owner-decided HARD constraint):
 - The construction-trace path is contract-review-grade (the live
-  `ReasoningTraceRegistry`). Fusion is additive, behind
-  `ARCHIMEDES_FUSION_ENABLED` (default OFF), and revertible by deleting this
-  file + its spec. Nothing in the audited flow is touched.
+  `ReasoningTraceRegistry`). Fusion started additive and revertible by
+  deleting this file + its spec. Nothing in the audited flow is touched.
+- Fusion is now UNCONDITIONAL. `ARCHIMEDES_FUSION_ENABLED` was retired on
+  2026-09-02: the debate society is the sole generation pipeline and every
+  proposer routes through `StrategyFusion.propose()`, so the only thing the
+  flag's OFF branch could do in production was return a `disabled` sentinel
+  and make Generate silently produce nothing. A lever that can only break
+  prod is not a lever. Do not reintroduce a switch here —
+  `backend/tests/test_fusion_flag_retired.py` fails if one comes back.
 - The LLM-backend seam, lazy `anthropic` import, `extract_json` (now in
   `agents/generation_json.py`), frozen artifact and honest-fallback
   labelling deliberately mirrored the (now-retired) architect so a later
@@ -95,22 +101,6 @@ FUSION_MAX_PAPERS = 30
 # evidence per generation before a single candidate is backtested. 30 stays
 # available as an explicit user pick; nobody is defaulted into it.
 DEFAULT_MAX_PAPERS = 8
-
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-# ── Feature flag (mirrors ARCHIMEDES_STRATEGIES_DIR: plain getenv) ──
-
-
-def fusion_enabled() -> bool:
-    """True iff ARCHIMEDES_FUSION_ENABLED is truthy. Default OFF.
-
-    Truthy = {1,true,yes,on} case-insensitive — the env convention shared
-    across the codebase. No central settings module exists; env override is
-    the established pattern (`strategy_provider.default_provider`).
-    """
-    return os.getenv("ARCHIMEDES_FUSION_ENABLED", "").strip().lower() in _TRUTHY
-
 
 # ── Asset-class synonym map (deterministic candidate filtering) ──
 #
@@ -1037,15 +1027,9 @@ class StrategyFusion:
         return self._corpus
 
     def propose(self, brief: FusionBrief) -> FusionProposal:
-        if not fusion_enabled():
-            # Hard inert path: no LLM, no manifest read, sentinel out.
-            return _inert_proposal(
-                brief,
-                "disabled",
-                "Strategy fusion is disabled. Set ARCHIMEDES_FUSION_ENABLED=1 "
-                "to enable multi-paper, novelty-seeking synthesis.",
-            )
-
+        # Unconditional since 2026-09-02 (deck Q4): no flag check here. See the
+        # module docstring for why the OFF branch was deleted rather than
+        # defaulted ON.
         if self._candidates is not None:
             # Pre-selected by the caller (the debate proposer, which already
             # ran select_candidates WITH its regime_bias) — used verbatim so
