@@ -422,16 +422,16 @@ async def start_generation(
             },
         )
 
-    # Cheap, deterministic brief prelude (Lane 1.3c: "never charge for a
-    # brief we can cheaply reject"). Deliberately BEFORE the payment gate —
-    # a caller must never be charged for a brief that is obviously invalid
-    # (empty / gibberish). Shares its exact criteria with the real (LLM)
-    # validator's own prelude in generation_pipeline._validate_brief via
+    # Deterministic brief screen (Lane 1.3c: "never charge for a brief we can
+    # cheaply reject"). Deliberately BEFORE the payment gate — a caller must
+    # never be charged for a brief that is empty, gibberish, over-length, or
+    # carrying a prompt-injection payload. Shares its exact criteria with the
+    # LLM validator's own prelude in generation_pipeline._validate_brief via
     # `cheap_brief_reject` — see that function's docstring for why the two
-    # call sites can never drift apart. Anything this misses (off-topic but
-    # grammatical text, jailbreak attempts) still gets the expensive LLM
-    # check post-payment, exactly as before — that outcome legitimately
-    # consumes work, so it stays a credit spend, not a pre-payment refusal.
+    # call sites can never drift apart. What this still misses is SEMANTIC
+    # (off-topic but grammatical text): that gets the LLM check post-payment,
+    # exactly as before — that outcome legitimately consumes work, so it
+    # stays a credit spend, not a pre-payment refusal.
     cheap_reject = cheap_brief_reject(req.brief)
     if cheap_reject is not None:
         raise HTTPException(
@@ -441,6 +441,10 @@ async def start_generation(
                 "code": "BRIEF_INVALID",
                 "message": _invalid_brief_message(cheap_reject.get("reason")),
                 "hint": cheap_reject.get("hint") or "Mention an asset class, a goal, or a risk appetite.",
+                # Machine-readable code from services.brief_screen's versioned
+                # vocabulary (#1801). Additive — the four keys above are
+                # unchanged, so no existing client moves.
+                "reason_code": cheap_reject.get("code") or "",
             },
         )
 
