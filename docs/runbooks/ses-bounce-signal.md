@@ -61,11 +61,13 @@ retention is what makes a periodic drain honest rather than lossy, so loosening 
 refusal **later, never wrong**.
 
 ```bash
-# what the schedule is set to, and when it last fired
+# what the schedule is set to, and whether it is ENABLED
 aws scheduler get-schedule --name archimedes-ses-events-drain
 
-# the last runs' output (the summary below is the whole of it)
-aws logs tail /archimedes/app --filter-pattern ses-events-drain --since 1h
+# the last runs' output (the summary below is the whole of it). The prefix is a
+# STREAM prefix, not a content filter: every drain writes to its own stream
+# under /archimedes/app named ses-events-drain/…
+aws logs tail /archimedes/app --log-stream-name-prefix ses-events-drain --since 1h
 
 # force one now, without waiting for the next tick
 aws ecs run-task --cluster archimedes-cluster --launch-type FARGATE \

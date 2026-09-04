@@ -215,7 +215,7 @@ output "ses_events_queue_url" {
 }
 
 output "ses_events_drain_task_definition_family" {
-  description = "ECS task definition family for the scheduled SES bounce/complaint drain (infra/ses_events.tf) — the family aws_scheduler_schedule.ses_events_drain invokes every tick. `aws ecs run-task --task-definition <this>` to force one drain by hand; `aws logs tail /archimedes/app --filter-pattern ses-events-drain --since 30m` to read the last one."
+  description = "ECS task definition family for the scheduled SES bounce/complaint drain (infra/ses_events.tf) — the family aws_scheduler_schedule.ses_events_drain invokes every tick. `aws ecs run-task --task-definition <this>` to force one drain by hand; `aws logs tail /archimedes/app --log-stream-name-prefix ses-events-drain --since 30m` to read the last one."
   value       = aws_ecs_task_definition.ses_events_drain.family
 }
 
