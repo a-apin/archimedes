@@ -46,8 +46,18 @@ from typing import TYPE_CHECKING, Any
 from archimedes.agents.generation_pipeline import (
     FusionUnavailable,
     _CandidateResult,
+    _paper_attribution_entry,
     _society_num_trials,
 )
+
+# The WRITE-time scrubber, imported here because the SSE path never touches
+# `record_debate_transcript` (which is where it normally runs). A debate turn
+# pushed onto the stream is the same paid model text that lands in
+# `debate_transcripts.transcript_json`; skipping the scrub would re-open the
+# exact leak `_sanitize_claim` / `_sanitize_paper_verdict` exist to close, one
+# transport to the left. No import cycle: models.debate_transcript imports only
+# models.chat.
+from archimedes.models.debate_transcript import sanitize_transcript
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
 from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
@@ -270,25 +280,19 @@ def _debate_can_run(brief: GenerateBrief) -> bool:
     (which would cause every proposer call to return ``insufficient_corpus``).
     Never raises — any failure degrades to ``False`` so ``run_generation`` emits
     ``GENERATION_UNAVAILABLE`` honestly rather than crashing.
-    """
-    try:
-        from archimedes.agents.strategy_fusion import (
-            MIN_PAPERS,
-            FusionBrief,
-            load_corpus,
-            select_candidates,
-        )
 
-        fb = FusionBrief(
-            asset_classes=list(brief.asset_classes or []),
-            risk_appetite=brief.risk_appetite,
-            strategic_direction=brief.intent or "",
-            max_papers=brief.max_papers,
-        )
-        return len(select_candidates(fb, load_corpus())) >= MIN_PAPERS
-    except Exception:
-        logger.debug("debate viability precheck failed; treating as not runnable", exc_info=True)
-        return False
+    The retrieval itself lives in ``corpus_viability.assess_corpus_viability``,
+    which returns the same verdict PLUS the count it measured and the
+    corpus-derived ways forward. This wrapper keeps the long-standing bool
+    contract (every caller and test binds to it) while guaranteeing that the
+    gate and the failure explanation can never be computed by two different
+    implementations. They remain two INVOCATIONS over a corpus that can move
+    between them, so ``generation_pipeline`` guards the case where the second
+    one comes back viable after this gate has already said no.
+    """
+    from archimedes.agents.corpus_viability import assess_corpus_viability
+
+    return assess_corpus_viability(brief).can_run
 
 
 # ── Step 1 — proposer pool ────────────────────────────────────────────────────
@@ -582,6 +586,95 @@ def _aggregate_paper_verdicts(
     return out
 
 
+#: Human nouns for the two debate roles and the two rounds. The stream used to
+#: carry the debate as four ``tool_called`` markers whose ``args_summary`` was
+#: ``cards[:120]`` — a truncated evidence card, never the turn — so a user
+#: watching a generation saw that a "tool" named ``debate_bear_r2`` had been
+#: called and nothing about what either researcher actually argued.
+_ROLE_NOUNS = {"bull": "Bull researcher", "bear": "Bear researcher"}
+_ROUND_NOUNS = {1: "opening argument", 2: "rebuttal"}
+
+
+def _turn_headline(turn: dict[str, Any]) -> str:
+    """One human sentence for a finished debate turn — server-written copy.
+
+    Built from the SANITIZED turn (see :func:`_emit_debate_turn`), so the
+    verdict it quotes is the scrubbed one, not the raw model string.
+
+    Counts rather than adjectives: how many claims the researcher made, how
+    many of them were grounded in a paper it was actually shown, and how many
+    papers it threw out. "2 of 3 claims grounded in a named paper" is checkable
+    against the claim list rendered underneath it; "a well-argued case" is not.
+
+    A turn whose backend output could not be parsed degrades to
+    ``{verdict: "n/a", claims: [], discard: []}``; that says so plainly instead
+    of rendering an empty card, because an unreadable answer IS the record.
+    """
+    role = str(turn.get("role") or "")
+    who = _ROLE_NOUNS.get(role, "Researcher")
+    rnd = turn.get("round")
+    stage = _ROUND_NOUNS.get(rnd if isinstance(rnd, int) else None, "argument")
+    claims = list(turn.get("claims") or [])
+    discards = list(turn.get("discard") or [])
+    verdict = str(turn.get("verdict") or "").strip()
+    has_verdict = bool(verdict) and verdict.lower() != "n/a"
+
+    if not claims and not discards and not has_verdict:
+        return f"{who}, {stage} — no argument recorded (the researcher's answer could not be read)."
+
+    parts = [f"{who}, {stage}"]
+    if has_verdict:
+        parts.append(f"verdict: {verdict}")
+    head = " — ".join(parts)
+
+    tail: list[str] = []
+    if claims:
+        grounded = sum(1 for c in claims if isinstance(c, dict) and (c.get("arxiv_ids") or []))
+        tail.append(f"{len(claims)} claim{'' if len(claims) == 1 else 's'}, {grounded} grounded in a named paper")
+    else:
+        tail.append("no claims recorded")
+    if discards:
+        tail.append(f"{len(discards)} paper{'' if len(discards) == 1 else 's'} set aside")
+    return f"{head}. {'; '.join(tail)}."
+
+
+async def _emit_debate_turn(emit: _Emitter, candidate_id: str, turn: dict[str, Any]) -> None:
+    """Push ONE finished debate turn onto the SSE stream — sanitized, never raw.
+
+    Called immediately after the turn is appended to the transcript, so the
+    stream is 1:1 with what gets stored: what the user watched is what was
+    written. The payload carries the turn itself (``role``/``round``/
+    ``verdict``/``claims``/``discard``) plus a server-written ``headline``, and
+    nothing else — the whole transcript is never re-sent per turn.
+
+    ``sanitize_transcript`` is mandatory here and is the reason this helper
+    exists at all. It normally runs inside ``record_debate_transcript``, on the
+    way into ``debate_transcripts``; the SSE path bypasses the DB entirely, so
+    without this call the raw model text would reach a browser through a
+    transport the write-time scrubber never sees. Best-effort like the rest of
+    the debate round: a failure here drops the EVENT, never the turn, and never
+    falls back to emitting the unsanitized dict.
+    """
+    try:
+        safe = sanitize_transcript([turn])
+    except Exception:
+        logger.debug("debate: could not sanitize a turn for the stream — event dropped", exc_info=True)
+        return
+    if not safe:
+        return
+    payload = safe[0]
+    await emit.emit(
+        "debate_turn",
+        candidate_id=candidate_id,
+        role=payload.get("role"),
+        round=payload.get("round"),
+        verdict=payload.get("verdict"),
+        claims=payload.get("claims") or [],
+        discard=payload.get("discard") or [],
+        headline=_turn_headline(payload),
+    )
+
+
 async def _debate_round(
     pool: list[Any],
     model: str | None,
@@ -642,12 +735,17 @@ async def _debate_round(
         except Exception:
             return {"role": role, "round": rnd, "verdict": "n/a", "claims": [], "discard": []}
 
-    # Round 1 — initial positions (fixed bull→bear order).
+    # Round 1 — initial positions (fixed bull→bear order). Each finished turn
+    # is pushed onto the stream as it lands (`_emit_debate_turn`), so the four
+    # `tool_called` markers below are no longer the only trace of the debate a
+    # watching user ever sees.
     for role in ("bull", "bear"):
         await emit.emit(
             "tool_called", candidate_id=candidate_id, tool_name=f"debate_{role}_r1", args_summary=cards[:120]
         )
-        transcript.append(await asyncio.to_thread(_turn, role, 1, []))
+        turn = await asyncio.to_thread(_turn, role, 1, [])
+        transcript.append(turn)
+        await _emit_debate_turn(emit, candidate_id, turn)
 
     # Round 2 — visible rebuttal: each researcher sees the other's round-1 claims.
     claims_by_role = {t["role"]: t["claims"] for t in transcript}
@@ -655,7 +753,9 @@ async def _debate_round(
         await emit.emit(
             "tool_called", candidate_id=candidate_id, tool_name=f"debate_{role}_r2", args_summary="rebuttal"
         )
-        transcript.append(await asyncio.to_thread(_turn, role, 2, claims_by_role.get(opponent, [])))
+        turn = await asyncio.to_thread(_turn, role, 2, claims_by_role.get(opponent, []))
+        transcript.append(turn)
+        await _emit_debate_turn(emit, candidate_id, turn)
 
     return transcript
 
@@ -797,14 +897,41 @@ def _rigor_verdict_dict(ev: Any) -> dict[str, Any]:
     }
 
 
-def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _CandidateResult:
+def _make_entry(
+    candidate_id: str,
+    proposal: Any,
+    ev: Any,
+    *,
+    regime: str,
+    evidence_by_id: dict[str, dict[str, str]] | None = None,
+) -> _CandidateResult:
     """One leaderboard entry — a fully-populated ``_CandidateResult``.
 
     ``has_real_rigor=True`` (carries C-rigor's real backtest) so the downstream
     ``_patch_pbo`` and buy-and-hold gather correctly SKIP it (keyed on
     ``has_real_rigor``), preserving the CSCV PBO from ``evaluate_fusion_spec``.
+
+    ``evidence_by_id`` (#1739) is the ``{arxiv_id: {"title", "published"}}`` map
+    ``_propose_pool`` already built — the only place in the run that knows a
+    cited paper's TITLE. Without it every ``source_papers`` entry shipped
+    ``"title": ""`` and the Library card had nothing but an id to print.
+    Defaults to ``None`` (→ blank titles, the old behaviour) so the pure
+    ranking tests can call ``build_leaderboard`` without an evidence map.
     """
     spec = proposal.strategy_spec or {}
+    # (#1739) The server-filtered paper→mechanism map, keyed for the join
+    # below. First entry per id wins; a cited paper with no entry is carried
+    # with an empty mechanism, which is the honest "cited but unattributed"
+    # record (never dropped — dropping it would hide the shortfall).
+    mechanisms = getattr(proposal, "paper_mechanisms", None) or []
+    mech_by_id: dict[str, dict[str, Any]] = {}
+    for entry in mechanisms:
+        if not isinstance(entry, dict):
+            continue
+        arxiv_id = str(entry.get("arxiv_id", "") or "")
+        if arxiv_id and arxiv_id not in mech_by_id:
+            mech_by_id[arxiv_id] = entry
+    titles = evidence_by_id or {}
     # Real per-bar returns for the live gate (#788/#818, mirrors the fusion
     # path): without return_series, _persist_real_returns SKIPS the winner and
     # the passport reads "pending" forever even though C-rigor just ran a real
@@ -816,7 +943,15 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         strategy_name=proposal.strategy_name or "Debate candidate",
         thesis=proposal.thesis,
         asset_universe=list(spec.get("asset_universe", []) or []),
-        source_papers=[{"arxiv_id": a, "title": ""} for a in proposal.source_arxiv_ids],
+        source_papers=[
+            {
+                "arxiv_id": a,
+                "title": (titles.get(a) or {}).get("title", ""),
+                "mechanism": str((mech_by_id.get(a) or {}).get("mechanism", "") or ""),
+                "spec_elements": list((mech_by_id.get(a) or {}).get("spec_elements", []) or []),
+            }
+            for a in proposal.source_arxiv_ids
+        ],
         weights={},  # debate emits a DSL spec, not a static weight vector
         reasoning=proposal.fusion_reasoning or proposal.novelty_rationale or "",
         rigor_verdict=_rigor_verdict_dict(ev),
@@ -836,6 +971,11 @@ def _make_entry(candidate_id: str, proposal: Any, ev: Any, *, regime: str) -> _C
         # live agent runner later loads it to evaluate a deployed generated
         # strategy under its own signal rule instead of silently skipping it.
         strategy_spec=spec or None,
+        # (#1739) The budget-vs-used pair and the per-paper prose, carried onto
+        # the candidate instead of ending at a log line / a write-only field.
+        papers_offered=int(getattr(proposal, "papers_offered", 0) or 0),
+        distinct_mechanism_papers=int(getattr(proposal, "distinct_mechanism_papers", 0) or 0),
+        fusion_reasoning=str(getattr(proposal, "fusion_reasoning", "") or ""),
     )
 
 
@@ -935,6 +1075,7 @@ def build_leaderboard(
     base_id: str,
     regime_force_abstain: bool = False,
     regime_reason: str = "",
+    evidence_by_id: dict[str, dict[str, str]] | None = None,
 ) -> list[_CandidateResult]:
     """Deterministic C-regime gate → C-null cull + rank → top-N leaderboard.
 
@@ -943,6 +1084,11 @@ def build_leaderboard(
     market regime structurally overrides candidate consensus (Hierarchy-of-Truth).
     Otherwise: C-null cull → rank → leaderboard (leader keeps ``base_id``,
     alternatives get ``base_id_alt{n}``). Pure + deterministic — directly tested.
+
+    ``evidence_by_id`` (#1739) is threaded through to ``_make_entry`` purely so
+    a cited paper's TITLE reaches ``source_papers``; it never influences
+    ranking, culling, or the abstain paths. Optional, so the pure ranking tests
+    keep calling this with rigor results alone.
     """
     if regime_force_abstain:
         return [
@@ -966,7 +1112,13 @@ def build_leaderboard(
     # candidate set can't balloon when the pool is large.
     survivors = survivors[: _leaderboard_max()]
     return [
-        _make_entry(base_id if i == 0 else f"{base_id}_alt{i}", p, ev, regime=regime)
+        _make_entry(
+            base_id if i == 0 else f"{base_id}_alt{i}",
+            p,
+            ev,
+            regime=regime,
+            evidence_by_id=evidence_by_id,
+        )
         for i, (p, ev) in enumerate(survivors)
     ]
 
@@ -1102,6 +1254,7 @@ async def _run_debate_leaderboard(
         base_id=candidate_id,
         regime_force_abstain=regime_gate["force_abstain"],
         regime_reason=regime_gate["reason"],
+        evidence_by_id=evidence_by_id,
     )
     # Stamp the ONE transcript this run produced onto every entry (winner AND
     # the tail Considered Alternatives) — build_leaderboard is pure and knows
@@ -1125,6 +1278,39 @@ async def _run_debate_leaderboard(
             else f"leader={leader.strategy_name} dsr={leader.rigor_verdict.get('dsr')} of {len(leaderboard)} entries"
         ),
     )
+
+    # The SAME paper-attribution entry `_persist_debate_transcripts` will append
+    # to this run's transcript row (#1739), pushed onto the live stream while
+    # the user is still watching instead of only being readable afterwards on
+    # the passport. Built by the one shared helper — the summary sentence lives
+    # in `_paper_attribution_entry` and nowhere else, or the stream and the
+    # passport would drift into two different claims about the same run.
+    #
+    # Sanitized here for the reason `_emit_debate_turn` documents: the SSE path
+    # never reaches `record_debate_transcript`, and both of this entry's new
+    # keys carry model prose.
+    #
+    # Gated on `transcript` for the same reason `paper_verdicts` is above: with
+    # no LLM backend the debate never ran, and "the papers accounted for by
+    # this debate" is not a thing that exists when there was no debate. The
+    # PERSISTED entry keeps its own #1739 rule (it also rides on
+    # `fusion_reasoning` alone) — this gate narrows the event, not the row.
+    if transcript:
+        attribution = _paper_attribution_entry(leader)
+        if attribution is not None:
+            # Built as ONE dict rather than spread into keyword arguments: a
+            # `**sanitized` spread makes every key of the attribution entry a
+            # kwarg, so the day `_paper_attribution_entry` grows a
+            # `candidate_id` the call dies with "got multiple values for
+            # keyword argument". Merging instead lets the entry's own keys land
+            # and keeps the three stream-only fields authoritative.
+            payload = {
+                **sanitize_transcript([attribution])[0],
+                "candidate_id": candidate_id,
+                "papers_offered": leader.papers_offered,
+                "distinct_mechanism_papers": leader.distinct_mechanism_papers,
+            }
+            await emit.emit("debate_attribution", **payload)
     return leaderboard
 
 

@@ -138,6 +138,11 @@ export default function Generate({ onNavigate, onStageChange, user }) {
 
 	// ── Drill-down: which job's stream to show (null = table view) ──
 	const [drillInJobId, setDrillInJobId] = useState(null);
+	// Focus handoff for the "ways forward" on a failed run: bumping the
+	// counter moves the caret into the brief box after the stream view
+	// unmounts, so the user lands where the edit actually happens.
+	const [focusBriefTick, setFocusBriefTick] = useState(0);
+	const briefRef = useRef(null);
 
 	useEffect(() => {
 		onStageChange?.(drillInJobId ? "debate" : "brief");
@@ -738,6 +743,32 @@ export default function Generate({ onNavigate, onStageChange, user }) {
 	const handleDrillIn = (jobId) => setDrillInJobId(jobId);
 	const handleBackToTable = () => setDrillInJobId(null);
 
+	// ── Ways forward from a run that found too few papers ──
+	// Both leave the stream view and put the user back in the brief box: the
+	// failure card's whole point is that there IS a next move.
+	const handleBroaden = (term, steer) => {
+		setDrillInJobId(null);
+		setIntent((prev) => {
+			const base = (prev || steer || "").trim();
+			if (!base) return term;
+			// Never duplicate a term the brief already contains.
+			if (base.toLowerCase().includes(term.toLowerCase())) return base;
+			return `${base.replace(/[\s.]+$/, "")}, including ${term}`;
+		});
+		setSurpriseLabel("");
+		setFocusBriefTick((n) => n + 1);
+	};
+
+	const handleSurpriseFromStream = () => {
+		setDrillInJobId(null);
+		handleSurprise();
+		setFocusBriefTick((n) => n + 1);
+	};
+
+	useEffect(() => {
+		if (focusBriefTick > 0) briefRef.current?.focus();
+	}, [focusBriefTick]);
+
 	// ─── Drill-down view (stream for a selected job) ───────────
 	if (drillInJobId) {
 		return (
@@ -764,6 +795,8 @@ export default function Generate({ onNavigate, onStageChange, user }) {
 					onReset={handleBackToTable}
 					onPipelineSelected={() => {}}
 					onNavigate={onNavigate}
+					onBroaden={handleBroaden}
+					onSurprise={handleSurpriseFromStream}
 					hideReset
 				/>
 			</div>
@@ -831,7 +864,7 @@ export default function Generate({ onNavigate, onStageChange, user }) {
 						Name assets, a mechanism, and a goal.{" "}
 						<a
 							className="generate-brief-guide-link"
-							href="https://github.com/a-apin/archimedes/blob/main/docs/writing-a-brief.md"
+							href="https://github.com/aprin-labs/archimedes/blob/main/docs/writing-a-brief.md"
 							target="_blank"
 							rel="noreferrer"
 						>
@@ -842,6 +875,7 @@ export default function Generate({ onNavigate, onStageChange, user }) {
 					<textarea
 						id="generate-brief"
 						aria-describedby="generate-brief-help"
+						ref={briefRef}
 						value={intent}
 						onChange={(e) => setIntent(e.target.value)}
 						placeholder="e.g. blend momentum, quality and a gold hedge across major ETFs with volatility-managed sizing for idle USDC"

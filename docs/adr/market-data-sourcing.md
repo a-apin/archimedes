@@ -6,8 +6,8 @@
 > **Owner:** Dan Browne
 > **Supersedes:** —
 > **Superseded-by:** —
-> **Question being decided:** Now that [#1218](https://github.com/a-apin/archimedes/issues/1218) has priced yfinance as an unlicensed-for-commercial-redistribution dependency sitting on the MVP critical path, which surfaces move to a commercial vendor, which stay on yfinance, and what has to be true before real money touches either?
-> **Related issues/PRs:** [#1218](https://github.com/a-apin/archimedes/issues/1218) (the costing exercise this decides), [#1282](https://github.com/a-apin/archimedes/pull/1282) (the provider seam), [#1455](https://github.com/a-apin/archimedes/pull/1455) (the Tiingo adapter), [#1203](https://github.com/a-apin/archimedes/issues/1203) (per-strategy universes — the routing fix that put market-data volume on the critical path), [#775](https://github.com/a-apin/archimedes/issues/775) (yfinance as an oracle cross-check — different use, same dependency).
+> **Question being decided:** Now that [#1218](https://github.com/aprin-labs/archimedes/issues/1218) has priced yfinance as an unlicensed-for-commercial-redistribution dependency sitting on the MVP critical path, which surfaces move to a commercial vendor, which stay on yfinance, and what has to be true before real money touches either?
+> **Related issues/PRs:** [#1218](https://github.com/aprin-labs/archimedes/issues/1218) (the costing exercise this decides), [#1282](https://github.com/aprin-labs/archimedes/pull/1282) (the provider seam), [#1455](https://github.com/aprin-labs/archimedes/pull/1455) (the Tiingo adapter), [#1203](https://github.com/aprin-labs/archimedes/issues/1203) (per-strategy universes — the routing fix that put market-data volume on the critical path), [#775](https://github.com/aprin-labs/archimedes/issues/775) (yfinance as an oracle cross-check — different use, same dependency).
 
 ## TL;DR
 
