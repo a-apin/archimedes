@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-01
+> **updated:** 2026-09-03
 > **superseded-by:** —
 
 A runbook is a procedure someone follows **under pressure**, usually during an incident.
@@ -30,6 +30,8 @@ Incident write-ups are evidence rather than procedure, so they live in `docs/inc
 | [`cost-kill-switch.md`](cost-kill-switch.md) | Dan Browne | The automatic AWS spend brake: how the 50/80/120% budget ladder and the billing tripwire fire, the one-command recovery, the billing-lag caveats, and the measured monthly baseline. || [`backtest-results-retention.md`](backtest-results-retention.md) | Dan Browne | `backtest_results` archive-then-prune procedure (v8 Lane 3.1): keep policy, the `--plan`/`--archive`/`--prune` flags, the manifest-verification guard, and the post-prune VACUUM step. |
 | [`curated-backtests.md`](curated-backtests.md) | Dan Browne | Producing curated backtest rows with `run_backtests.py` (#1760) — the three triggers that justify a run, the one-off Fargate `run-task` invocation, what to check in the summary, and the four things this must never do (no clock, no boot hook, never in the serving process, never for generated strategies). |
 | [`market-data-provider-proof.md`](market-data-provider-proof.md) | Dan Browne | Wiring the Tiingo token onto the backend container and proving the pull (#1798): the two task-definition registrars and which one ships, how to confirm the secret on the live revision, the fixed-window `verify_market_data.py` proof on the daily seam, and the blast radius of each of the two provider variables (#1798). |
+| [`market-data-provider-proof.md`](market-data-provider-proof.md) | Dan Browne | Wiring the Tiingo token onto the backend container and proving the pull (#1798): the two task-definition registrars and which one ships, how to confirm the secret on the live revision, the fixed-window `verify_market_data.py` proof, and the flip's blast radius. |
+| [`terraform-apply-and-task-definition-ownership.md`](terraform-apply-and-task-definition-ownership.md) | Dan Browne | Running `infra/apply.sh` after #1799: who owns the backend ECS task definition (`container_definitions` is pipeline-owned, everything else is Terraform's), why editing `infra/ecs.tf` no longer reaches production, how to make a deliberate task-definition change anyway, the two residuals a clean untargeted plan still shows, and how to arm the `terraform-drift` gate. |
 | [`cloudfront-cache-behaviour-apply.md`](cloudfront-cache-behaviour-apply.md) | Dan Browne | Applying a CloudFront cache-behaviour change with `infra/apply.sh` — the plan to expect, the post-apply invalidation, the `x-cache` verification, and the signed-out-`/app` failure mode to roll back from. Written for #1768 (`/app`, `/app/*`, `/sign-in*` on CachingDisabled — including the public `/app` carve-outs, de-cached by owner ruling), then generalised. |
 | [`erc8004-identity-registration.md`](erc8004-identity-registration.md) | Dan Browne | Minting the ERC-8004 agent identity on Arc (#1527): live-verified registry facts, `--plan`/`--verify`/`--execute`, the Circle-signed owner step, and the honest surface flip. |
 | [`runner-ec2-wedge.md`](runner-ec2-wedge.md) | Dan Browne | The `archimedes-runner` box wedging (#1402) — impaired instance check, healthy system check, dead SSM agent. Symptoms, read-only diagnosis, the recovery ladder, and what the `ec2:reboot` alarm now does for you before you get there. |
