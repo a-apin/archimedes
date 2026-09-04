@@ -313,6 +313,26 @@ resource "aws_iam_role_policy" "ecs_task_ses_send" {
         Effect   = "Allow"
         Action   = ["ses:SendEmail", "ses:SendRawEmail"]
         Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}"
+      },
+      # #1748 item 2: GET /api/auth/verification-status asks SES whether the
+      # caller's own address is on the account suppression list, because
+      # SendEmail SUCCEEDS for a suppressed address (it returns a MessageId and
+      # the message is then dropped) — so without this lookup the resend button
+      # can only ever answer "requested", forever.
+      #
+      # Resource "*" is not laziness: the suppression list is an ACCOUNT-level
+      # resource in SESv2 and has no per-identity ARN to scope to, unlike the
+      # send statement above. Read-only, one action, and the only thing it can
+      # reveal is whether an address AWS already refuses to mail is suppressed.
+      # Without it the lookup fails AccessDeniedException, which auth/
+      # suppression.js reports as "we could not look" — never as "not
+      # suppressed" — so a missing grant degrades to an honest unknown rather
+      # than a false all-clear.
+      {
+        Sid      = "ReadAccountSuppressionListForDeliveryFeedback"
+        Effect   = "Allow"
+        Action   = ["ses:GetSuppressedDestination"]
+        Resource = "*"
       }
     ]
   })
@@ -525,7 +545,6 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "BETTER_AUTH_INTERNAL_URL", value = "http://127.0.0.1:3000" },
         { name = "APP_ENV", value = "production" },
         { name = "FEATURE_QUANT", value = "false" },
-        { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },
         # Runtime env-parity fix (PR #1041 correctness pass, 2026-07-07): the
         # prod EC2 box sets these three via docker-compose's `env_file: .env`
         # (docker-compose.yml's `backend` service) — a box-local, gitignored
@@ -661,6 +680,27 @@ resource "aws_ecs_task_definition" "backend" {
         # below): supplied at apply time once the platform DCW exists, so the
         # flip needs no code change.
         { name = "GENERATION_PAYMENT_REQUIRED", value = "true" },
+        # Free allowance ABOVE the paywall (#1643): the first N generations on
+        # a VERIFIED account never reach GENERATION_PAYMENT_REQUIRED. Pinned
+        # here at the code default (free_generations.DEFAULT_ALLOWANCE = 3) so
+        # the number prod gives away is a decision someone applied rather than
+        # an accident of a code default — finding A5 on the flip-list, and the
+        # same drift GENERATION_DAILY_CAP_* and GENERATION_TIMEOUT_SECONDS
+        # above were plumbed to remove. This is the one knob on that page that
+        # gives away paid product, so it does not get to be implicit.
+        #
+        # TWIN, and the one that actually ships: FREE_GENERATIONS_VALUE in
+        # .github/scripts/ecs_rewrite_task_def.py. deploy.yml clones the live
+        # task definition and does not apply terraform, so this line alone is
+        # not live. Change BOTH or the next CI deploy overwrites you.
+        #
+        # `<= 0` disables the free path entirely and restores the pre-#1643
+        # wallet-gate-on-first-call behaviour; a non-integer falls back to 3
+        # with a warning, so keep it a bare integer.
+        # Reader: allowance() in services/free_generations.py. Guards:
+        # backend/tests/test_ecs_backend_secrets.py (this line) and
+        # backend/tests/test_ecs_free_generations_pin.py (both paths).
+        { name = "FREE_GENERATIONS_PER_ACCOUNT", value = "3" },
         # $2.00/generation (Dan, 2026-08-20): the testnet faucet drips $20
         # per 2h cooldown, so one drip = a clean 10 generations — and $2 sits
         # inside the 10x-margin-over-measured-cost pricing direction (private
