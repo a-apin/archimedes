@@ -295,6 +295,39 @@ def _spec_name(spec_json: str | None) -> str:
         return ""
 
 
+def _live_paper_verdicts(session, strategy_ids: list[str]) -> dict[str, dict]:
+    """The stored rigor verdict for every strategy on this board — ONE query.
+
+    Batched for the same reason the name lookup is, and — as on
+    ``paper_routes._page_verdicts`` — this is where RECOVERY lives.
+    ``stored_rigor_verdicts`` raises on a DB-level failure by design, because
+    rolling a session back is only safe where nothing uncommitted can be lost
+    (#1764 review: a rollback inside the create route's transaction discarded a
+    just-written deployment). This is a pure read path, so the rollback below
+    can discard nothing and leaves the session usable.
+
+    Degradation is per-FIELD, not per-board: a broken passport read makes every
+    row read "not graded" — never a pass — while the realised forward returns,
+    which are this board's actual subject and are already loaded, still serve.
+    Failing the whole board would be the worse lie of the two.
+    """
+    from archimedes.services.passport_loader import stored_rigor_verdicts, ungraded_verdicts_for
+
+    try:
+        found = stored_rigor_verdicts(session, strategy_ids)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "live-paper board: passport verdict read failed (%s) — every row degrades to ungraded",
+            type(exc).__name__,
+        )
+        try:
+            session.rollback()
+        except Exception:
+            logger.debug("rollback after a failed passport verdict read also failed", exc_info=True)
+        return ungraded_verdicts_for(strategy_ids)
+    return {**ungraded_verdicts_for(strategy_ids), **found}
+
+
 def _live_paper_ledgers(user_id: str) -> tuple[list[LivePaperLedger], bool, str]:
     """Load the caller's ACTIVE paper deployments and their forward ledgers.
 
@@ -334,6 +367,7 @@ def _live_paper_ledgers(user_id: str) -> tuple[list[LivePaperLedger], bool, str]
                     last_appended[row.deployment_id] = row.appended_at
 
             names = _display_names(session, {d.strategy_id for d in deps})
+            verdicts = _live_paper_verdicts(session, [d.strategy_id for d in deps])
             return (
                 [
                     LivePaperLedger(
@@ -354,6 +388,14 @@ def _live_paper_ledgers(user_id: str) -> tuple[list[LivePaperLedger], bool, str]
                         # cause) is stated in the field description rather than
                         # papered over.
                         drift_detected=d.drift_detected_at is not None or d.engine_regrade_at is not None,
+                        # The verdict of record, riding along with the forward
+                        # number it qualifies (#1764). Read, never recomputed —
+                        # the same `passport_loader` derivation the deployment
+                        # card reads, so the board and the card cannot show two
+                        # verdicts for one strategy. Always present: a strategy
+                        # with no passport row gets the ungraded verdict here,
+                        # so no row can reach the builder without one.
+                        verdict=verdicts[d.strategy_id],
                     )
                     for d in deps
                 ],

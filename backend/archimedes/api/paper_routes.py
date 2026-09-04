@@ -54,6 +54,7 @@ from archimedes.services.paper_trading import (
     create_deployment,
     deployment_summary,
 )
+from archimedes.services.passport_loader import stored_rigor_verdicts, ungraded_verdicts_for
 from archimedes.services.strategy_dsl import DSLError
 
 logger = logging.getLogger(__name__)
@@ -156,9 +157,44 @@ async def deploy_paper(
             logger.error("%s for deployment %s (initial advance)", COVERAGE_BROKEN_LOG, dep.id, exc_info=True)
         except Exception as exc:
             logger.warning("paper: initial advance for %s deferred to the scheduler: %s", dep.id, exc)
-        summary = deployment_summary(session, dep)
+        # COMMIT BEFORE SUMMARISING. The summary reads `strategy_passports`
+        # (#1764's verdict of record); a read that fails on a session still
+        # holding the just-created deployment used to take the deployment with
+        # it — the route returned 201 carrying a deployment_id for a row that
+        # had been discarded. Committing first makes the write durable before
+        # anything else touches the session, so the worst a broken passport
+        # read can now do is degrade THIS payload's verdict to "not graded".
+        # Pinned by test_a_broken_passport_read_never_discards_the_deployment.
         session.commit()
-    return summary
+        return deployment_summary(session, dep)
+
+
+def _page_verdicts(session, strategy_ids: list[str]) -> dict[str, dict]:
+    """The stored rigor verdict for a whole page of deployments — ONE query.
+
+    Batched here rather than per row (``deployment_summary`` would otherwise
+    issue one ``SELECT … FROM strategy_passports`` per deployment), and — more
+    importantly — this is where the RECOVERY lives. ``stored_rigor_verdicts``
+    raises on a DB-level failure by design, because un-poisoning a session is
+    only safe where there is nothing uncommitted to lose. This route is exactly
+    that place: a pure read, no writes in flight, so the rollback below can
+    discard nothing, and the page degrades to "every row not graded" while
+    still serving the ledger — the track record is the user's, and a broken
+    passport read must not take it down. No row is ever degraded to a PASS.
+    """
+    try:
+        found = stored_rigor_verdicts(session, strategy_ids)
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        logger.warning(
+            "paper: passport verdict read failed for the deployments page (%s) — every row degrades to ungraded",
+            type(exc).__name__,
+        )
+        try:
+            session.rollback()
+        except Exception:
+            logger.debug("rollback after a failed passport verdict read also failed", exc_info=True)
+        return ungraded_verdicts_for(strategy_ids)
+    return {**ungraded_verdicts_for(strategy_ids), **found}
 
 
 def _list_paper_deployments_sync(user_id: str) -> dict:
@@ -170,7 +206,8 @@ def _list_paper_deployments_sync(user_id: str) -> dict:
             .order_by(PaperDeployment.created_at.desc())
             .all()
         )
-        return {"deployments": [deployment_summary(session, d) for d in deps]}
+        verdicts = _page_verdicts(session, [d.strategy_id for d in deps])
+        return {"deployments": [deployment_summary(session, d, verdict=verdicts[d.strategy_id]) for d in deps]}
 
 
 @paper_router.get("/deployments")

@@ -254,12 +254,16 @@ variable "dmarc_rua_address" {
   description = <<-EOT
     Mailbox for DMARC aggregate reports (the rua= tag).
 
-    Reports only ARRIVE once inbound mail for this address is actually handled
-    — the zone's MX already points at SES inbound, but the receipt rule that
-    delivers it is #1460's scope. Until then the DMARC record still publishes
-    the policy signal Gmail/Yahoo bulk-sender rules look for; the reports are
-    simply not collected yet, and a reporter that cannot deliver drops them
-    silently rather than bouncing at us.
+    Read by TWO resources and they must agree: aws_route53_record.dmarc below
+    publishes it to the world, and aws_ses_receipt_rule.dmarc_reports
+    (dmarc_reports.tf, #1504) is what makes mail to it actually land somewhere.
+    Changing this in one place only means reporters send to an address with no
+    rule behind it. Nothing is stored, and no failure surfaces on our side —
+    any delivery error is the reporting receiver's to handle, where we never
+    see it. The symptom is an empty bucket, which is indistinguishable from
+    "nobody is spoofing us".
+
+    Procedure and interpretation: docs/runbooks/dmarc-reports.md.
   EOT
   type        = string
   default     = "dmarc-reports@archimedes-arc.com"

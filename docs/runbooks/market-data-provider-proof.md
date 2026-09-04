@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-01
+> **updated:** 2026-09-03
 > **superseded-by:** —
 
 **Scope:** getting `TIINGO_API_TOKEN` onto the running backend container, and producing the
@@ -96,8 +96,8 @@ aws ecs execute-command --cluster archimedes-cluster \
 
 [`../../scripts/verify_market_data.py`](../../scripts/verify_market_data.py) pulls `SPY` for a
 fixed, fully-historical window — `2026-06-01` through `2026-06-12` inclusive, ten US trading
-days with no market holiday in it — through the same `get_provider()` seam every backtest
-uses, and reports the vendor that answered.
+days with no market holiday in it — through the same `get_provider(seam="daily")` seam every
+backtest uses, and reports the seam it asked and the vendor that answered.
 
 **It does not run inside the backend container.** `backend/Dockerfile` COPYs `backend` into
 `/app`, so `/app/scripts` is `backend/scripts`; the repo-root `scripts/` tree is not in the
@@ -109,13 +109,20 @@ checkout instead, with the token in the process environment and `--no-cache` (wh
 export TIINGO_API_TOKEN=$(aws ssm get-parameter \
   --name /archimedes/prod/TIINGO_API_TOKEN --with-decryption \
   --query Parameter.Value --output text)
-MARKET_DATA_PROVIDER=tiingo python scripts/verify_market_data.py --no-cache
+MARKET_DATA_DAILY_PROVIDER=tiingo python scripts/verify_market_data.py --no-cache
 ```
+
+`MARKET_DATA_DAILY_PROVIDER` rather than `MARKET_DATA_PROVIDER` since
+[#1798](https://github.com/aprin-labs/archimedes/issues/1798): the daily variable is the one
+this pull is about, and it is the one the cutover flips. The older name still moves this seam
+when the daily one is unset, so the previous form of this command was not wrong — it was just
+wider than the thing being rehearsed. See § Step 3.
 
 The output has this shape — the block below is the format, **not** a recorded run:
 
 ```
 provider     : tiingo
+seam         : daily
 symbol       : SPY
 window       : 2026-06-01 .. 2026-06-13 (end-exclusive)
 cache        : bypassed (--no-cache)
@@ -138,22 +145,29 @@ claims-ledger row stays `PENDING ADR MERGE` until a run of this shows `provider 
 
 ## Step 3 — the flip, which is an owner decision with a blast radius
 
-`MARKET_DATA_PROVIDER` is **not** set by this wiring, and a guard in
+Neither market-data variable is set by this wiring, and a guard in
 `test_ecs_backend_secrets.py` (`FORBIDDEN_WHY`, which `FORBIDDEN_NAMES` derives from) fails
-if it is added to `infra/ecs.tf` without editing that guard first. That is deliberate, and the
-reason is a real hazard rather than caution:
+if either is added to `infra/ecs.tf` without editing that guard first. That is deliberate, and
+the reason is a real hazard rather than caution:
 
-> `MARKET_DATA_PROVIDER` is a **global** switch, not a paid-surface-only one. Today
-> `TiingoProvider` implements daily bars only: `get_intraday_quote`,
-> `get_intraday_quotes_batch` and `get_series` raise `NotImplementedError`. Setting it to
-> `tiingo` therefore also takes the live oracle push's equity fetch — which has no handler for
-> that exception, so it raises rather than degrading — plus the VIX / S&P-MA regime reads and
-> the Explore history modal. The ADR names this under § Consequences — those surfaces are
-> **not cutover-ready**. The split it describes ("Tiingo for paid analysis, yfinance for the
-> free Explore viewer") is enforced today by which methods exist, not by a second env var, so
-> there is no way to flip only the paid seam with the variables that exist.
+> **`MARKET_DATA_DAILY_PROVIDER` is the cutover switch.** Setting it to `tiingo` moves the
+> daily-bar readers — strategy signal evaluation on the marketplace tick, the generation
+> fusion panel, the portfolio backtester — and nothing else. Its blast radius is a cold
+> `asset_daily_bars` cache: reads filter on the vendor that wrote each row, so the first run
+> after a flip in *either* direction refetches. That is correct behaviour, not a fault.
+>
+> **`MARKET_DATA_PROVIDER` is the wider one, and setting it here is the mistake to avoid.**
+> Since [#1798](https://github.com/aprin-labs/archimedes/issues/1798) it names the
+> INTRADAY/history seam — the oracle push's provider leg, the paper-marks loop, the VIX/S&P
+> regime reads, the Explore history modal — **and** is the daily seam's fallback when the
+> daily variable is unset. So it flips daily bars too, by the back door and without naming
+> them. It no longer *breaks* intraday the way this page warned before #1798: a vendor that
+> cannot serve a seam is substituted for that seam and the substitution is logged by name
+> (`docs/adr/market-data-sourcing.md` § "Amendment: per-seam routing"), so the oracle keeps
+> pricing from yfinance rather than raising `NotImplementedError` out of an adapter. That is
+> exactly why it needs a guard now — the breakage used to be its own alarm.
 
-Step 2's command is exactly that rehearsal: `MARKET_DATA_PROVIDER=tiingo` set for one
+Step 2's command is exactly that rehearsal: `MARKET_DATA_DAILY_PROVIDER=tiingo` set for one
 short-lived process, which exercises the token, the adapter and the vendor's real responses
 and touches nothing else — the process exits. A green run there is evidence the credential
 works and the adapter is correct against live vendor responses.
@@ -161,19 +175,24 @@ works and the adapter is correct against live vendor responses.
 Be clear about what that green run does *not* unblock. The credential was never what stood
 between here and the flip — it was already in the web tier's process environment via the bulk
 load described at the top of this page, so the daily-bar path would have answered before this
-change too. What blocks the flip is the `NotImplementedError` surfaces above. Whether the
-global flip is acceptable is a separate call, and the honest answer today is that it needs
-Tiingo's intraday methods implemented first, or a second variable so the two seams can
-diverge.
+change too. What *did* block the flip was the intraday surfaces' `NotImplementedError`s,
+because one variable moved every seam at once. **#1798 removed that blocker**, by giving each
+seam its own variable. This page said, before that landed, that "there is no way to flip only
+the paid seam with the variables that exist" and that the flip "needs Tiingo's intraday
+methods implemented first, or a second variable so the two seams can diverge" — the second
+variable now exists, and those two sentences described the world before it. What remains is an
+owner decision about provenance and cost, plus the ADR's mainnet gate, which is a commercial
+licence rather than anything a fetch can prove.
 
 ## Rollback
 
-Nothing to roll back in the *runtime* behaviour: nothing reads `TIINGO_API_TOKEN` while
-`MARKET_DATA_PROVIDER` is unset, so no code path changes. If a flip is in
-effect and the oracle or Explore starts failing, unset `MARKET_DATA_PROVIDER` (or set it to
-`yfinance`) and redeploy. Note the ADR's cache consequence: **a provider flip in either
-direction starts cold**, because `asset_daily_bars` reads filter on the vendor that wrote
-each row. The first run after a flip is slow, and that is correct behaviour, not a fault.
+Nothing to roll back in the *runtime* behaviour: nothing reads `TIINGO_API_TOKEN` while both
+`MARKET_DATA_DAILY_PROVIDER` and `MARKET_DATA_PROVIDER` are unset, so no code path changes. If
+a flip is in effect and backtests or the marketplace tick start failing, unset whichever
+variable you set (or set it to `yfinance`) and redeploy. Note the ADR's cache consequence: **a
+provider flip in either direction starts cold**, because `asset_daily_bars` reads filter on
+the vendor that wrote each row. The first run after a flip is slow, and that is correct
+behaviour, not a fault.
 
 One thing this wiring does change: `/archimedes/prod/TIINGO_API_TOKEN` is now a task-LAUNCH
 dependency. Deleting, renaming or moving that parameter fails every task start with
@@ -184,9 +203,12 @@ value in place is safe; removing the parameter is not.
 ## Related
 
 - [`../adr/market-data-sourcing.md`](../adr/market-data-sourcing.md) — the split, the
-  free-tier-is-for-testing position, and the Tiingo Business plan as a mainnet gate.
+  free-tier-is-for-testing position, and the Tiingo Business plan as a mainnet gate. Its
+  § "Amendment: per-seam routing" is the per-feature seam table (#1798), including why the
+  S&P moving averages sit on `intraday` despite being daily bars.
 - [`../claims-ledger.md`](../claims-ledger.md) — the row this proof is for.
 - [`../operations/feature-flag-fliplist.md`](../operations/feature-flag-fliplist.md) —
-  `MARKET_DATA_PROVIDER`, `ORACLE_CRYPTO_SOURCE` and `TIINGO_MIN_REQUEST_INTERVAL_S`.
+  `MARKET_DATA_DAILY_PROVIDER`, `MARKET_DATA_PROVIDER`, `ORACLE_CRYPTO_SOURCE` and
+  `TIINGO_MIN_REQUEST_INTERVAL_S`.
 - [#1798 comment correcting the issue's premise](https://github.com/aprin-labs/archimedes/issues/1798#issuecomment-5504420216)
   — why "nothing could read the token" was wrong, and what actually blocks the flip.

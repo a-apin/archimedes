@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../AuthContext'
 import { apiGet } from '../api'
+import GateVerdictChip from './GateVerdictChip'
 import MetricValue from './MetricValue'
 import { formatMetric } from '../metricDomain.js'
 
@@ -840,6 +841,15 @@ export default function Leaderboard() {
                       <MetricValue metric="cumulative_return" value={row.cumulative_return} row={row} surface="Leaderboard live" />
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-3)' }}>realised, not annualised</div>
+                    {/* The verdict of record, on the same cell as the number it
+                        qualifies (#1764). Unconditional, for the same reason it
+                        is unconditional on /app/paper: deploy is at will, so a
+                        gate-REJECTED strategy can sit on this board, and its
+                        realised return standing alone would read as an
+                        endorsement. `gateVerdict` has a state for every payload
+                        — including one that carried no verdict — so there is no
+                        input for which drawing nothing here is correct. */}
+                    <GateVerdictChip dep={row} style={{ marginTop: 4, fontSize: 11, maxWidth: 220 }} />
                   </td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{row.days_live}</td>
                   <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>{row.inception_date}</td>

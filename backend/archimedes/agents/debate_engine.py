@@ -49,6 +49,7 @@ from archimedes.agents.generation_pipeline import (
     _paper_attribution_entry,
     _society_num_trials,
 )
+from archimedes.agents.prompts import PROMPTS
 
 # The WRITE-time scrubber, imported here because the SSE path never touches
 # `record_debate_transcript` (which is where it normally runs). A debate turn
@@ -386,20 +387,16 @@ async def _propose_pool(
 
 # ── Step 2 — best-effort adversarial round (transcript only, never gates) ─────
 
-_DEBATE_SYSTEM = (
-    "You are the {role} researcher in a quant strategy debate, round {rnd}. {stance}. "
-    "Cite ONLY the listed candidate strategies, and ONLY the arXiv ids printed on their cards. "
-    "Every key_claim must name at least one arxiv_id from the cards; a claim you cannot ground "
-    "in a listed paper must carry an EMPTY arxiv_ids list — never an invented id. "
-    "Use `discard` to name papers you read and rejected, with the reason. {rebuttal}"
-    'Reply with ONE JSON object: {{"verdict": "act"|"decline", "confidence": <0..1>, '
-    '"key_claims": [{{"claim": <str>, "candidate_id": "<C1|C2|…>", "arxiv_ids": ["<arxiv id>"]}}], '
-    '"discard": [{{"arxiv_id": "<arxiv id>", "reason": <str>}}]}}.'
-)
+# The turn template, the two stances and the round-2 rebuttal preamble all live
+# in the prompt registry (`agents/prompts.py`), rendered into
+# `docs/specs/prompt-inventory.md` under a drift test (#1800). The registry
+# templates on `$name`, so the JSON schema the turn prints no longer needs its
+# braces doubled the way `.format` required.
+_DEBATE_SYSTEM = PROMPTS["debate.turn.system"]
 
 _DEBATE_STANCES = {
-    "bull": "Argue FOR acting on the strongest candidate",
-    "bear": "Argue for ABSTENTION — the null is buy-and-hold; attack overfit/cost",
+    "bull": PROMPTS["debate.stance.bull"].text,
+    "bear": PROMPTS["debate.stance.bear"].text,
 }
 
 # How many pooled candidates get a card in the debate prompt. Unchanged from
@@ -499,7 +496,7 @@ def _rebuttal_clause(opponent_claims: list[Any], *, role: str, rnd: int) -> str:
 
     This is the one place in the debate where a model writes another model's
     instructions: the text lands unescaped inside ``_DEBATE_SYSTEM``'s
-    ``{rebuttal}`` slot, so a claim carrying a newline, a ``[C6]`` card marker
+    ``${rebuttal}`` slot, so a claim carrying a newline, a ``[C6]`` card marker
     or an override directive would be read as system-level framing by the next
     turn.
 
@@ -521,7 +518,7 @@ def _rebuttal_clause(opponent_claims: list[Any], *, role: str, rnd: int) -> str:
     ]
     if not texts:
         return ""
-    return f"The opposing researcher argued: {'; '.join(texts)}. Directly rebut their strongest point. "
+    return PROMPTS["debate.rebuttal_preamble"].render(opponent_claims="; ".join(texts))
 
 
 def _normalize_claim(raw: Any, known_ids: set[str]) -> dict[str, Any] | None:
@@ -771,7 +768,7 @@ async def _debate_round(
         rebuttal = _rebuttal_clause(opponent_claims, role=role, rnd=rnd)
         try:
             raw = backend.complete(
-                _DEBATE_SYSTEM.format(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
+                _DEBATE_SYSTEM.render(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
                 cards,
             )
             parsed = extract_json(raw)
