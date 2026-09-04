@@ -13,8 +13,8 @@
 
 site_name: Archimedes
 site_url: https://docs.archimedes-arc.com
-repo_url: https://github.com/a-apin/archimedes
-repo_name: a-apin/archimedes
+repo_url: https://github.com/aprin-labs/archimedes
+repo_name: aprin-labs/archimedes
 edit_uri: edit/main/docs/
 
 docs_dir: docs
@@ -168,6 +168,11 @@ nav:
       - runbooks/t3.2-contract-redeploy.md
       - runbooks/docs-site-setup.md
       - runbooks/email-verification-validation.md
+      - runbooks/ses-suppression.md
+      - runbooks/curated-backtests.md
+      # Incidents are evidence rather than procedure (docs/CONVENTIONS.md § 1),
+      # but an operator looking for "what went wrong last time" looks here.
+      - incidents/2026-09-03-paper-advance-ddl-wedge.md
 
   - Decisions (ADRs):
       - adr/README.md
@@ -189,6 +194,8 @@ nav:
       - adr/debate-society-sole-generation-pipeline.md
       - adr/num-trials-self-containment.md
       - adr/aurora-postgres-alembic-datastore.md
+      - adr/ipfs-pinning-not-live.md
+      - adr/backtests-are-frozen-evidence.md
 
   - Plans and roadmaps:
       - account-authentication.md

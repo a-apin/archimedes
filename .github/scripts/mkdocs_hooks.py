@@ -27,7 +27,7 @@ mkdocs, scoped to `docs_dir`, cannot resolve any of them: 371 warnings on
 published site. Rather than rewrite ~47 unique targets across dozens of files
 to work around a generator limitation (the tradeoff the docs-site scaffold
 declined, `docs/runbooks/docs-site-setup.md`), this rewrites them **at build
-time** to `https://github.com/a-apin/archimedes/blob/main/<path>`, preserving
+time** to `https://github.com/aprin-labs/archimedes/blob/main/<path>`, preserving
 `#Lnn` line anchors. The committed markdown is untouched.
 
 **The rewrite deliberately does not paper over real breakage.** A link whose
@@ -68,8 +68,8 @@ WIKI_DIR = "openwiki"
 #: its provenance note. Source file: docs/agent-wiki.md.
 PROVENANCE_PAGE = "agent-wiki.md"
 
-_BLOB_BASE = "https://github.com/a-apin/archimedes/blob/main"
-_TREE_BASE = "https://github.com/a-apin/archimedes/tree/main"
+_BLOB_BASE = "https://github.com/aprin-labs/archimedes/blob/main"
+_TREE_BASE = "https://github.com/aprin-labs/archimedes/tree/main"
 
 #: Stamped on every openwiki page by `add_provenance_banner`. A reader arriving from
 #: a search engine lands on a leaf page, not on the section index, so the label has to

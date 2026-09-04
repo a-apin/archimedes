@@ -18,6 +18,7 @@ services.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -1727,3 +1728,604 @@ def test_alembic_grading_engine_version_columns_added_and_removed(tmp_path):
 
     reupgrade_again = _run_alembic("upgrade", "head", database_url=database_url)
     assert reupgrade_again.returncode == 0, reupgrade_again.stderr
+
+
+def test_alembic_paper_agent_trades_table_added_and_removed(tmp_path):
+    """#1410: ``paper_agent_trades`` lands on upgrade, is gone on downgrade,
+    and comes back on re-upgrade — and the ORM's view of it matches alembic's.
+
+    Three things this asserts beyond the up/down/idempotent contract:
+
+      * the unique constraint really exists on the migrated table. It is
+        declared INSIDE ``create_table`` rather than as a follow-up
+        ``op.create_unique_constraint`` because SQLite has no ALTER for
+        constraints; the first draft of the revision used the follow-up form
+        and every ``alembic upgrade head`` test in this file failed. Asserting
+        the constraint (not just the table) is what keeps that from coming back.
+      * the LEDGER TABLES survive the round trip. This revision is additive and
+        must not be able to take ``paper_daily_returns`` with it on downgrade —
+        that ledger is a user-facing track record.
+      * ``create_all()`` and ``alembic upgrade head`` agree on the columns. A
+        column present on one path and absent on the other means the hermetic
+        tests and production are running different schemas.
+
+    Same derived-target discipline as the tests above: the downgrade target is
+    this revision's OWN ``down_revision``, never a hardcoded hash.
+    """
+    db_path = tmp_path / "paper_agent_trades.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _sql(statement: str, *params):
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(statement, params)
+            con.commit()
+            return cur.fetchall()
+        finally:
+            con.close()
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("c5e81a4f7b32").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "paper_agent_trades" in _table_names(db_path)
+    ddl = _sql("SELECT sql FROM sqlite_master WHERE name = ?", "paper_agent_trades")[0][0]
+    assert "uq_paper_agent_trades_dep_tick_symbol" in ddl
+    assert "tick_id VARCHAR(32) NOT NULL" in ddl, "a trade must not be writable without its tick"
+
+    # A ledger row the additive revision must not disturb in either direction.
+    _sql(
+        "INSERT INTO paper_daily_returns (deployment_id, date, daily_return, appended_at) VALUES (?, ?, ?, ?)",
+        "dep-1410",
+        "2026-08-21",
+        0.011,
+        "2026-08-22 00:00:00",
+    )
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "paper_agent_trades" not in _table_names(db_path)
+    assert _sql("SELECT daily_return FROM paper_daily_returns WHERE deployment_id = ?", "dep-1410") == [(0.011,)]
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "paper_agent_trades" in _table_names(db_path)
+    assert _sql("SELECT daily_return FROM paper_daily_returns WHERE deployment_id = ?", "dep-1410") == [(0.011,)]
+
+    # ─── create_all() vs alembic: same columns, or the hermetic tests and
+    # production are running different schemas.
+    create_all_db = tmp_path / "create_all_paper_agent_trades.db"
+    build = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        "from archimedes.models.paper_store import PaperAgentTrade, PaperDeployment\n"
+        "from archimedes.models.strategy_store import StrategyRecord\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", build],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    def _columns(path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    assert _columns(create_all_db, "paper_agent_trades") == _columns(db_path, "paper_agent_trades")
+
+
+# ── The rigor verdict of record (docs/adr/rigor-verdict-of-record.md) ───────
+#
+# b3f19d6c47ae adds four columns to strategy_passports and BACKFILLS them. The
+# backfill is the load-bearing part: it decides what every existing strategy's
+# badge says the moment this deploys, and it is a data migration, so it needs a
+# data test, not just an up/down smoke test.
+
+_VERDICT_MIGRATION_REVISION = "b3f19d6c47ae"
+_VERDICT_COLUMNS = ("rigor_gate_status", "graded_at", "gate_version", "cohort_n")
+
+
+def _verdict_migration_down_revision() -> str:
+    """This revision's OWN down_revision, read from the script directory — same
+    derived-target discipline as the tests above, so a later migration landing on
+    top does not silently redirect these at someone else's change."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    return script.get_revision(_VERDICT_MIGRATION_REVISION).down_revision
+
+
+def _passport_columns(db_path: Path) -> set[str]:
+    con = sqlite3.connect(str(db_path))
+    try:
+        cur = con.cursor()
+        cur.execute("PRAGMA table_info(strategy_passports)")
+        return {row[1] for row in cur.fetchall()}
+    finally:
+        con.close()
+
+
+def test_alembic_rigor_verdict_columns_added_and_removed(tmp_path):
+    """up → down → up for b3f19d6c47ae's four columns."""
+    db_path = tmp_path / "verdict_columns.db"
+    database_url = f"sqlite:///{db_path}"
+    target = _verdict_migration_down_revision()
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert set(_VERDICT_COLUMNS) <= _passport_columns(db_path)
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert not (set(_VERDICT_COLUMNS) & _passport_columns(db_path))
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert set(_VERDICT_COLUMNS) <= _passport_columns(db_path)
+
+    again = _run_alembic("upgrade", "head", database_url=database_url)
+    assert again.returncode == 0, again.stderr
+
+
+def test_alembic_strategy_passports_matches_a_fresh_create_all_schema(tmp_path):
+    """Column parity for ``strategy_passports`` between the ORM's
+    ``StrategyPassportRecord`` (create_all — every hermetic test, local dev) and
+    this migration's ADD COLUMNs (Alembic — CI/prod).
+
+    Not cosmetic: ``rigor_gate_status`` is NOT NULL with a server default. If the
+    two paths disagreed about it, every surface would read a verdict in one
+    environment and raise (or read NULL) in the other — the hardest gap to
+    notice, because the tests all run on the create_all path.
+    """
+    create_all_db = tmp_path / "create_all_passports.db"
+    script = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        "from archimedes.models.strategy_passport_record import StrategyPassportRecord\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    alembic_db = tmp_path / "alembic_built_passports.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{alembic_db}")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    create_all_cols = _passport_columns(create_all_db)
+    alembic_cols = _passport_columns(alembic_db)
+    assert set(_VERDICT_COLUMNS) <= create_all_cols
+    assert create_all_cols == alembic_cols
+
+
+def test_alembic_rigor_verdict_backfill_derives_the_documented_verdicts(tmp_path):
+    """The BACKFILL RULE, exercised on real rows.
+
+    Seeds five rows at the parent revision — one per branch of the rule plus the
+    inconsistent pair the old code could produce — then upgrades and asserts what
+    each row now says.
+
+    MUTATIONS this reddens:
+      * make the curated branch derive from ``passes_rigor_gate`` like the others
+        → 'curated-placeholder' becomes 'fail', promoting the #821 placeholder
+        into a verdict;
+      * drop the coupling rewrite → 'stored-true-no-sharpe' keeps
+        ``passes_rigor_gate = 1`` beside a 'pending' status, which is the exact
+        decoupled pair the loader now makes unconstructible;
+      * stamp ``gate_version`` on the pending rows → an ungraded row claims a
+        gate produced it;
+      * stamp a real ``gate_version()`` instead of 'legacy-derived' → a derived
+        verdict becomes indistinguishable from a gate run, and PR-C loses the one
+        marker that tells it which rows to re-grade.
+    """
+    db_path = tmp_path / "verdict_backfill.db"
+    database_url = f"sqlite:///{db_path}"
+    target = _verdict_migration_down_revision()
+
+    up_to_parent = _run_alembic("upgrade", target, database_url=database_url)
+    assert up_to_parent.returncode == 0, up_to_parent.stderr
+    assert "rigor_gate_status" not in _passport_columns(db_path)
+
+    rows = [
+        # (id, generation_method, sharpe_ratio, passes_rigor_gate)
+        ("curated-placeholder", "curated", None, 0),
+        ("curated-with-fixture-sharpe", "curated", 0.61, 0),
+        ("generated-graded-pass", "fusion", 1.4, 1),
+        ("generated-graded-fail", "fusion", 0.2, 0),
+        ("generated-ungraded", "fusion", None, 0),
+        # The inconsistent pair: the generation-time fusion verdict wrote the
+        # boolean; no backtest ever ran, so there is no sharpe.
+        ("stored-true-no-sharpe", "fusion", None, 1),
+    ]
+    con = sqlite3.connect(str(db_path))
+    try:
+        for sid, method, sharpe, passes in rows:
+            con.execute(
+                "INSERT INTO strategy_passports "
+                "(id, generation_method, methodology_summary, asset_universe, position_sizing, "
+                " rebalance_frequency, status, regime_tag, sharpe_ratio, passes_rigor_gate, "
+                " created_at, updated_at) "
+                "VALUES (?, ?, '', '[]', 'equal_weight', 'weekly', 'candidate', 'regime_neutral', ?, ?, "
+                " '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+                (sid, method, sharpe, passes),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        got = {
+            r[0]: (r[1], r[2], r[3], r[4])
+            for r in con.execute(
+                "SELECT id, rigor_gate_status, passes_rigor_gate, gate_version, graded_at FROM strategy_passports"
+            )
+        }
+    finally:
+        con.close()
+
+    # Curated rows are UNGRADED, not failed — their False is the #821 placeholder.
+    assert got["curated-placeholder"] == ("pending", 0, None, None)
+    assert got["curated-with-fixture-sharpe"] == ("pending", 0, None, None)
+
+    # Generated rows derive exactly as the pre-existing read path did, and carry
+    # the marker that says a gate did NOT produce this.
+    assert got["generated-graded-pass"] == ("pass", 1, "legacy-derived", None)
+    assert got["generated-graded-fail"] == ("fail", 0, "legacy-derived", None)
+    assert got["generated-ungraded"] == ("pending", 0, None, None)
+
+    # The repair: a stored True with no backtest is not a pass, and now cannot
+    # present as one on any surface.
+    assert got["stored-true-no-sharpe"] == ("pending", 0, None, None)
+
+
+def test_alembic_rigor_verdict_backfill_agrees_with_the_old_read_path(tmp_path):
+    """The backfill rule is "derive exactly as the read path did". Hold it to
+    that against the real function, rather than restating the rule in prose.
+
+    ``_passport_rigor_status`` is kept in ``strategies_routes`` precisely so this
+    comparison can exist. It takes a return series the migration cannot see, so
+    the comparison is made on the no-series case — which is where the two must
+    agree, and where SQL and Python could most easily diverge.
+    """
+    from types import SimpleNamespace
+
+    from archimedes.api.strategies_routes import _passport_rigor_status
+
+    db_path = tmp_path / "verdict_oracle.db"
+    database_url = f"sqlite:///{db_path}"
+    target = _verdict_migration_down_revision()
+    assert _run_alembic("upgrade", target, database_url=database_url).returncode == 0
+
+    cases = [("oracle-pass", 1.4, 1), ("oracle-fail", 0.2, 0), ("oracle-pending", None, 0)]
+    con = sqlite3.connect(str(db_path))
+    try:
+        for sid, sharpe, passes in cases:
+            con.execute(
+                "INSERT INTO strategy_passports "
+                "(id, generation_method, methodology_summary, asset_universe, position_sizing, "
+                " rebalance_frequency, status, regime_tag, sharpe_ratio, passes_rigor_gate, "
+                " created_at, updated_at) "
+                "VALUES (?, 'fusion', '', '[]', 'equal_weight', 'weekly', 'candidate', 'regime_neutral', ?, ?, "
+                " '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+                (sid, sharpe, passes),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+    assert _run_alembic("upgrade", "head", database_url=database_url).returncode == 0
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        migrated = dict(con.execute("SELECT id, rigor_gate_status FROM strategy_passports"))
+    finally:
+        con.close()
+
+    for sid, sharpe, passes in cases:
+        oracle, _ = _passport_rigor_status(SimpleNamespace(sharpe_ratio=sharpe, passes_rigor_gate=bool(passes)), [])
+        assert migrated[sid] == oracle, f"{sid}: migration said {migrated[sid]!r}, the read path said {oracle!r}"
+
+
+def test_alembic_auth_email_deliveries_table_added_and_removed(tmp_path):
+    """#1748 item 2: ``auth_email_deliveries`` lands on upgrade, is gone on
+    downgrade, comes back on re-upgrade — and the ORM agrees with alembic.
+
+    Three properties beyond the up/down/idempotent contract, each of which is
+    a claim the delivery-feedback feature makes and would otherwise only
+    assert by inspection:
+
+      * the FK onto ``auth_users`` really CASCADES. The rows carry an email
+        address, so account deletion has to take them; the erasure half of
+        migration ``85ca5310b7a1``'s policy would be silently incomplete
+        otherwise. Asserted by DELETING a user with ``PRAGMA foreign_keys=ON``
+        (SQLite ignores ``ON DELETE`` actions without it — see
+        ``test_account_deletion_cascade.py``'s docstring), not by reading the
+        DDL back.
+      * ``user_id`` is NULLABLE and ``email`` is NOT NULL. That asymmetry is
+        the design: a send whose owner cannot be resolved is still recorded,
+        and the address — not the user id — is what the status endpoint
+        matches on, because ``changeEmail`` can move an account's address.
+      * ``seq`` is NOT NULL and UNIQUE. It is the table's write order, and
+        ``GET /api/auth/verification-status`` reads the newest row as THE
+        latest attempt — the row that decides whether the owner is told "our
+        provider accepted it" or "the last attempt was refused". A repeated or
+        missing ``seq`` makes that a coin flip, so the constraint is asserted
+        by trying to INSERT a duplicate, not by reading the DDL back. (That
+        the value is DB-ASSIGNED is a Postgres-only property and SQLite has
+        no IDENTITY, so it is pinned separately, on the emitted Postgres DDL,
+        by ``test_alembic_auth_email_deliveries_seq_is_database_assigned``.)
+      * ``create_all()`` and ``alembic upgrade head`` agree on the columns.
+        ``auth/delivery-log.js`` writes this table by literal column name; a
+        column present on one path and absent on the other means the Node
+        sidecar's INSERT works in one environment and fails in the other.
+
+    Same derived-target discipline as every test above: the downgrade target
+    is this revision's OWN ``down_revision``, never a hardcoded hash.
+    """
+    db_path = tmp_path / "auth_email_deliveries.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _sql(statement: str, *params, foreign_keys: bool = False):
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            if foreign_keys:
+                cur.execute("PRAGMA foreign_keys=ON")
+            cur.execute(statement, params)
+            con.commit()
+            return cur.fetchall()
+        finally:
+            con.close()
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("d4b1f7c8e206").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "auth_email_deliveries" in _table_names(db_path)
+
+    ddl = _sql("SELECT sql FROM sqlite_master WHERE name = ?", "auth_email_deliveries")[0][0]
+    assert "ON DELETE CASCADE" in ddl, "delivery rows carry an email address and must not outlive the account"
+    assert "email VARCHAR(320) NOT NULL" in ddl, "a receipt that cannot name the address it went to is not a receipt"
+    assert "user_id VARCHAR(64)," in ddl, "user_id stays nullable — an unresolvable owner must not lose the receipt"
+    assert "UNIQUE (seq)" in ddl, "seq is the write order; a repeated value makes 'newest' a coin flip"
+
+    # ─── the CASCADE fires, not just exists.
+    now = "2026-09-01 22:00:00"
+    _sql(
+        'INSERT INTO auth_users (id, name, email, "emailVerified", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?)',
+        "user-1748",
+        "Dan",
+        "dan@example.com",
+        0,
+        now,
+        now,
+    )
+
+    # ``seq`` is supplied explicitly here and ONLY here: on Postgres it is
+    # ``GENERATED BY DEFAULT AS IDENTITY`` and auth/delivery-log.js leaves it
+    # out of the INSERT entirely, but SQLite has neither IDENTITY nor
+    # sequences, so this round-trip has to name it. "BY DEFAULT" (not
+    # "ALWAYS") is what keeps an explicit value legal on both.
+    def _insert_delivery(row_id: str, seq: int, user_id: str | None = "user-1748"):
+        _sql(
+            "INSERT INTO auth_email_deliveries"
+            " (id, seq, user_id, email, kind, status, message_id, error, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row_id,
+            seq,
+            user_id,
+            "dan@example.com",
+            "verification",
+            "sent",
+            "ses-message-1",
+            None,
+            now,
+        )
+
+    _insert_delivery("d1", 1)
+    assert _sql("SELECT COUNT(*) FROM auth_email_deliveries")[0][0] == 1
+
+    # ─── the UNIQUE on seq is enforced, not merely declared. Two rows sharing
+    # a write order is exactly the tie the column exists to end.
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_delivery("d2", 1)
+    # ...and NOT NULL: a row with no place in the order is not a receipt.
+    with pytest.raises(sqlite3.IntegrityError):
+        _sql(
+            "INSERT INTO auth_email_deliveries"
+            " (id, user_id, email, kind, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "d3",
+            "user-1748",
+            "dan@example.com",
+            "verification",
+            "sent",
+            now,
+        )
+    assert _sql("SELECT COUNT(*) FROM auth_email_deliveries")[0][0] == 1
+    _sql("DELETE FROM auth_users WHERE id = ?", "user-1748", foreign_keys=True)
+    assert _sql("SELECT COUNT(*) FROM auth_email_deliveries")[0][0] == 0, (
+        "deleting the account left its recorded email addresses behind"
+    )
+
+    # A ledger row the additive revision must not disturb in either direction.
+    _sql(
+        "INSERT INTO paper_daily_returns (deployment_id, date, daily_return, appended_at) VALUES (?, ?, ?, ?)",
+        "dep-1748",
+        "2026-08-21",
+        0.007,
+        "2026-08-22 00:00:00",
+    )
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "auth_email_deliveries" not in _table_names(db_path)
+    assert _sql("SELECT daily_return FROM paper_daily_returns WHERE deployment_id = ?", "dep-1748") == [(0.007,)]
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "auth_email_deliveries" in _table_names(db_path)
+
+    # ─── create_all() vs alembic: same columns, or auth/delivery-log.js's
+    # INSERT works in one environment and fails in the other.
+    create_all_db = tmp_path / "create_all_auth_email_deliveries.db"
+    build = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthEmailDelivery, AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", build],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+    def _columns(path: Path, table: str) -> set[str]:
+        con = sqlite3.connect(str(path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    assert _columns(create_all_db, "auth_email_deliveries") == _columns(db_path, "auth_email_deliveries")
+
+
+def test_alembic_auth_email_deliveries_seq_is_database_assigned(tmp_path):
+    """#1748 item 2, concern 6: the write order has to survive TWO processes.
+
+    ``auth/delivery-log.js`` reads ``rows[0]`` as THE latest attempt, and that
+    one row decides whether the account owner is told "our provider accepted
+    it" or "the last attempt was refused". ``created_at`` cannot carry that:
+    it is millisecond-resolution, back-to-back sends share a millisecond
+    routinely, and ``ORDER BY created_at DESC`` is then a tie Postgres may
+    break either way. A monotonic key computed in Node fixes it only inside
+    ONE process — and the auth service autoscales, so two tasks writing for one
+    address on the same millisecond still tie, with no key either of them can
+    compute to break it.
+
+    So ``seq`` must be assigned by the DATABASE, which is the one thing both
+    tasks share. That is a Postgres property (SQLite has no IDENTITY and no
+    sequences, so every other test in this file sees a plain integer column),
+    which is why this one asserts on the SQL alembic actually emits for
+    Postgres — offline, no connection, no server. If this DDL ever loses
+    ``GENERATED ... AS IDENTITY``, ``seq`` becomes a column Node would have to
+    fill in itself and the ordering goes back to being per-process, silently,
+    with every SQLite test in this file still green.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("d4b1f7c8e206").down_revision
+
+    rendered = _run_alembic(
+        "upgrade",
+        f"{target}:d4b1f7c8e206",
+        "--sql",
+        database_url="postgresql://archimedes:offline@localhost:5432/offline",
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    sql = rendered.stdout
+
+    assert "CREATE TABLE auth_email_deliveries" in sql
+    assert "GENERATED BY DEFAULT AS IDENTITY" in sql, (
+        "seq must be assigned by the database — a Node-computed key only orders one process's writes"
+    )
+    # BY DEFAULT, not ALWAYS: the alembic round-trip tests above run on SQLite
+    # and have to supply the value themselves.
+    assert "GENERATED ALWAYS AS IDENTITY" not in sql
+    assert "UNIQUE (seq)" in sql
+
+    # The identity is on `seq` and not on some other column — the assertions
+    # above would pass just as happily if it had landed on the wrong one.
+    seq_line = next(line for line in sql.splitlines() if line.strip().startswith("seq "))
+    assert "GENERATED BY DEFAULT AS IDENTITY" in seq_line, seq_line
+    assert "BIGINT" in seq_line, "a 32-bit counter is a wraparound waiting to happen"
+
+    # And the ORDER BY the Node reader issues names it. These two halves are
+    # joined by nothing but a string literal in a file Python never imports.
+    order_by = (_BACKEND_DIR.parent / "auth" / "delivery-log.js").read_text(encoding="utf-8")
+    assert "ORDER BY seq DESC" in order_by, "the migration assigns a write order the reader does not sort by"
+
+
+def test_auth_delivery_log_sql_names_the_columns_the_migration_creates(tmp_path):
+    """The Node sidecar's INSERT/SELECT are string literals in
+    ``auth/delivery-log.js`` — nothing type-checks them against this schema, so
+    a column rename here would break email delivery feedback in production with
+    every Python test still green.
+
+    This reads the JS's own SQL and checks every column it names exists on the
+    migrated table. Cheap, and it is the only thing standing between the two
+    halves of this feature.
+    """
+    delivery_log = (_BACKEND_DIR.parent / "auth" / "delivery-log.js").read_text(encoding="utf-8")
+
+    insert = re.search(r"\+ ' \(([^)]*)\)'", delivery_log)
+    assert insert, "could not find the INSERT column list in auth/delivery-log.js"
+    insert_columns = {column.strip() for column in insert.group(1).split(",") if column.strip()}
+    assert insert_columns, "parsed an empty INSERT column list"
+
+    select = re.search(r"'SELECT ([^']*)'", delivery_log)
+    assert select, "could not find the SELECT column list in auth/delivery-log.js"
+    select_columns = {column.strip() for column in select.group(1).split(",") if column.strip()}
+
+    # The table name itself, so a rename on either side is caught too.
+    assert "auth_email_deliveries" in delivery_log
+
+    db_path = tmp_path / "delivery_log_sql.db"
+    upgrade = _run_alembic("upgrade", "head", database_url=f"sqlite:///{db_path}")
+    assert upgrade.returncode == 0, upgrade.stderr
+    con = sqlite3.connect(str(db_path))
+    try:
+        cur = con.cursor()
+        cur.execute("PRAGMA table_info(auth_email_deliveries)")
+        actual = {row[1] for row in cur.fetchall()}
+    finally:
+        con.close()
+
+    assert insert_columns <= actual, f"delivery-log.js INSERTs columns that do not exist: {insert_columns - actual}"
+    assert select_columns <= actual, f"delivery-log.js SELECTs columns that do not exist: {select_columns - actual}"

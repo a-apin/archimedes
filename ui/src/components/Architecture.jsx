@@ -481,7 +481,7 @@ function RigorGateSection({ leaderboard, leaderboardError }) {
 			<p className="body mb-4">
 				Most backtests lie by selection: try enough ideas and one will look
 				brilliant by chance. Over 20+ years of backtested returns net of
-				realistic commission, a strategy's excess Sharpe must be positive at 90%
+				realistic commission, a strategy's excess Sharpe must be positive at 95%
 				one-sided confidence under standard errors robust to non-normality and
 				autocorrelation, and must stay positive on a 30% chronological holdout.
 				On the generated path, a strategy's Sharpe is additionally deflated
@@ -785,9 +785,10 @@ function ProvenanceSection() {
 						3. Reveal
 					</div>
 					<div className="caption" style={{ color: "var(--text-3)" }}>
-						After settlement, the full trace is published (IPFS-pointed) and the
+						After settlement, the full trace is published off-chain and the
 						contract itself re-hashes the content to verify it matches the
-						commitment.
+						commitment. The on-chain keccak256 is the integrity anchor; we
+						do not pin traces to IPFS.
 					</div>
 				</div>
 			</div>

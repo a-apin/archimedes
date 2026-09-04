@@ -95,7 +95,7 @@ consecutive presses never repeat.
 Two honest notes about that bank, because it is easy to over-read:
 
 - **Only three entries have been run through the live pipeline** — the dogfood-proven
-  carry-overs from the 2026-07-04 bake-off ([PR #875](https://github.com/a-apin/archimedes/pull/875)).
+  carry-overs from the 2026-07-04 bake-off ([PR #875](https://github.com/aprin-labs/archimedes/pull/875)).
   Their per-entry status comments say so in the file.
 - **The rest are curated copy.** They are written to the shape in § 1, machine-checked
   against `cheap_brief_reject` (`backend/tests/test_surprise_briefs_quality.py`) and against

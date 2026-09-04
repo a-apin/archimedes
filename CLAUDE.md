@@ -27,7 +27,7 @@ gated off every public surface behind `ROADMAP_SURFACES_ENABLED`
 `ui/test/roadmap-copy.test.js`), and #1469 is open to scrub the remaining present-tense
 copy. Spine (generate → rigor-gate → execute → monitor → explore) locked in
 [`docs/user-stories.md`](docs/user-stories.md).
-Repo [`a-apin/archimedes`](https://github.com/a-apin/archimedes) · Discord **Archimedes
+Repo [`aprin-labs/archimedes`](https://github.com/aprin-labs/archimedes) · Discord **Archimedes
 Arcadia** · live at [`archimedes-arc.com`](https://archimedes-arc.com/) (Arc testnet, chain
 `5042002` / `0x4cef52`; `.com` is the sole domain — the `.app` split caused the Circle
 passkey rpId bug and was decommissioned) · [Unlicense](docs/adr/unlicense-public-domain.md).
@@ -42,7 +42,7 @@ doc here — that has happened twice.)
 ***Claims must be true.*** Every guarantee the UI, the pitch, or a grant application makes
 — rigor, non-custodial, on-chain provenance — must be backed by the live path, not a
 fixture, not a cached boolean, not a hard-coded `true`. This is the #1 rule and the thing
-Bogdan's full-tree audit ([PR #710](https://github.com/a-apin/archimedes/pull/710)) showed
+Bogdan's full-tree audit ([PR #710](https://github.com/aprin-labs/archimedes/pull/710)) showed
 we were violating. Building flashy work on a fake-strict rigor badge is building on sand.
 
 Two corollaries an agent gets wrong by default:
@@ -481,7 +481,7 @@ Operational fixes inside an already-approved architecture are fine to proxy.
 - **Product shape** — [two-tier marketplace](docs/adr/two-tier-marketplace.md) · [non-custodial vault, owner ≠ agent](docs/adr/non-custodial-vault-owner-agent.md) · [Arc settlement](docs/adr/arc-settlement-chain.md)
 - **Rigor gate** — [unified gate](docs/adr/rigor-gate-unification.md) · [`num_trials` self-containment](docs/adr/num-trials-self-containment.md) · [backtrader](docs/adr/backtrader-backtest-engine.md) · [selection-bias spec](docs/specs/selection-bias-corrections-spec.md)
 - **Generation** — [debate society is the sole pipeline](docs/adr/debate-society-sole-generation-pipeline.md) (supersedes fusion/architect routing) · [K=1 + external rigor gate](docs/adr/k1-generation-external-rigor-gate.md) · [Bedrock](docs/adr/glm-to-bedrock-llm-migration.md)
-- **Provenance** — [passport](docs/specs/strategy-passport-spec.md) · [commit-reveal](docs/specs/commit-reveal-trace-spec.md) · [Xia protocols](docs/specs/xia-2026-protocols.md)
+- **Provenance** — [passport](docs/specs/strategy-passport-spec.md) · [commit-reveal](docs/specs/commit-reveal-trace-spec.md) · [Xia protocols](docs/specs/xia-2026-protocols.md) · [IPFS pinning is not live](docs/adr/ipfs-pinning-not-live.md)
 - **Infra** — [Fargate cutover](docs/adr/ec2-to-ecs-fargate-cutover.md) · [Aurora + Alembic](docs/adr/aurora-postgres-alembic-datastore.md) · [build-on-deploy](docs/adr/build-on-deploy-main-only.md) · [AWS account migration](docs/adr/aws-account-migration.md)
 - **Interfaces, principles, risks** — [frozen interfaces](docs/specs/component-interfaces-spec.md) · [principles](docs/architectural-principles.md) · [risk matrix](docs/architecture.md)
 

@@ -124,6 +124,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Install libpq headers (source-built psycopg2, #1632)
+        # requirements-base.txt asks for `psycopg2`, not `psycopg2-binary`, so pip
+        # COMPILES it here and needs `pg_config` + the libpq headers. The runner
+        # image ships libpq5 but not reliably the -dev package, and without it the
+        # install below fails with "pg_config executable not found". gcc is already
+        # on the runner. (The swap exists because the binary wheel vendors a second
+        # OpenSSL — see backend/requirements-base.txt.)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libpq-dev
+
       - name: Install
         # Unit tests never load the embedding model — paper_rag.py lazy-imports
         # torch/sentence-transformers and falls back to TF-IDF on ImportError, and
@@ -318,6 +327,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # libpq headers for the source-built psycopg2 (#1632) — same reason as the
+      # unit-test job above: the binary wheel vendored a second OpenSSL, so pip
+      # now compiles psycopg2 and needs pg_config.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libpq-dev
       # Same torch/sentence-transformers skip as the unit-test job above
       # (CDN-independent) — requirements-base.txt is exactly that set (#1522).
       - run: |
@@ -365,9 +378,13 @@ jobs:
         run: |
           pip install --quiet pip-audit==2.10.1
           # Current Vyper already contains both fixes; advisory ranges falsely
-          # include 0.4.3. See backend/requirements.txt for full rationale.
+          # include 0.4.3. PYSEC-2026-3609 / PYSEC-2026-3654 (pymdown-extensions,
+          # also via titanoboa) are unreachable and the fix version is
+          # unsatisfiable against titanoboa's exact mkdocs-material pin. See
+          # backend/requirements-base.txt for full rationale on both pairs.
           pip-audit -r backend/requirements.txt --format json --progress-spinner=off \
             --ignore-vuln PYSEC-2023-142 --ignore-vuln PYSEC-2025-33 \
+            --ignore-vuln PYSEC-2026-3609 --ignore-vuln PYSEC-2026-3654 \
             > /tmp/pip_audit.json || true
           python3 - <<'EOF'
           import json, os

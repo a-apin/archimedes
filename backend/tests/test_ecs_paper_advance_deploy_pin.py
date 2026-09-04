@@ -1,14 +1,22 @@
-"""CI deploy must pin ``PAPER_ADVANCE_ENABLED=false`` on the cloned task-def.
+"""CI deploy must pin ``PAPER_ADVANCE_ENABLED`` explicitly on the cloned task-def.
 
 #1725 put the pin in ``infra/ecs.tf``. That is not the path that ships:
 ``deploy.yml`` clones the currently registered task definition and retags
-images. It does not apply terraform. Live last-good ``011b6bfc`` predates
-#1725, so cloning it without this rewrite leaves the code default ON and
-the paper-advance tick still kills the web container.
+images. It does not apply terraform, so an ecs.tf pin is not live until
+somebody applies, and a clone that never heard of the name ships whatever the
+code default happens to be — which is how task-def :211 ticked itself to death.
 
-These tests run the same function ``deploy.yml`` invokes. They are
-hermetic — no AWS, no terraform, no network. Every assertion is paired
-with the mutation it would catch.
+The invariant these tests hold is therefore direction-independent: the value
+that ships is the one ``ecs_rewrite_task_def.PAPER_ADVANCE_VALUE`` states, on
+every deploy, no matter what the clone carried. That value is ``"true"`` as of
+2026-09-01 (#1778, the #1632 lift): the tick is armed and runs in an isolated
+child (#1728). Flipping it back means editing that constant and these tests
+together — the point of hard-coding it is that turning the tick on or off
+cannot happen by accident or by CLI flag.
+
+These tests run the same function ``deploy.yml`` invokes. They are hermetic —
+no AWS, no terraform, no network. Every assertion is paired with the mutation
+it would catch.
 """
 
 from __future__ import annotations
@@ -40,8 +48,10 @@ def _load_rewrite():
 def _last_good_task_def(*, paper_advance: str | None = None) -> dict:
     """Shape of a cloned live revision that predates the #1725 terraform pin.
 
-    ``paper_advance is None`` is last-good ``011b6bfc``: the name is absent,
-    so the code default ON is what the container would boot with.
+    ``paper_advance is None`` is last-good ``011b6bfc``: the name is absent, so
+    the container falls through to whatever the code default is — ON when :211
+    died, OFF today, and in neither case a decision anybody made for that
+    revision. That is precisely what the rewrite exists to stop.
     """
     env = [
         {"name": "APP_ENV", "value": "production"},
@@ -91,30 +101,39 @@ def _deploy_ecs_job() -> str:
 
 
 class TestRewritePinsTheKillSwitch:
-    def test_last_good_clone_without_the_name_ships_false(self):
+    def test_last_good_clone_without_the_name_ships_the_pinned_value(self):
         """The incident shape: live last-good never heard of the flag."""
         out = _rewrite(_last_good_task_def(paper_advance=None))
         env = _backend_env(out)
-        assert env["PAPER_ADVANCE_ENABLED"] == "false"
+        assert env["PAPER_ADVANCE_ENABLED"] == "true"
         assert env["APP_ENV"] == "production"
         assert env["PAPER_TRADING"] == "true"
 
-    def test_an_existing_true_is_overwritten_not_left_alone(self):
-        out = _rewrite(_last_good_task_def(paper_advance="true"))
+    def test_an_existing_false_is_overwritten_not_duplicated(self):
+        """The exact production input on the first deploy after the lift.
+
+        The live task-def family says ``false`` today, so this — not the
+        already-``true`` case below — is the shape the very next CI deploy
+        rewrites. If the rewrite appended instead of replacing, ECS would take
+        the LAST entry and the flip would look like it worked for the wrong
+        reason; if it left the clone alone, the flip would not ship at all.
+        """
+        out = _rewrite(_last_good_task_def(paper_advance="false"))
         env = _backend_env(out)
-        assert env["PAPER_ADVANCE_ENABLED"] == "false"
+        assert env["PAPER_ADVANCE_ENABLED"] == "true"
         names = [
             e["name"] for e in next(c for c in out["containerDefinitions"] if c["name"] == "backend")["environment"]
         ]
         assert names.count("PAPER_ADVANCE_ENABLED") == 1
 
-    def test_already_false_is_not_duplicated(self):
-        out = _rewrite(_last_good_task_def(paper_advance="false"))
+    def test_an_existing_true_is_not_duplicated(self):
+        """Every deploy after the first: the clone already carries the pin."""
+        out = _rewrite(_last_good_task_def(paper_advance="true"))
         names = [
             e["name"] for e in next(c for c in out["containerDefinitions"] if c["name"] == "backend")["environment"]
         ]
         assert names.count("PAPER_ADVANCE_ENABLED") == 1
-        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "false"
+        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "true"
 
     def test_nginx_and_auth_are_not_given_the_flag(self):
         out = _rewrite(_last_good_task_def())
@@ -192,7 +211,7 @@ class TestRewritePinsTheKillSwitch:
         )
         assert result.returncode == 0, result.stderr
         out = json.loads(result.stdout)
-        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "false"
+        assert _backend_env(out)["PAPER_ADVANCE_ENABLED"] == "true"
 
 
 class TestDeployYmlIsThePathThatShips:
@@ -204,21 +223,28 @@ class TestDeployYmlIsThePathThatShips:
         )
         assert "ecs_rewrite_task_def.py" in job, (
             "deploy-ecs no longer invokes ecs_rewrite_task_def.py — that is the "
-            "path that actually ships PAPER_ADVANCE_ENABLED=false"
+            "path that actually ships PAPER_ADVANCE_ENABLED"
         )
         # The previous inline jq only swapped images. A revert to that shape
         # is the outage still running on last-good 011b6bfc.
         assert 'if .name == "backend" then .image' not in job
 
-    def test_rewrite_script_hard_codes_false_not_a_parameter(self):
-        """Flip-back cannot be a quietly-defaulted CLI flag.
+    def test_rewrite_script_hard_codes_the_value_not_a_parameter(self):
+        """Turning the tick on or off cannot be a quietly-defaulted CLI flag.
 
-        The value that ships has to be the literal in the rewrite function,
-        so deleting this test and changing the constant is the only way to
-        turn the tick back on via CI.
+        The value that ships has to be the literal in the module, so editing
+        that constant — and this test with it — is the only way to move the
+        tick in either direction via CI. A ``--paper-advance`` argument with a
+        default would make the deployed value a property of whoever wrote the
+        workflow line, which is how a pin becomes untraceable.
         """
         source = REWRITE_PY.read_text(encoding="utf-8")
-        assert 'PAPER_ADVANCE_VALUE = "false"' in source
+        assert 'PAPER_ADVANCE_VALUE = "true"' in source
         assert "#1632" in source
         mod = _load_rewrite()
-        assert mod.PAPER_ADVANCE_VALUE == "false"
+        assert mod.PAPER_ADVANCE_VALUE == "true"
+        # The name must stay out of argparse: an option here is an option
+        # someone can forget to pass, and its default would quietly decide
+        # production. The CLI takes images and a file, nothing else.
+        assert 'add_argument("--paper' not in source
+        assert "PAPER_ADVANCE_VALUE" not in source.split("def main(", 1)[1]

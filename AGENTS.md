@@ -60,7 +60,7 @@ add a row there for each generation wave. Any edit to `.openwikiignore` must be 
 with `node scripts/check_openwiki_ignore.mjs`.
 
 Pages publish to **`docs.archimedes-arc.com`**, served from our own infrastructure rather
-than GitHub Pages ([#1634](https://github.com/a-apin/archimedes/issues/1634)); the
+than GitHub Pages ([#1634](https://github.com/aprin-labs/archimedes/issues/1634)); the
 `mkdocs build --strict` wiring from #1624 is the build step and stays.
 
 <!-- OPENWIKI:END -->

@@ -306,7 +306,7 @@ def test_out_of_docs_link_becomes_a_github_url() -> None:
     """`../CLAUDE.md` is correct on GitHub and 404s on the site. Repoint it, keep the anchor."""
     assert (
         hooks.rewrite_target("../backend/archimedes/main.py#L203", "docs/architecture.md", "architecture.md", KNOWN)
-        == "https://github.com/a-apin/archimedes/blob/main/backend/archimedes/main.py#L203"
+        == "https://github.com/aprin-labs/archimedes/blob/main/backend/archimedes/main.py#L203"
     )
 
 
@@ -343,7 +343,7 @@ def test_unpublished_repo_file_under_the_wiki_becomes_a_github_url() -> None:
     """`openwiki/.claims/` and `.last-update.json` are real files the site does not serve."""
     assert (
         hooks.rewrite_target("../openwiki/.last-update.json", "docs/agent-wiki.md", "agent-wiki.md", KNOWN)
-        == "https://github.com/a-apin/archimedes/blob/main/openwiki/.last-update.json"
+        == "https://github.com/aprin-labs/archimedes/blob/main/openwiki/.last-update.json"
     )
 
 

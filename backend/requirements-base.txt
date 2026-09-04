@@ -1,6 +1,6 @@
 # Archimedes backend — floors shared by every consumer (issue #1522).
 #
-# This file is the single owner of the 32 non-torch package floors. Both
+# This file is the single owner of the 33 non-torch package floors. Both
 # `backend/requirements.txt` (Docker / CI) and the `pip:` block of
 # `environment.yml` (local conda dev) pull it in with `-r`, so a Dependabot bump
 # lands here once instead of being mirrored by hand into a second file.
@@ -31,9 +31,43 @@ sqlalchemy>=2.0.52
 # the already-populated prod Postgres DB. MIT license, maintained by the
 # SQLAlchemy project itself.
 alembic>=1.19.1
-psycopg2-binary>=2.9.12
+# Source-built, NOT `psycopg2-binary` (swapped 2026-09-01, issue #1632).
+#
+# The binary wheel vendors its OWN copy of libpq *and* libssl/libcrypto
+# (`psycopg2_binary.libs/libssl-*.so.3`). Loading it into an interpreter that
+# already maps the system OpenSSL — which ours does, via stdlib `_ssl`,
+# aiohttp, and web3 — puts TWO distinct OpenSSL builds in one address space.
+# psycopg2's own docs say exactly this: "the binary package is a practical
+# choice for development and testing but in production it is advised to use
+# the package built from sources", because the bundled libraries clash with
+# other extension modules linked to a different OpenSSL. This image loads 230
+# C extensions (ckzg, greenlet, uvloop, cryptography, …), so the odds of a
+# symbol resolving into the wrong OpenSSL are not theoretical.
+#
+# Prod backend was dying with a bare `Fatal Python error: Aborted` — a raw C
+# abort(), no Python traceback, no glibc/terminate/SSL message — inside
+# psycopg2 `do_executemany` on the OHLCV cache-write commit (~10 min after
+# boot, on the paper-replay tick). Dual-OpenSSL is the leading mechanism and
+# is being A/B-confirmed separately; the swap is correct hygiene either way,
+# and `backend/tests/test_single_openssl.py` keeps the class visible forever.
+#
+# Cost: the wheel no longer ships libpq, so the image needs `libpq-dev` at
+# build time and `libpq5` at runtime (both wired in backend/Dockerfile), and
+# local `conda env create` needs conda-forge `libpq` for `pg_config` (wired in
+# environment.yml). Do not "fix a slow build" by putting -binary back.
+psycopg2>=2.9.12
 redis>=8.1.0
 pydantic>=2.13.4
+# Declared because backend code IMPORTS IT DIRECTLY — `PydanticCustomError` in
+# `api/rigor_verify_routes.py`, which is how that route's refusals carry a stable
+# machine-readable `type` (#1803). pydantic exposes no public re-export of it
+# (`pydantic.PydanticCustomError` does not exist in 2.x; only the private
+# `pydantic.types` re-export does), so the honest fix for import-guard's DEP001
+# is to declare the package we import rather than reach through a private path.
+# pydantic pins pydantic-core EXACTLY (`pydantic 2.13.4` -> `pydantic-core==2.46.4`),
+# so this floor never selects the version — pydantic's own pin does. It exists so
+# the dependency is declared where every consumer of this file can see it.
+pydantic-core>=2.46.4
 pydantic-settings>=2.14.2
 python-dotenv>=1.2.3
 
@@ -83,6 +117,28 @@ backtrader>=1.9.78.123
 # never untrusted input. Re-verify with `pip-audit -r backend/requirements.txt`
 # before assuming this is stale (investigated 2026-07-14).
 circle-titanoboa-sdk[x402,wallets] @ git+https://github.com/vyperlang/circle-titanoboa-sdk.git@09828f399731dd3250fb402f7f511046fb202355
+
+# pip-audit also flags pymdown-extensions 10.21.3 (PYSEC-2026-3609, fix
+# 11.0.0; PYSEC-2026-3654, fix 11.0.1) via the same titanoboa pull-in.
+# Not a live exposure: titanoboa 0.2.8 declares mkdocs-material==9.5.41 as a
+# hard runtime Requires-Dist (its own docs toolchain, mis-declared upstream —
+# none of titanoboa's 51 source files import mkdocs or pymdownx). We looked
+# at directly pinning pymdown-extensions>=11.0.1 here (the starlette
+# pattern) and it is unsatisfiable: mkdocs-material 9.5.41 itself caps
+# pymdown-extensions to `~=10.2` (<11), confirmed by a real resolver
+# conflict in a throwaway venv ("mkdocs-material 9.5.41 depends on
+# pymdown-extensions~=10.2"). Bumping mkdocs-material doesn't help either —
+# titanoboa 0.2.8 pins it to that exact version, not a floor, so it can't
+# move without moving titanoboa's pinned commit (a forked git dep, upstream
+# call). mkdocs-material 9.7.7 has since relaxed the cap to
+# `pymdown-extensions>=10.2` with no ceiling, so the real fix is upstream:
+# titanoboa dropping the exact 9.5.41 pin, or moving mkdocs-material into a
+# docs extra instead of install_requires. Ignored in quality-gate.yml
+# alongside the vyper pair above until one of those lands (investigated
+# 2026-08-30; re-verified against main 2026-09-01, same 2 packages / 4
+# advisories, same resolver conflict, mkdocs-material still latest 9.7.7 —
+# re-verify with `pip-audit -r backend/requirements.txt` before assuming
+# this is stale).
 
 # LLM
 anthropic>=0.120.2
