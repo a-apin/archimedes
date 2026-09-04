@@ -10,6 +10,31 @@ generation pipeline, per
 ``docs/adr/debate-society-sole-generation-pipeline.md``. The route table is
 guarded by ``backend/tests/test_sole_generation_route_guard.py`` — adding a
 generation route back here fails that test.
+
+**The read routes here do their database work on a worker thread (#1818 P4).**
+Every one of them is ``async def`` and every one of them is synchronous and
+blocking underneath — ``session.query``, and on ``GET /`` a cohort PBO compute
+that measured 6s on a healthy task. On 2026-09-03 that combination took the
+site down: ``GET /api/strategies/generated`` blocked on a lock for 5,648,772 ms,
+and because it was blocking THE EVENT LOOP, ``/health`` — a sibling coroutine
+on the same loop — stopped answering too. The ALB saw two dead targets and
+served 504s to everything, so a single slow query became a full outage. Off the
+loop, the same blocked query costs one pool thread and every other route
+(``/health`` included) keeps being served.
+
+``asyncio.to_thread``, not a private pool: it runs on the loop's default
+executor, which ``main.py`` sizes explicitly (``_install_default_executor``,
+floor 16) so serving handlers and the generation fan-out share a pool somebody
+chose rather than one CPython picked. Note the Postgres pool is 5 + 10 overflow
+(``db._get_engine_kwargs``): past 15 concurrent handlers the wait moves to the
+connection pool — still off the loop, still not an outage, but that is the next
+number to raise if this tier ever saturates.
+
+Each route is a docstring plus ONE ``await asyncio.to_thread(_…_sync, …)``. The
+blocking body lives in the module-level ``_…_sync`` twin directly above it, so a
+reviewer can see the whole boundary in one screen and
+``backend/tests/test_handlers_off_the_loop.py`` can assert, by running them,
+that no ``session.query`` on these routes happens on the loop thread.
 """
 
 from __future__ import annotations
@@ -422,10 +447,9 @@ def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, 
     strategy_ids = [s.id for s in strategies]
 
     try:
-        from archimedes.db import get_session, init_db
+        from archimedes.db import get_session
         from archimedes.services.backtest_repository import get_all_daily_returns
 
-        init_db()
         with get_session() as session:
             returns_by_strategy = get_all_daily_returns(session, strategy_ids)
     except Exception as exc:
@@ -649,30 +673,13 @@ def _publishable_strategy_ids(
 # ── Library listing ─────────────────────────────────────────────
 
 
-@strategies_router.get("/", response_model=StrategyListResponse)
-async def list_strategies(
-    request: Request,
-    status: str | None = Query(None, pattern="^(candidate|validated|live|retired)$"),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    """List strategies in the library. Backed by LocalStrategyProvider.
+def _list_strategies_sync(request: Request, status: str | None, limit: int, offset: int) -> StrategyListResponse:
+    """Grade the library, then page it.
 
-    Both the ``passes_rigor_gate`` badge and the numeric rigor fields
-    (``dsr_p_value``, ``pbo_score``, ``out_of_sample_sharpe``,
-    ``deflated_sharpe_ratio``) come from a SINGLE live-gate run via
-    ``_live_rigor_results_for_strategies`` (#868). The badge is derived from the
-    result via ``_verdict_from_result`` — a second DB read + duplicate gate run
-    through ``verdicts_for_strategies`` is not needed, and the inconsistency that
-    arose when the two paths used different cohort filtering (degenerate-series
-    exclusion existed only in ``_live_rigor_results_for_strategies``) is
-    eliminated.
-
-    NOTE on the ``status`` filter: it filters on the file-declared status BEFORE the
-    live-gate promotion overlay, so a CANDIDATE that the live gate promotes to
-    VALIDATED still appears under ``?status=candidate`` (its stored status) with a
-    served ``status: "validated"``. This is intentional — the stored status is the
-    stable filter key; the served status reflects the live verdict.
+    The blocking half of the route below (#1818 P4): it holds every
+    ``session.query`` and every synchronous compute, and it runs on a worker
+    thread so a slow or lock-blocked read cannot stop the event loop from
+    answering ``/health``.
     """
     from archimedes.db import get_session
 
@@ -769,6 +776,34 @@ async def list_strategies(
     )
 
 
+@strategies_router.get("/", response_model=StrategyListResponse)
+async def list_strategies(
+    request: Request,
+    status: str | None = Query(None, pattern="^(candidate|validated|live|retired)$"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List strategies in the library. Backed by LocalStrategyProvider.
+
+    Both the ``passes_rigor_gate`` badge and the numeric rigor fields
+    (``dsr_p_value``, ``pbo_score``, ``out_of_sample_sharpe``,
+    ``deflated_sharpe_ratio``) come from a SINGLE live-gate run via
+    ``_live_rigor_results_for_strategies`` (#868). The badge is derived from the
+    result via ``_verdict_from_result`` — a second DB read + duplicate gate run
+    through ``verdicts_for_strategies`` is not needed, and the inconsistency that
+    arose when the two paths used different cohort filtering (degenerate-series
+    exclusion existed only in ``_live_rigor_results_for_strategies``) is
+    eliminated.
+
+    NOTE on the ``status`` filter: it filters on the file-declared status BEFORE the
+    live-gate promotion overlay, so a CANDIDATE that the live gate promotes to
+    VALIDATED still appears under ``?status=candidate`` (its stored status) with a
+    served ``status: "validated"``. This is intentional — the stored status is the
+    stable filter key; the served status reflects the live verdict.
+    """
+    return await asyncio.to_thread(_list_strategies_sync, request, status, limit, offset)
+
+
 # What a generated row carries when strategy_passports has never heard of it:
 # the strategy exists, no gate has graded it. `passes_rigor_gate` is None rather
 # than False because False is a VERDICT ("the gate ran and it lost") and no gate
@@ -831,20 +866,14 @@ def _passport_verdicts_for(session, strategy_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-@strategies_router.get("/generated")
-async def list_generated_strategies(
-    request: Request,
-    limit: int = Query(50, ge=1, le=200),
-    user: CurrentUser = Depends(require_current_user),
-):
-    """List fusion/architect-generated strategies from the strategy_store table.
+def _list_generated_strategies_sync(request: Request, limit: int, user: CurrentUser) -> dict:
+    """Read the caller-visible page of ``strategy_store`` rows.
 
-    Private-until-published: row is visible when published or owned by current
-    canonical user; verified linked wallet handles legacy ``owner_wallet`` rows.
-    Legacy ownerless rows remain invisible until purged (scripts/purge_orphan_generated.py)
-    or published. Curated examples live on GET /api/strategies/ and stay public.
+    The blocking half of the route below (#1818 P4): it holds every
+    ``session.query`` and every synchronous compute, and it runs on a worker
+    thread so a slow or lock-blocked read cannot stop the event loop from
+    answering ``/health``.
     """
-
     from sqlalchemy import and_, or_
 
     from archimedes.db import get_session
@@ -941,6 +970,22 @@ async def list_generated_strategies(
         degraded = True
         degraded_reason = "strategy store unavailable"
     return {"strategies": rows, "total": len(rows), "degraded": degraded, "degraded_reason": degraded_reason}
+
+
+@strategies_router.get("/generated")
+async def list_generated_strategies(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    user: CurrentUser = Depends(require_current_user),
+):
+    """List fusion/architect-generated strategies from the strategy_store table.
+
+    Private-until-published: row is visible when published or owned by current
+    canonical user; verified linked wallet handles legacy ``owner_wallet`` rows.
+    Legacy ownerless rows remain invisible until purged (scripts/purge_orphan_generated.py)
+    or published. Curated examples live on GET /api/strategies/ and stay public.
+    """
+    return await asyncio.to_thread(_list_generated_strategies_sync, request, limit, user)
 
 
 @strategies_router.get("/signals", response_model=StrategySignalsResponse)
@@ -1143,17 +1188,13 @@ def _visible_passports(session, records: list, caller: str | None = None, caller
     return visible
 
 
-@strategies_router.get("/passports")
-async def list_strategy_passports(
-    request: Request,
-    status: str | None = Query(None),
-    regime_tag: str | None = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-):
-    """List strategies from the unified strategy_passports table.
+def _list_strategy_passports_sync(request: Request, status: str | None, regime_tag: str | None, limit: int) -> dict:
+    """Read the caller-visible passports.
 
-    Private-until-published applies here exactly as on ``/generated`` — see
-    ``_visible_passports``.
+    The blocking half of the route below (#1818 P4): it holds every
+    ``session.query`` and every synchronous compute, and it runs on a worker
+    thread so a slow or lock-blocked read cannot stop the event loop from
+    answering ``/health``.
     """
     from archimedes.db import get_session
     from archimedes.services.passport_loader import list_passports
@@ -1168,12 +1209,28 @@ async def list_strategy_passports(
     return {"passports": passports, "total": len(passports), "source": "strategy_passports"}
 
 
-@strategies_router.get("/passports/{strategy_id}")
-async def get_strategy_passport(request: Request, strategy_id: str):
-    """Get a single passport in its native dict shape from strategy_passports.
+@strategies_router.get("/passports")
+async def list_strategy_passports(
+    request: Request,
+    status: str | None = Query(None),
+    regime_tag: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """List strategies from the unified strategy_passports table.
 
-    Unpublished non-example passports 404 for non-owners (never 403 — a 403
-    would confirm the id exists).
+    Private-until-published applies here exactly as on ``/generated`` — see
+    ``_visible_passports``.
+    """
+    return await asyncio.to_thread(_list_strategy_passports_sync, request, status, regime_tag, limit)
+
+
+def _get_strategy_passport_sync(request: Request, strategy_id: str) -> dict:
+    """Read one passport, gated on visibility.
+
+    The blocking half of the route below (#1818 P4): it holds every
+    ``session.query`` and every synchronous compute, and it runs on a worker
+    thread so a slow or lock-blocked read cannot stop the event loop from
+    answering ``/health``.
     """
     from fastapi import HTTPException
 
@@ -1187,6 +1244,16 @@ async def get_strategy_passport(request: Request, strategy_id: str):
         if record is None or not _visible_passports(session, [record], caller, user.id if user else None):
             raise HTTPException(status_code=404, detail="Passport not found")
         return _redact_owner_wallet(record.to_dict(), caller)
+
+
+@strategies_router.get("/passports/{strategy_id}")
+async def get_strategy_passport(request: Request, strategy_id: str):
+    """Get a single passport in its native dict shape from strategy_passports.
+
+    Unpublished non-example passports 404 for non-owners (never 403 — a 403
+    would confirm the id exists).
+    """
+    return await asyncio.to_thread(_get_strategy_passport_sync, request, strategy_id)
 
 
 def _year_from_published(published: str | None) -> int | None:
@@ -1737,33 +1804,13 @@ def _owned_generated_strategy_responses(
     return _passport_responses(owned, session)
 
 
-@strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
-async def get_strategy_returns(strategy_id: str, request: Request):
-    """Return persisted real daily returns for a strategy.
+def _get_strategy_returns_sync(strategy_id: str, request: Request) -> StrategyReturnsResponse:
+    """Gate on ownership, then load the persisted series.
 
-    Response schema: {strategy_id, source: "persisted_backtest", start, end,
-    n, daily_returns: [...]}
-
-    **The per-day series is REASONING, not card content, and gates on
-    OWNERSHIP (#1557).** Curated / ``is_example`` strategies stay fully public
-    (house demo content; ``/quant`` fetches exactly this for every curated
-    library row with no session). For a generated row the series is 404 unless
-    the caller OWNS it — a published row is NOT enough, because a full
-    day-by-day return series lets a reader reconstruct positions and clone the
-    strategy. The HEADLINE stats derived from it (``sharpe_ratio``, ``cagr``,
-    ``max_drawdown``, the rigor verdict) remain on the public card served by
-    ``GET /api/strategies/{id}`` and the leaderboard — publishing shares the
-    result, not the derivation. See the matrix in
-    ``services/strategy_visibility.py``.
-
-    404 when the strategy does not exist (or the caller is not entitled to its
-    reasoning — 404-hides-existence per the #850 ownership gating contract).
-    404 with body ``{"detail": "no persisted returns"}`` when the strategy
-    exists but has no BacktestResultRecord row. Never synthesizes data from
-    fixture metrics; only real persisted run data is returned (#passport-honesty).
-
-    ``owner_wallet`` is intentionally absent from the response — pseudonymous
-    PII, redacted per the same policy as GET /api/strategies/{id}.
+    The blocking half of the route below (#1818 P4): it holds every
+    ``session.query`` and every synchronous compute, and it runs on a worker
+    thread so a slow or lock-blocked read cannot stop the event loop from
+    answering ``/health``.
     """
     from fastapi import HTTPException
 
@@ -1790,10 +1837,9 @@ async def get_strategy_returns(strategy_id: str, request: Request):
 
     # ── 2. Load persisted daily returns from backtest_results ────────────────
     try:
-        from archimedes.db import get_session, init_db
+        from archimedes.db import get_session
         from archimedes.services.backtest_repository import get_daily_returns, latest_backtests_by_strategy
 
-        init_db()
         with get_session() as session:
             daily_returns = get_daily_returns(session, strategy_id)
             rows = latest_backtests_by_strategy(session, [strategy_id])
@@ -1824,33 +1870,44 @@ async def get_strategy_returns(strategy_id: str, request: Request):
     )
 
 
-@strategies_router.get("/{strategy_id}/debate")
-async def get_strategy_debate(strategy_id: str, request: Request):
-    """Return the persisted bull/bear debate transcript for a generated strategy.
+@strategies_router.get("/{strategy_id}/returns", response_model=StrategyReturnsResponse)
+async def get_strategy_returns(strategy_id: str, request: Request):
+    """Return persisted real daily returns for a strategy.
 
-    Response shape: ``{strategy_id, generation_id, candidate_id, created_at,
-    transcript: [{role, round, verdict, claims}, ...]}``.
+    Response schema: {strategy_id, source: "persisted_backtest", start, end,
+    n, daily_returns: [...]}
 
-    **This route is PURE REASONING and gates on OWNERSHIP, not on card-level
-    visibility (#1557).** Curated / ``is_example`` strategies are always public
-    (house demo content — in practice they carry no transcript at all, the
-    debate society never ran for them). For a generated row the transcript is
-    404 unless the caller OWNS it — a published row is NOT enough. Existence
-    stays hidden either way: 404, never 403.
+    **The per-day series is REASONING, not card content, and gates on
+    OWNERSHIP (#1557).** Curated / ``is_example`` strategies stay fully public
+    (house demo content; ``/quant`` fetches exactly this for every curated
+    library row with no session). For a generated row the series is 404 unless
+    the caller OWNS it — a published row is NOT enough, because a full
+    day-by-day return series lets a reader reconstruct positions and clone the
+    strategy. The HEADLINE stats derived from it (``sharpe_ratio``, ``cagr``,
+    ``max_drawdown``, the rigor verdict) remain on the public card served by
+    ``GET /api/strategies/{id}`` and the leaderboard — publishing shares the
+    result, not the derivation. See the matrix in
+    ``services/strategy_visibility.py``.
 
-    Until #1557 this docstring claimed exactly that contract while the code
-    asked ``is_strategy_visible``, which returns True on ``is_published`` — so
-    an anonymous GET on any published strategy returned its full generation
-    debate. The claim was false; the predicate is now the one that makes it
-    true. Publishing consents to sharing the strategy, not the multi-agent
-    argument that produced it (same reasoning as ``brief_intent`` on the detail
-    route, and ``_redact_owner_wallet`` for the owner's wallet).
+    404 when the strategy does not exist (or the caller is not entitled to its
+    reasoning — 404-hides-existence per the #850 ownership gating contract).
+    404 with body ``{"detail": "no persisted returns"}`` when the strategy
+    exists but has no BacktestResultRecord row. Never synthesizes data from
+    fixture metrics; only real persisted run data is returned (#passport-honesty).
 
-    404 with ``{"detail": "no debate transcript"}`` when the strategy exists
-    and the caller is entitled to its reasoning but no transcript was ever
-    persisted for it — every strategy generated before this table existed,
-    every curated strategy, and any run whose debate step genuinely produced
-    nothing (no LLM backend reachable). Never fabricates a transcript.
+    ``owner_wallet`` is intentionally absent from the response — pseudonymous
+    PII, redacted per the same policy as GET /api/strategies/{id}.
+    """
+    return await asyncio.to_thread(_get_strategy_returns_sync, strategy_id, request)
+
+
+def _get_strategy_debate_sync(strategy_id: str, request: Request) -> dict:
+    """Gate on ownership, then load the persisted transcript.
+
+    The blocking half of the route below (#1818 P4): it holds every
+    ``session.query`` and every synchronous compute, and it runs on a worker
+    thread so a slow or lock-blocked read cannot stop the event loop from
+    answering ``/health``.
     """
     from fastapi import HTTPException
 
@@ -1890,33 +1947,44 @@ async def get_strategy_debate(strategy_id: str, request: Request):
     return payload
 
 
-@strategies_router.get("/{strategy_id}", response_model=StrategyResponse)
-async def get_strategy(strategy_id: str, request: Request):
-    """Get a single strategy by ID. Tries LocalStrategyProvider (curated)
-    first; falls through to the strategy_passports table for fusion- and
-    architect-generated strategies so they're clickable from Library.
+@strategies_router.get("/{strategy_id}/debate")
+async def get_strategy_debate(strategy_id: str, request: Request):
+    """Return the persisted bull/bear debate transcript for a generated strategy.
 
-    Private-until-published: non-public row is 404 unless canonical user owns it,
-    with linked-wallet fallback for legacy rows. 404 prevents existence probing.
-    Curated strategies (provider path / is_example rows) stay fully public.
+    Response shape: ``{strategy_id, generation_id, candidate_id, created_at,
+    transcript: [{role, round, verdict, claims}, ...]}``.
 
-    **This route is MIXED and stays CARD-gated (#1557).** Everything the
-    response carries for a generated row is card content — name, papers,
-    methodology writeup, headline metrics, the rigor badge — which is exactly
-    what a published strategy is published FOR, so a published row 200s for
-    anonymous callers and the public detail page keeps working. The TWO
-    REASONING fields on the schema — ``brief_intent`` and ``strategy_spec``
-    (#1646) — are stripped for non-owners below rather than 404ing the whole
-    route (the strip-don't-404 rule for mixed routes; the purely-reasoning
-    siblings ``/{id}/debate`` and ``/{id}/returns`` 404 instead). Audited field
-    by field against ``_passport_to_strategy_response``: those two are the only
-    reasoning fields reachable here, and NEITHER is set by that shared helper —
-    both are attached at this route, from rows it has already loaded.
-    ``equity_curve`` is never set on this path, and the rigor/display metrics
-    are aggregates, not derivation. They take DIFFERENT gates on purpose
-    (``owns_strategy`` vs ``is_strategy_reasoning_visible``) because a curated
-    house row has a public spec and no owner to have typed a brief — see each
-    call site and the matrix in ``services/strategy_visibility.py``.
+    **This route is PURE REASONING and gates on OWNERSHIP, not on card-level
+    visibility (#1557).** Curated / ``is_example`` strategies are always public
+    (house demo content — in practice they carry no transcript at all, the
+    debate society never ran for them). For a generated row the transcript is
+    404 unless the caller OWNS it — a published row is NOT enough. Existence
+    stays hidden either way: 404, never 403.
+
+    Until #1557 this docstring claimed exactly that contract while the code
+    asked ``is_strategy_visible``, which returns True on ``is_published`` — so
+    an anonymous GET on any published strategy returned its full generation
+    debate. The claim was false; the predicate is now the one that makes it
+    true. Publishing consents to sharing the strategy, not the multi-agent
+    argument that produced it (same reasoning as ``brief_intent`` on the detail
+    route, and ``_redact_owner_wallet`` for the owner's wallet).
+
+    404 with ``{"detail": "no debate transcript"}`` when the strategy exists
+    and the caller is entitled to its reasoning but no transcript was ever
+    persisted for it — every strategy generated before this table existed,
+    every curated strategy, and any run whose debate step genuinely produced
+    nothing (no LLM backend reachable). Never fabricates a transcript.
+    """
+    return await asyncio.to_thread(_get_strategy_debate_sync, strategy_id, request)
+
+
+def _get_strategy_sync(strategy_id: str, request: Request) -> StrategyResponse:
+    """Resolve the card from the provider, else from the passport row.
+
+    The blocking half of the route below (#1818 P4): it holds every
+    ``session.query`` and every synchronous compute, and it runs on a worker
+    thread so a slow or lock-blocked read cannot stop the event loop from
+    answering ``/health``.
     """
     from fastapi import HTTPException
 
@@ -2009,6 +2077,37 @@ async def get_strategy(strategy_id: str, request: Request):
             return resp
 
     raise HTTPException(status_code=404, detail="Strategy not found")
+
+
+@strategies_router.get("/{strategy_id}", response_model=StrategyResponse)
+async def get_strategy(strategy_id: str, request: Request):
+    """Get a single strategy by ID. Tries LocalStrategyProvider (curated)
+    first; falls through to the strategy_passports table for fusion- and
+    architect-generated strategies so they're clickable from Library.
+
+    Private-until-published: non-public row is 404 unless canonical user owns it,
+    with linked-wallet fallback for legacy rows. 404 prevents existence probing.
+    Curated strategies (provider path / is_example rows) stay fully public.
+
+    **This route is MIXED and stays CARD-gated (#1557).** Everything the
+    response carries for a generated row is card content — name, papers,
+    methodology writeup, headline metrics, the rigor badge — which is exactly
+    what a published strategy is published FOR, so a published row 200s for
+    anonymous callers and the public detail page keeps working. The TWO
+    REASONING fields on the schema — ``brief_intent`` and ``strategy_spec``
+    (#1646) — are stripped for non-owners below rather than 404ing the whole
+    route (the strip-don't-404 rule for mixed routes; the purely-reasoning
+    siblings ``/{id}/debate`` and ``/{id}/returns`` 404 instead). Audited field
+    by field against ``_passport_to_strategy_response``: those two are the only
+    reasoning fields reachable here, and NEITHER is set by that shared helper —
+    both are attached at this route, from rows it has already loaded.
+    ``equity_curve`` is never set on this path, and the rigor/display metrics
+    are aggregates, not derivation. They take DIFFERENT gates on purpose
+    (``owns_strategy`` vs ``is_strategy_reasoning_visible``) because a curated
+    house row has a public spec and no owner to have typed a brief — see each
+    call site and the matrix in ``services/strategy_visibility.py``.
+    """
+    return await asyncio.to_thread(_get_strategy_sync, strategy_id, request)
 
 
 @strategies_router.patch("/{strategy_id}")
