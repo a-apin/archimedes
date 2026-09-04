@@ -381,6 +381,43 @@ class LivePaperLedger:
     returns: list[tuple[date, float]] = field(default_factory=list)
     last_appended_at: datetime | None = None
     drift_detected: bool = False
+    # The STORED rigor verdict for this deployment's strategy, as the four
+    # JSON-ready fields `passport_loader.stored_rigor_verdicts` produces
+    # (#1764). Loaded by the caller — this module does no I/O — and `None`
+    # means "none was loaded", which the builder renders as the ungraded
+    # verdict rather than as silence. There is no arm here that omits the
+    # verdict from a row: a forward return without the verdict that qualifies
+    # it is the exact claim this board must not make.
+    verdict: dict | None = None
+
+
+#: The verdict fields a forward row carries, and what they say when no verdict
+#: was loaded for it (#1764).
+#:
+#: A LABEL plus its provenance — deliberately NOT ``passes_rigor_gate``: a bare
+#: boolean beside a forward return is the field a consumer would blend or sort
+#: on, which is exactly what the two-board split exists to prevent, while a
+#: dated four-state reads as the statement about the BACKTEST that it is. The
+#: three values are byte-identical to ``passport_loader.UNGRADED_RIGOR_VERDICT``'s
+#: — pinned by test rather than imported, because this module is deliberately
+#: I/O-free and importing the passport loader would drag the ORM into the pure
+#: layer.
+UNGRADED_ENTRY_VERDICT: dict = {
+    "rigor_gate_status": "pending",
+    "graded_at": None,
+    "gate_version": None,
+}
+
+
+def _verdict_or_ungraded(verdict: dict | None) -> dict:
+    """One row's verdict fields — never fewer, and never a pass by default.
+
+    Takes the ``passport_loader`` verdict dict (which also carries the derived
+    ``passes_rigor_gate``) and keeps only what this board serves.
+    """
+    if not verdict:
+        return dict(UNGRADED_ENTRY_VERDICT)
+    return {key: verdict.get(key, UNGRADED_ENTRY_VERDICT[key]) for key in UNGRADED_ENTRY_VERDICT}
 
 
 def _cumulative_return(returns: list[tuple[date, float]]) -> float:
@@ -433,6 +470,12 @@ def build_live_paper_leaderboard(
                 as_of=observations[-1][0].isoformat(),
                 last_updated=led.last_appended_at.isoformat() if led.last_appended_at else None,
                 drift_detected=led.drift_detected,
+                # Unconditional, exactly like `cumulative_return` beside it. A
+                # ledger that arrived with no verdict loaded falls back to the
+                # ungraded four-state ("pending") — an explicit "no gate has
+                # answered", never an omitted field the UI would have to guess
+                # about and never a pass.
+                **_verdict_or_ungraded(led.verdict),
             )
         )
 

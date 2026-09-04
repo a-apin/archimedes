@@ -27,6 +27,14 @@
 //     the status -> sentence mapping StrategyPassport.jsx's PaperDeployCard
 //     already established for the sibling paper CTA.
 
+import { DEGENERATE_TITLE, NOT_GRADED_TITLE } from './libraryStatus.js'
+import {
+  UNKNOWN_RIGOR_LABEL,
+  UNKNOWN_RIGOR_TITLE,
+  isUnknownRigorGateStatus,
+  warnUnknownRigorGateStatus,
+} from './rigorGateStatus.js'
+
 /**
  * Render a `drift_detected_at` ISO timestamp as a plain human date, in UTC
  * so the output is independent of the caller's local timezone (Node's
@@ -277,6 +285,229 @@ export function markBasisNote(mark) {
  */
 export function marksUnavailableNote(err) {
   return `Live value unavailable — ${paperErrorMessage(err, 'the intraday feed could not be reached.')}`
+}
+
+// ── The verdict of record, beside the forward record (#1764) ─────────────────
+//
+// Deploy is AT WILL: paper_routes checks ownership and that the stored spec
+// still validates, and nothing else — a strategy whose gate said `fail`,
+// `pending` or `degenerate` can be paper-traded exactly like one that passed
+// (docs/claims-ledger.md: "A failing strategy stays a failing strategy.
+// Paper-trading one is allowed. Relabelling one is not."). Owner decision, Dan
+// 2026-09-01: that is the POINT — a gate-failed strategy that performs badly
+// forward validates the gate, and one that passed and tracks its backtest
+// validates it too.
+//
+// That freedom is only honest if the verdict travels with the numbers. Without
+// it, /app/paper renders "+2.10% · total return" for a strategy the rigor gate
+// rejected, with nothing on the card saying so — a performance figure standing
+// alone reads as an endorsement, and the reader has no way to know the gate
+// ever ran. So every helper below exists to make one thing structurally true:
+//
+//   THE PAPER CARD NEVER SHOWS A PERFORMANCE NUMBER WITHOUT THE GATE VERDICT
+//   BESIDE IT — including when the payload carries no verdict at all.
+//
+// `gateVerdict` has no silent arm. A missing `rigor_gate_status` (an old
+// backend behind a new bundle, a truncated payload) yields the explicit
+// "verdict unavailable" state, never `null` and never an empty chip: an
+// absence has to be rendered as an absence, which is the same rule
+// formatTotalReturn's day-0 em-dash follows.
+//
+// The four states and their words come from the shared modules, not from
+// re-typed literals here: `rigorGateStatus.js` owns the four-state list and
+// the unknown-state fallback, `libraryStatus.js` owns the tooltip sentences
+// for ungraded and degenerate rows. #1358 is what happens when two surfaces
+// keep their own copies of the same verdict vocabulary.
+
+/** The `gate_version` the verdict-of-record migration writes on a verdict it
+ * INFERRED from pre-existing columns rather than one a gate run produced.
+ *
+ * Byte-identical to `rigor_gate_version.LEGACY_DERIVED` on the backend —
+ * `backend/tests/test_paper_deploy_verdict.py` reads this file and asserts the
+ * two literals match, so the UI cannot start describing a legacy row as a real
+ * grade because someone renamed the marker on one side.
+ */
+export const LEGACY_DERIVED_GATE_VERSION = 'legacy-derived'
+
+/** What the chip says when the payload carried no verdict at all.
+ *
+ * NOT "not yet graded": that is a CLAIM about the strategy (no gate ran), and
+ * this state cannot support it — the gate may well have run and the answer
+ * simply did not arrive. The honest statement is about the payload.
+ */
+export const VERDICT_UNAVAILABLE_LABEL = 'Gate: verdict unavailable'
+
+export const VERDICT_UNAVAILABLE_TITLE =
+  'This deployment payload carried no rigor-gate verdict, so none is shown. ' +
+  'That is a gap in what was served — not a statement that the strategy passed, ' +
+  'failed, or was never graded. Reload; if it persists the passport page carries the verdict of record.'
+
+/** Why a legacy-derived verdict is not a grade. Appended to the tooltip of any
+ * verdict whose `gate_version` is the migration marker. */
+export const LEGACY_DERIVED_NOTE =
+  'This verdict was inferred from pre-existing columns by the verdict-of-record migration — ' +
+  'no gate run produced it, and it is not comparable to a freshly graded verdict.'
+
+/** The page-level statement of the deploy-at-will rule.
+ *
+ * Kept as a pinned constant for the same reason MARK_BASIS_DISCLOSURE is: the
+ * honesty claim is the product. It states the permission AND its limit in one
+ * breath — the gate result is unchanged by deploying, and the forward record is
+ * not a re-grade. Checked against docs/claims-ledger.md ("A failing strategy
+ * stays a failing strategy. Paper-trading one is allowed. Relabelling one is
+ * not."): no "validated", no "proves", no promotion of a paper return into a
+ * verdict.
+ */
+export const DEPLOY_AT_WILL_NOTE =
+  'Any strategy you can open can be paper-traded — whether its rigor gate passed, failed, ' +
+  'never ran, or had nothing it could score. Deploying changes no verdict: every card below ' +
+  'shows the gate result it was graded with, beside the forward record it is building.'
+
+/** The one sentence that must be on this surface and nowhere weakened: the
+ * forward ledger is evidence ABOUT the gate, not a re-grade of the strategy. */
+export const FORWARD_EVIDENCE_NOTE =
+  'The gate verdict was graded once, before deployment; the forward record beside it is ' +
+  'evidence that tests the gate. Neither re-labels the other — a paper return does not ' +
+  'overturn a failed gate, and a passed gate does not vouch for a paper return.'
+
+/** `graded_at` as a plain human date, or null when it is absent/unusable.
+ *
+ * Parses the leading `YYYY-MM-DD` and rebuilds the day in UTC rather than
+ * handing the raw string to `new Date`. `graded_at` is `datetime.isoformat()`
+ * of a NAIVE column, so it arrives without an offset ("2026-08-30T12:00:00")
+ * and `new Date` would read it as LOCAL time — which silently renders the
+ * previous day for anyone west of UTC. A grade date that moves with the
+ * reader's timezone is a fabricated date.
+ *
+ * Returns null rather than a placeholder so the caller can omit the clause
+ * entirely: "(graded —)" would be worse than no parenthetical at all.
+ */
+export function formatGradedAt(gradedAtIso) {
+  if (typeof gradedAtIso !== 'string') return null
+  const m = gradedAtIso.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return null
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+// The four states' words. Written as "Gate: <verdict>" so the chip is
+// self-describing next to a percentage — "failed" alone, beside +2.10%, is
+// ambiguous about WHAT failed.
+const _VERDICT_WORDS = Object.freeze({
+  pass: 'Gate: passed',
+  fail: 'Gate: failed',
+  pending: 'Gate: not yet graded',
+  degenerate: 'Gate: unevaluable — flat returns',
+})
+
+const _VERDICT_TONES = Object.freeze({
+  pass: 'positive',
+  fail: 'negative',
+  pending: 'muted',
+  degenerate: 'muted',
+})
+
+// The four explanations, WITHOUT the shared forward-evidence sentence —
+// `gateVerdict` appends that to all four, so the sentence exists once and every
+// graded state carries it. `pending` and `degenerate` borrow the Library's own
+// sentences rather than re-typing them: two surfaces, one explanation.
+const _VERDICT_TITLES = Object.freeze({
+  pass: 'The rigor gate graded this strategy and it passed.',
+  fail:
+    'The rigor gate graded this strategy and it did not pass. Paper-trading it anyway is ' +
+    "deliberate: a rejected strategy's forward record is evidence about the gate's call.",
+  pending: NOT_GRADED_TITLE,
+  degenerate: DEGENERATE_TITLE,
+})
+
+/**
+ * The gate verdict for one deployment-summary row. NEVER null, for any input.
+ *
+ * Returns `{ status, label, title, tone, gradedLabel }`:
+ *   - `status`     the raw four-state string, or null when none was served;
+ *   - `label`      the chip's words, always a non-empty string;
+ *   - `gradedLabel` "graded Aug 30, 2026", or null when there is no usable
+ *                  date — never a fabricated one;
+ *   - `tone`       'positive' | 'negative' | 'muted' | 'unknown', for colour
+ *                  only. Only a literal `pass` is ever 'positive'.
+ *
+ * The arm order matters and mirrors `libraryStatus.js`: a payload with no
+ * verdict field is caught FIRST, because every arm below it would otherwise
+ * answer a question the payload never asked. An unrecognised state renders the
+ * shared em-dash and warns in dev — the UI must not map a fifth state the API
+ * grew onto "failed" (or onto "passed", which would be worse).
+ */
+export function gateVerdict(dep) {
+  const status = dep?.rigor_gate_status
+  if (status == null) {
+    return {
+      status: null,
+      label: VERDICT_UNAVAILABLE_LABEL,
+      title: VERDICT_UNAVAILABLE_TITLE,
+      tone: 'unknown',
+      gradedLabel: null,
+    }
+  }
+  if (isUnknownRigorGateStatus(status)) {
+    warnUnknownRigorGateStatus(status, 'PaperTrading')
+    return {
+      status,
+      label: `Gate: ${UNKNOWN_RIGOR_LABEL}`,
+      title: UNKNOWN_RIGOR_TITLE,
+      tone: 'unknown',
+      gradedLabel: null,
+    }
+  }
+  const graded = formatGradedAt(dep?.graded_at)
+  const legacy = dep?.gate_version === LEGACY_DERIVED_GATE_VERSION
+  // Composed here rather than baked into the constants so the forward-evidence
+  // sentence lands on all four states exactly once — appending it at the render
+  // site instead would double it on the two arms that already carried it.
+  const base = legacy ? `${_VERDICT_TITLES[status]} ${LEGACY_DERIVED_NOTE}` : _VERDICT_TITLES[status]
+  const title = `${base} ${FORWARD_EVIDENCE_NOTE}`
+  return {
+    status,
+    label: _VERDICT_WORDS[status],
+    title,
+    tone: _VERDICT_TONES[status],
+    gradedLabel: graded ? `graded ${graded}` : null,
+  }
+}
+
+/**
+ * The verdict as ONE line — "Gate: failed (graded Aug 30, 2026)".
+ *
+ * Both the visible chip and the screen-reader announcement render from this,
+ * so the two can never state different verdicts for the same row.
+ */
+export function gateVerdictText(dep) {
+  const v = gateVerdict(dep)
+  return v.gradedLabel ? `${v.label} (${v.gradedLabel})` : v.label
+}
+
+/**
+ * The screen-reader line for the headline figure — the number and the verdict
+ * in ONE accessible name.
+ *
+ * This is where the "never a number without its verdict" rule is enforced for
+ * assistive tech rather than merely arranged visually: the percentage is a
+ * `<span aria-hidden>` and THIS string is what a screen reader gets, so a
+ * future edit that drops the chip from the layout cannot also silently drop
+ * the verdict from the announcement — they come from the same call.
+ *
+ * The performance clause follows formatTotalReturn's discriminator exactly:
+ * `days === 0` is the normal post-deploy state, not a measurement, and must
+ * never be announced as one.
+ */
+export function paperReturnAnnouncement(dep) {
+  const figure = formatTotalReturn(dep?.total_return, dep?.days)
+  const days = dep?.days
+  const perf =
+    figure === '—'
+      ? 'No settled paper return yet'
+      : `Paper total return ${figure} over ${days} trading day${days === 1 ? '' : 's'}`
+  return `${perf}. ${gateVerdictText(dep)}.`
 }
 
 // ── Page-intro cadence copy (#1802) ──────────────────────────────────────────
