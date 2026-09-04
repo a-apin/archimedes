@@ -4,7 +4,10 @@
 # with AWS credentials — merging the PR changes nothing on the live stack.
 #
 # Edge layer that sits in front of the existing ALB (aws_lb.main in alb.tf):
-#   - Static assets (/assets/*, /static/*, *.js, *.css) cached 1h at the edge.
+#   - Static assets cached 1h at the edge: /assets/*, /static/*, /fonts/*,
+#     *.js, *.css, *.png, *.svg, *.jpg, *.webp, *.woff2, *.ico. The suffix
+#     patterns sit LAST in the behaviour list, behind every never-cached
+#     behaviour, so a gated /app/*.png can never be captured by one (#1776).
 #   - /health, /health/*, /api/* and /events/* NEVER cached (liveness probes +
 #     dynamic responses + SSE pass-through).
 #   - /app, /app/* and /sign-in* NEVER cached. The gated pages under /app
@@ -380,6 +383,36 @@ resource "aws_cloudfront_distribution" "main" {
     compress                   = true
   }
 
+  # /fonts/* — self-hosted webfonts and the OFL licence files beside them.
+  # Cached 1h at the edge (#1776).
+  #
+  # `ui/index.html` carries `<link rel="preload" href="/fonts/gabarito-latin.woff2">`,
+  # so these are on the critical render path — and they matched no ordered
+  # pattern, which put them on the `html` policy's 60s TTL and made every edge
+  # POP re-fetch them from the origin once a minute. They are immutable-by-build
+  # files under `ui/public/fonts/`, served straight off nginx's disk
+  # (`location /` → `root /usr/share/nginx/html`), not HTML.
+  #
+  # A prefix pattern rather than a suffix one, so it also covers the `OFL-*.txt`
+  # licence files that ship beside the fonts, and any future font format, without
+  # spending another cache-behaviour slot. `*.woff2` below is the belt for a font
+  # emitted anywhere outside this directory.
+  #
+  # Safe this far up the list: `/fonts/` cannot collide with any gated path, so
+  # unlike the suffix patterns it does not have to sit behind the CachingDisabled
+  # behaviours.
+  ordered_cache_behavior {
+    path_pattern               = "/fonts/*"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = aws_cloudfront_cache_policy.static_assets.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = true
+  }
+
   # /app, /app/* and /sign-in* — NEVER cached at the edge (#1768).
   #
   # 2026-09-01 sign-in outage ("I can't sign into the production site. It
@@ -539,6 +572,149 @@ resource "aws_cloudfront_distribution" "main" {
   # *.css — top-level CSS files. Cached 1h at the edge.
   ordered_cache_behavior {
     path_pattern               = "*.css"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = aws_cloudfront_cache_policy.static_assets.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = true
+  }
+
+  # ── Image, icon and font suffixes — cached 1h at the edge (#1776) ──
+  #
+  # Found while verifying PR #1772. CloudFront takes the FIRST matching
+  # `ordered_cache_behavior`, and before this block no pattern matched these
+  # files at all, so they fell through to `default_cache_behavior` and the
+  # `html` policy — `default_ttl = 60`, `query_string_behavior = "all"`:
+  #
+  #   /og-image.png            the Open Graph card, fetched by every link unfurl
+  #   /product-workspace.png   136 KB — the largest single asset on the landing page
+  #   /favicon.svg /logo.svg /icons.svg
+  #   /favicon-16x16.png /favicon-32x32.png /apple-touch-icon.png
+  #   /icon-192.png /icon-512.png
+  #
+  # All immutable-by-build files under `ui/public/`, served straight off nginx's
+  # disk (`location /` → `root /usr/share/nginx/html`), none of them HTML. The
+  # 136 KB PNG was re-fetched from the origin every 60s per edge POP, once per
+  # distinct query string on top of that.
+  #
+  # Bound to `static_assets`: `default_ttl = 3600`, `max_ttl = 86400`, and a
+  # cache key with `cookie_behavior`, `header_behavior` and
+  # `query_string_behavior` all `"none"` — no viewer cookie, header or query
+  # string enters it. That is the same policy `/assets/*`, `/static/*`, `*.js`
+  # and `*.css` already use. (Precisely: the policy also sets
+  # `enable_accept_encoding_brotli/gzip = true`, so CloudFront still splits the
+  # key by NORMALISED accept-encoding, exactly as it does for `/assets/*`. That
+  # is a compression variant, not a viewer identity.) (`all_viewer` forwards
+  # cookies and headers to the ORIGIN on a miss; it is the CACHE POLICY, not the
+  # origin request policy, that sets the cache key, so the key stays
+  # cookie-blind. Same split as the pre-existing static behaviours, and it is why
+  # this file can hand these paths a 1h TTL safely.)
+  # Hygiene as well as cost: the 60s `html` policy is the cookie-blind one that
+  # carried #1767's cache-poisoning shape, so keeping non-HTML off it is worth
+  # doing on its own terms.
+  #
+  # ORDERED LAST, behind every CachingDisabled behaviour — that is the whole
+  # reason this group sits here rather than beside `/assets/*` further up. A
+  # suffix pattern matches ANY path ending that way, `/app/hero.png` included,
+  # and binding a gated path to a 1h cookie-blind cache is #1768's defect with a
+  # longer TTL. `/health`, `/health/*`, `/api/*`, `/events/*`, `/app/*`, `/app`
+  # and `/sign-in*` all win first-match ahead of these. Nothing is served under
+  # `/app/*.png` today, which is precisely why the ordering has to be right
+  # before someone puts one there — the same argument the `/app` blocks above
+  # make about `*.js`. `backend/tests/test_cloudfront_static_assets_cached.py`
+  # pins the ordering, not just the bindings.
+  #
+  # Residuals, named rather than papered over:
+  #
+  #   - nginx's `location /` ends in `try_files $uri $uri/ /index.html`, so a
+  #     path with one of these suffixes that does NOT exist on disk — `/typo.png`,
+  #     or `/favicon.ico`, which some browsers request by default and which this
+  #     repo does not ship — answers 200 with the ~4 KB SPA shell, now cached 1h
+  #     instead of 60s and NOT covered by deploy.yml's deliberately narrow
+  #     invalidation (`/`, `/?*`, `/index.html*`). That shell is anonymous and
+  #     identical for every viewer, so the cost is staleness, never a session
+  #     leak — and it is the same shape `*.js` and `*.css` have had since this
+  #     file was written.
+  #   - Suffixes NOT covered: `.jpeg` (a distinct pattern from `.jpg`), `.gif`,
+  #     `.avif`, `.woff`. Nothing under `ui/public/` uses them today, and each
+  #     pattern costs one of CloudFront's default 25 cache behaviours per
+  #     distribution. The guard enumerates `ui/public/` from disk, so adding such
+  #     a file makes this a red test rather than a silent 60s TTL.
+  #   - `robots.txt`, `llms.txt`, `sitemap.xml` and `site.webmanifest` stay on
+  #     the `html` policy on purpose: they are rewritten by the build, they are
+  #     small, and 60s is the right staleness for a file a crawler re-reads.
+
+  # *.png — /og-image.png, /product-workspace.png, the favicons and PWA icons.
+  ordered_cache_behavior {
+    path_pattern               = "*.png"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = aws_cloudfront_cache_policy.static_assets.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = true
+  }
+
+  # *.svg — /favicon.svg, /logo.svg, /icons.svg (the sprite sheet).
+  ordered_cache_behavior {
+    path_pattern               = "*.svg"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = aws_cloudfront_cache_policy.static_assets.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = true
+  }
+
+  # *.jpg — no .jpg ships today; declared so the first one added is cached.
+  ordered_cache_behavior {
+    path_pattern               = "*.jpg"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = aws_cloudfront_cache_policy.static_assets.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = true
+  }
+
+  # *.webp — no .webp ships today; declared so the first one added is cached.
+  ordered_cache_behavior {
+    path_pattern               = "*.webp"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = aws_cloudfront_cache_policy.static_assets.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = true
+  }
+
+  # *.woff2 — a webfont emitted anywhere outside /fonts/ (belt for the prefix above).
+  ordered_cache_behavior {
+    path_pattern               = "*.woff2"
+    target_origin_id           = local.alb_origin_id
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = aws_cloudfront_cache_policy.static_assets.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.all_viewer.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    compress                   = true
+  }
+
+  # *.ico — no .ico ships today; see the /favicon.ico residual noted above.
+  ordered_cache_behavior {
+    path_pattern               = "*.ico"
     target_origin_id           = local.alb_origin_id
     viewer_protocol_policy     = "redirect-to-https"
     allowed_methods            = ["GET", "HEAD", "OPTIONS"]
