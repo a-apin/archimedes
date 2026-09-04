@@ -355,12 +355,23 @@ def test_a_passing_verdict_reports_no_failures():
 
 
 def test_unattributed_when_nothing_on_record_falls_below_the_bar():
-    """The agent path grades DSR at 0.95 while the badge bar is 0.90, so a
-    p-value in between lands a rejected row with every badge-bar check clear.
-    The surface must say it cannot attribute the rejection, not name a culprit."""
+    """A rejected row on which every recorded check CLEARS the bar.
+
+    The shape was first produced by a DSR-bar divergence: the agent path graded
+    DSR at its own hardcoded, stricter bar while the badge profile's ``dsr_p_min``
+    was looser, so a p-value in between landed a rejected row with every badge-bar
+    check clear. #1794 collapsed both onto ``DSR_P_BADGE_MIN``, so this fixture is
+    built AGAINST the live bar instead of against a number that used to sit
+    between two of them — the state it pins is still reachable (a stored row
+    graded under the retired bar; a leg that never ran, which fails admission
+    closed yet reports ``not_computed``, never ``fail``).
+
+    The surface must say it cannot attribute the rejection, not name a culprit.
+    """
+    clears_the_bar = (_BADGE.dsr_p_min + 1.0) / 2
     report = rigor_reasons_for_verdict(
         {
-            "dsr_p_value": 0.92,
+            "dsr_p_value": clears_the_bar,
             "pbo": 0.2,
             "oos_sharpe": 0.9,
             "in_sample_sharpe": 1.2,
@@ -370,6 +381,10 @@ def test_unattributed_when_nothing_on_record_falls_below_the_bar():
         }
     )
     assert report["unattributed"] is True
+    # Anti-vacuity: unattributed here must come from every leg CLEARING the bar,
+    # not from a report full of not-computed legs (which is a different state
+    # with a different surface).
+    assert [c["status"] for c in report["checks"]] == [PASS] * 5
     assert not [c for c in report["checks"] if c["status"] == FAIL]
 
 

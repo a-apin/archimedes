@@ -422,16 +422,16 @@ async def start_generation(
             },
         )
 
-    # Cheap, deterministic brief prelude (Lane 1.3c: "never charge for a
-    # brief we can cheaply reject"). Deliberately BEFORE the payment gate —
-    # a caller must never be charged for a brief that is obviously invalid
-    # (empty / gibberish). Shares its exact criteria with the real (LLM)
-    # validator's own prelude in generation_pipeline._validate_brief via
+    # Deterministic brief screen (Lane 1.3c: "never charge for a brief we can
+    # cheaply reject"). Deliberately BEFORE the payment gate — a caller must
+    # never be charged for a brief that is empty, gibberish, over-length, or
+    # carrying a prompt-injection payload. Shares its exact criteria with the
+    # LLM validator's own prelude in generation_pipeline._validate_brief via
     # `cheap_brief_reject` — see that function's docstring for why the two
-    # call sites can never drift apart. Anything this misses (off-topic but
-    # grammatical text, jailbreak attempts) still gets the expensive LLM
-    # check post-payment, exactly as before — that outcome legitimately
-    # consumes work, so it stays a credit spend, not a pre-payment refusal.
+    # call sites can never drift apart. What this still misses is SEMANTIC
+    # (off-topic but grammatical text): that gets the LLM check post-payment,
+    # exactly as before — that outcome legitimately consumes work, so it
+    # stays a credit spend, not a pre-payment refusal.
     cheap_reject = cheap_brief_reject(req.brief)
     if cheap_reject is not None:
         raise HTTPException(
@@ -441,6 +441,10 @@ async def start_generation(
                 "code": "BRIEF_INVALID",
                 "message": _invalid_brief_message(cheap_reject.get("reason")),
                 "hint": cheap_reject.get("hint") or "Mention an asset class, a goal, or a risk appetite.",
+                # Machine-readable code from services.brief_screen's versioned
+                # vocabulary (#1801). Additive — the four keys above are
+                # unchanged, so no existing client moves.
+                "reason_code": cheap_reject.get("code") or "",
             },
         )
 
@@ -542,8 +546,9 @@ async def start_generation(
     # This covers only what THIS request can see fail. Everything that goes
     # wrong after the enqueue — the corpus yielding too few papers to fuse, a
     # pipeline crash, a cancel — is released by
-    # `_release_free_slot_if_undelivered` in the run's own `finally`, keyed on
-    # the job id stamped below.
+    # `release_entitlements_if_undelivered` in the run's own `finally`, keyed on
+    # the job id stamped below. That seam, not this helper's caller, is what
+    # makes the release reach BOTH run paths (#1793).
     try:
         # Paid-tier gating (T1.8): a premium (Anthropic) model requires a
         # wallet-connected entitlement. Enforced BEFORE the job is enqueued so a
@@ -850,6 +855,55 @@ async def _release_free_slot_if_undelivered(job_id: str, store) -> None:
         )
 
 
+async def release_entitlements_if_undelivered(job_id: str, store) -> None:
+    """Every refund an undelivered run owes, in ONE place both run paths call.
+
+    Two code paths run a generation, and only one of them used to clean up:
+
+    * ``_run_with_cleanup`` — the serving task's background coroutine, spawned
+      by ``POST /api/generate/start``;
+    * ``scripts/run_generation_job.run_job`` — the out-of-process entrypoint
+      that ``docs/adr/lambda-generation-offload.md`` ADOPTED (an
+      ``ecs:RunTask``, a Lambda invocation, or an operator's ``python -m``).
+
+    The enqueue spends the caller's entitlements *before* either of them
+    starts, so both owe the same refunds when the run then delivers nothing.
+    The refunds lived inside ``_run_with_cleanup``'s ``finally``, which the
+    script never enters, so on that path every post-enqueue failure — thin
+    corpus, crash, cancel, timeout — kept the caller's credit, and after #1785
+    their free slot, spent (#1793).
+
+    **A new release goes HERE, not into a caller's ``finally``.** That is the
+    whole point of the seam, and it is enforced rather than asked for:
+    ``test_run_generation_job.py::TestBothRunPathsReleaseTheSameThings``
+    discovers every release helper in this module and fails if one of them is
+    not reached through this function. #1785's
+    ``_release_free_slot_if_undelivered`` — the free tier's equivalent — landed
+    on main in ``_run_with_cleanup``'s ``finally``, i.e. the serving path only,
+    which is the very shape that test fails on; moving it into this function is
+    what gives the offload entrypoint the free slot back too.
+
+    **The limit of that discovery, stated where the next author will read it:**
+    it matches a NAMING CONVENTION —
+    ``_(release|void|refund|restore)_<thing>_(if|when)_undelivered`` on this
+    module — not reachability. A refund helper named outside that pattern is
+    invisible to the tripwire and can be given to one run path only without
+    anything going red. Name a new one ``_release_<thing>_if_undelivered``.
+
+    ``store`` is a parameter rather than a ``get_job_store()`` call because the
+    offload worker binds its store from the environment *as it is at run time*
+    — ``get_job_store()``'s singleton reads a ``REDIS_URL`` frozen at import,
+    which for that worker is the localhost default. See
+    ``run_generation_job``'s module docstring for why no import ordering can
+    win that race.
+    """
+    await _release_credit_if_undelivered(job_id, store)
+    # …and the free-tier equivalent. Both run: a run is funded by a credit or
+    # by a free slot, never both, and each helper is a no-op for the funding it
+    # does not own.
+    await _release_free_slot_if_undelivered(job_id, store)
+
+
 async def _run_with_cleanup(
     job_id: str,
     brief: GenerateBrief,
@@ -947,11 +1001,11 @@ async def _run_with_cleanup(
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
-        await _release_credit_if_undelivered(job_id, store)
-        # …and the free-tier equivalent. Both run: a run is funded by a credit
-        # or by a free slot, never both, and each helper is a no-op for the
-        # funding it does not own.
-        await _release_free_slot_if_undelivered(job_id, store)
+        # ONE seam, both run paths (#1793). A new refund goes INSIDE
+        # `release_entitlements_if_undelivered`, never on the next line here:
+        # a release added to this `finally` is a release the offload
+        # entrypoint does not get. That is how #1785 arrived.
+        await release_entitlements_if_undelivered(job_id, store)
 
 
 @generate_router.get("/stream/{job_id}")

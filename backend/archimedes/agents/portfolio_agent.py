@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from archimedes.services.brief_screen import quote_for_prompt
 from archimedes.services.llm_backend import LLMBackend, make_llm_backend
 from archimedes.services.strategy_signal_evaluator import GLOBAL_ASSETS
 
@@ -191,8 +192,19 @@ def _format_strategies(strategies: list[Any], rigor_statuses: dict[str, str] | N
         rule = _summarize_rule(s)
         status = (rigor_statuses or {}).get(s.id, "pending")
         rigor_label = _RIGOR_LABELS.get(status, "pending (no live verdict)")
+        # `paper_title` is third-party arXiv metadata landing raw in a
+        # line-oriented prompt: the very next line of this same entry carries
+        # `sharpe=` and `rigor=`, so an unquoted title containing a newline
+        # writes a metric onto the agent's own evidence line. `quote_for_prompt`
+        # (#1801) screens the title and returns it as ONE quoted JSON token; a
+        # refused title leaves the field empty rather than being rewritten, and
+        # the id — which is what the agent must anchor every pick to — is
+        # unaffected either way.
+        quoted_title, _ = quote_for_prompt(
+            str(s.paper_title or ""), field="paper_title", context=f"strategy {s.id[:8]}"
+        )
         lines.append(
-            f"  - id={s.id[:8]}  title={s.paper_title}\n"
+            f"  - id={s.id[:8]}  title={quoted_title}\n"
             f"      sharpe={sr:.2f}  cagr={cagr:+.1f}%  rigor={rigor_label}\n"
             f"      signal rule: {rule}"
         )
