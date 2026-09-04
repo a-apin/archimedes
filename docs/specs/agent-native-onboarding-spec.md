@@ -53,8 +53,9 @@ an onboarding story:
 **On MCP: is it a product surface at all, or is the skills-plus-CLI pair the answer? That
 is an open question and this doc does not answer it.** Grepping `docs/`, `cli/`, `skills/`,
 `backend/`, `ui/src/`, and `scripts/` for `mcp` returns only three unrelated kinds of hit:
-Safari MCP as a *tool the team drives a browser with*, OpenWiki's `openwiki mcp --host
-claude` mode ([`decisions/tooling-adoptions-2026-08.md`](../decisions/tooling-adoptions-2026-08.md)),
+Safari MCP as a *tool the team drives a browser with*, OpenWiki's
+`openwiki mcp --host claude` mode
+([`decisions/tooling-adoptions-2026-08.md`](../decisions/tooling-adoptions-2026-08.md)),
 and [`anti-features.md`](../anti-features.md)'s "NOT building: a custom agent framework"
 entry, which mentions `fastmcp` only as an off-the-shelf option *if* an MCP-style tool
 layer is ever needed. There is no MCP server, no MCP dependency, and no commitment to

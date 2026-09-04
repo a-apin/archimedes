@@ -11,7 +11,7 @@ Purpose: one card per session instead of a 45k-token plan re-read.
 
 ## State — 2026-08-21
 
-Cards are committed (`16324bd`, PR #1238) and indexed in [`docs/README.md`](../README.md).
+Cards are committed (`16324bd`, PR #1238) and indexed in [`docs/doc-index.md`](../doc-index.md).
 The Aug-16 State section this replaces claimed *"zero sprint work has landed"* and listed four
 PRs as still open. **Both were accurate when written** — the card was authored 2026-08-16
 00:18 +0300, and the four sprint commits (`5327dbf` 00:27, `5c601fb` 00:39, `d7073f1` 00:46,

@@ -84,4 +84,4 @@ What it must cover, at minimum:
    you get a second incident on top of the first.
 
 Write it under `infra/runbooks/`, next to the Terraform whose state it depends on, and link it
-from this index and from [`../README.md`](../README.md) in the same commit.
+from this index and from [`../doc-index.md`](../doc-index.md) in the same commit.
