@@ -8,6 +8,8 @@
                                                        ▼
                                               aws_sqs_queue.ses_events
                                                        ▼
+                              aws_scheduler_schedule.ses_events_drain
+                                                       ▼
                                   archimedes.scripts.ses_events drain
 
 Every one of those links fails SILENTLY. A send that names no configuration
@@ -15,9 +17,11 @@ set is a perfectly successful send that publishes no event. A configuration
 set whose name does not match the one the mailer sends with publishes events
 for nobody. An SNS topic with no SQS subscriber drops each notification on the
 floor. A task role without the queue grant makes the drain raise AccessDenied
-where nobody is watching. In every case mail still goes out, no alarm fires,
-and the product goes back to being unable to tell a dead address from an
-impatient human — the exact state #1804 is about.
+where nobody is watching. And with no schedule at all, every resource above is
+built, wired, and inert: bounces pile up in SQS and the 14-day retention
+deletes them unread. In every case mail still goes out, no alarm fires, and the
+product goes back to being unable to tell a dead address from an impatient
+human — the exact state #1804 is about.
 
 ``terraform validate`` catches none of it: a configuration set nobody
 references, an event destination with an empty ``matching_event_types``, and a
