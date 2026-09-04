@@ -194,9 +194,107 @@ def _build_paper_refs(passport_id: str, papers: list[PaperRef]) -> list[Passport
                 year=p.year,
                 citation_count=p.citation_count,
                 contribution=p.contribution,
+                role=getattr(p, "role", None) or "cited",
+                selection_rank=getattr(p, "selection_rank", None),
+                semantic_score=getattr(p, "semantic_score", None),
+                content_hash=getattr(p, "content_hash", None),
             )
         )
     return refs
+
+
+#: Columns merged additively on re-ingest. ``arxiv_id`` and ``role`` are the
+#: identity of the association and are deliberately absent: identity is matched
+#: on, never overwritten.
+_MERGEABLE_REF_COLUMNS = (
+    "title",
+    "authors",
+    "doi",
+    "venue",
+    "year",
+    "citation_count",
+    "contribution",
+    "selection_rank",
+    "semantic_score",
+    "content_hash",
+)
+
+
+def _ref_key(arxiv_id: str | None, doi: str | None, title: str | None) -> str:
+    """Stable identity for one paper reference within a passport.
+
+    Delegates to :func:`archimedes.models.paper_assoc.assoc_handle` so the
+    store's idea of "the same paper" and the passport's are one definition, not
+    two that drift. ``arxiv_id`` is the id space (#1637); ``doi`` and the
+    case-folded ``title`` are the fallbacks that keep the 34 curated references
+    — every one of which declares ``PAPER_ARXIV_ID = None`` — mergeable instead
+    of duplicated on every re-ingest.
+    """
+    from archimedes.models.paper_assoc import assoc_handle
+
+    return assoc_handle({"arxiv_id": arxiv_id, "doi": doi, "title": title}) or ""
+
+
+def _is_empty(value: object) -> bool:
+    """Is this incoming value "nothing to say"? ``None``, ``""`` or ``"[]"``.
+
+    A JSON ``"[]"`` authors column is the shape an id+title-only rebuild emits;
+    treating it as a value is how a backfilled author list got wiped.
+    """
+    return value is None or value == "" or value == "[]"
+
+
+def _merge_paper_refs(session: Session, passport_id: str, papers: list[PaperRef]) -> None:
+    """Merge incoming refs onto the stored ones — never a blind DELETE (#1637).
+
+    ``ingest_passport(force_update=True)`` used to ``DELETE FROM
+    passport_paper_refs`` and rebuild from whatever the caller had in hand.
+    The caller on the real-returns refresh path
+    (``generation_pipeline._refresh_passport_real_metrics``) has **id + title
+    only**, so every backfilled author list, year, venue, DOI and contribution
+    was guaranteed to be wiped on the next metrics refresh. Enrichment could
+    not survive by construction.
+
+    Three rules, in order:
+
+    1. **Match, don't replace.** An incoming ref merges onto the stored row
+       with the same :func:`_ref_key`.
+    2. **Never overwrite a value with an absence.** A populated column is left
+       alone when the incoming ref has nothing for it — that is the rule that
+       makes the id+title-only refresh non-destructive.
+    3. **Never blind-delete.** A stored ref the caller did not mention is
+       *dropped only when the caller demonstrably knows the full cited set* —
+       i.e. it passed a non-empty list. An empty incoming list means "I don't
+       know the papers", not "this strategy has none", and must leave the
+       stored set intact.
+    """
+    stored = session.query(PassportPaperRef).filter_by(passport_id=passport_id).all()
+    by_key = {_ref_key(r.arxiv_id, r.doi, r.title): r for r in stored}
+    seen: set[str] = set()
+
+    for incoming in _build_paper_refs(passport_id, papers):
+        key = _ref_key(incoming.arxiv_id, incoming.doi, incoming.title)
+        seen.add(key)
+        current = by_key.get(key)
+        if current is None:
+            session.add(incoming)
+            by_key[key] = incoming
+            continue
+        for column in _MERGEABLE_REF_COLUMNS:
+            value = getattr(incoming, column)
+            if _is_empty(value):
+                continue  # rule 2
+            setattr(current, column, value)
+        # ``role`` is identity-adjacent: a paper may be promoted from
+        # "considered" to "cited" by a later run, but never silently demoted
+        # back by a caller that simply defaulted the field.
+        if incoming.role == "cited":
+            current.role = "cited"
+
+    if papers:  # rule 3 — an empty list is ignorance, not a deletion instruction
+        for key, row in by_key.items():
+            if key not in seen and row in stored:
+                session.delete(row)
 
 
 def ingest_passport(
@@ -287,11 +385,15 @@ def ingest_passport(
         if owner_wallet and not existing.owner_wallet:
             # Backfill only — an existing owner is never overwritten.
             existing.owner_wallet = owner_wallet
-        # Replace paper refs
-        session.query(PassportPaperRef).filter_by(passport_id=passport.id).delete()
-        existing.paper_refs = _build_paper_refs(passport.id, passport.papers)
+        # Merge paper refs additively — see _merge_paper_refs. This was a
+        # DELETE-then-rebuild, which made enrichment impossible to keep (#1637).
+        _merge_paper_refs(session, passport.id, passport.papers)
         existing.updated_at = datetime.now(UTC)
         session.flush()
+        # The merge writes through the session, not through the relationship, so
+        # the already-loaded collection on `existing` would hand the caller a
+        # pre-merge view. Expire it so the next read reloads.
+        session.expire(existing, ["paper_refs"])
         logger.info("passport_loader: updated %s (%s)", passport.id, generation_method)
         return existing
 

@@ -495,6 +495,11 @@ exclude_docs: |
   # Merged into adr/strategy-dsl-hardening-over-lean4.md
   plans/future-strategy-language-reeval-issue.md
 
+  # assoc/v1 — the paper→strategy association contract (#1637). Internal
+  # engineering reference, owner decision Q6 on #1688: land the spec so it is
+  # not re-derived wrong from a merged diff, keep it off the published site.
+  specs/assoc-v1-spec.md
+
   # ── Owner decision 1 (#1751), taken 2026-09-02: all four stay OFF the site.
   # Reversing that call is moving ONE line out of this block and adding one nav
   # row. No page is edited, no section restructured, no git mv.

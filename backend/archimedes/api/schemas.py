@@ -153,16 +153,33 @@ class VaultListResponse(BaseModel):
 
 
 class PaperRefResponse(BaseModel):
-    """A single paper reference in a strategy passport."""
+    """A single paper reference in a strategy passport.
+
+    The wire projection of one ``assoc/v1`` association (#1637) — see
+    ``models/paper_assoc.py``. Every enrichment field is nullable and stays
+    null when unknown: authors, venue, year and DOI are structurally NULL for
+    generated strategies today, and ``null`` is the honest rendering of that.
+    """
 
     arxiv_id: str | None = None
-    title: str = ""
+    #: ``None``, not ``""``, when no title resolves — the renderer prints
+    #: "title unavailable — arXiv:<id>" rather than an empty pair of quotes.
+    title: str | None = None
     authors: list[str] = []
     doi: str | None = None
     venue: str | None = None
     year: int | None = None
     citation_count: int | None = None
     contribution: str | None = None
+    #: "cited" | "considered". ``papers[]`` carries only cited associations
+    #: today; the field is here so a consumer never has to assume.
+    role: str = "cited"
+    selection_rank: int | None = None
+    #: Reranker score at selection time. ``None`` whenever the rerank was
+    #: keyword-only or disabled — which is the common case. Never 0.0.
+    semantic_score: float | None = None
+    #: Corpus content hash. NULL in production until #1091 hydrates it.
+    content_hash: str | None = None
 
 
 class StrategyResponse(BaseModel):
@@ -568,6 +585,30 @@ class TraceVerifyResponse(BaseModel):
     vault: str = ""
     on_chain_timestamp: int = 0
     details: str  # Human-readable result
+    # ── Source-paper verification (#1637) ────────────────────────────────
+    # ``verify_source_papers`` had ZERO production callers: /verify re-hashed
+    # the trace body and never checked that the papers it claims to have
+    # consulted exist. The "trace-verify button" could not verify the half of
+    # the trace that carries the research provenance.
+    #
+    # Tri-state for the same reason ``verification_mode`` is: None means NOT
+    # CHECKED, and the two ways that happens are named in
+    # ``source_paper_verification.mode`` — the trace claimed no papers, or the
+    # corpus was unreachable. Neither is a pass and neither is a failure, and
+    # collapsing either into ``False`` would report a fabricated provenance
+    # failure while collapsing it into ``True`` would report a fabricated pass.
+    #
+    # And what a ``True`` here means is EXISTENCE, not a hash comparison:
+    # corpus ``content_hash``/``pdf_sha256`` are NULL until #1091, so a claimed
+    # suffix is empty and the check is "the corpus has this paper". Every
+    # surface that renders this must say so (owner decision Q8 on #1688) —
+    # ``ui/src/trace-binding.js:sourcePapersCopy`` is the one place that copy
+    # lives.
+    papers_verified: bool | None = None
+    #: ``{"mode", "checked", "verified", "missing", "hash_mismatch"}`` — None
+    #: when nothing was attempted (the anchored-only branch has no off-chain
+    #: body to read a cited set out of).
+    source_paper_verification: dict[str, Any] | None = None
     # Temporal binding verification
     temporal_binding_valid: bool | None = None
     commit_block_number: int | None = None

@@ -2501,3 +2501,120 @@ def test_auth_delivery_log_sql_names_the_columns_the_migration_creates(tmp_path)
 
     assert insert_columns <= actual, f"delivery-log.js INSERTs columns that do not exist: {insert_columns - actual}"
     assert select_columns <= actual, f"delivery-log.js SELECTs columns that do not exist: {select_columns - actual}"
+
+
+# ── assoc/v1 passport projection columns (c8a4d1f70b93, issue #1637) ───────
+
+_ASSOC_MIGRATION_REVISION = "c8a4d1f70b93"
+_ASSOC_COLUMNS = {"role", "selection_rank", "semantic_score", "content_hash"}
+
+
+def _assoc_migration_down_revision() -> str:
+    """Looked up from the script directory, not hardcoded — same rationale as
+    ``_expected_head_revision``."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision(_ASSOC_MIGRATION_REVISION).down_revision
+    assert isinstance(target, str), f"expected a single down_revision, got {target!r}"
+    return target
+
+
+def _passport_ref_columns(db_path: Path) -> set[str]:
+    con = sqlite3.connect(str(db_path))
+    try:
+        return {r[1] for r in con.execute("PRAGMA table_info(passport_paper_refs)").fetchall()}
+    finally:
+        con.close()
+
+
+def test_assoc_migration_columns_added_and_removed(tmp_path):
+    """Up, down, up. The whole revision is one ADD COLUMN / DROP COLUMN pair,
+    so a downgrade genuinely restores the previous schema — which is the
+    property that lets this land ahead of the dry-run-gated re-stamp (#1688
+    owner call: *"a dedup-hygiene step does not get to be irreversible on an
+    unmeasured table"*)."""
+    db_path = tmp_path / "assoc_columns.db"
+    database_url = f"sqlite:///{db_path}"
+    target = _assoc_migration_down_revision()
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert _ASSOC_COLUMNS.issubset(_passport_ref_columns(db_path))
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert _ASSOC_COLUMNS.isdisjoint(_passport_ref_columns(db_path))
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert _ASSOC_COLUMNS.issubset(_passport_ref_columns(db_path))
+
+
+def test_assoc_migration_leaves_every_strategy_row_byte_identical(tmp_path):
+    """GUARD on the PR-1 / PR-2 boundary: this revision rewrites NO data.
+
+    #1688 shipped the column add together with a ``content_hash`` re-stamp and
+    a ``source_papers`` normalization. Both are held for PR-2, and holding the
+    normalization is load-bearing rather than tidy: PR-2's gate is a read-only
+    dry-run that recomputes each row's *historical* hash from its **stored
+    ``source_papers`` JSON**. Normalizing the column first makes the legacy
+    hash irreproducible for every row, so the dry-run would report a ~0
+    reproduce rate and the re-stamp it gates could never run.
+
+    A legacy-shaped row is seeded and its columns compared byte for byte after
+    the upgrade. The adversarial half is at the bottom: the same comparison is
+    shown to fail on a row that WAS rewritten.
+    """
+    import json as _json
+
+    db_path = tmp_path / "assoc_no_rewrite.db"
+    database_url = f"sqlite:///{db_path}"
+
+    assert _run_alembic("upgrade", _assoc_migration_down_revision(), database_url=database_url).returncode == 0
+
+    legacy_papers = _json.dumps([{"arxiv_id": "2301.00001", "sha256": ""}])
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute(
+            "INSERT INTO strategy_store (id, content_hash, generation_method, source_papers, strategy_name, "
+            "thesis, asset_universe, risk_profile, status, is_example, is_published, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "legacy_row",
+                "0xlegacy",
+                "fusion",
+                legacy_papers,
+                "Legacy",
+                "Legacy thesis",
+                _json.dumps(["SPY"]),
+                "moderate",
+                "candidate",
+                0,
+                0,
+                "2026-08-01 00:00:00",
+                "2026-08-01 00:00:00",
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    post = _run_alembic("upgrade", "head", database_url=database_url)
+    assert post.returncode == 0, post.stderr
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        row = con.execute("SELECT id, content_hash, source_papers FROM strategy_store").fetchone()
+    finally:
+        con.close()
+
+    assert row == ("legacy_row", "0xlegacy", legacy_papers), (
+        "the schema-only revision rewrote strategy_store — the re-stamp belongs to PR-2, behind the dry-run"
+    )
+
+    # Adversarial companion: the same assertion DOES fail on a rewritten row,
+    # so a green result above is evidence of something.
+    rewritten = ("legacy_row", "0xnew", _json.dumps([{"arxiv_id": "2301.00001", "role": "cited"}]))
+    assert rewritten != ("legacy_row", "0xlegacy", legacy_papers)

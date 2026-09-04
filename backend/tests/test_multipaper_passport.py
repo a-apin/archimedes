@@ -194,8 +194,17 @@ class TestPassportToStrategyResponse:
 
         assert resp.papers[0].title == "Hand-curated Title"
 
-    def test_unknown_arxiv_id_falls_back_to_arxiv_id(self, session: Session):
-        """When corpus has no matching row, the title falls back to the arxiv_id."""
+    def test_unknown_arxiv_id_reports_a_null_title_not_the_id(self, session: Session):
+        """An unresolvable title is **None**, not the arXiv id (#1637).
+
+        Was: the id was returned in the ``title`` field. An id presented as a
+        title is a small fabrication of the same family as printing the
+        strategy's own name there — and it is not needed, because ``arxiv_id``
+        is right beside it and the renderer already composes its own fallback
+        (``{p.title || p.arxiv_id || "—"}``). This also aligns the passport
+        with ``_resolve_source_papers``, whose ``resolved_title`` has always
+        stayed None for exactly this case. Owner decision Q3 on #1688.
+        """
         _make_passport_record(
             session,
             "fuse-003",
@@ -209,10 +218,12 @@ class TestPassportToStrategyResponse:
         record = get_passport(session, "fuse-003")
         resp = _passport_to_strategy_response(record, session=session)
 
-        assert resp.papers[0].title == "2301.99999"
+        assert resp.papers[0].title is None
+        assert resp.papers[0].arxiv_id == "2301.99999"
+        assert resp.paper_title is None
 
-    def test_no_session_falls_back_to_arxiv_id(self, session: Session):
-        """Without a session, enrichment is skipped and title falls back to arxiv_id."""
+    def test_no_session_reports_a_null_title_not_the_id(self, session: Session):
+        """Without a session, enrichment is skipped and the title stays None."""
         _add_corpus_paper(session, "2301.00004", "Would be enriched")
 
         _make_passport_record(
@@ -228,9 +239,9 @@ class TestPassportToStrategyResponse:
         record = get_passport(session, "fuse-004")
         resp = _passport_to_strategy_response(record, session=None)
 
-        # No session → falls back to arxiv_id (the title is "" so _resolved_title
-        # returns arxiv_id as the final fallback)
-        assert resp.papers[0].title == "2301.00004"
+        # No session → no enrichment, and the final fallback is None, not the id.
+        assert resp.papers[0].title is None
+        assert resp.papers[0].arxiv_id == "2301.00004"
 
     def test_papers_field_populated_for_multi_paper_strategy(self, session: Session):
         """The ``papers`` list on the response contains all source papers."""
