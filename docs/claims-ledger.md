@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-01
+> **updated:** 2026-09-03
 > **superseded-by:** —
 
 Every public claim Archimedes makes, with a verdict on each and the code that backs it.
@@ -16,6 +16,11 @@ citation stops resolving.
 tree on that date — the citation is the thing that was read, not a remembered fact. A row
 whose evidence could not be confirmed is not marked `TRUE`. The 2026-09-01 copy-honesty
 pass moved the remaining `OVER-CLAIMED` generation-on-chain tags to `CHANGED`.
+
+**Amended 2026-09-03 (#1807)** with the paper-trading section below — the one place the
+cancelled mainnet cutover ([#1240](https://github.com/aprin-labs/archimedes/issues/1240),
+owner call 2026-08-30) had left a live claim standing on four user-facing surfaces. Those
+rows were measured against `main` on 2026-09-03; no other row was re-measured.
 
 ## How to read a row
 
@@ -192,6 +197,21 @@ unset, so the boundary holds under both answers.
 | "Archimedes Verified" cannot be earned by an imported return series | `CHANGED` | The 2026-08-20 reading — "no CSV/return-import endpoint exists, so the claim is vacuously true" — no longer holds: `POST /api/rigor/verify` accepts a bare returns series today. The claim survives on a stronger footing, by structure rather than by absence: two of the four legs are permanently `not_evaluable` on that transport (`backend/archimedes/api/rigor_verify_routes.py:273`), the verdict is explicitly `verdict_capped` and "not the strategy passport's gate" (`:47`), and the endpoint persists no strategy. |
 | Leaderboard figures are provisional | `CHANGED` | The broad two-defect banner is retired: the #1203 routing defect and the backtest/live interpreter divergence were both fixed and re-verified, so their clauses became false and were removed (`ui/src/components/Leaderboard.jsx:446`). One caveat remains, scoped to the own view: generated-strategy figures are fixed at generation time and are not re-backtested (`:477`). |
 | No public surface quotes a curated pass count | `TRUE` | Verified across Landing, `/security`, `ui/index.html`, `README.md`, `llms.txt`, and `agent.json` on 2026-08-31. |
+
+## Paper trading — the ledger, the passport card, and the own-leaderboard tab
+
+Added 2026-09-03 (#1807). The cutover to Arc mainnet was **cancelled** by owner call on
+2026-08-30 ([#1240](https://github.com/aprin-labs/archimedes/issues/1240)): Archimedes stays a
+testnet product until legal/regulatory review and sustained user traction justify charging real
+money, and no date is named. Four shipped surfaces were still promising that the paper ledger
+"carries to mainnet" — a claim about an event that is not scheduled, which is the strongest kind
+of over-claim this file exists to catch, because it is unfalsifiable rather than merely optimistic.
+
+| Claim | Status | What backs it |
+|---|---|---|
+| "This is the track record that **carries to mainnet**" — the paper ledger, on the Paper Trading page, the passport's paper-deploy card, and the own view of the research leaderboard | `RETRACTED` | #1807. All four carriers now say what is true: `ui/src/components/PaperTrading.jsx:319` and `ui/src/components/StrategyPassport.jsx:1438` say "a paper track record on Arc testnet — no real funds"; `ui/src/components/Leaderboard.jsx:341` says paper deployments record it forward on Arc testnet, with no real funds; and the module comment the other three were quoting is corrected at `ui/src/paperCopy.js:110`. |
+| The retraction is guarded, not just performed | `TRUE` | `ui/test/no-mainnet-track-record.test.js:72` (`PAPER_SURFACES`) bans the **word** `mainnet` on those four files rather than the one phrasing — "ahead of mainnet" and "mainnet-ready" are the rewrites a sentence-scrub would miss. Two repo-wide sweeps stop the sentence migrating to a fifth file: the literal `carries to mainnet`, and `:154` (`ledgerMainnetPairs`), which flags any line pairing the word `mainnet` with `track record`/`ledger` — over every text extension under `ui/src`, not just `.js`/`.jsx`, with `:179` (`wrappedLedgerMainnetClaim`) making a second sentence-wide pass so a claim split across a line wrap is not invisible to a line scan. The positive "nothing true replaced it" assertion reads `:120` (`readerText`), which strips comments and flattens `'…' + '…'` wrapping, so a note in a comment does not count as copy and a line break cannot change the verdict. The other UI files that name mainnet are the honest negations ("No mainnet money" at `ui/src/components/PublicLayout.jsx:23`) and are deliberately out of scope. The only way the word comes back is a line-level `mainnet-claim-exemption: owner=<name> date=<YYYY-MM-DD> issue=#<n>`, and the guard proves a malformed marker does **not** silence a line. |
+| The same sentence on the machine and doc surfaces | `RETRACTED` | Same change, same wording: `docs/api/paper-trading.md:100`, `backend/archimedes/models/paper_store.py:276`, `backend/archimedes/services/paper_marks.py:49`, `backend/migrations/versions/e41c7a9b2d63_add_paper_marks.py:10`. The design record is corrected in the open rather than rewritten in silence — `docs/plans/2026-08-30-intraday-paper-trading.md:8` carries a dated note saying what the plan used to claim and why it changed. These four are outside the UI guard's reach, so the phrase is pinned absent from them by `backend/tests/test_claims_ledger.py` (`_RETRACTED_PHRASE_PINS`) — without that, this row could rot back to false with every suite green. |
 
 ## Market data — the Explore page and what paid analysis runs on
 
