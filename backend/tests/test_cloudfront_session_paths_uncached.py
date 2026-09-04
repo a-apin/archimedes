@@ -134,7 +134,10 @@ STILL_CACHED = {
 # Ordering anchors. The session behaviours sit AFTER these (nothing may get in
 # front of the liveness or API paths) and BEFORE the suffix patterns.
 MUST_PRECEDE_SESSION = ("/health", "/health/*", "/api/*", "/events/*", "/assets/*", "/static/*")
-MUST_FOLLOW_SESSION = ("*.js", "*.css")
+# `*.png` and its siblings joined this list in #1776: every suffix pattern
+# bound to `static_assets` is a way for a gated /app path to acquire a 1h
+# cookie-blind cache, not just the two that existed when #1768 was written.
+MUST_FOLLOW_SESSION = ("*.js", "*.css", "*.png", "*.svg", "*.jpg", "*.webp", "*.woff2", "*.ico")
 
 
 def _by_pattern() -> dict[str, dict[str, str]]:

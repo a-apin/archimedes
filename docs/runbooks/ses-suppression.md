@@ -131,9 +131,28 @@ removed dan@example.com (reason BOUNCE, since 2026-08-30T10:00:00+00:00)
 lookup and the delete (someone else removed it), the script exits `3` and says the address is
 not on the list — it does **not** claim a removal it did not perform.
 
+### 4a. Removing from this list is only HALF the unblock (#1804)
+
+Since [#1804](https://github.com/aprin-labs/archimedes/issues/1804), a permanent bounce is
+also recorded on the user row (`auth_users.emailBouncedAt`), and **that** is what makes
+signup and the signed-in resend refuse the address with `EMAIL_ADDRESS_BOUNCED`. It is a
+separate fact in a separate place: taking the address off the AWS list above does not clear
+it, so the person still cannot sign up.
+
+Run both, in either order:
+
+```bash
+PYTHONPATH=backend python -m archimedes.scripts.ses_events clear dan@example.com --apply
+```
+
+Full procedure, including how to tell which half is blocking:
+[`ses-bounce-signal.md`](ses-bounce-signal.md) § 5.
+
 ## 5. Verify, then watch
 
 1. Re-run `check <address>` — it should exit `3` ("not on the suppression list").
+   Then confirm the user row carries no stamp either (§ 4a) — one without the other leaves
+   the address blocked.
 2. Have the owner request a verification email and confirm it arrives.
 3. Once #1748 item 2 has shipped, confirm the account's own
    `GET /api/auth/verification-status` reports `sent`, not `suppressed`. Until then, step 2
@@ -150,6 +169,10 @@ clean sending to repair, and no command reverses it.
 
 ## 7. Related
 
+- [`ses-bounce-signal.md`](ses-bounce-signal.md) — the push half (#1804): the SES
+  configuration set, the SNS → SQS event queue, `ses_events drain`, and the
+  `auth_users.emailBouncedAt` stamp that the refusal reads. That page owns the two-command
+  unblock procedure this one links to from § 4a.
 - [`email-verification-validation.md`](email-verification-validation.md) — the human,
   real-inbox validation procedure for verification and reset mail, and its delivery-state
   triage table, which is where a `suppressed` finding comes from.

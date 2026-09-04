@@ -311,10 +311,19 @@ resource "aws_iam_role_policy" "ecs_task_ses_send" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "SendVerificationEmailAsDomainIdentity"
-        Effect   = "Allow"
-        Action   = ["ses:SendEmail", "ses:SendRawEmail"]
-        Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}"
+        Sid    = "SendVerificationEmailAsDomainIdentity"
+        Effect = "Allow"
+        Action = ["ses:SendEmail", "ses:SendRawEmail"]
+        Resource = [
+          "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}",
+          # #1804: naming a configuration set on SendEmail requires permission
+          # on the CONFIGURATION SET as well as on the identity — AWS evaluates
+          # both resources for the one call. Without this entry every send from
+          # the auth container starts failing AccessDeniedException the moment
+          # SES_CONFIGURATION_SET is set, i.e. this line is what keeps turning
+          # the bounce signal on from turning verification mail off.
+          "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:configuration-set/${aws_sesv2_configuration_set.mail.configuration_set_name}",
+        ]
       },
       # #1748 item 2: GET /api/auth/verification-status asks SES whether the
       # caller's own address is on the account suppression list, because
@@ -574,6 +583,16 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
         { name = "AWS_SSM_PATH_PREFIX", value = "/archimedes/prod/" },
+        # SES bounce/complaint feedback queue (#1804, infra/ses_events.tf).
+        # This copy is the OPERATOR path: the scheduled drain runs in its own
+        # `archimedes-ses-events-drain` task definition (ses_events.tf), and
+        # this variable is what makes `aws ecs execute-command` into a running
+        # service task able to run the same drain by hand without anyone
+        # pasting a queue URL. Nothing in the serving path reads it and no
+        # always-on loop in this container consumes the queue, so its presence
+        # costs the web tier nothing. The task role's queue grant is
+        # aws_iam_role_policy.ecs_task_ses_events_queue, shared by both.
+        { name = "SES_EVENTS_QUEUE_URL", value = aws_sqs_queue.ses_events.id },
         # PUBLIC_DOMAIN includes scheme because CORS and wallet-link URI/domain
         # bindings compare scheme-qualified origins. var.domain_name is bare host.
         { name = "PUBLIC_DOMAIN", value = "https://${var.domain_name}" },
@@ -932,6 +951,15 @@ resource "aws_ecs_task_definition" "backend" {
         # refusal for unverified accounts is gated separately below.
         { name = "EMAIL_MAILER", value = "ses" },
         { name = "EMAIL_SENDER", value = "no-reply@${var.domain_name}" },
+        # #1804. Every send names this configuration set, which is the only
+        # thing that makes SES publish a bounce/complaint event for it
+        # (infra/ses_events.tf). auth/mailer.js treats a blank value as "send
+        # without a configuration set", so the mailer keeps working unchanged
+        # if this is ever removed — it just goes back to being deaf.
+        # backend/tests/test_ses_event_wiring.py pins this value to the
+        # configuration set's own name; they are one string in two files and
+        # must not drift.
+        { name = "SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.mail.configuration_set_name },
         # Flip to "true" when the SES production-access request clears
         # (account is in the SES sandbox until then — sandbox can only send
         # to individually-verified addresses, so enforcing now would lock

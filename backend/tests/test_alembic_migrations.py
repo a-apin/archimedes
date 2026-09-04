@@ -722,9 +722,28 @@ def _seed_phase1_fixture(db_path: Path) -> None:
     now = datetime.now(UTC)
 
     with SessionLocal() as session:
-        session.add(
-            AuthUser(
-                id="user-1", name="Ada", email="ada@example.com", email_verified=True, created_at=now, updated_at=now
+        # auth_users goes in through the table AS IT EXISTS AT THIS REVISION,
+        # for the same reason paper_deployments does below (see that comment):
+        # #1804's emailBouncedAt / emailBounceKind are added by a LATER
+        # migration, so a plain ORM insert names columns this schema does not
+        # have yet and fails with "no such column" — a failure about the
+        # fixture, not about the migration under test. The values still come
+        # from the model's own construction. Note the extra step the
+        # paper_deployments block does not need: auth_users is one of the
+        # camelCase Better Auth tables, so the ORM ATTRIBUTE (`email_verified`)
+        # and the COLUMN (`emailVerified`) have different names and the mapper
+        # is what translates between them.
+        user_table = sa.Table("auth_users", sa.MetaData(), autoload_with=engine)
+        seed_user = AuthUser(
+            id="user-1", name="Ada", email="ada@example.com", email_verified=True, created_at=now, updated_at=now
+        )
+        session.execute(
+            user_table.insert().values(
+                **{
+                    attribute.columns[0].name: getattr(seed_user, attribute.key)
+                    for attribute in sa.inspect(AuthUser).column_attrs
+                    if attribute.columns[0].name in user_table.c and getattr(seed_user, attribute.key, None) is not None
+                }
             )
         )
         session.add(WalletIdentity(wallet_address=_REAL_WALLET, actor_class="human", first_seen_at=now))
@@ -2232,6 +2251,126 @@ def test_alembic_auth_email_deliveries_table_added_and_removed(tmp_path):
             con.close()
 
     assert _columns(create_all_db, "auth_email_deliveries") == _columns(db_path, "auth_email_deliveries")
+
+
+def test_alembic_auth_users_email_bounce_columns_added_and_removed(tmp_path):
+    """#1804: ``emailBouncedAt`` / ``emailBounceKind`` land, go, and come back.
+
+    Beyond the up/down/re-up contract, three claims this feature makes that
+    would otherwise only be asserted by reading the migration:
+
+      * BOTH columns exist and BOTH are nullable. NULL is the load-bearing
+        value — it means "SES has never told us anything bad about this
+        address", which is true of every row that exists today, so a NOT NULL
+        or a server default would either fail the upgrade on live data or
+        invent a bounce for people who never had one.
+      * the downgrade actually DROPS them and leaves the rest of ``auth_users``
+        intact. ``op.batch_alter_table`` on SQLite rebuilds the whole table, so
+        "the two columns went" and "the row survived" are genuinely separate
+        questions and a seeded account is checked across both directions.
+      * ``create_all()`` and ``alembic upgrade head`` agree on the column set.
+        ``auth/auth.js`` declares the same two as Better Auth
+        ``user.additionalFields``, and Better Auth queries them by literal
+        name; a column on one path and not the other means the auth service
+        works in one environment and 500s in the other.
+
+    Same derived-target discipline as every test above: the downgrade target
+    is this revision's OWN ``down_revision``, never a hardcoded hash — which
+    also means re-pointing the chain when another migration lands on main
+    needs no edit here.
+    """
+    db_path = tmp_path / "auth_users_email_bounce.db"
+    database_url = f"sqlite:///{db_path}"
+
+    def _sql(statement: str, *params):
+        con = sqlite3.connect(str(db_path))
+        try:
+            cur = con.cursor()
+            cur.execute(statement, params)
+            con.commit()
+            return cur.fetchall()
+        finally:
+            con.close()
+
+    def _columns(path: Path, table: str) -> dict[str, int]:
+        """column name -> notnull flag."""
+        con = sqlite3.connect(str(path))
+        try:
+            cur = con.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            return {row[1]: row[3] for row in cur.fetchall()}
+        finally:
+            con.close()
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision("e6b2a19c4d70").down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    columns = _columns(db_path, "auth_users")
+    assert "emailBouncedAt" in columns, "the consumer writes this column by name; without it every drain fails"
+    assert "emailBounceKind" in columns, "without the kind, a complaint and a dead mailbox get the same wording"
+    assert columns["emailBouncedAt"] == 0, "NULL means 'SES has never reported anything' — every row today"
+    assert columns["emailBounceKind"] == 0
+
+    now = "2026-09-01 22:00:00"
+    _sql(
+        'INSERT INTO auth_users (id, name, email, "emailVerified", "createdAt", "updatedAt") VALUES (?, ?, ?, ?, ?, ?)',
+        "user-1804",
+        "Dan",
+        "dan@example.com",
+        0,
+        now,
+        now,
+    )
+    # An existing account takes the columns as NULL, which is the only honest
+    # backfill: the bounces that happened before the configuration set existed
+    # were published nowhere and cannot be reconstructed.
+    assert _sql('SELECT "emailBouncedAt", "emailBounceKind" FROM auth_users WHERE id = ?', "user-1804") == [
+        (None, None)
+    ]
+    _sql('UPDATE auth_users SET "emailBouncedAt" = ?, "emailBounceKind" = ? WHERE id = ?', now, "bounce", "user-1804")
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    after = _columns(db_path, "auth_users")
+    assert "emailBouncedAt" not in after and "emailBounceKind" not in after
+    # batch_alter_table rebuilds the table on SQLite — the account has to come
+    # through that rebuild, not just the schema.
+    assert _sql("SELECT email FROM auth_users WHERE id = ?", "user-1804") == [("dan@example.com",)]
+    assert "emailVerified" in after, "the downgrade dropped more than it added"
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert "emailBouncedAt" in _columns(db_path, "auth_users")
+    # The stamp does NOT survive a downgrade+re-upgrade, and must not pretend
+    # to: the column was dropped, so the fact is gone and NULL is the truth.
+    assert _sql('SELECT "emailBouncedAt" FROM auth_users WHERE id = ?', "user-1804") == [(None,)]
+
+    # ─── create_all() vs alembic: Better Auth queries these by literal name.
+    create_all_db = tmp_path / "create_all_auth_users_email_bounce.db"
+    build = (
+        "import sqlalchemy as sa\n"
+        "from archimedes.models.account import AuthEmailDelivery, AuthUser\n"
+        "from archimedes.models.chat import Base\n"
+        "from archimedes.models.identity import WalletIdentity\n"
+        f"engine = sa.create_engine('sqlite:///{create_all_db}')\n"
+        "Base.metadata.create_all(bind=engine)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", build],
+        cwd=str(_BACKEND_DIR),
+        env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert set(_columns(create_all_db, "auth_users")) == set(_columns(db_path, "auth_users"))
 
 
 def test_alembic_auth_email_deliveries_seq_is_database_assigned(tmp_path):

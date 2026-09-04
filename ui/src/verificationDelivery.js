@@ -28,7 +28,7 @@
 export const VERIFICATION_STATUS_ENDPOINT = "/api/auth/verification-status";
 
 /**
- * The six states `resolveVerificationStatus` can return. Matched exactly,
+ * The seven states `resolveVerificationStatus` can return. Matched exactly,
  * never truthy-tested: a state this build has never heard of (a future one,
  * deployed server-side ahead of the UI) renders NOTHING rather than being
  * mapped onto the nearest familiar message, which would be an invented claim
@@ -37,6 +37,15 @@ export const VERIFICATION_STATUS_ENDPOINT = "/api/auth/verification-status";
  */
 export const DELIVERY_STATES = Object.freeze({
 	VERIFIED: "verified",
+	/**
+	 * #1804 — Amazon SES PUSHED us a permanent bounce or a spam complaint for
+	 * this address, through the feedback queue the backend consumer drains.
+	 * Kept apart from `suppressed` (the PULL half: asking the account
+	 * suppression list at status time) because the two are different evidence
+	 * with different words, and because the pushed fact survives a suppression
+	 * lookup this account is not permitted to make.
+	 */
+	BOUNCED: "bounced",
 	SUPPRESSED: "suppressed",
 	FAILED: "failed",
 	RATE_LIMITED: "rate_limited",
@@ -94,6 +103,33 @@ export function deriveVerificationDeliveryView(status) {
 			: null;
 
 	if (state === DELIVERY_STATES.VERIFIED) return null;
+
+	if (state === DELIVERY_STATES.BOUNCED) {
+		// The strongest fact this panel can ever carry: the mail provider came
+		// back and told us. Like `suppressed` it takes the button away, because
+		// pressing it again cannot work — and unlike `suppressed` the same
+		// account will also be REFUSED at signup and at the signed-in resend
+		// (auth.js's EMAIL_ADDRESS_BOUNCED / EMAIL_ADDRESS_COMPLAINED), so the
+		// copy here has to agree with that 422 rather than soften it.
+		//
+		// The two kinds are not interchangeable. `bounce` is a mailbox that does
+		// not exist — "use a different address" is the whole fix. `complaint` is
+		// a real person who told their provider our mail is spam; telling them
+		// their address is broken would be a lie, so the honest sentence is that
+		// we stopped sending.
+		const complained = status.bounce?.kind === "complaint";
+		return {
+			state,
+			tone: "blocked",
+			message: complained
+				? "This address reported our mail as spam, so we stopped sending to it. " +
+					"Resending will not help. Use a different email address, or contact the team if this was a mistake."
+				: "Mail to this address bounced — our provider says the mailbox does not exist, so nothing we send can reach it. " +
+					"Resending will not help. Use a different email address.",
+			canResend: false,
+			retryAfterSeconds: null,
+		};
+	}
 
 	if (state === DELIVERY_STATES.SUPPRESSED) {
 		// The only state where pressing the button again cannot work, so it is
