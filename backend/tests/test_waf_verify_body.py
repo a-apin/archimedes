@@ -61,7 +61,8 @@ from pathlib import Path
 import httpx
 import pytest
 from archimedes.api import account_auth, rigor_verify_routes
-from archimedes.api.rigor_verify_routes import _MAX_RETURN_ROWS, RigorVerifyRequest
+from archimedes.api.rigor_verify_routes import _MAX_RETURN_ROWS, _MIN_RETURN_ROWS, RigorVerifyRequest
+from archimedes.services.rigor_evaluator import DSR_MIN_BARS
 from fastapi import FastAPI
 from pydantic import ValidationError
 
@@ -449,6 +450,40 @@ def test_boundary_measurement_from_the_issue_still_holds():
     assert 8_192 < year < 20_000, f"252 rows = {year} B, outside the measured band"
 
 
+def test_the_waf_exemption_is_load_bearing_for_every_request_not_just_long_ones():
+    """DEPLOY PRECONDITION. The 250-bar floor (#1803) coupled this endpoint to
+    the #1749 terraform, and the coupling is total.
+
+    Before the floor, the exemption was an improvement: a caller could send ~160
+    bars and get a 200 at the edge without it. With the floor, the SMALLEST body
+    the schema accepts — 250 rows, most-compact JSON, no whitespace — is already
+    larger than ``SizeRestrictions_BODY``'s 8,192-byte inspection limit. There is
+    no longer any legal request that survives the ALB with the managed rule in
+    block mode: the endpoint is not degraded without the exemption, it is dead.
+
+    So the ordering is not a preference:
+
+        `infra/waf.tf` carries the exemption on main, but terraform state is not
+        the repo. **Do not deploy the 250-bar floor to production until
+        `infra/apply.sh` has been applied** (plan first; expect one in-place
+        change to ``aws_wafv2_web_acl.main``), and confirm with a real 250-row
+        POST through the edge — a `403` whose body is HTML from `awselb/2.0` is
+        the WAF, not FastAPI. Deploying in the other order takes
+        `POST /api/rigor/verify` from partially working to answering nothing.
+
+    This test cannot see terraform state and does not pretend to. It pins the
+    fact that makes the ordering matter, so the coupling is discoverable from
+    the repo instead of living only in a PR body.
+    """
+    smallest = len(json.dumps({"returns": _rows(_MIN_RETURN_ROWS), "trials": 1}, separators=(",", ":")).encode())
+    assert smallest > REGIONAL_BODY_INSPECTION_LIMIT, (
+        f"the minimum accepted body is {smallest} B, at or under the {REGIONAL_BODY_INSPECTION_LIMIT} B "
+        "edge limit. If the floor moved back below the crossover, some requests survive the ALB "
+        "without the exemption again — re-read this test's docstring before relaxing it."
+    )
+    assert smallest > 10_000, f"the minimum accepted body measured {smallest} B, outside the measured band"
+
+
 def test_a_decade_of_daily_bars_fits_under_the_cap():
     assert _MAX_RETURN_ROWS == 2600
     assert _MAX_RETURN_ROWS >= 10 * 252, "the cap must admit ten years of daily bars"
@@ -475,11 +510,25 @@ def test_schema_rejects_one_row_over_the_cap_with_a_message_that_names_the_limit
     assert str(_MAX_RETURN_ROWS + 1) in message, "the error must say how many rows were sent"
 
 
-def test_max_length_is_declared_on_the_field_as_the_backstop():
-    """The validator produces the message; max_length is the contract in the OpenAPI schema."""
+def test_length_bounds_are_declared_on_the_field_as_the_backstop():
+    """The validator produces the message; min/max_length are the contract in the OpenAPI schema.
+
+    ``minItems`` moved 1 -> ``_MIN_RETURN_ROWS`` with #1803: the endpoint
+    refuses a series shorter than the minimum evaluation window (250 daily
+    bars, one trading year — the owner's call) instead of answering 200 with a
+    verdict nothing evaluable stands behind, and the published schema has to
+    say so rather than advertise a length the server rejects.
+    """
     schema = RigorVerifyRequest.model_json_schema()
     assert schema["properties"]["returns"]["maxItems"] == _MAX_RETURN_ROWS
-    assert schema["properties"]["returns"]["minItems"] == 1
+    assert schema["properties"]["returns"]["minItems"] == _MIN_RETURN_ROWS
+    assert _MIN_RETURN_ROWS == 250, "the window is one trading year"
+    assert _MIN_RETURN_ROWS >= DSR_MIN_BARS, (
+        "the product window may sit above the gate's own sample floor, never below it"
+    )
+    # The schema is the contract a generated client sees; the window has to be
+    # legible there, not only in the refusal message.
+    assert "window" in schema["properties"]["returns"]["description"].lower()
 
 
 # ── 5. …and returns a 422 over HTTP, not a truncation or a silent accept ──

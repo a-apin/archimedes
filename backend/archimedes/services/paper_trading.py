@@ -608,7 +608,12 @@ def _publish_decision_traces(
         row.decision_date: row
         for row in session.query(PaperDecisionTrace).filter(PaperDecisionTrace.deployment_id == dep.id)
     }
-    paper_hashes = pt.resolve_paper_hashes(list(spec.source_arxiv_ids))
+    # The CYCLE's session, not a second one (#1818 P2). This lookup used to
+    # open its own connection while this transaction was still open, which is
+    # the shape that wedged the fleet on 2026-09-03: our AccessShareLock on
+    # `papers` in front, a sibling's ALTER TABLE queued behind it, and our
+    # second session queued behind the ALTER — a cycle PostgreSQL cannot see.
+    paper_hashes = pt.resolve_paper_hashes(session, list(spec.source_arxiv_ids))
 
     budget = pt.backfill_max()
     attempted = 0
@@ -1027,7 +1032,14 @@ def trace_coverage(session, dep: PaperDeployment) -> dict:
     }
 
 
-def deployment_summary(session, dep: PaperDeployment) -> dict:
+def deployment_summary(session, dep: PaperDeployment, *, verdict: dict | None = None) -> dict:
+    """One deployment's payload: the forward record and the verdict that qualifies it.
+
+    ``verdict`` lets a LIST-shaped caller hand in the rigor verdict it already
+    read for the whole page (``passport_loader.stored_rigor_verdicts`` — one
+    query for N rows instead of one per row). When it is ``None`` this reads the
+    single row itself, which is what the create and detail routes want.
+    """
     rows = (
         session.query(PaperDailyReturn)
         .filter(PaperDailyReturn.deployment_id == dep.id)
@@ -1057,6 +1069,7 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
     # deployment created between ticks, or one on SPY before the open), and
     # the UI must render it as an em-dash with a reason rather than +0.00%.
     from archimedes.services.paper_marks import latest_mark, mark_to_dict
+    from archimedes.services.passport_loader import stored_rigor_verdict
 
     newest = latest_mark(session, dep.id)
     return {
@@ -1066,6 +1079,33 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
         "status": dep.status,
         "days": len(rows),
         "total_return": equity - 1.0,
+        # THE VERDICT OF RECORD, BESIDE THE FORWARD RECORD (#1764). Deploy is
+        # at will — a strategy can be paper-traded whether its gate said pass,
+        # fail, pending or degenerate (paper_routes checks ownership and spec
+        # validity, and nothing else). That freedom is only honest if the
+        # verdict travels with the numbers: "Paper: +2.1% over 12 days" beside
+        # "Gate: failed (graded 2026-08-30)" is the whole point — the forward
+        # record is the evidence that TESTS the gate, and neither re-labels the
+        # other.
+        #
+        # A pure READ of strategy_passports (docs/adr/rigor-verdict-of-record.md),
+        # never a recompute: a strategy is graded once, at backtest time. If this
+        # re-ran the gate, a deployment card and its own passport could show two
+        # different verdicts for the same strategy — the #1746/#1747 split, on a
+        # new surface. `stored_rigor_verdict` fails closed to "pending", so a
+        # strategy with no passport row reads as ungraded and never as a pass.
+        #
+        # Deliberately NOT here: `outside_window`. Nothing in this product
+        # declares a deployment time window — not the DSL spec, not
+        # strategy_store, not strategy_passports, not paper_deployments. The only
+        # windows in the tree are the VAULT window (docs/specs/vault-semantics-spec.md,
+        # explicitly out of scope for the paper-only cut) and the BACKTEST window
+        # (`backtest_start`/`backtest_end`), which every forward paper deployment
+        # is outside of by construction — a flag that is always true is not a
+        # disclosure, it is decoration that trains a reader to ignore it. What
+        # actually carries the staleness is `graded_at` beside `deployed_at`,
+        # both of which are on this payload and both of which the card renders.
+        **(verdict if verdict is not None else stored_rigor_verdict(session, dep.strategy_id)),
         "drift_detected_at": dep.drift_detected_at.isoformat() if dep.drift_detected_at else None,
         # The engine-version half of the drift story (#1449). Separate keys from
         # `drift_detected_at` on purpose: a client must be able to render "we
@@ -1183,6 +1223,22 @@ async def paper_advance_loop() -> None:
     ledger's uniqueness constraint would abort the loser's whole transaction,
     discarding rows it had already appended for unrelated deployments.
 
+    NO SCHEMA WORK IN THIS LOOP (#1818). This cycle must never run DDL. It
+    used to call ``init_db()`` on every tick, in both ECS tasks at once, and on
+    2026-09-03 that cost 94 minutes of production: a no-op ``ADD COLUMN IF NOT
+    EXISTS`` takes AccessExclusiveLock on ``papers`` for the rest of its
+    transaction, and a *waiting* exclusive-lock request queues every later
+    reader of that table behind it — including this loop's own trace session,
+    which is how two sibling children wedged each other outside PostgreSQL's
+    view. Schema is the migrate task's job (``alembic upgrade head``, see
+    ``migrations/README.md``) plus the web process's boot-time ``init_db()``
+    — and, today, eleven request handlers that still call it on the serving
+    path (#1818 P6, listed in the incident doc); a 24-hourly ticker has no
+    business adding itself to that list. If this loop ever needs a column
+    that does not exist, the answer is an Alembic revision, not a patch call
+    from here.
+    See ``docs/incidents/2026-09-03-paper-advance-ddl-wedge.md``.
+
     Two independent passes run per cycle, in this order and in separate
     try/excepts (#1410):
 
@@ -1196,7 +1252,7 @@ async def paper_advance_loop() -> None:
     import asyncio
     import contextlib
 
-    from archimedes.db import get_session, init_db
+    from archimedes.db import get_session
 
     delay = float(os.getenv("PAPER_ADVANCE_STARTUP_DELAY_S", "240"))
     interval_s = float(os.getenv("PAPER_ADVANCE_INTERVAL_HOURS", "24")) * 3600.0
@@ -1226,7 +1282,7 @@ async def paper_advance_loop() -> None:
                         "(#1632 break-glass switch is pulled; ledgers do not advance until it is flipped back)"
                     )
                 else:
-                    init_db()
+                    # No init_db() here, ever (#1818). See the docstring.
                     contended = not try_take_paper_advance_lock(cycle.enter_context(get_session()))
                     if contended:
                         # INFO, not WARNING: a second task standing down is the
@@ -1257,11 +1313,13 @@ async def paper_advance_loop() -> None:
             # lock's scope whenever the lock was ASKED for: a cycle that lost
             # it stands down whole, or the lock would only be buying half of
             # what it claims. It is NOT locked when we never asked — with the
-            # kill switch off, or if init_db()/get_session() raised before the
-            # ask, `contended` stays False and this pass runs unlocked in every
-            # task, exactly as it did before the lock existed. That is the
-            # pre-existing behaviour, kept deliberately: gating the agent tick
-            # on PAPER_ADVANCE_ENABLED too is a separate call, not made here.
+            # kill switch off, or if get_session() raised before the ask (the
+            # only other statement left ahead of it since #1818 removed the
+            # per-cycle schema call), `contended` stays False and this pass
+            # runs unlocked in every task, exactly as it did before the lock
+            # existed. That is the pre-existing behaviour, kept deliberately:
+            # gating the agent tick on PAPER_ADVANCE_ENABLED too is a separate
+            # call, not made here.
             if not contended:
                 try:
                     from archimedes.services.paper_agent_execution import advance_agent_execution

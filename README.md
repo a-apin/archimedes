@@ -1,28 +1,34 @@
 # Archimedes
 
-*The lever is academic research. The fulcrum is autonomous AI. The world is your portfolio.*
+*Research. Rigor. Proof.*
 
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
 [![Settled on: Arc](https://img.shields.io/badge/settled%20on-Arc-2A4DD1.svg)](https://www.arc.network/)
 
-**Linus for quantitative finance.** Archimedes is a single-user agent that turns q-fin
-research literature into rigor-gated strategies. You describe what you want from a portfolio
-in plain English; it proposes strategies grounded in a corpus of arXiv quantitative-finance
-preprints, puts each one through four admission checks — a deflated Sharpe ratio, a
-probability of backtest overfitting, a walk-forward out-of-sample pass, and a static
-look-ahead audit — and shows you the numbers behind the verdict either way.
+**Portfolio strategy, under scrutiny.** Archimedes is an agentic strategy generation and
+validation system, grounded in research and statistical rigor. You describe what you want
+from a portfolio in plain English; it proposes strategies drawn from a corpus of arXiv
+quantitative-finance preprints, and then the part that makes it different — the honest
+validation layer — spends its effort trying to reject every one of them: a deflated Sharpe
+ratio, a probability of backtest overfitting, a walk-forward out-of-sample pass, and a
+static look-ahead audit, with the measured verdict recorded whichever way it lands.
+Survivors run as paper deployments, so a gated strategy's results play out in the open
+with full provenance.
 
 Live at **<https://archimedes-arc.com/>**, running against Arc testnet.
 
 ## The spine
 
 ```
-generate  →  rigor-gate  →  (roadmap: execute → monitor)  →  explore
+generate  →  rigor-gate  →  execute (paper)  →  explore      (roadmap: vaults → monitor)
 ```
 
 **Generate** and **rigor-gate** are the shipped product, and so is **explore** — the
 reasoning traces, the rejected alternatives, the paper provenance behind every proposal.
-**Execute** and **monitor** are roadmap. The `Vault` / `VaultFactory` contracts are written
+**Execute** ships as paper: strategies that survive the gate run as paper deployments —
+the same decision core a vault will one day use, executing against an append-only paper
+trade ledger instead of a chain, so results accrue in the open with nothing at stake.
+**Vault execution** and **monitor** are roadmap. The `Vault` / `VaultFactory` contracts are written
 and deployed to Arc testnet, but the deploy-a-vault journey is gated off every public
 surface behind `ROADMAP_SURFACES_ENABLED`
 ([`ui/src/featureFlags.js`](ui/src/featureFlags.js), off by default), and no user vault has
@@ -48,8 +54,9 @@ not. The locked spine is [`docs/user-stories.md`](docs/user-stories.md).
 ## The rigor gate
 
 The gate is evidence, not proof. The deflation prices in how many candidates were searched
-before this one was picked; the 0.90 DSR bar is a deliberate calibration, a one-sided ~10%
-test. PBO is computed and disclosed on every passport but does not block the badge while the
+before this one was picked; the DSR bar is 0.95 — a one-sided 5% test — and it has exactly
+one definition in the tree (`DSR_P_BADGE_MIN` in
+`backend/archimedes/services/rigor_profiles.py`, #1794). PBO is computed and disclosed on every passport but does not block the badge while the
 library holds fewer than ten graded strategies — below that, CSCV lacks the power to gate
 honestly, so it reports `NOT_RUN` with the reason rather than a pass. A check that cannot
 run says so; it never reports a silent pass.

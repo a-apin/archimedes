@@ -210,5 +210,5 @@ change to the ADR, not a change to this runbook.
 
 - [`../adr/backtests-are-frozen-evidence.md`](../adr/backtests-are-frozen-evidence.md) — the policy, the incident, and the alternatives that were rejected.
 - [`backtest-results-retention.md`](backtest-results-retention.md) — archiving and pruning the rows this script produces.
-- [`../operations/feature-flag-fliplist.md`](../operations/feature-flag-fliplist.md) § DEAD / RETIRED — the retired `BACKTEST_REFRESH_*` knobs, and the now-inert `BACKTEST_REFRESH_ENABLED=false` pin still sitting on the live task definition.
+- [`../operations/feature-flag-fliplist.md`](../operations/feature-flag-fliplist.md) § DEAD / RETIRED — the retired `BACKTEST_REFRESH_*` knobs, and the inert `BACKTEST_REFRESH_ENABLED=false` pin that the deploy script now strips from the task definition.
 - [`operations.md`](operations.md) — the general operations runbook.

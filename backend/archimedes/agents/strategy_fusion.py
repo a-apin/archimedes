@@ -1,8 +1,8 @@
 """Strategy fusion — multi-paper, user-steered, novelty-seeking synthesis.
 
-A NEW, feature-flagged primitive that originally sat *beside* the interactive
-Strategy Architect (retired — issue #1064; the debate society is now the sole
-strategy-generation path). The architect used to select + weight pre-curated
+A primitive that originally sat *beside* the interactive Strategy Architect
+(retired — issue #1064; the debate society is now the sole strategy-generation
+path), behind a feature flag that was itself retired on 2026-09-02 (deck Q4). The architect used to select + weight pre-curated
 single-paper library strategies (the verified-library path that fed the
 strategy-passport / reasoning-trace data flow). Fusion does the
 opposite-direction thing: synthesizes a *new* strategy hypothesis by fusing
@@ -10,11 +10,17 @@ opposite-direction thing: synthesizes a *new* strategy hypothesis by fusing
 (McLean & Pontiff 2016: published alpha decays — the un-decayed edge is
 combinations not yet in the literature).
 
-Why a separate, flagged module (owner-decided HARD constraint):
+Why a separate module (owner-decided HARD constraint):
 - The construction-trace path is contract-review-grade (the live
-  `ReasoningTraceRegistry`). Fusion is additive, behind
-  `ARCHIMEDES_FUSION_ENABLED` (default OFF), and revertible by deleting this
-  file + its spec. Nothing in the audited flow is touched.
+  `ReasoningTraceRegistry`). Fusion started additive and revertible by
+  deleting this file + its spec. Nothing in the audited flow is touched.
+- Fusion is now UNCONDITIONAL. `ARCHIMEDES_FUSION_ENABLED` was retired on
+  2026-09-02: the debate society is the sole generation pipeline and every
+  proposer routes through `StrategyFusion.propose()`, so the only thing the
+  flag's OFF branch could do in production was return a `disabled` sentinel
+  and make Generate silently produce nothing. A lever that can only break
+  prod is not a lever. Do not reintroduce a switch here —
+  `backend/tests/test_fusion_flag_retired.py` fails if one comes back.
 - The LLM-backend seam, lazy `anthropic` import, `extract_json` (now in
   `agents/generation_json.py`), frozen artifact and honest-fallback
   labelling deliberately mirrored the (now-retired) architect so a later
@@ -47,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from archimedes.agents.generation_json import extract_json
+from archimedes.agents.prompts import PROMPTS
 from archimedes.models.portfolio import RISK_PROFILE_PARAMS, RiskProfile
 from archimedes.services.llm_backend import LLMBackend, make_llm_backend
 from archimedes.services.strategy_dsl import DSLError, validate_strategy_spec
@@ -94,22 +101,6 @@ FUSION_MAX_PAPERS = 30
 # evidence per generation before a single candidate is backtested. 30 stays
 # available as an explicit user pick; nobody is defaulted into it.
 DEFAULT_MAX_PAPERS = 8
-
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-# ── Feature flag (mirrors ARCHIMEDES_STRATEGIES_DIR: plain getenv) ──
-
-
-def fusion_enabled() -> bool:
-    """True iff ARCHIMEDES_FUSION_ENABLED is truthy. Default OFF.
-
-    Truthy = {1,true,yes,on} case-insensitive — the env convention shared
-    across the codebase. No central settings module exists; env override is
-    the established pattern (`strategy_provider.default_provider`).
-    """
-    return os.getenv("ARCHIMEDES_FUSION_ENABLED", "").strip().lower() in _TRUTHY
-
 
 # ── Asset-class synonym map (deterministic candidate filtering) ──
 #
@@ -912,122 +903,26 @@ class FusionProposal:
 
 
 # ── Prompt construction ─────────────────────────────────────────
+#
+# The prompt TEXT lives in `agents/prompts.py` — one registry for every live LLM
+# prompt in the tree, rendered into `docs/specs/prompt-inventory.md` under a
+# drift test and byte-guarded by `test_prompt_registry_goldens.py` (#1800). The
+# three module constants below stay, because that is what the rest of this file
+# (and `test_multi_paper_utilization`) reads; only their SOURCE moved.
 
 
-_SPEC_CONTRACT = """The strategy_spec field is REQUIRED. It is a machine-readable strategy definition \
-using the Archimedes DSL (closed-enum vocabulary). For asset_universe, list the \
-tickers the mechanism trades from the user's selected assets (in user_steer); the \
-platform overrides this with the user's chosen universe, so do not default to a \
-single broad-market proxy. Valid rebalance_frequency values: \
-daily, weekly, monthly. Valid indicators: sma_N, ema_N, rsi_N, momentum_N, \
-realized_vol_N (replace N with an integer period). momentum_N is the trailing \
-N-bar RETURN, centred on 0 (+0.05 means +5%); write momentum thresholds on that \
-scale — e.g. {"gt": ["momentum_20", 0]} means "trailing 20-bar return is \
-positive". realized_vol_N is the ANNUALIZED standard deviation of the last N \
-daily returns, so 0.15 means 15% annualized vol — e.g. \
-{"lt": ["realized_vol_20", 0.15]} means "the last 20 bars were calm". \
-Entry/exit conditions use comparison ops (gt, lt, gte, lte) \
-or logic ops (and, or, not). Position sizing types: full_invested_when_in_market \
-(all-in while the entry condition holds; no other keys), equal_weight (1/N of \
-the account per name in asset_universe; no other keys), inverse_vol \
-(equal_weight scaled by reference_vol_annual / realized vol; the ONLY extra key \
-is reference_vol_annual, optional, must be > 0, defaults to 0.15), \
-volatility_target (the ONLY extra key is annual_pct, required, > 0). \
-position_sizing accepts NO other keys — a key outside that list is a hard \
-validation error, not an ignored field, so do not invent one. Do NOT emit any \
-field asserting the strategy's own correctness or look-ahead safety; the \
-platform derives that structurally from the spec and ignores anything you \
-claim about it.
-parameter_variants is OPTIONAL: a dict mapping indicator aliases to 2-8 numeric \
-values for CSCV overfitting detection (e.g. {"sma_200": [150, 175, 200, 225, 250]}). \
-Keys must reference indicators used in entry/exit conditions.
-paper_mechanisms is a TOP-LEVEL field of the proposal, NOT a key inside \
-strategy_spec — do not emit it here. It maps each cited paper to the part of \
-this spec it produced: each entry's spec_elements must name indicator aliases \
-that actually appear in the spec's entry/exit conditions (the same rule \
-parameter_variants keys follow). An alias that is not in entry/exit is \
-dropped, and a cited paper left with no surviving spec_element counts as \
-UNATTRIBUTED."""
+_SPEC_CONTRACT = PROMPTS["fusion.spec_contract"].text
 
-
-_SYSTEM_PROMPT = (
-    f"""You are Archimedes Fusion, an AI quant-research synthesizer. \
-You design a NOVEL trading-strategy hypothesis by FUSING the mechanisms of \
-MULTIPLE peer-reviewed quantitative-finance papers into one combined approach.
-
-Hard rules:
-- You MUST fuse AT LEAST {FUSE_TARGET_MIN} of the provided papers when that \
-many are provided; NEVER fewer than {MIN_PAPERS}. A single-paper answer is \
-invalid — that is a different tool's job — and never cite a paper not in the \
-provided list.
-- If you cite fewer than {FUSE_TARGET_MIN}, you MUST justify the shortfall in \
-`fusion_reasoning`, naming each rejected paper and why it contributes no \
-distinct mechanism. Padding the citation list with a paper whose mechanism \
-you cannot name is WORSE than an honest shortfall: citation count is read \
-downstream as evidence depth, so a fabricated mechanism launders weak \
-evidence into the provenance record.
-- Reference papers ONLY by an arxiv_id from the provided candidates. Never \
-invent a paper or an arxiv_id.
-- Every id in `source_arxiv_ids` MUST have a matching entry in \
-`paper_mechanisms` naming the one mechanism that paper contributes and the \
-`spec_elements` — indicator aliases that literally appear in the spec's \
-entry/exit conditions — it produced. If you cannot name the mechanism a paper \
-contributes to THIS spec, OMIT that id from `source_arxiv_ids` entirely; do \
-NOT pad the citation list with it and do not invent a mechanism for it. An \
-honest shorter list is correct; a longer one you cannot map is laundering.
-- OPTIMIZE FOR NOVELTY. The edge is the combination the literature has NOT \
-published. Published single-paper alpha decays post-publication (McLean & \
-Pontiff 2016) — your value is the non-obvious synthesis, not re-stating one \
-paper. Explain why the COMBINATION is non-obvious relative to each paper alone.
-- This is a HYPOTHESIS, not validated alpha. Do NOT invent Sharpe ratios, \
-returns, or backtest numbers. Do NOT promise or forecast returns. State \
-plainly that empirical validation (backtest / DSR / PBO) is pending.
-- Respect the user's risk envelope (USYC floor/ceiling, target vol, max DD) \
-as a synthesis constraint, not as a paper filter.
-
-"""
-    # NOT an f-string from here down: the JSON schema below is full of literal
-    # braces. The interpolated half is the paper-count rule above.
-    + """Output STRICT JSON ONLY (no prose, no markdown fences), exactly this schema:
-{
-  "strategy_name": "<short working name for the fused strategy>",
-  "thesis": "<the fused strategy in plain language, honest it is pre-backtest>",
-  "source_arxiv_ids": ["<arxiv_id from candidates>", "<another>", ...],
-  "fusion_reasoning": "<what mechanism EACH cited paper contributes and how \
-they combine>",
-  "paper_mechanisms": [
-    {"arxiv_id": "<from source_arxiv_ids>",
-     "mechanism": "<the one mechanism THIS paper contributes>",
-     "spec_elements": ["<indicator alias used in entry/exit>", "..."]}
-  ],
-  "novelty_rationale": "<why this specific combination is not already in the \
-literature>",
-  "risk_notes": "<key risks + the pre-backtest / selection-bias caveat>",
-  "strategy_spec": {
-    "name": "<same as strategy_name>",
-    "asset_universe": ["<ticker>", "<ticker>", ...],
-    "rebalance_frequency": "monthly",
-    "entry": {"gt": ["close", "sma_200"]},
-    "exit": {"lt": ["close", "sma_200"]},
-    "position_sizing": {"type": "full_invested_when_in_market"},
-    "source_arxiv_ids": ["<from source_arxiv_ids above>"],
-    "indicators": ["sma_200"],
-    "parameter_variants": {"sma_200": [150, 175, 200, 225, 250]}
-  }
-}
-
-"""
-    + _SPEC_CONTRACT
+# The paper-count rule is the only interpolated half of the proposer prompt.
+# Rendering it here — rather than storing "5" and "2" in the registry — keeps
+# the sentence the model reads tied to the constants this module actually
+# enforces (MIN_PAPERS hard-rejects; FUSE_TARGET_MIN is a request, #1636).
+_SYSTEM_PROMPT = PROMPTS["fusion.proposer.system"].render(
+    fuse_target_min=FUSE_TARGET_MIN,
+    min_papers=MIN_PAPERS,
 )
 
-
-_SPEC_REPAIR_SYSTEM = (
-    "You are the spec compiler for Archimedes. A strategy proposal was produced "
-    "WITHOUT the REQUIRED machine-readable strategy_spec. From the proposal JSON "
-    "the user sends, output STRICT JSON ONLY — a single object that IS the "
-    "strategy_spec (no wrapper key, no prose, no markdown fences).\n\n"
-    "" + _SPEC_CONTRACT
-)
+_SPEC_REPAIR_SYSTEM = PROMPTS["fusion.spec_repair.system"].text
 
 
 def _build_user_prompt(brief: FusionBrief, candidates: list[CorpusPaper]) -> str:
@@ -1132,15 +1027,9 @@ class StrategyFusion:
         return self._corpus
 
     def propose(self, brief: FusionBrief) -> FusionProposal:
-        if not fusion_enabled():
-            # Hard inert path: no LLM, no manifest read, sentinel out.
-            return _inert_proposal(
-                brief,
-                "disabled",
-                "Strategy fusion is disabled. Set ARCHIMEDES_FUSION_ENABLED=1 "
-                "to enable multi-paper, novelty-seeking synthesis.",
-            )
-
+        # Unconditional since 2026-09-02 (deck Q4): no flag check here. See the
+        # module docstring for why the OFF branch was deleted rather than
+        # defaulted ON.
         if self._candidates is not None:
             # Pre-selected by the caller (the debate proposer, which already
             # ran select_candidates WITH its regime_bias) — used verbatim so

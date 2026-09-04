@@ -201,3 +201,8 @@ output "kb_runner_log_group_name" {
   description = "CloudWatch log group the kb-runner scheduled task ships to — `aws logs tail <this> --since 10m` to verify a run."
   value       = aws_cloudwatch_log_group.kb_runner.name
 }
+
+output "dmarc_reports_bucket" {
+  description = "S3 bucket the SES receipt rule writes DMARC aggregate reports into (infra/dmarc_reports.tf, #1504). Feed it to the parser: `python scripts/dmarc_report_summary.py --bucket $(terraform output -raw dmarc_reports_bucket) --since-days 14`. An empty bucket means no reports have been collected, NOT that nothing is spoofing the domain — see docs/runbooks/dmarc-reports.md."
+  value       = aws_s3_bucket.dmarc_reports.id
+}

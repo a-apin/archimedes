@@ -113,7 +113,7 @@ export default function Security() {
 								<p>
 									Production session cookies are HttpOnly, Secure, and
 									SameSite=Lax. nginx, the UI route guard, and FastAPI
-									independently protect private surfaces. Four browse pages are
+									independently protect private surfaces. Two browse pages are
 									deliberately anonymous, and the edge and client halves of
 									that carve-out list are kept in lockstep.
 								</p>

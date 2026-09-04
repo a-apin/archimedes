@@ -2,15 +2,21 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-01
+> **updated:** 2026-09-03
 > **superseded-by:** —
 
 A change to `infra/cloudfront.tf`'s cache behaviours does **nothing** when the PR merges.
-CI never runs `terraform plan` or `apply` — `infra-gate.yml` is `fmt -check` + `validate`
-only, deliberately (a plan needs credentials and reads a state file that holds a private
-key). Until someone runs `infra/apply.sh --apply`, the merged file describes an edge
-configuration that is not live, and the tests that guard it are asserting about the *repo*,
-not about production.
+CI never runs `terraform apply` — `infra-gate.yml` is `fmt -check` + `validate` only,
+deliberately (a plan needs credentials and reads a state file that holds a private key).
+Until someone runs `infra/apply.sh --apply`, the merged file describes an edge configuration
+that is not live, and the tests that guard it are asserting about the *repo*, not about
+production.
+
+Since #1799 CI *can* run a plan, in one place: `terraform-drift.yml`, a separate advisory
+workflow on a separate read-only role, which reports drift and still applies nothing. See
+[`terraform-apply-and-task-definition-ownership.md`](terraform-apply-and-task-definition-ownership.md)
+for that and for the ECS task-definition ownership split, which changes what an `infra/ecs.tf`
+edit means but leaves everything on this page intact.
 
 This runbook is the step between those two facts. It is written for the pending change
 first, then generalised.
@@ -22,10 +28,10 @@ bound to `data.aws_cloudfront_cache_policy.caching_disabled`, the `all_viewer` o
 request policy, and the same response headers policy the default behaviour uses. They sit
 after `/static/*` and ahead of `*.js` / `*.css`.
 
-`/app/*` and `/app` cover more than the gated pages. The anonymous-browse carve-outs of
-#1194 revision d — bare `/app`, `/app/explore`, `/app/leaderboard`, `/app/corpus`,
-`/app/strategy/*` — are public and ungated at nginx, and they come off the 60s `html`
-policy too. That is the owner's ruling (2026-09-01, on the review of PR #1772), not an
+`/app/*` and `/app` cover more than the gated pages. The anonymous-browse carve-outs —
+bare `/app`, `/app/explore`, `/app/corpus` (#1753, the owner's call, which
+narrowed #1194 revision d by gating `/app/leaderboard` and `/app/strategy/*`) — are
+public and ungated at nginx, and they come off the 60s `html` policy too. That is the owner's ruling (2026-09-01, on the review of PR #1772), not an
 oversight: it costs an origin hit per anonymous visitor for a ~4 KB static shell, and it
 buys the guarantee that promoting a carve-out to gated later cannot reintroduce the cached
 anonymous 302.

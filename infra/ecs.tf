@@ -43,10 +43,11 @@
 #    and `/archimedes/prod/REDIS_URL` — both now exist, seeded the same way
 #    AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY already were (via
 #    `infra/scripts/seed-ssm-secrets.sh` — operator step, see
-#    infra/runbooks/ecs-fargate-cutover.md). All seven secrets in the
+#    infra/runbooks/ecs-fargate-cutover.md). All eight secrets in the
 #    `secrets` block below — DATABASE_URL, REDIS_URL,
-#    AURORA_MASTER_PASSWORD, EMAIL_ENCRYPTION_KEY, and the CIRCLE_API_KEY /
-#    CIRCLE_ENTITY_SECRET / WALLET_ID trio added by #1463 — are live in SSM
+#    AURORA_MASTER_PASSWORD, EMAIL_ENCRYPTION_KEY, the CIRCLE_API_KEY /
+#    CIRCLE_ENTITY_SECRET / WALLET_ID trio added by #1463, and
+#    TIINGO_API_TOKEN added by #1798 — are live in SSM
 #    under /archimedes/prod/ and resolve without further action. Keep this
 #    count and list in step with the block; the guard in
 #    backend/tests/test_ecs_backend_secrets.py pins the membership.
@@ -198,7 +199,8 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_managed" {
 # WILDCARD, not an enumeration: adding a parameter under
 # /archimedes/prod/ to the task definition's `secrets` needs no change here
 # (that is why #1463's three additions below — CIRCLE_API_KEY,
-# CIRCLE_ENTITY_SECRET, WALLET_ID — carry no IAM diff).
+# CIRCLE_ENTITY_SECRET, WALLET_ID — carry no IAM diff, and neither does
+# #1798's TIINGO_API_TOKEN).
 resource "aws_iam_role_policy" "ecs_task_execution_ssm_secrets" {
   name = "archimedes-ecs-execution-ssm-read"
   role = aws_iam_role.ecs_task_execution.id
@@ -313,6 +315,26 @@ resource "aws_iam_role_policy" "ecs_task_ses_send" {
         Effect   = "Allow"
         Action   = ["ses:SendEmail", "ses:SendRawEmail"]
         Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain_name}"
+      },
+      # #1748 item 2: GET /api/auth/verification-status asks SES whether the
+      # caller's own address is on the account suppression list, because
+      # SendEmail SUCCEEDS for a suppressed address (it returns a MessageId and
+      # the message is then dropped) — so without this lookup the resend button
+      # can only ever answer "requested", forever.
+      #
+      # Resource "*" is not laziness: the suppression list is an ACCOUNT-level
+      # resource in SESv2 and has no per-identity ARN to scope to, unlike the
+      # send statement above. Read-only, one action, and the only thing it can
+      # reveal is whether an address AWS already refuses to mail is suppressed.
+      # Without it the lookup fails AccessDeniedException, which auth/
+      # suppression.js reports as "we could not look" — never as "not
+      # suppressed" — so a missing grant degrades to an honest unknown rather
+      # than a false all-clear.
+      {
+        Sid      = "ReadAccountSuppressionListForDeliveryFeedback"
+        Effect   = "Allow"
+        Action   = ["ses:GetSuppressedDestination"]
+        Resource = "*"
       }
     ]
   })
@@ -508,8 +530,41 @@ resource "aws_ecs_task_definition" "backend" {
       # lets ECS track this container's health for nginx's `dependsOn
       # condition = HEALTHY` below — an image-only HEALTHCHECK isn't visible
       # to the ECS agent for container-dependency purposes.
+      #
+      # /health/ready, NOT /health (#1818 P3). This is the READINESS probe: it
+      # answers 200 while the task can still read its database and 503 once the
+      # DB-backed /health probes have been serving cached readings for longer
+      # than HEALTH_STALE_UNREADY_S (default 900s). On 2026-09-03 two
+      # paper-advance children wedged Postgres on a DDL lock chain and /health
+      # went on answering 200 in ~1.05s from `stale_cached` values for TEN
+      # HOURS — liveness was true, readiness was represented nowhere, and ECS
+      # had nothing to act on until an OOM kill broke the wedge.
+      #
+      # Why here and not on the ALB target group: failing infra/alb.tf's check
+      # pulls a target out of rotation IMMEDIATELY and a shared cause pulls all
+      # of them at once (the incident's 13:29Z line: HealthyHostCount=0, 504s).
+      # Failing THIS check hands the task to the ECS scheduler, which is bound
+      # by `deployment_minimum_healthy_percent = 100` below — it brings a
+      # replacement up healthy before draining the wedged one. So the target
+      # group keeps polling /health (still unconditionally 200 — the N2 argument
+      # in main.py's chain block) and only the container check acts on
+      # staleness. 3 retries x 30s => ~90s of continuous 503 before ECS acts.
+      #
+      # THIS FILE IS NOT WHAT SHIPS IT. deploy.yml clones the LIVE revision and
+      # .github/scripts/ecs_rewrite_task_def.py rewrites the clone; it does not
+      # apply terraform. That is true TODAY, on its own: a healthCheck that
+      # exists only here is not live until somebody applies, and a targeted
+      # apply of this block is neither needed nor safe (it would carry the whole
+      # accumulated container drift with it). #1799 (PR #1833, still OPEN as of
+      # 2026-09-03) would add `lifecycle { ignore_changes =
+      # [container_definitions] }` to this resource and make terraform stop
+      # writing container settings altogether — that STRENGTHENS the argument
+      # below but nothing here depends on it landing. The effective writer is
+      # ecs_rewrite_task_def.READINESS_HEALTH_CHECK_COMMAND; the lines below are
+      # the documented twin, kept in step by
+      # backend/tests/test_ecs_readiness_deploy_pin.py.
       healthCheck = {
-        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')\" || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -524,8 +579,19 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "PUBLIC_DOMAIN", value = "https://${var.domain_name}" },
         { name = "BETTER_AUTH_INTERNAL_URL", value = "http://127.0.0.1:3000" },
         { name = "APP_ENV", value = "production" },
+        # Readiness threshold for the /health/ready container check above
+        # (#1818 P3). Stated here at its code default rather than left implicit
+        # so the knob is visible where the check that uses it is: seconds of
+        # continuous `stale_cached` DB probes before this task reports 503 and
+        # ECS replaces it.
+        #
+        # Twin of ecs_rewrite_task_def.HEALTH_STALE_UNREADY_VALUE, which is what
+        # actually ships it (see the healthCheck note above, #1799). To pull the
+        # rule back: "0" on the live revision disables it immediately and holds
+        # until the next deploy; the DURABLE pull-back is "0" in BOTH places,
+        # because the pipeline re-pins this name on every deploy.
+        { name = "HEALTH_STALE_UNREADY_S", value = "900" },
         { name = "FEATURE_QUANT", value = "false" },
-        { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },
         # Runtime env-parity fix (PR #1041 correctness pass, 2026-07-07): the
         # prod EC2 box sets these three via docker-compose's `env_file: .env`
         # (docker-compose.yml's `backend` service) — a box-local, gitignored
@@ -661,6 +727,27 @@ resource "aws_ecs_task_definition" "backend" {
         # below): supplied at apply time once the platform DCW exists, so the
         # flip needs no code change.
         { name = "GENERATION_PAYMENT_REQUIRED", value = "true" },
+        # Free allowance ABOVE the paywall (#1643): the first N generations on
+        # a VERIFIED account never reach GENERATION_PAYMENT_REQUIRED. Pinned
+        # here at the code default (free_generations.DEFAULT_ALLOWANCE = 3) so
+        # the number prod gives away is a decision someone applied rather than
+        # an accident of a code default — finding A5 on the flip-list, and the
+        # same drift GENERATION_DAILY_CAP_* and GENERATION_TIMEOUT_SECONDS
+        # above were plumbed to remove. This is the one knob on that page that
+        # gives away paid product, so it does not get to be implicit.
+        #
+        # TWIN, and the one that actually ships: FREE_GENERATIONS_VALUE in
+        # .github/scripts/ecs_rewrite_task_def.py. deploy.yml clones the live
+        # task definition and does not apply terraform, so this line alone is
+        # not live. Change BOTH or the next CI deploy overwrites you.
+        #
+        # `<= 0` disables the free path entirely and restores the pre-#1643
+        # wallet-gate-on-first-call behaviour; a non-integer falls back to 3
+        # with a warning, so keep it a bare integer.
+        # Reader: allowance() in services/free_generations.py. Guards:
+        # backend/tests/test_ecs_backend_secrets.py (this line) and
+        # backend/tests/test_ecs_free_generations_pin.py (both paths).
+        { name = "FREE_GENERATIONS_PER_ACCOUNT", value = "3" },
         # $2.00/generation (Dan, 2026-08-20): the testnet faucet drips $20
         # per 2h cooldown, so one drip = a clean 10 generations — and $2 sits
         # inside the 10x-margin-over-measured-cost pricing direction (private
@@ -728,9 +815,11 @@ resource "aws_ecs_task_definition" "backend" {
       # DATABASE_URL / REDIS_URL were seeded the same way via
       # infra/scripts/seed-ssm-secrets.sh (operator step, documented in
       # infra/runbooks/ecs-fargate-cutover.md) and now also exist live in SSM.
-      # Seven entries follow — DATABASE_URL, REDIS_URL, AURORA_MASTER_PASSWORD,
-      # EMAIL_ENCRYPTION_KEY, CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID
-      # — and each resolves at task launch with no outstanding gap.
+      # TIINGO_API_TOKEN was seeded by the owner on 2026-08-31 (SecureString,
+      # same path convention) and is wired here by #1798.
+      # Eight entries follow — DATABASE_URL, REDIS_URL, AURORA_MASTER_PASSWORD,
+      # EMAIL_ENCRYPTION_KEY, CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID,
+      # TIINGO_API_TOKEN — and each resolves at task launch with no outstanding gap.
       secrets = [
         { name = "DATABASE_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/DATABASE_URL" },
         { name = "REDIS_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/REDIS_URL" },
@@ -768,7 +857,45 @@ resource "aws_ecs_task_definition" "backend" {
         # already authorizes all three reads.
         { name = "CIRCLE_API_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_API_KEY" },
         { name = "CIRCLE_ENTITY_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_ENTITY_SECRET" },
-        { name = "WALLET_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/WALLET_ID" }
+        { name = "WALLET_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/WALLET_ID" },
+        # Tiingo market-data credential (#1798). The parameter has existed as a
+        # SecureString since 2026-08-31. It already reaches the web-tier app
+        # process, but only by accident of the boot-time bulk load:
+        # `main.py:47-48` calls `secrets_service.load_ssm_secrets()` when
+        # PUBLIC_DOMAIN is set, which GetParametersByPath's the whole
+        # /archimedes/prod/ prefix (AWS_SSM_PATH_PREFIX, in the `environment`
+        # block above) into os.environ. That loader catches every error and
+        # boots degraded — a credential that arrives only through it is a
+        # SOFT dependency nothing verifies. This entry makes it a task-launch
+        # dependency instead, which is what the runbook's execute-command
+        # check can actually observe.
+        # `services/market_data_provider._tiingo_api_key()` reads
+        # TIINGO_API_TOKEN off the process environment (legacy alias
+        # TIINGO_API_KEY second) and raises TiingoAPIKeyMissingError at provider
+        # construction when both are blank — it does NOT fall back to yfinance,
+        # by design (docs/adr/market-data-sourcing.md § "Never mix vendors
+        # inside one run"). The flip itself is deliberately NOT in this change — it
+        # is the owner's proof step, and it is guarded (MARKET_DATA_PROVIDER is
+        # absent from the `environment` block above on purpose, pinned by
+        # backend/tests/test_ecs_backend_secrets.py's FORBIDDEN_WHY).
+        #
+        # No IAM diff, same reason #1463's trio carried none: the execution
+        # role's SSM statement above is a PREFIX WILDCARD over
+        # parameter/archimedes/prod/*, which already authorises this read, and
+        # its kms:Decrypt statement already covers every SecureString fetched
+        # via ssm.<region>.amazonaws.com. That property is itself pinned by
+        # test_execution_role_policy_is_a_prefix_wildcard — if someone narrows
+        # the policy to an enumeration, that guard fails (its message enumerates
+        # REQUIRED_CIRCLE_SECRETS, not this entry). The guard that names THIS
+        # secret is test_every_secret_sits_under_the_execution_roles_prefix,
+        # which fires if this ARN ever moves outside parameter/archimedes/prod/.
+        #
+        # This entry is only half the wiring. deploy.yml does not terraform
+        # apply: it CLONES the live revision and retags images (#1799 — the two
+        # sources of truth). The clone path pins the same secret in
+        # .github/scripts/ecs_rewrite_task_def.py, so a deploy that lands
+        # before an apply still carries the token.
+        { name = "TIINGO_API_TOKEN", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/TIINGO_API_TOKEN" }
       ]
 
       logConfiguration = {
@@ -940,6 +1067,61 @@ resource "aws_ecs_task_definition" "backend" {
   ])
 
   tags = { Project = var.project_name }
+
+  # ── OWNERSHIP SPLIT: container_definitions is PIPELINE-OWNED (#1799) ─────
+  #
+  # Two registrars write revisions of the `archimedes-backend` family:
+  #
+  #   terraform (this resource)  — registers a revision on `terraform apply`,
+  #                                from the jsonencode() above.
+  #   .github/workflows/deploy.yml — registers a revision on EVERY merge to
+  #                                main: it clones the family's LATEST
+  #                                revision (`aws ecs describe-task-definition
+  #                                --task-definition archimedes-backend`,
+  #                                which resolves a bare family name to its
+  #                                latest ACTIVE revision), rewrites it with
+  #                                .github/scripts/ecs_rewrite_task_def.py,
+  #                                and calls register-task-definition.
+  #
+  # Before this block, those two fought. Terraform's state held revision 213
+  # (the last apply); the pipeline had walked the family to 233. Every
+  # attribute of aws_ecs_task_definition is ForceNew, so any edit to the JSON
+  # above — #1778's PAPER_ADVANCE_ENABLED flip was the one that surfaced this
+  # — made a plain `terraform plan` say "must be replaced", and an UNTARGETED
+  # apply would then register a fresh revision built from this file. The
+  # service below does not roll onto it (`ignore_changes = [task_definition]`,
+  # kept deliberately), so nothing breaks that minute. The damage lands on the
+  # NEXT merge: the pipeline clones the family's latest, which is now
+  # terraform's revision, so twenty revisions of pipeline-accumulated
+  # container state — the commit-SHA image tags above all — are silently
+  # rolled back into production by a deploy that looks completely normal.
+  # #1799 is that report; 2026-09-03 the owner picked the pipeline as owner.
+  #
+  # WHY EXACTLY container_definitions AND NOTHING ELSE. Read
+  # `rewrite_registered_task_definition` in ecs_rewrite_task_def.py: the only
+  # keys it writes are inside `containerDefinitions` — the backend / nginx /
+  # auth `image` tags, and the backend container's `PAPER_ADVANCE_ENABLED`
+  # environment pin. Everything else in a registered revision (cpu, memory,
+  # execution_role_arn, task_role_arn, runtime_platform, the corpus-artifact
+  # volume, network_mode, requires_compatibilities) is copied through the
+  # clone untouched, never authored by the pipeline, and so stays
+  # TERRAFORM-owned: a change to any of them still shows up in `plan` and
+  # still needs a deliberate apply. Adding them here would be strictly worse
+  # than the bug — it would hide real drift on attributes nobody else writes.
+  # `tags` is likewise NOT ignored: `describe-task-definition --query
+  # taskDefinition` omits tags entirely, so the pipeline's revisions carry
+  # none, while terraform refreshes the specific revision ARN it registered
+  # (which has them) — no diff to suppress.
+  #
+  # WHAT THIS COSTS. Editing the JSON above no longer reaches production. The
+  # env pins that actually ship live in ecs_rewrite_task_def.py; the block
+  # above is the declared baseline a from-scratch rebuild would register as
+  # revision 1, and the documentation of intent for everything else. To make a
+  # deliberate change to the LIVE task definition, follow
+  # docs/runbooks/terraform-apply-and-task-definition-ownership.md.
+  lifecycle {
+    ignore_changes = [container_definitions]
+  }
 }
 
 # ── ECS Service — behind the existing ALB target group ─────────────────────

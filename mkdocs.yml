@@ -213,6 +213,7 @@ nav:
       - The journey, end to end: user-stories.md
       - Generate a strategy:
           - Writing a brief that works: writing-a-brief.md
+          - What a brief is rejected for, and why: brief-guidelines.md
           - What you can build over — the asset universe: asset-universe.md
           - Inside a generation run — the debate society: specs/multi-agent-debate-spec.md
           - Why a strategy fuses several papers: specs/strategy-fusion-spec.md
@@ -247,6 +248,7 @@ nav:
           - The rigor gate runs outside the generator: adr/k1-generation-external-rigor-gate.md
           - A strategy's trial count is self-contained: adr/num-trials-self-containment.md
           - Backtests are frozen evidence: adr/backtests-are-frozen-evidence.md
+          - A strategy is graded once, and the verdict is stored: adr/rigor-verdict-of-record.md
       - Measured findings (dated):
           - Library-level PBO (2026-06-11): quant/library-pbo.md
           - Third-wave retest — alpha-absent, not cost-bled (2026-06-11): quant/third-wave-retest.md
@@ -291,6 +293,11 @@ nav:
       - One job per screen — the surface roles: specs/page-roles-spec.md
       - Generation pipeline:
           - Where the research comes from — the paper corpus: corpus-architecture.md
+          # Generated from the agents/prompts.py registry by
+          # scripts/gen_prompt_inventory.py (#1800) — the file is regenerated,
+          # never hand-edited, and backend/tests/test_prompt_inventory_doc.py
+          # fails when it drifts from the registry.
+          - Every prompt we send a model (generated): specs/prompt-inventory.md
           - Corpus enrichment pipeline (designed, not built): specs/kb-integration-spec.md
           - Measuring what a generation costs: generation-cost-instrumentation.md
       - Execution and traces:
@@ -337,7 +344,11 @@ nav:
           - Building and publishing this site: runbooks/docs-site-setup.md
           - GitHub security toggles: runbooks/github-security-toggles.md
           - SES suppression list: runbooks/ses-suppression.md
+          - DMARC aggregate reports, and the p=none ramp: runbooks/dmarc-reports.md
           - Re-running the curated backtests: runbooks/curated-backtests.md
+          # Incidents are evidence rather than procedure (docs/CONVENTIONS.md § 1),
+          # but an operator looking for "what went wrong last time" looks here.
+          - "2026-09-03: the paper-advance DDL wedge": incidents/2026-09-03-paper-advance-ddl-wedge.md
 
   # ── 7 ── FORCED TOP-LEVEL. backend/tests/test_docs_site.py:90 `_wiki_section`
   #         iterates TOP-LEVEL nav items only and raises when the label is not
@@ -437,6 +448,18 @@ exclude_docs: |
   # names the distribution and its rollback. Same class as the two runbooks
   # above, so it is off the site for the same reason.
   runbooks/cloudfront-cache-behaviour-apply.md
+  # Same class again, landed 2026-09-03. Both name the AWS account number
+  # (037613907429) and a decrypt-and-export procedure for live SSM
+  # SecureStrings, which is the "has a key" half of the cut line above.
+  # market-data-provider-proof.md: `/archimedes/prod/TIINGO_API_TOKEN`,
+  #   `aws ssm get-parameter --with-decryption`, an `ecs execute-command` probe.
+  # terraform-apply-and-task-definition-ownership.md: `TF_VAR_aurora_master_password`
+  #   read out of SSM, the plan/apply IAM role ARN, and the names of the rest of
+  #   the prod secret set (CIRCLE_ENTITY_SECRET, BETTER_AUTH_SECRET, DATABASE_URL).
+  # Neither is in the aprin-labs/docs#10 snapshot — that PR froze #1816's 89
+  # pages on 2026-09-03 and these two landed after it; they port next.
+  runbooks/market-data-provider-proof.md
+  runbooks/terraform-apply-and-task-definition-ownership.md
   # Deployer-key handling
   runbooks/t3.2-contract-redeploy.md
 
