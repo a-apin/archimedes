@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-01
+> **updated:** 2026-09-04
 > **superseded-by:** —
 
 **Scope:** producing persisted backtest rows for the **curated** strategy library by running
