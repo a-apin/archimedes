@@ -29,6 +29,18 @@ from pathlib import Path
 import pytest
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
+#: The revision under test. Every ``_run_alembic("upgrade", ...)`` below names
+#: it EXPLICITLY rather than "head", and that is load-bearing, not style. It
+#: was head when this file was written, so the two were the same string; the
+#: moment any branch chains a migration behind this one they stop being, and
+#: "head" silently changes what the test runs. Two ways it breaks, both seen:
+#: the idempotency test ``stamp``s back to ``_down_revision()`` and upgrades
+#: again to re-execute THIS revision's ``upgrade()`` — with "head" that also
+#: re-executes every later revision, and an ``add_column`` is not idempotent
+#: (``sqlite3.OperationalError: duplicate column name``); and the dry-run
+#: tests assert ``alembic_version`` equals this revision afterwards, which
+#: "head" makes false. Naming the revision is what makes this file about this
+#: migration instead of about whatever merged last.
 _REVISION = "d3a71f5c9e28"
 
 #: 60 store rows + 60 passport rows (the same 60 strategies, both mirrors
@@ -354,7 +366,7 @@ def test_adoption_stamps_every_orphan_and_nothing_else(tmp_path):
     db_path, url = _prepared(tmp_path, "adopt.db")
     platform = _platform_id()
 
-    result = _run_alembic("upgrade", "head", database_url=url)
+    result = _run_alembic("upgrade", _REVISION, database_url=url)
     assert result.returncode == 0, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
 
     # Every orphan adopted — 60 + 60 + 32 = 152.
@@ -426,7 +438,7 @@ def test_adoption_refuses_a_population_outside_the_band(tmp_path, n_pairs, n_pro
     db_path, url = _prepared(tmp_path, "band.db", n_pairs=n_pairs, n_proposals=n_proposals)
     total = n_pairs * 2 + n_proposals
 
-    result = _run_alembic("upgrade", "head", database_url=url)
+    result = _run_alembic("upgrade", _REVISION, database_url=url)
 
     assert result.returncode != 0, f"{label}: the migration must refuse, not adopt"
     combined = result.stdout + result.stderr
@@ -455,7 +467,7 @@ def test_adoption_refuses_a_population_outside_the_band(tmp_path, n_pairs, n_pro
 def test_adoption_refuses_each_structural_defect(tmp_path, kwargs, marker):
     db_path, url = _prepared(tmp_path, "dangling.db", **kwargs)
 
-    result = _run_alembic("upgrade", "head", database_url=url)
+    result = _run_alembic("upgrade", _REVISION, database_url=url)
 
     assert result.returncode != 0, f"{marker} must be refused"
     combined = result.stdout + result.stderr
@@ -471,7 +483,7 @@ def test_adoption_refuses_each_structural_defect(tmp_path, kwargs, marker):
 def test_dry_run_logs_the_plan_and_writes_absolutely_nothing(tmp_path):
     db_path, url = _prepared(tmp_path, "dryrun.db")
 
-    dry = _run_alembic("upgrade", "head", database_url=url, ORPHAN_MIGRATION_DRY_RUN="1")
+    dry = _run_alembic("upgrade", _REVISION, database_url=url, ORPHAN_MIGRATION_DRY_RUN="1")
 
     # Non-zero by design: aborting the transaction is what guarantees the
     # alembic_version stamp is not written either.
@@ -486,7 +498,7 @@ def test_dry_run_logs_the_plan_and_writes_absolutely_nothing(tmp_path):
     assert _rows(db_path, "SELECT version_num FROM alembic_version") == [(_down_revision(),)]
 
     # And the real run afterwards still works — the dry run left no residue.
-    wet = _run_alembic("upgrade", "head", database_url=url)
+    wet = _run_alembic("upgrade", _REVISION, database_url=url)
     assert wet.returncode == 0, wet.stderr
     assert _owned_by_platform(db_path) == _N_ORPHANS
 
@@ -512,7 +524,7 @@ def test_dry_run_on_a_zero_population_database_also_writes_absolutely_nothing(tm
     assert pre.returncode == 0, pre.stderr
     # Deliberately NOT seeded: zero orphans, the CI / fresh-clone shape.
 
-    dry = _run_alembic("upgrade", "head", database_url=url, ORPHAN_MIGRATION_DRY_RUN="1")
+    dry = _run_alembic("upgrade", _REVISION, database_url=url, ORPHAN_MIGRATION_DRY_RUN="1")
 
     combined = dry.stdout + dry.stderr
     assert dry.returncode != 0, f"a dry run must abort, not apply:\n{combined[-2000:]}"
@@ -526,7 +538,7 @@ def test_dry_run_on_a_zero_population_database_also_writes_absolutely_nothing(tm
 
     # The real run afterwards still creates the ledger: the dry run changed
     # the outcome of nothing, it only declined to be that outcome.
-    wet = _run_alembic("upgrade", "head", database_url=url)
+    wet = _run_alembic("upgrade", _REVISION, database_url=url)
     assert wet.returncode == 0, wet.stderr
     assert _has_table(db_path, "legacy_row_adoptions")
     assert _rows(db_path, "SELECT version_num FROM alembic_version") == [(_REVISION,)]
@@ -539,7 +551,7 @@ def test_dry_run_on_a_zero_population_database_also_writes_absolutely_nothing(tm
 def test_running_the_upgrade_a_second_time_is_a_no_op(tmp_path):
     db_path, url = _prepared(tmp_path, "idempotent.db")
 
-    first = _run_alembic("upgrade", "head", database_url=url)
+    first = _run_alembic("upgrade", _REVISION, database_url=url)
     assert first.returncode == 0, first.stderr
     before = _rows(db_path, "SELECT id, owner_user_id, owner_wallet FROM strategy_store ORDER BY id")
 
@@ -549,7 +561,7 @@ def test_running_the_upgrade_a_second_time_is_a_no_op(tmp_path):
     stamp = _run_alembic("stamp", _down_revision(), database_url=url)
     assert stamp.returncode == 0, stamp.stderr
 
-    second = _run_alembic("upgrade", "head", database_url=url)
+    second = _run_alembic("upgrade", _REVISION, database_url=url)
     assert second.returncode == 0, f"STDOUT:\n{second.stdout}\nSTDERR:\n{second.stderr}"
     assert "second run is a no-op" in (second.stdout + second.stderr)
 
@@ -564,7 +576,7 @@ def test_running_the_upgrade_a_second_time_is_a_no_op(tmp_path):
 def test_downgrade_re_orphans_ownership_and_leaves_everything_else(tmp_path):
     db_path, url = _prepared(tmp_path, "downgrade.db")
 
-    up = _run_alembic("upgrade", "head", database_url=url)
+    up = _run_alembic("upgrade", _REVISION, database_url=url)
     assert up.returncode == 0, up.stderr
     assert _owned_by_platform(db_path) == _N_ORPHANS
 
@@ -584,6 +596,6 @@ def test_downgrade_re_orphans_ownership_and_leaves_everything_else(tmp_path):
     assert _scalar(db_path, "SELECT COUNT(*) FROM paper_deployments WHERE strategy_id = 'orph00000'") == 1
 
     # And upgrading again re-adopts cleanly.
-    again = _run_alembic("upgrade", "head", database_url=url)
+    again = _run_alembic("upgrade", _REVISION, database_url=url)
     assert again.returncode == 0, again.stderr
     assert _owned_by_platform(db_path) == _N_ORPHANS

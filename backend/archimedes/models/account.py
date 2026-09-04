@@ -81,6 +81,24 @@ class AuthUser(Base):
     updated_at: Mapped[datetime] = mapped_column(
         "updatedAt", DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )
+    # #1804 — what SES told us about this address, as opposed to what the
+    # person did. ``email_verified`` above cannot carry it: false there means
+    # both "hasn't clicked yet" and "the mailbox does not exist", and the free
+    # tier gates on it, so a dead address is locked out indistinguishably from
+    # an impatient human. NULL means SES has never reported a bounce or a
+    # complaint for this address.
+    #
+    # Written by exactly one thing — ``archimedes.scripts.ses_events`` draining
+    # the SES → SNS → SQS feedback queue (``infra/ses_events.tf``). Better Auth
+    # declares the same two columns as ``user.additionalFields`` with
+    # ``input: false`` (``auth/auth.js``) so no request body can set them; it
+    # only READS them, to refuse signup and the self-service resend.
+    email_bounced_at: Mapped[datetime | None] = mapped_column("emailBouncedAt", DateTime(timezone=True), nullable=True)
+    #: ``bounce`` (permanent — the mailbox does not exist) or ``complaint``
+    #: (a human told their provider our mail is spam). Transient bounces are
+    #: NOT recorded here: a full mailbox or a temporary DNS failure is not a
+    #: fake address, and stamping one would lock out a real user.
+    email_bounce_kind: Mapped[str | None] = mapped_column("emailBounceKind", String(32), nullable=True)
 
 
 class AuthSession(Base):
