@@ -148,7 +148,6 @@ class _MechanismBackend:
 
 
 def _propose(monkeypatch, mechanisms, *, source_ids=None):
-    monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "1")
     monkeypatch.delenv("ARCHIMEDES_CORPUS_MANIFEST", raising=False)
     svc = StrategyFusion(
         backend=_MechanismBackend(mechanisms, source_ids=source_ids),

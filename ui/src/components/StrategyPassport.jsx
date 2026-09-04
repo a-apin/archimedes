@@ -1487,7 +1487,7 @@ function PaperDeployCard({ strategyId, user, onNavigate }) {
 			<p className="caption leading-relaxed">
 				Simulated deployment — <strong>free, no funds move</strong>. Snapshots
 				this strategy's spec and appends one real-data return per trading day,
-				building the track record that carries to mainnet.
+				building a paper track record on Arc testnet — no real funds.
 			</p>
 			{error && (
 				<p className="caption" role="alert" style={{ color: "var(--negative)", marginTop: 6 }}>

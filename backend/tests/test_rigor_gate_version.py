@@ -48,7 +48,14 @@ def test_the_digest_moves_when_a_gate_threshold_moves(monkeypatch):
     A digest that does not react to the ladder would let two rows graded at
     materially different bars claim the same gate — the exact false equivalence
     the column exists to prevent. Recalibrating level 1's ``dsr_p_min`` (real
-    precedent: #901 moved it 0.95 → 0.90) must produce a different version.
+    precedent: #901 moved it one way, #1794 moved it back) must produce a
+    different version.
+
+    The recalibrated value is DERIVED from the live bar rather than written down.
+    An earlier draft hardcoded the number it moved to, and the moment #1794 moved
+    the badge bar onto exactly that number this test started mutating nothing and
+    failed — the right lesson being that a mutation test must not pin the value it
+    mutates to.
     """
     from dataclasses import replace
 
@@ -56,8 +63,38 @@ def test_the_digest_moves_when_a_gate_threshold_moves(monkeypatch):
 
     before = gv.gate_version()
     recalibrated = dict(rigor_profiles._PROFILES)
-    recalibrated[1] = replace(recalibrated[1], dsr_p_min=0.95)
+    moved = round(recalibrated[1].dsr_p_min - 0.05, 4)
+    assert moved != recalibrated[1].dsr_p_min, "the recalibration must actually move the bar"
+    recalibrated[1] = replace(recalibrated[1], dsr_p_min=moved)
     monkeypatch.setattr(rigor_profiles, "_PROFILES", recalibrated)
+
+    assert gv.gate_version() != before
+
+
+def test_the_digest_moves_when_the_badge_bar_constant_moves(monkeypatch):
+    """The #1794 case: the badge's DSR bar is ONE constant, and moving it must
+    move the digest.
+
+    ``DSR_P_BADGE_MIN`` is level 1's ``dsr_p_min`` today, so the ladder test above
+    already covers it *while that wiring holds*. It is hashed on its own because
+    the wiring is a source-level property nothing at runtime can police: equal
+    float constants inside one module are the SAME object, so re-writing level 1
+    as a bare literal passes an ``is`` assertion against the constant. Hashing the
+    constant is what makes the bar unable to move behind the digest's back —
+    ``generation_pipeline`` compares against it directly, without a profile.
+
+    MUTATION: drop ``badge_bar`` from ``gate_version_inputs`` and re-write level 1
+    of ``_PROFILES`` with a literal — the digest then sits still while the bar
+    every gate path reads has moved.
+    """
+    from archimedes.services import rigor_profiles
+
+    assert gv.gate_version_inputs()["badge_bar"] == rigor_profiles.DSR_P_BADGE_MIN
+
+    before = gv.gate_version()
+    moved = round(rigor_profiles.DSR_P_BADGE_MIN - 0.05, 4)
+    assert moved != rigor_profiles.DSR_P_BADGE_MIN, "the mutation must actually move the bar"
+    monkeypatch.setattr(rigor_profiles, "DSR_P_BADGE_MIN", moved)
 
     assert gv.gate_version() != before
 
@@ -107,6 +144,7 @@ def test_the_inputs_name_every_documented_ingredient():
         "schema",
         "code_revision",
         "badge_level",
+        "badge_bar",
         "profiles",
         "floors",
         "min_returns_for_gate",

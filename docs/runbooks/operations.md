@@ -186,7 +186,7 @@ The local docker-compose stack runs the same code as the EC2 deployment. To veri
 ./scripts/check-parity.sh https://archimedes-arc.com   # or against prod
 ```
 
-This checks `/health` and asserts: live LLM backend, non-empty corpus (`corpus_papers > 0`; do not freeze a floor here), fusion enabled.
+This checks `/health` and asserts two things: live LLM backend, and a non-empty corpus (`corpus_papers > 0`; do not freeze a floor here). There used to be a third assertion, `fusion_enabled` — it went with the flag when `ARCHIMEDES_FUSION_ENABLED` was retired (deck Q4; see the [flip-list](../operations/feature-flag-fliplist.md)), and `/health` stopped publishing the field on 2026-09-03. Fusion is now the unconditional generation path, so there is nothing left to assert.
 
 Full production infrastructure (ECS Fargate behind an ALB, CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1, CI/CD and Terraform) is documented in [`docs/architecture.md`](../architecture.md) and the Terraform under `infra/`. The old `docs/infra-setup.md` is archived and describes a single EC2 box that no longer exists.
 
