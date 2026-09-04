@@ -735,6 +735,10 @@ jobs:
           # code default stays false, so a revision that never heard of the
           # name still cannot tick. terraform apply is still required for
           # other ecs.tf drift; this flag must not depend on it.
+          # The same script also ensures the backend container carries the
+          # TIINGO_API_TOKEN secret (#1798), for the same reason and against
+          # the same drift (#1799): the SSM parameter has existed since
+          # 2026-08-31 and no cloned revision has ever carried it.
           aws ecs describe-task-definition --task-definition "$ECS_TASK_FAMILY" \
             --query 'taskDefinition' > current-task-def.json
 

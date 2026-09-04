@@ -13,9 +13,9 @@
 #   - /app, /app/* and /sign-in* NEVER cached. The gated pages under /app
 #     must not be: their responses depend on the session cookie and the edge
 #     keys without one (2026-09-01 sign-in outage, issue #1768). The public
-#     anonymous-browse carve-outs (bare /app, /app/explore, /app/leaderboard,
-#     /app/corpus, /app/strategy/*) are de-cached alongside them deliberately —
-#     the block comment on those behaviours carries the cost and the reason.
+#     anonymous-browse carve-outs (bare /app, /app/explore, /app/corpus) are
+#     de-cached alongside them deliberately — the block comment on those
+#     behaviours carries the cost and the reason.
 #   - Generated 5xx error responses NEVER cached (custom_error_response with
 #     error_caching_min_ttl = 0) — see the block near the bottom of this file.
 #   - HTML ("/") cached 60s, respecting origin Cache-Control.
@@ -450,15 +450,19 @@ resource "aws_cloudfront_distribution" "main" {
   #     not "make the caching policy weaker".
   #
   # NOT every path these three patterns cover is session-dependent, and that is
-  # a decision rather than an oversight. nginx/nginx.conf:293-326 is the
-  # anonymous-browse carve-out block (#1194 revision d, the owner's product
-  # call), and nginx picks the LONGEST matching prefix, so those locations win
-  # over the gated `^~ /app` below them. Bare `/app` (the SPA's alias for
-  # Explore), `/app/explore`, `/app/leaderboard`, `/app/corpus` and
-  # `/app/strategy/*` are PUBLIC: no `auth_request`, no
-  # `error_page 401 = @sign_in`, the same shell for every viewer. `/app` and
-  # `/app/*` pull them off the 60s `html` policy along with the gated pages, on
-  # purpose (owner's ruling on the review of PR #1772, 2026-09-01):
+  # a decision rather than an oversight. nginx/nginx.conf carries the
+  # anonymous-browse carve-out block (#1753, the owner's product call
+  # narrowing #1194 revision d), and nginx picks the LONGEST
+  # matching prefix, so those locations win over the gated `^~ /app` below
+  # them. Bare `/app` (the SPA's alias for Explore), `/app/explore` and
+  # `/app/corpus` are PUBLIC: no `auth_request`, no
+  # `error_page 401 = @sign_in`, the same shell for every viewer.
+  # `/app/leaderboard` and `/app/strategy/*` used to be on that list and are
+  # NOT any more — they are gated, and this file changes nothing about them
+  # either way, because `/app/*` already covered both halves. `/app` and
+  # `/app/*` pull the public pages off the 60s `html` policy along with the
+  # gated ones, on purpose (owner's ruling on the review of PR #1772,
+  # 2026-09-01):
   #
   #   Cost. Every anonymous visitor to those pages now reaches the origin
   #   instead of being answered at the edge for up to 60s. What they fetch is
@@ -467,9 +471,10 @@ resource "aws_cloudfront_distribution" "main" {
   #   backend call; the SPA's data then comes over `/api/*`, which was never
   #   cached at the edge anyway.
   #
-  #   Benefit. Promoting one of those carve-outs to gated later — the product
-  #   has already moved pages across that line — cannot reintroduce the cached
-  #   anonymous 302 of #1767/#1768. The alternative, per-carve-out behaviours
+  #   Benefit. Promoting one of those carve-outs to gated later — which is
+  #   exactly what #1753 then did to `/app/leaderboard` and `/app/strategy/*`,
+  #   with no edit needed here — cannot reintroduce the cached anonymous 302
+  #   of #1767/#1768. The alternative, per-carve-out behaviours
   #   on the `html` policy, makes this file a fourth copy of the anon-page list
   #   that nginx/nginx.conf and `ANON_APP_PAGES` in ui/src/routes.js already
   #   have to keep in lockstep (ui/public/sitemap.xml carries the same set

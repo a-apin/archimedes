@@ -1,6 +1,6 @@
 # Archimedes backend — floors shared by every consumer (issue #1522).
 #
-# This file is the single owner of the 32 non-torch package floors. Both
+# This file is the single owner of the 33 non-torch package floors. Both
 # `backend/requirements.txt` (Docker / CI) and the `pip:` block of
 # `environment.yml` (local conda dev) pull it in with `-r`, so a Dependabot bump
 # lands here once instead of being mirrored by hand into a second file.
@@ -58,6 +58,16 @@ alembic>=1.19.1
 psycopg2>=2.9.12
 redis>=8.1.0
 pydantic>=2.13.4
+# Declared because backend code IMPORTS IT DIRECTLY — `PydanticCustomError` in
+# `api/rigor_verify_routes.py`, which is how that route's refusals carry a stable
+# machine-readable `type` (#1803). pydantic exposes no public re-export of it
+# (`pydantic.PydanticCustomError` does not exist in 2.x; only the private
+# `pydantic.types` re-export does), so the honest fix for import-guard's DEP001
+# is to declare the package we import rather than reach through a private path.
+# pydantic pins pydantic-core EXACTLY (`pydantic 2.13.4` -> `pydantic-core==2.46.4`),
+# so this floor never selects the version — pydantic's own pin does. It exists so
+# the dependency is declared where every consumer of this file can see it.
+pydantic-core>=2.46.4
 pydantic-settings>=2.14.2
 python-dotenv>=1.2.3
 
