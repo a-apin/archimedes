@@ -270,3 +270,23 @@ variable "public_trace_vaults" {
   type        = string
   default     = "0x88F284e6667947d66949528dB209b2a50bf2f612,0x99120A79f54F83f6729E1E1e2B1f536952BF3574,0x9d4530e874D712d3F0f65c49F9355403bf232e66,0xA3b077e16C208cD794581db46b559FDC9619ada7,0xcdd47c6D16a206f2C69B6D533Ac98b56Db3CeF52"
 }
+
+# ── SES bounce/complaint drain (#1804, infra/ses_events.tf) ─────────────────
+
+variable "ses_events_drain_cpu" {
+  description = "Fargate task-level vCPU units for the scheduled ses-events-drain task (infra/ses_events.tf). 256 = 0.25 vCPU, the Fargate minimum — the job reads a small SQS batch and writes one UPDATE per bounce, so this is sized for the boto3 + SQLAlchemy import cost, not for the work."
+  type        = string
+  default     = "256"
+}
+
+variable "ses_events_drain_memory" {
+  description = "Fargate task-level memory (MiB) for the scheduled ses-events-drain task. Must pair validly with ses_events_drain_cpu (256 cpu allows 512, 1024 or 2048) — see https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html."
+  type        = string
+  default     = "1024"
+}
+
+variable "ses_events_drain_schedule_expression" {
+  description = "EventBridge Scheduler rate/cron expression for the SES bounce/complaint drain (infra/ses_events.tf's aws_scheduler_schedule.ses_events_drain). Every 15 minutes is the latency a person retrying a signup would notice; the queue's 14-day retention means a looser interval loses nothing, it only makes the refusal later. Set to a longer rate to cut cost, not to `null` — there is no 'off' here short of setting the schedule's state, and a drain that never runs is the defect #1804 opened against."
+  type        = string
+  default     = "rate(15 minutes)"
+}

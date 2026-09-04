@@ -549,12 +549,14 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "AWS_SSM_PATH_PREFIX", value = "/archimedes/prod/" },
         # SES bounce/complaint feedback queue (#1804, infra/ses_events.tf).
-        # Read by `python -m archimedes.scripts.ses_events drain`, which is run
-        # against this container (`aws ecs execute-command`, or a `run-task`
-        # command override) rather than by any always-on loop in it — nothing
-        # in the serving path reads this variable, so its presence costs the
-        # web tier nothing. The task role's queue grant is
-        # aws_iam_role_policy.ecs_task_ses_events_queue.
+        # This copy is the OPERATOR path: the scheduled drain runs in its own
+        # `archimedes-ses-events-drain` task definition (ses_events.tf), and
+        # this variable is what makes `aws ecs execute-command` into a running
+        # service task able to run the same drain by hand without anyone
+        # pasting a queue URL. Nothing in the serving path reads it and no
+        # always-on loop in this container consumes the queue, so its presence
+        # costs the web tier nothing. The task role's queue grant is
+        # aws_iam_role_policy.ecs_task_ses_events_queue, shared by both.
         { name = "SES_EVENTS_QUEUE_URL", value = aws_sqs_queue.ses_events.id },
         # PUBLIC_DOMAIN includes scheme because CORS and wallet-link URI/domain
         # bindings compare scheme-qualified origins. var.domain_name is bare host.

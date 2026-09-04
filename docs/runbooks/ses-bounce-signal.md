@@ -38,21 +38,44 @@ auth container ──SendEmail(ConfigurationSetName = archimedes-mail)──▶ 
 ```
 
 Terraform: [`infra/ses_events.tf`](../../infra/ses_events.tf) (configuration set, topic,
-queue, DLQ, IAM) plus the `SES_CONFIGURATION_SET` / `SES_EVENTS_QUEUE_URL` variables in
+queue, DLQ, IAM, **the scheduled drain task and its two alarms**) plus the
+`SES_CONFIGURATION_SET` / `SES_EVENTS_QUEUE_URL` variables in
 [`infra/ecs.tf`](../../infra/ecs.tf). Consumer:
 [`backend/archimedes/scripts/ses_events.py`](../../backend/archimedes/scripts/ses_events.py).
 Refusal: [`auth/auth.js`](../../auth/auth.js) (`bounceRefusal`).
 
 **Every link fails silently.** A send that names no configuration set produces no event; a
 topic with no subscriber drops notifications; a drain that never runs leaves the queue
-filling. In all three cases mail still goes out and nothing alarms. § 3 is how you tell.
+filling. In all three cases mail still goes out and **no AWS error is raised anywhere** —
+the alarms in § 3 exist because that third case is otherwise indistinguishable from a quiet
+week.
 
-## 2. Drain the queue
+## 2. Draining the queue
 
-Nothing runs this on a clock yet — wiring a scheduled task is an owner decision, and the
-queue's 14-day retention is what makes that safe: a bounce that arrives between drains is
-**late, not lost**. Run it from the backend task, whose role already carries the queue grant
-and whose environment already has the URL:
+**A schedule already does this.** `aws_scheduler_schedule.ses_events_drain`
+(`infra/ses_events.tf`) invokes the `archimedes-ses-events-drain` Fargate task every
+15 minutes by default — a dedicated single-container task definition running
+`python -m archimedes.scripts.ses_events drain`, the same one-off shape as the Alembic
+migrate task. The interval is `var.ses_events_drain_schedule_expression`; the queue's 14-day
+retention is what makes a periodic drain honest rather than lossy, so loosening it makes a
+refusal **later, never wrong**.
+
+```bash
+# what the schedule is set to, and when it last fired
+aws scheduler get-schedule --name archimedes-ses-events-drain
+
+# the last runs' output (the summary below is the whole of it)
+aws logs tail /archimedes/app --filter-pattern ses-events-drain --since 1h
+
+# force one now, without waiting for the next tick
+aws ecs run-task --cluster archimedes-cluster --launch-type FARGATE \
+    --task-definition "$(cd infra && terraform output -raw ses_events_drain_task_definition_family)" \
+    --network-configuration "$(cd infra && terraform output -raw ecs_migrate_network_configuration)"
+```
+
+The same command runs by hand when you want to watch it, from the backend task (whose role
+already carries the queue grant and whose environment already has the URL) or from an
+operator shell:
 
 ```bash
 # inside the running backend container
@@ -118,6 +141,18 @@ records nothing: the mailer treats a blank `SES_CONFIGURATION_SET` as "send with
 configuration set", which is the pre-#1804 behaviour, so mail keeps flowing and no event is
 ever published.
 
+**Two alarms answer the other half of the question without you asking.** Both publish to
+`cloudwatch.tf`'s existing alerts topic:
+
+| Alarm | Fires when | What it means |
+|---|---|---|
+| `archimedes-ses-events-not-drained` | the queue's oldest message is over an hour old, twice running | the schedule is off, failing, or has lost its grant — bounces are safe (14-day retention) but **nothing is being stamped** |
+| `archimedes-ses-events-dlq-not-empty` | one message reaches the DLQ | the consumer's parser is behind an SES payload change — read one with the `receive-message` command above |
+
+Neither treats missing data as breaching: an **empty** queue publishes no age datapoints at
+all, and empty is the healthy steady state, so the opposite setting would fire every quiet
+week until somebody muted it.
+
 ## 4. Reading the stamp
 
 ```sql
@@ -177,7 +212,12 @@ the column back to NULL, so a genuinely new bounce finds a NULL and records itse
 
 ## 6. What this does NOT do
 
-* **It does not run itself.** No schedule, no cron, no loop — see § 2.
+* **It is not a continuous consumer.** The drain is a scheduled batch task (§ 2), not an
+  SQS-triggered or always-on poller, so a bounce is acted on within one interval rather than
+  within seconds. Fargate has no native SQS trigger, and the alternatives — a Lambda with a
+  second runtime and dependency set for one file that already runs in the backend image, or
+  a long-lived poller as a new always-on singleton — buy latency that nothing here needs:
+  the deadline is a human eventually retrying a signup.
 * **It does not write per-send delivery rows, and it does not write feedback rows into
   `auth_email_deliveries` either.** One row per SEND is
   [#1790](https://github.com/aprin-labs/archimedes/pull/1790)'s, written by `auth/mailer.js`;
@@ -185,8 +225,15 @@ the column back to NULL, so a genuinely new bounce finds a NULL and records itse
   second writer in Python could not be covered by this repo's SQLite-backed tests without
   either diverging from the production schema or supplying `seq` by hand — and an explicit
   `seq` does not advance the Postgres sequence, which would collide with the sidecar's next
-  insert and lose a real receipt. The per-user stamp above carries the fact the product acts
-  on; a per-event audit trail keyed on `MessageId` is a follow-up, not part of this loop.
+  insert and lose a real receipt. (On Postgres alone an insert that OMITS `seq` is fine; the
+  obstacle is the test substrate, not the database.) The per-user stamp above carries the
+  fact the product acts on. **The residual #1804 stays open for** is the per-event audit
+  trail the issue's sketch names — `(address, message_id, type, sub-type, timestamp)`. The
+  consumer parses `MessageId` and the SES sub-type (`bounceSubType` /
+  `complaintFeedbackType`) and logs them, but persists neither, so once the log rotates
+  nothing can answer "**which** verification email died". Closing it needs a table keyed on
+  `MessageId` — a new `bounce_events`, or `auth_email_deliveries` once `seq` is reachable
+  from Python.
 * **It does not refuse the anonymous resend.** `/send-verification-email` is reachable with
   no session and answers identically for unknown, verified and genuine sends; that
   uniformity is what stops it being an account-existence oracle. Only a caller signed in AS

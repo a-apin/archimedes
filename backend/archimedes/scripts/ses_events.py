@@ -42,13 +42,23 @@ WHAT COUNTS AS A BOUNCE, AND WHAT DOES NOT.
 Stamping a transient bounce would lock out a real user over a full mailbox,
 which is the same defect this issue is about, pointed the other way.
 
-IT IS A MANAGEMENT COMMAND, NOT A SERVICE. Nothing here runs on a clock. The
-queue is what makes that honest: ``infra/ses_events.tf`` gives it the maximum
-14-day retention and a dead-letter queue, so a bounce that arrives between
-drains is LATE, never lost. Standing up a new scheduled compute unit is an
-owner-gated call (``scripts/run_paper_marks.py`` documents the same boundary
-for its own loop), so this ships as the runnable unit and the invocation is
-wired separately. Until then::
+IT IS A BATCH COMMAND, NOT A SERVICE — AND SOMETHING CALLS IT. ``drain`` reads
+what is on the queue, writes, and exits; it never polls. What invokes it is
+``aws_scheduler_schedule.ses_events_drain`` (``infra/ses_events.tf``), an
+EventBridge Scheduler schedule that runs the dedicated single-container
+``archimedes-ses-events-drain`` Fargate task every 15 minutes by default — the
+same one-off shape as the Alembic migrate task, deliberately NOT a command
+override on the three-container service family, whose nginx sidecar
+``dependsOn`` the backend being HEALTHY and would be waiting on an HTTP server
+this command never starts.
+
+The queue is what licenses that interval: ``infra/ses_events.tf`` gives it the
+maximum 14-day retention and a dead-letter queue, so a bounce that arrives
+between ticks is LATE, never lost — and two CloudWatch alarms
+(queue ``ApproximateAgeOfOldestMessage``, DLQ depth) are what stop a schedule
+that quietly stops running from putting the product back where #1804 found it.
+
+The same command is run by hand whenever you want to watch it::
 
     # in the running backend task (the ECS task role carries the queue grant —
     # aws_iam_role_policy.ecs_task_ses_events_queue), SES_EVENTS_QUEUE_URL is

@@ -214,6 +214,11 @@ output "ses_events_queue_url" {
   value       = aws_sqs_queue.ses_events.id
 }
 
+output "ses_events_drain_task_definition_family" {
+  description = "ECS task definition family for the scheduled SES bounce/complaint drain (infra/ses_events.tf) — the family aws_scheduler_schedule.ses_events_drain invokes every tick. `aws ecs run-task --task-definition <this>` to force one drain by hand; `aws logs tail /archimedes/app --filter-pattern ses-events-drain --since 30m` to read the last one."
+  value       = aws_ecs_task_definition.ses_events_drain.family
+}
+
 output "ses_events_dlq_url" {
   description = "Dead-letter queue for SES events the consumer could not parse or write five times running — a non-empty ApproximateNumberOfMessages here means the parser is behind an AWS schema change, not that mail is fine."
   value       = aws_sqs_queue.ses_events_dlq.id

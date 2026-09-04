@@ -60,6 +60,54 @@ def _strip_comments(hcl: str) -> str:
     return "\n".join(line for line in hcl.splitlines() if not line.lstrip().startswith("#"))
 
 
+#: The three containers `aws_ecs_task_definition.backend` defines, in the order
+#: infra/ecs.tf declares them.
+CONTAINERS = ("backend", "auth", "nginx")
+
+
+def _container(ecs: str, name: str) -> str:
+    """ONE container object out of infra/ecs.tf's `container_definitions`.
+
+    WHY THE SLICE, AND NOT A GREP OVER THE WHOLE FILE. The three containers
+    share one task definition but do NOT run the same code. `auth/mailer.js`
+    only ever runs in the `auth` container; `archimedes.scripts.ses_events`
+    only ever runs where the backend image runs. A file-wide regex therefore
+    passes just as happily when `SES_CONFIGURATION_SET` is defined on the
+    `backend` (or `nginx`) container — at which point no send names the set,
+    SES publishes nothing, and every test in this file is still green. That is
+    the same silent deafening the file's own docstring exists to defend
+    against, one level down, so the guard has to be able to say WHICH
+    container, not merely "somewhere in ecs.tf".
+
+    Sliced on the object braces rather than on the container names so an entry
+    smuggled ABOVE a container's own `name` line still lands in the right
+    slice. `terraform fmt -check -recursive` (CI, quality-gate.yml) is what
+    pins the indentation this relies on, and every assert below fails loudly
+    rather than silently passing if the shape ever moves.
+    """
+    marker = "container_definitions = jsonencode(["
+    assert ecs.count(marker) == 1, (
+        f"infra/ecs.tf has {ecs.count(marker)} `container_definitions` blocks, expected exactly 1 — "
+        "this helper slices the one belonging to aws_ecs_task_definition.backend"
+    )
+    region = ecs.split(marker, 1)[1]
+    resource_end = re.search(r"^\}$", region, re.MULTILINE)
+    assert resource_end, "could not find the end of the aws_ecs_task_definition.backend resource"
+    region = region[: resource_end.start()]
+
+    blocks = {}
+    for chunk in re.split(r"^    \{$", region, flags=re.MULTILINE)[1:]:
+        found = re.search(r'^\s+name\s*=\s*"([a-z0-9-]+)"\s*$', chunk, re.MULTILINE)
+        if found:
+            blocks[found.group(1)] = chunk
+    assert set(CONTAINERS) <= set(blocks), (
+        f"could not slice infra/ecs.tf's containers apart: found {sorted(blocks)}, expected at least "
+        f"{sorted(CONTAINERS)}. Fix this helper before trusting anything below it — a slice that "
+        "silently matched nothing would turn every per-container assert into a pass."
+    )
+    return blocks[name]
+
+
 # ─────────────────── the mailer actually names the set ──────────────────
 
 
@@ -108,16 +156,28 @@ def test_the_auth_container_is_given_the_configuration_sets_own_name():
 
     Enforced structurally rather than by string comparison — the env value is
     the resource attribute itself, so the two cannot be edited apart.
+
+    Pinned to the AUTH container specifically. `auth/mailer.js` runs there and
+    nowhere else, so the same line sitting on the backend or nginx container
+    is a variable no send will ever read: mail keeps flowing, SES publishes
+    nothing, and the loop is deaf with every other assertion in this file
+    still green.
     """
     ecs = _strip_comments(_read(ECS_TF))
     pattern = re.compile(
         r'\{\s*name\s*=\s*"' + CONFIG_SET_ENV + r'"\s*,\s*value\s*=\s*' + re.escape(CONFIG_SET_REF) + r"\s*\}"
     )
-    assert pattern.search(ecs), (
+    assert pattern.search(_container(ecs, "auth")), (
         f"infra/ecs.tf's auth container must set {CONFIG_SET_ENV} = {CONFIG_SET_REF}. A hardcoded literal "
         "here is exactly how the two names drift, and a drifted name publishes events for nobody while "
         "mail keeps flowing."
     )
+    for other in ("backend", "nginx"):
+        assert CONFIG_SET_ENV not in _container(ecs, other), (
+            f"{CONFIG_SET_ENV} is defined on the `{other}` container. auth/mailer.js runs in the `auth` "
+            "container only, so a set named there is named by no send at all — SES publishes nothing and "
+            "the whole feedback loop goes silently deaf while verification mail keeps being delivered."
+        )
 
 
 def test_the_task_role_may_send_with_that_configuration_set():
@@ -133,6 +193,14 @@ def test_the_task_role_may_send_with_that_configuration_set():
 
 
 def test_the_backend_container_knows_which_queue_to_drain():
+    """The operator path: `ecs execute-command` into the running service task.
+
+    Pinned to the BACKEND container for the same reason as the set name above.
+    `python -m archimedes.scripts.ses_events drain` can only run where the
+    backend image runs; the variable on nginx or auth is read by nothing, and
+    the drain would exit 2 ("no queue URL") in the one place an operator
+    reaches for it.
+    """
     ecs = _strip_comments(_read(ECS_TF))
     pattern = re.compile(
         r'\{\s*name\s*=\s*"'
@@ -141,11 +209,16 @@ def test_the_backend_container_knows_which_queue_to_drain():
         + re.escape("aws_sqs_queue.ses_events.id")
         + r"\s*\}"
     )
-    assert pattern.search(ecs), (
+    assert pattern.search(_container(ecs, "backend")), (
         f"infra/ecs.tf's backend container must set {QUEUE_URL_ENV} = aws_sqs_queue.ses_events.id — "
         "`ses_events drain` reads it, and hardcoding a queue URL anywhere else is how it ends up "
         "draining the wrong account's queue"
     )
+    for other in ("auth", "nginx"):
+        assert QUEUE_URL_ENV not in _container(ecs, other), (
+            f"{QUEUE_URL_ENV} is defined on the `{other}` container, which does not carry the backend "
+            "image and cannot run the drain — the variable would be read by nothing"
+        )
 
 
 def test_the_task_role_can_read_and_delete_from_the_queue():
@@ -216,3 +289,147 @@ def test_the_queue_url_is_exported_for_the_operator():
     outputs = _strip_comments(_read(OUTPUTS_TF))
     assert 'output "ses_events_queue_url"' in outputs
     assert 'output "ses_configuration_set_name"' in outputs
+
+
+# ─────────────────── something actually CALLS the consumer ──────────────
+
+
+def _drain_task_container(tf: str) -> str:
+    """The one container object inside aws_ecs_task_definition.ses_events_drain."""
+    block = tf.split('resource "aws_ecs_task_definition" "ses_events_drain"', 1)
+    assert len(block) == 2, (
+        "there is no task definition for the drain — every resource in this file would be built, wired, and still deaf"
+    )
+    return block[1].split("\nresource ", 1)[0]
+
+
+def test_something_invokes_the_consumer_on_a_clock():
+    """A built loop nobody calls is the defect #1804 opened against, with terraform in it.
+
+    The queue's 14-day retention makes a PERIODIC drain honest — a bounce that
+    arrives between ticks is late, never lost — but only if the ticks exist.
+    With no schedule, bounces accumulate in SQS and the retention deletes them
+    unread, and every other assertion in this file still passes.
+    """
+    tf = _strip_comments(_read(SES_EVENTS_TF))
+    schedule = tf.split('resource "aws_scheduler_schedule" "ses_events_drain"', 1)
+    assert len(schedule) == 2, (
+        "no aws_scheduler_schedule for the drain — nothing calls "
+        "`archimedes.scripts.ses_events drain`, so nothing is ever stamped"
+    )
+    body = schedule[1].split("\nresource ", 1)[0]
+    assert "schedule_expression = var.ses_events_drain_schedule_expression" in body, (
+        "the interval must be a variable, so the owner can loosen it without a code change"
+    )
+    assert 'state               = "ENABLED"' in body or 'state = "ENABLED"' in body, (
+        "a DISABLED schedule is indistinguishable from no schedule at all"
+    )
+    assert "aws_ecs_task_definition.ses_events_drain.family" in body, (
+        "the schedule must target the drain's own task family — a schedule pointed at any other "
+        "family runs the wrong command on a clock and reports success"
+    )
+
+
+def test_the_scheduled_task_actually_runs_the_drain_command():
+    """The task definition is the only place the subcommand is named.
+
+    `python -m archimedes.scripts.ses_events` with no subcommand exits 2
+    (argparse: a subcommand is required), and `clear` would need an address.
+    Only `drain` consumes the queue, so this string is the difference between
+    a schedule that works and one that fails identically every tick.
+    """
+    container = _drain_task_container(_strip_comments(_read(SES_EVENTS_TF)))
+    assert '"archimedes.scripts.ses_events", "drain"' in container, (
+        "the scheduled task must run `python -m archimedes.scripts.ses_events drain`"
+    )
+
+
+def test_the_scheduled_task_is_told_which_queue_and_which_database():
+    """Both are hard requirements, and only one of them fails loudly.
+
+    Without SES_EVENTS_QUEUE_URL the command exits 2 with a message. Without
+    DATABASE_URL there is nothing to write the stamp through. The queue URL
+    comes off the resource, never a literal — same one-name-one-place rule as
+    the configuration set.
+    """
+    container = _drain_task_container(_strip_comments(_read(SES_EVENTS_TF)))
+    pattern = re.compile(
+        r'\{\s*name\s*=\s*"'
+        + QUEUE_URL_ENV
+        + r'"\s*,\s*value\s*=\s*'
+        + re.escape("aws_sqs_queue.ses_events.id")
+        + r"\s*\}"
+    )
+    assert pattern.search(container), (
+        f"the drain task must set {QUEUE_URL_ENV} = aws_sqs_queue.ses_events.id — without it every "
+        "scheduled invocation exits 2 without reading a single message"
+    )
+    assert "parameter/archimedes/prod/DATABASE_URL" in container, (
+        "the drain task must resolve DATABASE_URL from SSM — the stamp is a database write"
+    )
+
+
+def test_the_scheduler_may_only_run_this_one_family():
+    """An `ecs:RunTask` grant scoped to `*` would let a compromised schedule run anything."""
+    tf = _strip_comments(_read(SES_EVENTS_TF))
+    grant = tf.split('resource "aws_iam_role_policy" "ses_events_scheduler_run_task"', 1)
+    assert len(grant) == 2, "the scheduler role has no RunTask grant — every tick would fail AccessDenied"
+    body = grant[1].split("\nresource ", 1)[0]
+    assert "task-definition/${aws_ecs_task_definition.ses_events_drain.family}:*" in body, (
+        "the RunTask grant must name the drain family, not a wildcard"
+    )
+    assert 'ArnLike = { "ecs:cluster" = aws_ecs_cluster.main.arn }' in body, (
+        "the RunTask grant must be scoped to this cluster"
+    )
+    assert '"iam:PassedToService" = "ecs-tasks.amazonaws.com"' in body, (
+        "the PassRole grant must be scoped to ECS — the task role carries the queue grant and the "
+        "SSM secret access, and an unscoped PassRole hands both to anything that can assume the "
+        "scheduler role"
+    )
+
+
+def test_a_drain_that_stops_running_sets_off_an_alarm():
+    """The schedule must not become the next unwatched link.
+
+    A drain that silently stops — a revoked grant, a failing image, a disabled
+    schedule — puts the product straight back in #1804's original state, and
+    the ONLY externally visible symptom is a queue that stops emptying.
+    """
+    tf = _strip_comments(_read(SES_EVENTS_TF))
+    assert 'resource "aws_cloudwatch_metric_alarm" "ses_events_not_being_drained"' in tf, (
+        "nothing watches whether the drain is still running"
+    )
+    backlog = tf.split('resource "aws_cloudwatch_metric_alarm" "ses_events_not_being_drained"', 1)[1]
+    backlog = backlog.split("\nresource ", 1)[0]
+    assert 'metric_name = "ApproximateAgeOfOldestMessage"' in backlog, (
+        "age-of-oldest-message is the metric that says 'nothing is draining this'; a message COUNT "
+        "cannot tell a busy quarter-hour apart from a dead consumer"
+    )
+    assert "dimensions  = { QueueName = aws_sqs_queue.ses_events.name }" in backlog
+    assert "alarm_actions = [aws_sns_topic.alerts.arn]" in backlog, "an alarm that notifies nobody is a dashboard"
+    # An empty queue publishes no datapoints at all, and empty is the healthy
+    # steady state — `missing = breaching` would fire every quiet week, which
+    # is how an alarm gets muted and stops being a signal.
+    assert 'treat_missing_data = "notBreaching"' in backlog
+
+
+def test_a_message_the_parser_cannot_handle_sets_off_an_alarm():
+    """The DLQ is where an AWS schema change lands, and it is silent by default."""
+    tf = _strip_comments(_read(SES_EVENTS_TF))
+    assert 'resource "aws_cloudwatch_metric_alarm" "ses_events_dlq_not_empty"' in tf, (
+        "nothing watches the dead-letter queue — a parser behind an SES schema change would look "
+        "exactly like a quiet week"
+    )
+    dlq = tf.split('resource "aws_cloudwatch_metric_alarm" "ses_events_dlq_not_empty"', 1)[1]
+    dlq = dlq.split("\nresource ", 1)[0]
+    assert "dimensions  = { QueueName = aws_sqs_queue.ses_events_dlq.name }" in dlq
+    assert "threshold           = 0" in dlq, "one message in the DLQ is already the signal"
+    assert "alarm_actions = [aws_sns_topic.alerts.arn]" in dlq
+
+
+def test_the_drain_task_family_is_exported_for_the_operator():
+    outputs = _strip_comments(_read(OUTPUTS_TF))
+    assert 'output "ses_events_drain_task_definition_family"' in outputs, (
+        "the operator needs the family name to force a drain by hand (`aws ecs run-task`) when a "
+        "bounce needs clearing now rather than at the next tick"
+    )
