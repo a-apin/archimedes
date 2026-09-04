@@ -66,7 +66,8 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 #       ramping). Those alarms are added below, and the connections one is the
 #       single highest-value line in this file: it fires at ~03:48.
 #   (b) DETECTION LATENCY. 9m46s is the 5-of-5-minute window plus evaluation
-#       lag. The retune to 2-of-2 below buys back ~6 minutes of that.
+#       lag. The retune to 2-of-2 below drops three of the five one-minute
+#       datapoints, so it buys back about three minutes of that.
 #   (c) THE PAGE DID NOT REACH THE OWNER. Six delivered emails, zero failures,
 #       and it still had to be discovered by hand. NOTHING IN TERRAFORM FIXES
 #       THAT. It is an address/channel decision — a mailbox that is actually
@@ -145,18 +146,25 @@ resource "aws_cloudwatch_metric_alarm" "alb_unhealthy_hosts" {
   # fast tripwire.
   #
   # RE-TUNED AGAIN 2026-09-03 (issue #1818 P5, owner call): back to 2 minutes.
-  # MEASURED, not inferred: this alarm went OK -> ALARM at 13:38:46Z on an
-  # outage that began at 13:29 (CloudWatch alarm history, read 2026-09-03).
-  # 9m46s is the 5-of-5-minute window plus evaluation lag; 2-of-2 buys back
-  # about six of those minutes. Modest, and worth being clear-eyed about: six
-  # minutes was not what made this a 94-minute outage.
+  # MEASURED, not inferred (CloudWatch, read 2026-09-03): the incident began at
+  # 13:29Z; UnHealthyHostCount on this target group read 0 through 13:30Z and
+  # first read 2 at 13:31Z; this alarm went OK -> ALARM at 13:38:46Z. So the
+  # 9m46s decomposes as ~2 min before the ALB itself saw anything, 5 min of
+  # 5-of-5 window, and ~2m46s of evaluation/publication lag.
+  #
+  # 2-of-2 removes three of the five one-minute datapoints, so it fires about
+  # THREE minutes earlier — not the six an earlier draft of this comment
+  # claimed, which had quietly assumed the retuned alarm evaluates with no lag
+  # while the 5-of-5 alarm demonstrably lagged its own window by 2m46s.
+  # Modest, and worth being clear-eyed about: three minutes was not what made
+  # this a 94-minute outage.
   #
   # KNOWN COST, stated rather than discovered: the 2026-08-21 flapping was real
   # and this brings some of it back. `deployment_minimum_healthy_percent = 100`
   # (ecs.tf) means every rollout registers new targets — `initial` state counts
   # as unhealthy — while old ones drain, so expect transient fires on deploys,
   # and they go to a mailbox that already has an attention problem. If the
-  # noise proves worse than the six minutes, revert `datapoints_to_alarm` here
+  # noise proves worse than the three minutes, revert `datapoints_to_alarm` here
   # — that trade is the owner's, and the numbers on both sides are now known.
   alarm_name          = "${var.project_name}-alb-unhealthy-hosts"
   alarm_description   = "One or more backend targets are unhealthy for 2 min (#1818 P5)."
@@ -276,8 +284,10 @@ resource "aws_cloudwatch_metric_alarm" "aurora_connections_high" {
 #   ────────────────────────────────────    ────────────────────    ───────────
 #   Aurora connections 16 → 33, flat 11.5h  fires above 80          blind   → aurora_connections_wedge
 #   ECS MemoryUtilization 39% → 100%/90min  no ECS alarm at all     blind   → ecs_service_memory_high
-#   ALB 504s (ELB-generated, not target)    counts TARGET 5xx only  blind   → alb_elb_5xx_count
-#   UnHealthyHostCount = 2 from 13:29       fired at 13:38:46       slow    → retuned above to 2 min
+#   Target 5xx: four, 13:31-13:33Z          alb_5xx_rate_high       FIRED 13:39:16Z
+#     (the same four)                       alb_5xx_high (Sum > 10) stayed OK — four is not > 10
+#   ELB-generated 5xx: none at all, all day nothing watched it      unwatched → alb_elb_5xx_count
+#   UnHealthyHostCount = 2 from 13:31Z      fired at 13:38:46Z      slow    → retuned above to 2 min
 #   Aurora CPU ~4%, ECS CPU ~3%             cpu alarms              correctly quiet — never saturation
 #
 # HONESTY NOTE, because "we added alarms" is the kind of claim that rots.
@@ -290,16 +300,22 @@ resource "aws_cloudwatch_metric_alarm" "aurora_connections_high" {
 #                                      HOURS before the first alarm that
 #                                      actually fired on the day (13:38:46),
 #                                      while the fleet is still serving.
-#   ~13:32  alb_unhealthy_hosts        2-of-2 instead of 5-of-5: measured
-#                                      against the real 13:38:46 transition,
-#                                      worth about six minutes. Useful, small.
+#   ~13:36  alb_unhealthy_hosts        2-of-2 instead of 5-of-5 drops three of
+#                                      the five one-minute datapoints, so it
+#                                      fires ~3 min earlier. Measured:
+#                                      UnHealthyHostCount first breached 13:31Z
+#                                      and the 5-of-5 alarm transitioned at
+#                                      13:38:46Z. Useful, small.
 #   ~14:39  ecs_service_memory_high    the 39% → 100% ramp runs 13:31–15:01, so
 #                                      85% is crossed ~68 min in — a real
 #                                      detector, but 70 min into a 94-minute
 #                                      outage. Do not sell it as early warning.
-#   never   alb_elb_5xx_count          the ALB logged 2/1/1 504s per minute,
-#                                      four in the window, under a >= 5
-#                                      threshold at this traffic level.
+#   never   alb_elb_5xx_count          the ELB-side metric had NO datapoints at
+#                                      all on 2026-09-03 — the balancer
+#                                      generated no 5xx of its own. The alarm
+#                                      sits OK via treat_missing_data =
+#                                      notBreaching. It is general ELB-side
+#                                      cover, NOT an #1818 detector.
 #   never   ecs_service_cpu_high       CPU was 3% throughout.
 #
 # The last two are general saturation cover — they catch the ordinary shapes
@@ -312,13 +328,38 @@ resource "aws_cloudwatch_metric_alarm" "aurora_connections_high" {
 
 # The ALB's OWN 5xx, which is a different question from `alb_5xx_high` above.
 # That alarm counts HTTPCode_Target_5XX_Count — 5xx the backend produced and
-# the ALB relayed. On 2026-09-03 the backend produced no 5xx; it produced
-# nothing at all, and the ALB synthesised 504s because no target was healthy
-# and the one it tried timed out. Only HTTPCode_ELB_5XX_Count sees that.
+# the ALB relayed. This one counts HTTPCode_ELB_5XX_Count — 5xx the balancer
+# generated itself (typically 504: no healthy target, or the one it tried
+# timed out). Nothing in this account watched the ELB-side metric before.
+#
+# WHAT 2026-09-03 ACTUALLY SHOWS. An earlier revision of this comment had this
+# backwards, so it is written out with the query that settles it. Re-derived
+# from CloudWatch, account 037613907429 / us-east-1,
+# LoadBalancer = app/archimedes-alb/955aeff03e643d11:
+#
+#   * The balancer generated NO 5xx that day. HTTPCode_ELB_5XX_Count and the
+#     _500_/_502_/_503_/_504_ breakdowns each return ZERO datapoints for the
+#     whole of 2026-09-03, while RequestCount returns datapoints over the same
+#     minutes — so the metric was queried correctly and simply never published.
+#   * The only 5xx were four TARGET-side responses:
+#     HTTPCode_Target_5XX_Count = 2 / 1 / 1 at 13:31 / 13:32 / 13:33Z.
+#   * The target side was therefore NOT blind. `alb_5xx_rate_high` below
+#     (issue #418, metric math 100 * target_5xx / requests) went OK -> ALARM at
+#     13:39:16Z on exactly those four. `alb_5xx_high` stayed OK only because
+#     its threshold is 10 and four is not more than ten — not for want of a
+#     signal.
+#
+# So this alarm would NOT have fired on 2026-09-03 and it is NOT an #1818
+# detector. It is added as general ELB-side cover for a real recurring signal
+# that nothing watched: the same metric carried 1,254 errors on UTC day
+# 2026-08-20 (387 of them in the 04:00Z hour alone) and 306 on 2026-09-01.
 #
 # Dimensioned on LoadBalancer alone: HTTPCode_ELB_5XX_Count has no TargetGroup
-# dimension (AWS/ApplicationELB publishes it per LB and per AZ). Adding one
-# would silently select nothing and the alarm would sit in INSUFFICIENT_DATA.
+# dimension (list-metrics returns LoadBalancer and LoadBalancer+AvailabilityZone
+# only). Adding one would silently select nothing and the alarm would sit in
+# INSUFFICIENT_DATA. treat_missing_data = "notBreaching" for the reason the
+# 2026-09-03 numbers make concrete: the metric is ABSENT, not zero, on a day
+# with no ELB-side errors.
 #
 # Window caveat, stated because it bounds the claim: CloudWatch evaluates fixed
 # 5-minute windows, so four errors in one window plus three in the next never
