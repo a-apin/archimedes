@@ -116,6 +116,7 @@ nav:
       - generation-cost-instrumentation.md
       - corpus-architecture.md
       - specs/multi-agent-debate-spec.md
+      - specs/prompt-inventory.md
       - specs/strategy-fusion-spec.md
       - specs/strategy-passport-spec.md
       - specs/strategy-dsl-spec.md
