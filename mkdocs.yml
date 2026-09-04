@@ -153,7 +153,6 @@ nav:
       - specs/vault-semantics-spec.md
       - specs/commit-reveal-trace-spec.md
       - specs/ipfs-reasoning-traces-design-note.md
-      - specs/mnemonik-integration-scoping.md
       - specs/execution-trading-agent-society-spec.md
 
   - Security:
@@ -274,3 +273,17 @@ nav:
 
   - Archive:
       - archive/README.md
+
+# Pages that are internal by classification, kept off the public site. `exclude_docs`
+# takes gitignore-style patterns, one per line, and NOTHING after a pattern — a trailing
+# `# comment` becomes part of the pattern and then silently matches no file. Leaving a
+# page out of `nav:` is NOT enough on its own: mkdocs walks `docs_dir` and builds every
+# file it finds, and `validation.nav.omitted_files` is INFO, which `--strict` ignores.
+#
+# A link from a published page into an excluded one is reported at INFO too, so `--strict`
+# stays green while the link resolves nowhere. docs/README.md is the index every doc must
+# appear in (.github/scripts/docs_index.py), so its row for an excluded page is exactly
+# that case until #1832 lands the hook that rewrites such links to their GitHub blob URL.
+exclude_docs: |
+  # Third-party scoping memo: names a vendor and grades its maturity and maintainer.
+  specs/mnemonik-integration-scoping.md
