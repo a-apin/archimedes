@@ -167,8 +167,8 @@ TOOLS: tuple[dict, ...] = (
             "over five minutes old), 'error' and 'cancelled' are terminal. A job that is "
             "not yours returns 404, never 403 — existence is private, so a 404 here is not "
             "proof the id is wrong. Then read the AUTHORITATIVE verdict with "
-            "archimedes_strategy: the generation-time verdict and the live gate can "
-            "disagree, and the live gate wins."
+            "archimedes_strategy: the generation-time verdict and the stored verdict of "
+            "record can disagree, and the stored one wins."
         ),
     },
     {
@@ -178,14 +178,18 @@ TOOLS: tuple[dict, ...] = (
         "routes": ("GET /api/strategies/{strategy_id}",),
         "description": (
             "Read one strategy and its authoritative rigor verdict. Free and public — no "
-            "credential needed; a private strategy answers 404 rather than 401. "
-            "rigor_gate_status is four-state and each state means something different: "
-            "'pass' (real persisted returns exist and the live gate passed), 'fail' (real "
-            "returns exist and the gate failed at least one criterion — an honest outcome, "
-            "not an error), 'pending' (no real returns yet, so the gate could not run), "
-            "'degenerate' (real returns exist but are a zero-variance series). "
-            "passes_rigor_gate is true only for 'pass'. Never read 'pending' or 'fail' as "
-            "a soft yes."
+            "credential needed; a private strategy answers 404 rather than 401. This route "
+            "runs no gate: it serves the STORED verdict of record, graded once by the real "
+            "gate and persisted on the strategy's passport, so it agrees with "
+            "archimedes_passport for the same id by construction. rigor_gate_status is "
+            "four-state and each state means something different: 'pass' (the stored grade "
+            "passed), 'fail' (the stored grade failed at least one criterion — an honest "
+            "outcome, not an error), 'pending' (NO GATE HAS GRADED THIS ROW — either there "
+            "are no persisted returns to grade, or the grading job has not run over the "
+            "ones there are; read graded_at on archimedes_passport to tell them apart), "
+            "'degenerate' (the graded series was zero-variance). passes_rigor_gate is true "
+            "only for 'pass'. Never read 'pending' or 'fail' as a soft yes, and never read "
+            "'pending' as proof that no backtest exists."
         ),
     },
     {

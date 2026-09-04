@@ -302,6 +302,63 @@ async def test_every_surface_that_reports_the_verdict_reports_the_same_one(monke
 
 
 @pytest.mark.asyncio
+async def test_the_verify_surface_agrees_with_the_grade_it_was_computed_from(monkeypatch):
+    """The one read surface that still runs the gate must not contradict the badge.
+
+    ``GET /api/selection-bias/gate/{id}`` — the Strategy Passport's "verify"
+    trace and the vault deploy ladder — is the seam this PR deliberately leaves
+    open (``docs/adr/rigor-verdict-of-record.md``: admission is arguably the one
+    place a fresh recompute is safer). Leaving it open makes the *vintage* free
+    to differ; it does not make the COMPUTATION free to differ. ``grade_cohort``
+    is that route's cohort path lifted onto the write side, so over the same
+    data, at the same moment, the two must produce the same verdict and the same
+    four numbers. If they do not, the badge and the deploy answer disagree for a
+    reason that is not vintage — which is #1746 again, one surface over.
+
+    The look-ahead audit input is pinned on BOTH sides: ``_load_strategy_code``
+    resolves against ``os.getcwd()``, so under pytest the route reads no source
+    and fails that leg closed while the grading job (whose loader the fixture
+    patches) passes it. Patching both is what makes this compare the two
+    computations rather than the two working directories.
+
+    MUTATION: change ``num_trials`` in ``curated_grading.grade_cohort`` from 1 to
+    ``len(valid_returns)``. The stored DSR moves and the trace's does not.
+    """
+    from archimedes.api import selection_bias_routes as sbr
+    from archimedes.main import app
+
+    monkeypatch.setattr(sbr, "_load_strategy_code", lambda _path: _CLEAN_CODE)
+    _seed_the_reproduction(monkeypatch, grade=True)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        detail = await client.get(f"/api/strategies/{REPRO_ID}")
+        trace = await client.get(f"/api/selection-bias/gate/{REPRO_ID}")
+
+    assert detail.status_code == 200, detail.text
+    assert trace.status_code == 200, trace.text
+    body = detail.json()
+    computed = trace.json()
+
+    assert body["rigor_gate_status"] == "pass", (
+        f"fixture guard: the reproduction must reproduce the PASS case; got {body['rigor_gate_status']}"
+    )
+    assert computed["passes_all"] is True, (
+        "the verify/deploy surface recomputed a FAIL for an id every badge surface serves as "
+        f"`pass`: {computed['gate_details']}"
+    )
+    for served, recomputed in (
+        ("deflated_sharpe_ratio", "deflated_sharpe"),
+        ("dsr_p_value", "dsr_p_value"),
+        ("pbo_score", "pbo_score"),
+        ("out_of_sample_sharpe", "oos_sharpe"),
+    ):
+        assert body[served] == pytest.approx(computed[recomputed]), (
+            f"the stored {served} ({body[served]}) and the recomputed {recomputed} "
+            f"({computed[recomputed]}) came from two different computations over the same data"
+        )
+
+
+@pytest.mark.asyncio
 async def test_two_reads_of_the_same_id_cannot_drift(monkeypatch):
     """The issue's secondary finding: "Sharpe drifted between reads 37s apart".
 

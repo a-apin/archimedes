@@ -76,8 +76,9 @@ Conventions used below:
 | 10 | Paper-deploy | `POST /api/paper/deployments` | cookie |
 | 11 | Read the ledger back | `GET /api/paper/deployments/{deployment_id}` | cookie |
 
-Step 9 is not optional. Step 8's verdict is the *generation-time* one; step 9 is the live
-gate the server enforces. They can disagree, and step 9 wins.
+Step 9 is not optional. Step 8's verdict is the *generation-time* one; step 9 is the
+**stored verdict of record** — graded once by the real gate and served by every surface.
+They can disagree, and step 9 wins.
 
 Every row that says `cookie` accepts a key instead, **except step 4b itself** — see there
 for why.
@@ -565,9 +566,9 @@ is four-state and each state means something different:
 
 | `rigor_gate_status` | What it means | Deployable |
 |---|---|---|
-| `pass` | Real persisted returns exist; the live gate passed | yes |
-| `fail` | Real returns exist; the gate failed ≥1 criterion | no — and that is the honest outcome |
-| `pending` | No real persisted returns yet; the gate could not run | no |
+| `pass` | The stored grade passed | yes |
+| `fail` | The stored grade failed ≥1 criterion | no — and that is the honest outcome |
+| `pending` | **No gate has graded this row.** Either there are no persisted returns to grade, or the grading job has not run over the ones there are | no |
 | `degenerate` | Real returns exist but are a zero-variance series (broken data or a zero-trade backtest) | no |
 
 `passes_rigor_gate` is `true` only when the status is `pass`. **Never treat `pending` or
@@ -872,8 +873,8 @@ quote attached and step 6b is still yours to perform.
   Carry an `Idempotency-Key`, and let an undelivered run's credit pay for the next attempt.
 - **Do not treat a `pending` or `fail` rigor gate as a pass.** A gate that never says no is
   not a gate; this one says no, on real strategies, on purpose.
-- **Do not confuse the two verdicts.** Step 8's is generation-time; step 9's is the live
-  gate the server enforces. Cite step 9.
+- **Do not confuse the two verdicts.** Step 8's is generation-time; step 9's is the stored
+  verdict of record. Cite step 9.
 - **Do not assume a paper deployment is an on-chain position.** It is simulated: no chain,
   no funds, no gas. The real vault is `POST /api/vaults/create`, needs a linked wallet, and
   is documented in [`agent-api.md`](agent-api.md#deploy--create-a-vault-from-the-generated-strategy).
