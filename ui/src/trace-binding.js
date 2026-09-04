@@ -81,6 +81,12 @@ export function verificationTone(mode) {
 //   no_papers_claimed → the trace cites no papers; nothing was attempted
 //   corpus_unavailable → the corpus was unreachable; nothing was attempted
 //
+// Plus one case that carries no mode at all, because it carries no detail
+// object: a `verification_mode: 'anchored_only'` response, where the store
+// held no off-chain body and so recorded no cited set. That is not "not yet
+// checked" — it is "there is nothing to check", and it must not be rendered
+// with a "Run Verify" prompt the reader has already followed.
+//
 // The two `null` modes are NOT collapsed into a failure or a pass. An outage
 // that reads as "these papers do not exist" reports fabricated provenance;
 // one that reads as a pass is #1359's bug with a different name. And the mode
@@ -92,6 +98,24 @@ export function sourcePapersCopy(result) {
   const mode = r.source_paper_verification?.mode
   const d = r.source_paper_verification || {}
 
+  // `anchored_only`: the trace store is reachable and simply has no off-chain
+  // body for this trace, so `/verify` returns `papers_verified: null` and
+  // `source_paper_verification: null` (traces_routes.verify_trace). There is
+  // no consulted-paper list recorded anywhere, so nothing was checked and
+  // nothing CAN be — the generic fallback at the bottom of this function
+  // ("Run Verify to check…") would be a straight lie on this branch: Verify
+  // already ran, this IS its answer, and running it again returns the same
+  // null. Checked before the `mode` branches because there is no mode to
+  // read: the whole detail object is absent.
+  if (!mode && r.verification_mode === 'anchored_only') {
+    return {
+      mode: null,
+      tone: 'absent',
+      label: 'cited papers not recorded',
+      detail:
+        'Only the trace hash was anchored on-chain — no off-chain trace body was stored, so there is no record of which papers this decision cited and nothing to look up (verification_mode: anchored_only). Re-running Verify cannot change that.',
+    }
+  }
   if (mode === 'corpus_unavailable') {
     return {
       mode,

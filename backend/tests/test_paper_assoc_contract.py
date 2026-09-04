@@ -867,3 +867,130 @@ class TestVerifySourcePapersIsWired:
         assert split_consulted_entry("2301.1:abc") == ("2301.1", "abc")
         assert split_consulted_entry("2301.1:") == ("2301.1", "")
         assert split_consulted_entry("2301.1") == ("2301.1", "")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. "Corpus unavailable" must mean what SQLAlchemy actually raises
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCorpusUnavailableCoversRealFailures:
+    """``corpus_content_hashes`` converted only ``DBAPIError``.
+
+    ``OperationalError`` / ``InterfaceError`` / ``DatabaseError`` are all
+    ``DBAPIError`` subclasses, so a refused connect or a server that went away
+    was already handled. What was NOT handled is the family SQLAlchemy raises
+    *itself*, before a statement ever reaches the driver — above all
+    ``sqlalchemy.exc.TimeoutError``, the pool giving up on a checkout because
+    every connection is blocked. That is what a lock-wedged database looks like
+    from a read path (2026-09-03), and it escaped the catch: ``/verify`` 500'd
+    instead of reporting ``corpus_unavailable``, which is a worse answer than
+    either verdict — the endpoint whose whole job is to say what it checked
+    stopped answering at all.
+    """
+
+    @staticmethod
+    def _raising(exc):
+        """A ``get_session`` stand-in whose query raises ``exc``."""
+        from contextlib import contextmanager
+
+        class _Session:
+            def query(self, *_a, **_k):
+                raise exc
+
+            def close(self):
+                pass
+
+        @contextmanager
+        def _factory():
+            yield _Session()
+
+        return _factory
+
+    def test_corpus_unavailable_covers_what_sqlalchemy_actually_raises(self):
+        """The classes named in ``CORPUS_UNAVAILABLE_ERRORS``, checked against
+        the INSTALLED SQLAlchemy rather than assumed from their names."""
+        import sqlalchemy.exc as sa_exc
+        from archimedes.services.source_tracker import (
+            CORPUS_UNAVAILABLE_ERRORS,
+            CorpusUnavailable,
+            corpus_content_hashes,
+        )
+
+        # The three that were already covered — and the reason they were:
+        # every one of them IS a DBAPIError.
+        for cls in (sa_exc.OperationalError, sa_exc.InterfaceError, sa_exc.DatabaseError):
+            assert issubclass(cls, sa_exc.DBAPIError), f"{cls.__name__} is no longer a DBAPIError"
+
+        # The ones that were not, and are the point of this test.
+        escaped = (sa_exc.TimeoutError, sa_exc.DisconnectionError, sa_exc.ResourceClosedError)
+        for cls in escaped:
+            assert not issubclass(cls, sa_exc.DBAPIError), (
+                f"{cls.__name__} is now a DBAPIError — this test no longer proves anything"
+            )
+            assert issubclass(cls, CORPUS_UNAVAILABLE_ERRORS), f"{cls.__name__} is not in CORPUS_UNAVAILABLE_ERRORS"
+
+        # …and each is actually converted, not merely listed.
+        for cls in (*escaped, sa_exc.OperationalError):
+            exc = cls("boom", None, Exception("boom")) if issubclass(cls, sa_exc.DBAPIError) else cls("boom")
+            with patch("archimedes.db.get_session", self._raising(exc)), pytest.raises(CorpusUnavailable):
+                corpus_content_hashes(["2301.00001"])
+
+    def test_a_real_pool_timeout_is_reported_as_an_outage(self):
+        """The end-to-end shape, not a hand-constructed exception.
+
+        A pool with one connection, already checked out, is the smallest honest
+        model of "every connection is blocked". The class this produces is
+        whatever the installed SQLAlchemy produces — that is the whole point of
+        raising it for real rather than naming it.
+        """
+        import sqlalchemy as sa
+        from archimedes.services.source_tracker import CorpusUnavailable, corpus_content_hashes
+        from sqlalchemy.orm import sessionmaker
+
+        engine = sa.create_engine(
+            "sqlite://",
+            poolclass=sa.pool.QueuePool,
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout=0.05,
+        )
+        held = engine.connect()  # the only connection in the pool
+        try:
+            with (
+                patch("archimedes.db.get_session", sessionmaker(bind=engine)),
+                pytest.raises(CorpusUnavailable),
+            ):
+                corpus_content_hashes(["2301.00001"])
+        finally:
+            held.close()
+            engine.dispose()
+
+    def test_a_bug_in_this_function_is_NOT_laundered_into_an_outage(self):
+        """GUARD, adversarial: the catch must stay narrow.
+
+        Widening to ``SQLAlchemyError`` would swallow a misconfigured URL
+        (``ArgumentError``) and a query this module built wrong
+        (``InvalidRequestError``), and a bug that reports itself as an outage
+        is the defect ``resolve_paper_hashes`` already shipped once.
+        """
+        import sqlalchemy.exc as sa_exc
+        from archimedes.services.source_tracker import corpus_content_hashes
+
+        for exc in (
+            AttributeError("PaperRecord has no attribute 'content_hsah'"),
+            sa_exc.InvalidRequestError("bad query"),
+            sa_exc.ArgumentError("bad url"),
+            sa_exc.NoSuchModuleError("no dialect"),
+        ):
+            with patch("archimedes.db.get_session", self._raising(exc)), pytest.raises(type(exc)):
+                corpus_content_hashes(["2301.00001"])
+
+    def test_no_ids_never_touches_the_database(self):
+        """An empty request is answered without a session, so an outage that
+        coincides with one is not reported as an outage."""
+        from archimedes.services.source_tracker import corpus_content_hashes
+
+        with patch("archimedes.db.get_session", self._raising(AssertionError("must not open a session"))):
+            assert corpus_content_hashes([]) == {}
+            assert corpus_content_hashes(["", "   "]) == {}

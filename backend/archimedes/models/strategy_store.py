@@ -4,6 +4,51 @@ Every strategy generated (fusion, architect, curated) is persisted here with
 a keccak256 content hash for dedup and on-chain anchoring.  Status transitions
 (candidate → live, demotions) are tracked.  Source paper provenance links
 strategies to their origin arXiv documents for full traceability.
+
+Legacy rows are not rewritten (#1637)
+-------------------------------------
+
+``upsert_strategy`` normalizes ``source_papers`` to ``assoc/v1``
+(``models/paper_assoc.py``) before it hashes or stores, so every row written
+from here on holds one shape. Rows written before it keep their writer's
+legacy shape: this PR redefines the write path and its migration adds columns
+to ``passport_paper_refs`` only — neither touches a stored ``source_papers``
+value. **So the column holds two shapes, and it will until PR-2's pass.**
+
+On read, exactly one path normalizes: ``to_strategy_passport``, via
+``paper_assoc.cited``. ``to_dict``, ``strategies_by_paper`` and
+``resolve_source_papers`` return the stored JSON verbatim — a legacy row and
+an ``assoc/v1`` row do **not** decode to the same dict on those paths, and no
+comment here should say they do.
+
+What makes the mixed column survivable is narrower than "everything
+normalizes", and worth stating exactly, because it is the property PR-2 must
+not silently lose:
+
+* Every verbatim path addresses an entry through ``.get()`` on ``arxiv_id``
+  (and, on the ``/generated`` render path, ``title`` and ``year``). Those are
+  the keys every historical shape either carries or omits, so an omitted
+  legacy key reads ``None`` in the same place ``assoc/v1`` stores ``None``.
+  ``api/strategies_routes._resolve_source_papers`` then resolves a blank title
+  from the corpus, and the Library card prints ``resolved_title`` — never a
+  raw stored key.
+* The ``assoc/v1``-only keys — ``role``, ``content_hash``, ``contribution``,
+  ``selection_rank``, ``semantic_score``, ``schema`` — are *additive*. No
+  verbatim reader requires one, so their absence on a legacy row is not a
+  decode failure; it is simply less metadata.
+* The one reader that branches on ``role`` normalizes first, and
+  ``normalize_assoc`` defaults a role-less legacy entry to ``cited`` — which
+  is what every pre-#1637 association was.
+* Identity is never exposed to the difference at all: ``_compute_content_hash``
+  only ever sees the list ``upsert_strategy`` already normalized, never a
+  stored row.
+
+The standing cost, stated rather than implied: a legacy row's associations
+cannot gain ``role`` / ``content_hash`` / rank / score until they are
+normalized, and any NEW reader that needs an ``assoc/v1`` key must call
+``normalize_assocs`` itself rather than assume the column. Deferring the
+normalization is a deviation from the owner's PR-1 list and is called out as
+one on the PR, with the reason and the sign-off it needs.
 """
 
 from __future__ import annotations
@@ -52,12 +97,15 @@ class StrategyRecord(Base):
     # Generation provenance
     generation_method = Column(String(32), nullable=False)  # fusion|architect|curated
     # JSON list of ``assoc/v1`` records — see ``models/paper_assoc.py`` for the
-    # key set and the honesty rules. Normalized on write by upsert_strategy, so
-    # every row written from here on holds one shape regardless of which writer
-    # produced it (#1637). Rows written BEFORE that still hold a legacy shape;
-    # every reader in this module goes through the normalizer, so both decode
-    # identically. This comment previously claimed ``[{arxiv_id, sha256}]``,
-    # which was a FOURTH shape nothing actually emitted.
+    # key set and the honesty rules. Normalized on WRITE by ``upsert_strategy``,
+    # so every row written from here on holds one shape whichever writer
+    # produced it (#1637). Rows written BEFORE that keep their writer's legacy
+    # shape and NOTHING in this PR rewrites them — see "Legacy rows are not
+    # rewritten" in the module docstring for what the column therefore actually
+    # holds, which readers normalize, and which hand the stored JSON back
+    # verbatim.
+    # This comment previously claimed ``[{arxiv_id, sha256}]``, which was a
+    # FOURTH shape nothing actually emitted.
     source_papers = Column(Text, nullable=False, default="[]")
     provenance_hash = Column(String(66), nullable=True)
 
@@ -337,8 +385,11 @@ def upsert_strategy(
     passport instead of no card at all.
 
     ``source_papers`` is normalized to ``assoc/v1`` here (#1637) regardless of
-    which writer's legacy shape arrived, so the column holds ONE shape and the
-    hash sees paper identity only.
+    which writer's legacy shape arrived, so every row written from here on
+    holds one shape and the hash sees paper identity only. It does NOT make the
+    whole column one shape: rows stored before this PR keep their legacy shape
+    until PR-2's pass (see "Legacy rows are not rewritten" in the module
+    docstring).
     """
     from archimedes.models.paper_assoc import normalize_assocs
 
@@ -439,7 +490,28 @@ def upsert_strategy(
 
 
 def resolve_source_papers(session: Session, strategy_id: str) -> list[dict]:
-    """Given a strategy/trace → its source_papers (arxiv_id + sha256)."""
+    """One strategy's stored ``source_papers`` list, decoded and **not** normalized.
+
+    Returns the column exactly as it sits on disk, so what comes back is
+    ``assoc/v1`` records for rows written since #1637 and the writing agent's
+    legacy shape for older ones (see "Legacy rows are not rewritten" in the
+    module docstring). A caller that needs one shape must run
+    ``paper_assoc.normalize_assocs`` over the result; a caller that only reads
+    ``arxiv_id`` / ``title`` / ``year`` with ``.get()`` does not have to.
+
+    The old summary said "arxiv_id + sha256". ``sha256`` was one writer's
+    spelling of the corpus hash, it was ``""`` on every row it ever appeared
+    on, and ``normalize_assoc`` now folds it (and ``pdf_sha256``) into
+    ``content_hash`` — so no writer emits that key any more and nothing here
+    ever guaranteed the pair.
+
+    An unknown ``strategy_id`` returns ``[]`` — indistinguishable from a
+    strategy that cites nothing, which is why this is a convenience reader and
+    not a provenance check. It has no production caller today: the ``/generated``
+    route reads the column through ``to_dict`` and the passport path through
+    ``to_strategy_passport``. A corrupt column raises out of ``json.loads``
+    rather than degrading, the same as ``to_dict``.
+    """
     record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
     if not record:
         return []

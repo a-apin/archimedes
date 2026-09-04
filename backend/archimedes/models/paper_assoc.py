@@ -29,10 +29,13 @@ The fix is one shape and one identity:
   so ``set(a) == set(b)`` for any two associations from any two writers. The
   guarantee is enforced at ONE choke point rather than at N call sites:
   ``strategy_store.upsert_strategy`` runs :func:`normalize_assocs` over
-  whatever a writer handed it, so the stored column holds ``assoc/v1``
-  whichever historical shape arrived. (``main.py``'s example seed builds a
-  ``StrategyRecord`` directly, bypassing that choke point, so it normalizes
-  itself via :func:`paper_ref_to_assoc`.)
+  whatever a writer handed it, so every row written from here on holds
+  ``assoc/v1`` whichever historical shape arrived. (``main.py``'s example seed
+  builds a ``StrategyRecord`` directly, bypassing that choke point, so it
+  normalizes itself via :func:`paper_ref_to_assoc`.) On write only — rows
+  stored earlier keep their legacy shape until PR-2 normalizes them, and
+  ``strategy_store``'s module docstring ("Legacy rows are not rewritten") says
+  which readers therefore see which shape.
 * **Identity** — :func:`assoc_identity` projects an association list down to
   ``(handle, role)`` pairs, where the handle is the arXiv id, or — for the
   curated papers that have none — the DOI or the case-folded title

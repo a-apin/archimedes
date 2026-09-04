@@ -27,20 +27,41 @@ dry-run."* So both halves of that data rewrite are held for PR-2, and this
 revision is a pure ``ADD COLUMN`` / ``DROP COLUMN`` pair — reversible, byte
 for byte.
 
-**The ``source_papers`` normalization is held back with the re-stamp, not
-separately from it, and that is load-bearing.** PR-2's gate is a read-only
-dry-run that recomputes each row's *historical* hash with the frozen
-pre-#1637 function over that row's **stored ``source_papers`` JSON**, and
-re-stamps only the rows where the recomputation reproduces what is actually
-stored. Normalizing the column first destroys that input: the legacy hash
-would no longer reproduce for any row, the dry-run would report a ~0 reproduce
-rate, and the re-stamp it gates would correctly refuse to do anything —
-permanently. (#1688's own ``test_assoc_migration_upgrade_is_idempotent``
-relies on exactly this property to prove a second pass is a no-op.) The
-normalization therefore belongs in the same pass that reads the raw shape, and
-it costs nothing to wait: every reader in ``strategy_store`` runs its input
-through ``paper_assoc.normalize_assocs``, so a legacy-shaped row and an
-``assoc/v1`` row decode identically today.
+**Holding the ``source_papers`` normalization back is a DEVIATION from the
+owner's PR-1 list, and it needs the owner's sign-off** — the list says "new
+``passport_paper_refs`` columns + ``source_papers`` normalization". The reason
+it is deferred, and the true cost of deferring it, both belong here rather
+than in a merge comment.
+
+The reason is ordering. PR-2 is specified to gate its re-stamp on a read-only
+dry-run that recomputes each row's *historical* hash with the frozen pre-#1637
+function **over that row's stored ``source_papers`` JSON**, and to re-stamp
+only rows where the recomputation reproduces what is stored. That dry-run's
+only input is the raw stored shape. Normalize the column in this revision and
+the input is gone before the gate ever runs: the legacy hash reproduces for no
+row, the dry-run reports a ~0 reproduce rate, and the re-stamp it gates
+correctly refuses to act — permanently. (#1688's own
+``test_assoc_migration_upgrade_is_idempotent`` leans on the same property to
+prove a second pass is a no-op.) So the normalization belongs in the pass that
+reads the raw shape, not ahead of it. That is a claim about PR-2's *design*,
+not about code that exists yet — which is precisely why it is an owner call
+and not a maintainer's tidy-up.
+
+The cost of waiting, stated honestly rather than waved away: **the column
+holds two shapes until PR-2 lands.** It is NOT true that every reader
+normalizes — only ``StrategyRecord.to_strategy_passport`` does, via
+``paper_assoc.cited``. ``to_dict``, ``strategies_by_paper`` and
+``resolve_source_papers`` hand the stored JSON back verbatim, so a legacy row
+and an ``assoc/v1`` row decode to different dicts on those paths. What holds
+instead is narrower: every verbatim path addresses an entry through ``.get()``
+on ``arxiv_id`` (plus ``title``/``year`` on the ``/generated`` render path),
+which every historical shape either carries or omits, and an omitted key reads
+``None`` exactly where ``assoc/v1`` stores ``None``; the ``assoc/v1``-only
+keys are additive and no verbatim reader requires one; and the single reader
+that branches on ``role`` normalizes first, where a role-less legacy entry
+defaults to ``cited`` — what every pre-#1637 association was. The full
+argument, with the standing cost, is in ``strategy_store``'s module docstring
+under "Legacy rows are not rewritten".
 
 The one interim cost, stated rather than hidden: ``_compute_content_hash`` now
 produces a value no pre-existing row carries, so re-upserting the *same*

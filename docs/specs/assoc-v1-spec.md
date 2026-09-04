@@ -100,10 +100,21 @@ the link survives the write. Neither is identity — see § 3.
 ### Where normalization happens
 
 At **one choke point**, not at N call sites: `strategy_store.upsert_strategy`
-runs `normalize_assocs` over whatever a writer handed it, so the stored column
-holds `assoc/v1` whichever historical shape arrived. `main.py`'s example seed
-builds a `StrategyRecord` directly, bypassing that choke point, so it
-normalizes itself via `paper_ref_to_assoc`.
+runs `normalize_assocs` over whatever a writer handed it, so every row written
+from here on holds `assoc/v1` whichever historical shape arrived. `main.py`'s
+example seed builds a `StrategyRecord` directly, bypassing that choke point, so
+it normalizes itself via `paper_ref_to_assoc`.
+
+**On write only.** Rows stored before this landed keep their writer's legacy
+shape, and neither PR-1 nor its migration rewrites one — that pass is PR-2's,
+and holding it back is a deviation from the owner's PR-1 list that the PR calls
+out for sign-off. So the column holds two shapes in the meantime, and exactly
+one reader normalizes on the way out (`StrategyRecord.to_strategy_passport`,
+via `cited`). `to_dict`, `strategies_by_paper` and `resolve_source_papers`
+return the stored JSON verbatim. What makes that survivable is that those paths
+address an entry only through `.get()` on keys every historical shape either
+carries or omits — the full argument, and the standing cost, are in
+`strategy_store`'s module docstring under "Legacy rows are not rewritten".
 
 `_CandidateResult.source_papers` is the pre-store carrier, and it holds exactly
 these keys — the `mechanism` / `spec_elements` pair included, because #1739 made

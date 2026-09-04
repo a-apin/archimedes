@@ -17,7 +17,44 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
+import sqlalchemy.exc as sa_exc
+
 logger = logging.getLogger(__name__)
+
+#: What "the corpus is unreachable" actually raises on the installed
+#: SQLAlchemy 2.0.x — verified against it by
+#: ``test_corpus_unavailable_covers_what_sqlalchemy_actually_raises``, not
+#: assumed from the class names.
+#:
+#: ``DBAPIError`` alone is NOT enough, which is the bug this constant exists to
+#: fix. It *is* the base of ``OperationalError`` / ``InterfaceError`` /
+#: ``DatabaseError`` — a refused connect, a server that went away, an aborted
+#: statement — so those three were already covered. But SQLAlchemy raises its
+#: OWN exceptions, not the driver's, when the failure happens before a
+#: statement ever reaches the driver, and none of those inherit from
+#: ``DBAPIError``:
+#:
+#: * ``TimeoutError`` — the pool could not hand out a connection within
+#:   ``pool_timeout`` because every one of them is blocked. That is precisely
+#:   what a lock-wedged database looks like from here (the 94-minute
+#:   ``AccessShareLock`` wedge on 2026-09-03), and it is the one that escaped:
+#:   ``/verify`` returned a 500 instead of reporting ``corpus_unavailable``.
+#:   Note this is ``sqlalchemy.exc.TimeoutError``, not the builtin.
+#: * ``DisconnectionError`` — the pool decided the connection is dead.
+#: * ``ResourceClosedError`` — the connection or result was closed underneath
+#:   us mid-read.
+#:
+#: Deliberately NOT widened to ``SQLAlchemyError``: that would swallow
+#: ``ArgumentError`` / ``NoSuchModuleError`` (a misconfigured URL) and
+#: ``InvalidRequestError`` (a query this module built wrong), and a bug that
+#: reports itself as an outage is the failure mode the docstring below is
+#: about.
+CORPUS_UNAVAILABLE_ERRORS: tuple[type[Exception], ...] = (
+    sa_exc.DBAPIError,
+    sa_exc.TimeoutError,
+    sa_exc.DisconnectionError,
+    sa_exc.ResourceClosedError,
+)
 
 
 class CorpusUnavailable(RuntimeError):
@@ -69,13 +106,17 @@ def corpus_content_hashes(arxiv_ids: Iterable[str]) -> dict[str, str]:
     corpus does not have this paper", which is the distinction every caller
     here actually needs. Ids absent from the corpus are absent from the result.
 
-    Raises :class:`CorpusUnavailable` when the database is unreachable. Bugs in
-    this function (a wrong model class, a malformed query) are deliberately NOT
-    converted — the imports sit outside the ``try`` and only the DBAPI family is
-    caught, so a typo cannot masquerade as an outage. That exact defect shipped
-    once already: ``resolve_paper_hashes`` imported a class name that did not
-    exist, swallowed the ``ImportError``, and returned "nothing resolves"
-    permanently and indistinguishably from the honest empty answer.
+    Raises :class:`CorpusUnavailable` when the database is unreachable — for
+    the full set of exception classes that means, and why ``DBAPIError`` alone
+    was not it, see :data:`CORPUS_UNAVAILABLE_ERRORS`.
+
+    Bugs in this function (a wrong model class, a malformed query) are
+    deliberately NOT converted — the imports sit outside the ``try`` and the
+    catch names connection-level failures only, so a typo cannot masquerade as
+    an outage. That exact defect shipped once already: ``resolve_paper_hashes``
+    imported a class name that did not exist, swallowed the ``ImportError``,
+    and returned "nothing resolves" permanently and indistinguishably from the
+    honest empty answer.
 
     **Opens its OWN session, so it must only be called from a caller that
     holds none.** ``/verify`` qualifies (its state lives in Redis). A caller
@@ -84,14 +125,16 @@ def corpus_content_hashes(arxiv_ids: Iterable[str]) -> dict[str, str]:
     wedge that took production down for 94 minutes on 2026-09-03
     (``docs/incidents/2026-09-03-paper-advance-ddl-wedge.md``). That is why
     ``paper_trace.resolve_paper_hashes`` keeps its own caller-session +
-    SAVEPOINT lookup instead of delegating here: same DBAPI-only catch rule,
-    different session ownership, and the difference is load-bearing.
+    SAVEPOINT lookup instead of delegating here, and the difference is
+    load-bearing. Its catch is still ``DBAPIError`` alone, correctly: it runs
+    inside a connection the caller already holds, so the pool-level failures
+    listed at :data:`CORPUS_UNAVAILABLE_ERRORS` — a checkout that times out
+    above all — cannot arise on that path. This one takes a connection, so they
+    can.
     """
     wanted = sorted({i.strip() for i in (arxiv_ids or []) if i and i.strip()})
     if not wanted:
         return {}
-
-    from sqlalchemy.exc import DBAPIError
 
     from archimedes.db import get_session
     from archimedes.models.corpus_store import PaperRecord
@@ -99,7 +142,7 @@ def corpus_content_hashes(arxiv_ids: Iterable[str]) -> dict[str, str]:
     try:
         with get_session() as session:
             rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(wanted)).all()
-    except DBAPIError as exc:
+    except CORPUS_UNAVAILABLE_ERRORS as exc:
         logger.warning("source_tracker: corpus content-hash lookup failed", exc_info=True)
         raise CorpusUnavailable("corpus content-hash lookup failed") from exc
 

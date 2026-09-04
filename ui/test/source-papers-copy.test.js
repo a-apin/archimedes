@@ -81,6 +81,74 @@ test("a trace that cites no papers reports an absence, not a verdict", () => {
 	assert.ok(!/verified/i.test(c.label));
 });
 
+// ── 2b. anchored_only: nothing to check, and no "Run Verify" prompt ─────
+//
+// `/verify`'s anchored_only branch (traces_routes.verify_trace) returns
+// `papers_verified: null` with `source_paper_verification: null` — the store
+// had no off-chain body, so no cited set was ever recorded. Reasoning.jsx
+// renders the line anyway (`papers_verified !== undefined` is true for null),
+// so before this branch existed the reader got the generic fallback: "Run
+// Verify to check the cited papers against the corpus." They HAD just run
+// Verify, and running it again returns the same null forever.
+
+const anchoredOnly = {
+	is_verified: true,
+	verification_mode: "anchored_only",
+	papers_verified: null,
+	source_paper_verification: null,
+};
+
+test("anchored_only says there is nothing to check, not 'run Verify'", () => {
+	const c = sourcePapersCopy(anchoredOnly);
+	assert.notEqual(c.tone, "verified");
+	assert.notEqual(c.tone, "failed");
+	// The lie this branch exists to remove.
+	assert.ok(
+		!/run verify/i.test(c.detail),
+		`anchored_only tells the reader to run a check that can never run: ${c.detail}`,
+	);
+	// …and it says WHY, naming the mode a reader can look up (Q8's
+	// surface-the-mode rule).
+	assert.match(c.detail, /no off-chain trace body was stored/i);
+	assert.match(c.detail, /anchored_only/);
+	assert.equal(c.label, "cited papers not recorded");
+	// Distinct from the "this trace cites nothing" case above — that is a fact
+	// about the trace, this is a gap in what was stored.
+	assert.notEqual(c.label, sourcePapersCopy({
+		papers_verified: null,
+		source_paper_verification: { mode: "no_papers_claimed", checked: 0, missing: [], hash_mismatch: [] },
+	}).label);
+	assert.ok(!/verified/i.test(c.label));
+});
+
+test("the anchored_only branch does not swallow a real corpus answer", () => {
+	// Adversarial companion: a response that IS anchored_only but somehow
+	// carries a real detail object must report the real result, not the
+	// nothing-to-check copy — the branch is keyed on the ABSENCE of a mode.
+	const c = sourcePapersCopy({
+		verification_mode: "anchored_only",
+		papers_verified: false,
+		source_paper_verification: {
+			mode: "checked",
+			checked: 1,
+			verified: false,
+			missing: ["2999.99999"],
+			hash_mismatch: [],
+		},
+	});
+	assert.equal(c.tone, "failed");
+	assert.match(c.detail, /2999\.99999/);
+});
+
+test("a hash_matched result with no paper detail still says 'run Verify'", () => {
+	// The fallback is still reachable and still correct: this shape is a
+	// response from a backend that predates the source-paper check, where the
+	// check genuinely has not run rather than being impossible.
+	const c = sourcePapersCopy({ verification_mode: "hash_matched", papers_verified: null });
+	assert.match(c.label, /not checked/);
+	assert.match(c.detail, /Run Verify/);
+});
+
 // ── 3. The failure case names the papers ────────────────────────────────
 
 test("a missing paper is a failure that names the id", () => {
