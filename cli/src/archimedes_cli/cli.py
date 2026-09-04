@@ -23,11 +23,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import os
+import re
 import sys
 import time
 import urllib.parse
 from collections.abc import Iterator
+from datetime import date as _Date
 
 import click
 import httpx
@@ -177,6 +180,92 @@ def _response_detail(response: httpx.Response) -> str:
     return str(body)
 
 
+# `POST /api/rigor/verify`'s own bounds (#1803), mirrored so an obviously-bad
+# invocation is refused before a request is spent. The SERVER is the authority:
+# these are pre-flight conveniences, and every limit is enforced there too.
+_MAX_TRIALS = 10_000
+
+# The two per-bar shape rules from `ReturnPoint` (rigor_verify_routes.py),
+# mirrored for the same reason and with the same values. See the block above
+# `_parse_returns_csv` for why the CLI checks these locally at all.
+_MAX_ABS_DAILY_RETURN = 1.0
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# The minimum evaluation window the endpoint publishes: 250 daily bars, one
+# trading year (owner decision, #1803). Mirrored here — unlike the row CEILING,
+# which is an infrastructure number — because it is a product promise printed in
+# `--help`, and making a caller spend one of five requests a minute to be told it
+# helps nobody. The server re-checks it and stays the authority.
+_MIN_RETURN_ROWS = 250
+
+# The reason codes `POST /api/rigor/verify` attaches to an input refusal
+# (`INPUT_REJECTED_CODES` in backend/archimedes/api/rigor_verify_routes.py,
+# #1803). Mirrored here rather than imported for the same reason
+# `RISK_APPETITES` is: this package does not depend on the backend, and the
+# server stays the authority — an unrecognised code still renders, it just
+# renders through the generic path below.
+_INPUT_REJECTED_CODES = frozenset(
+    {
+        "invalid_date",
+        "duplicate_date",
+        "unsorted_dates",
+        "non_finite",
+        "out_of_range",
+        "window_too_short",
+        "too_many_rows",
+        "trials_out_of_range",
+        # The pre-window spelling of the same refusal, kept because `--api-url`
+        # can point at any host: an older server answers `too_short` on a short
+        # series, and it should still render through the coded path with a
+        # remedy rather than degrading to a generic HTTP error.
+        "too_short",
+    }
+)
+
+# One line of "what to do about it" per code. The server's own sentence is
+# always printed first and is never replaced by these — it says what was
+# rejected; this says what to change.
+_INPUT_REJECTED_REMEDY = {
+    "invalid_date": "Write dates as YYYY-MM-DD. A two-column CSV of `2026-01-02,0.0013` rows is the expected shape.",
+    "duplicate_date": "One row per trading day. Duplicates are refused, not merged — decide which bar is real.",
+    "unsorted_dates": (
+        "Sort the CSV by date, oldest first (`sort -t, -k1,1 returns.csv`). The out-of-sample split is "
+        "positional, so row order IS the time order it grades; the server refuses to re-sort for you "
+        "because that would grade a series you did not send."
+    ),
+    "non_finite": "Remove NaN/inf bars (or drop those days). A non-finite bar cannot be graded.",
+    "out_of_range": (
+        "Returns are simple decimals, not percentages: +1.3% is 0.013, not 1.3. |r| > 1.0 in one day is "
+        "refused because it silently inflates the Sharpe the whole verdict rests on."
+    ),
+    "window_too_short": (
+        "Send at least one trading year of daily bars (250). Below that the endpoint returns a refusal "
+        "rather than a verdict — a short series is not graded and then flagged, it is not graded at all, "
+        "because a `passes` field with a warning next to it gets read as a pass."
+    ),
+    "too_short": "Send a longer series — this host's floor predates the 250-bar evaluation window.",
+    "too_many_rows": "Split the series or aggregate to a coarser frequency.",
+    "trials_out_of_range": "--trials is the number of variants you actually tried: 1..10000.",
+}
+
+
+def _input_rejection(response: httpx.Response) -> tuple[str, str] | None:
+    """``(reason_code, server_message)`` when the API refused the BODY with one
+    of the verify endpoint's explicit reason codes (#1803), else ``None``.
+
+    The code is what a CI job branches on; the message is the server's own
+    sentence, never one this CLI invented.
+    """
+    detail = _detail(response)
+    if not isinstance(detail, dict) or detail.get("error") != "input_rejected":
+        return None
+    reason = detail.get("reason")
+    if reason not in _INPUT_REJECTED_CODES:
+        return None
+    message = detail.get("message")
+    return reason, message if isinstance(message, str) and message else reason
+
+
 def _handle_api_error(command: str, *, as_json: bool, response: httpx.Response) -> None:
     """Turn a non-2xx API response into a :func:`_fail` call. Never returns."""
     if response.status_code == 401:
@@ -196,6 +285,19 @@ def _handle_api_error(command: str, *, as_json: bool, response: httpx.Response) 
             message="rate limited by the API. Wait a moment and try again.",
         )
     if response.status_code == 422:
+        rejection = _input_rejection(response)
+        if rejection is not None:
+            reason, server_message = rejection
+            remedy = _INPUT_REJECTED_REMEDY.get(reason)
+            _fail(
+                command,
+                as_json=as_json,
+                exit_code=exits.USAGE,
+                error="input_rejected",
+                message=f"the API rejected the input ({reason}): {server_message}",
+                extra={"reason": reason},
+                lines=[remedy] if remedy else None,
+            )
         _fail(
             command,
             as_json=as_json,
@@ -386,12 +488,72 @@ def meter(api_url: str | None, as_json: bool) -> None:
     sys.exit(exits.OK)
 
 
-def _parse_returns_csv(source: str) -> list[dict]:
+def _reject_local_input(*, as_json: bool, error: str, reason: str, message: str) -> None:
+    """A locally-caught violation of the verify input contract. Never returns.
+
+    ``error`` is this CLI's own stable string and ``reason`` is the SERVER's code for
+    the identical refusal, exactly the split ``--trials`` already uses: a CI job
+    branches on one ``reason`` whichever side caught the bad row. The exit code is
+    ``USAGE``, never ``GATE_FAILED`` — a malformed file is not a verdict about a
+    strategy, and ``exits.py`` exists to keep those two apart.
+    """
+    _fail(
+        "verify",
+        as_json=as_json,
+        exit_code=exits.USAGE,
+        error=error,
+        message=message,
+        extra={"reason": reason},
+        lines=[_INPUT_REJECTED_REMEDY[reason]],
+    )
+
+
+# ── The local mirror of the verify input contract (#1803 review round 2) ──
+#
+# WHY THE CLI CHECKS AT ALL. `httpx` serialises the body with
+# `json.dumps(..., allow_nan=False)`, so a CSV carrying `nan`/`inf` did not fail
+# at the server with `reason: non_finite` — it raised `ValueError` inside the
+# request build, printed a traceback, and exited **1**. Exit 1 is `GATE_FAILED`,
+# which `exits.py` reserves for "the gate ran and the answer was no": a
+# mistyped column was being reported to CI as a research finding, and `--json`
+# emitted nothing parseable at all. The other rules are mirrored alongside it so
+# one bad file gets one shape of answer rather than two.
+#
+# WHAT IT IS NOT. This is a mirror, never a replacement. The server re-checks
+# every one of these; a row this misses is still refused there, with the same
+# code, and the response's sentence is still the one printed. Nothing is sorted,
+# deduplicated, dropped or coerced here either — the CLI refuses exactly what
+# the server refuses, and repairs nothing.
+#
+# THE WINDOW **IS** MIRRORED (owner decision, #1803). 250 daily bars — one
+# trading year — is a published product rule, not the gate's shifting arithmetic:
+# a caller who sends 200 bars is going to be refused, and making them spend a
+# rate-limited round trip (5/minute) to be told a number that is printed in
+# `--help` is a worse answer than saying it here. It is checked FIRST, before any
+# per-row rule, because that is the order the server's own validators run in, so
+# one file gets one code whichever side catches it.
+#
+# WHAT IS STILL NOT MIRRORED: the ceiling (`too_many_rows`). It tracks the edge's
+# payload budget (#1749) rather than a product promise, so a CLI that hard-coded
+# it could refuse a series a newer server accepts. `--trials` keeps its local
+# bound because it is an argument THIS tool defines, not a property of the
+# caller's file. An EMPTY file keeps its own `empty_returns` error rather than
+# being reported as a short window: zero rows almost always means the wrong file
+# or the wrong columns, and that is the more useful thing to say.
+def _parse_returns_csv(source: str, *, as_json: bool) -> list[dict]:
     """Parse ``RETURNS_CSV`` into ``[{"date": ..., "daily_return": ...}, ...]``.
 
     Two columns: date, then daily return. A header row (or any row whose second column
     does not parse as a float — a blank line, a comment) is skipped rather than rejected,
     so both a ``date,daily_return`` header and a bare headerless file work.
+
+    The series is then held to the endpoint's contract, in the server's own order:
+    the row COUNT against the 250-bar evaluation window first, then per-row rules
+    (strict ``YYYY-MM-DD`` calendar dates, finite returns inside ``[-1.0, 1.0]``),
+    then uniqueness, then ordering. A violation exits ``USAGE`` with the server's
+    own ``reason`` code (see the block above). Row numbers in the messages count
+    DATA rows — the index the server would see — not physical lines, so a skipped
+    header does not shift them.
     """
     if source == "-":
         text = click.get_text_stream("stdin").read()
@@ -399,18 +561,117 @@ def _parse_returns_csv(source: str) -> list[dict]:
         with open(source, newline="", encoding="utf-8") as handle:
             text = handle.read()
 
-    rows: list[dict] = []
+    # Collect the data rows first so the window can be checked before anything
+    # else, the way the server checks it (`_row_count_bounds` runs `mode="before"`,
+    # ahead of per-row parsing). A file that is both short AND malformed therefore
+    # gets the SAME code from both sides.
+    data_rows: list[tuple[int, str, str, float]] = []
     for row in csv.reader(io.StringIO(text)):
         if len(row) < 2:
             continue
         date_str = row[0].strip()
         if not date_str:
             continue
+        raw_value = row[1].strip()
         try:
-            value = float(row[1].strip())
+            value = float(raw_value)
         except ValueError:
             continue
+        data_rows.append((len(data_rows) + 1, date_str, raw_value, value))
+
+    # An empty file keeps its own, more diagnostic `empty_returns` answer (raised
+    # by the caller); 1..249 rows is the window refusal.
+    if data_rows and len(data_rows) < _MIN_RETURN_ROWS:
+        _reject_local_input(
+            as_json=as_json,
+            error="window_too_short_returns",
+            reason="window_too_short",
+            message=(
+                f"{source!r} has {len(data_rows)} data rows; the minimum evaluation window is "
+                f"{_MIN_RETURN_ROWS} daily bars (one trading year). A shorter series is refused, "
+                "not graded with a caveat"
+            ),
+        )
+
+    rows: list[dict] = []
+    dates: list[_Date] = []
+    for number, date_str, raw_value, value in data_rows:
+        # Date before value, the order `ReturnPoint` declares its two fields in,
+        # so a row that is wrong in both ways is named the same way on both sides.
+        if not _ISO_DATE_RE.match(date_str):
+            _reject_local_input(
+                as_json=as_json,
+                error="invalid_date_format",
+                reason="invalid_date",
+                message=(
+                    f"{source!r} row {number} has date {date_str!r}, which is not a strict "
+                    "ISO calendar date (YYYY-MM-DD). Epoch seconds, ISO week dates and "
+                    "YYYYMMDD are refused rather than guessed at"
+                ),
+            )
+        try:
+            parsed = _Date.fromisoformat(date_str)
+        except ValueError:
+            _reject_local_input(
+                as_json=as_json,
+                error="invalid_date_format",
+                reason="invalid_date",
+                message=(
+                    f"{source!r} row {number} has date {date_str!r}, which is well-formed "
+                    "YYYY-MM-DD but is not a real calendar date"
+                ),
+            )
+        if not math.isfinite(value):
+            _reject_local_input(
+                as_json=as_json,
+                error="non_finite_returns",
+                reason="non_finite",
+                message=(
+                    f"{source!r} row {number} has daily_return {raw_value!r}, which is not a "
+                    "finite number and cannot be sent as JSON"
+                ),
+            )
+        if abs(value) > _MAX_ABS_DAILY_RETURN:
+            _reject_local_input(
+                as_json=as_json,
+                error="out_of_range_returns",
+                reason="out_of_range",
+                message=(
+                    f"{source!r} row {number} has daily_return {value}, outside "
+                    f"[-{_MAX_ABS_DAILY_RETURN}, {_MAX_ABS_DAILY_RETURN}] (simple return units, "
+                    "0.01 = +1%)"
+                ),
+            )
         rows.append({"date": date_str, "daily_return": value})
+        dates.append(parsed)
+
+    # Whole-series rules, in the server's order: every per-row error is reported
+    # before either of these, and a duplicate before an inversion.
+    first_seen: dict[_Date, int] = {}
+    for number, parsed in enumerate(dates, start=1):
+        if parsed in first_seen:
+            _reject_local_input(
+                as_json=as_json,
+                error="duplicate_date_rows",
+                reason="duplicate_date",
+                message=(
+                    f"{source!r} row {number} repeats the date {parsed.isoformat()}, already "
+                    f"used by row {first_seen[parsed]}. A daily series has one bar per date"
+                ),
+            )
+        first_seen[parsed] = number
+    for index in range(1, len(dates)):
+        if dates[index] < dates[index - 1]:
+            _reject_local_input(
+                as_json=as_json,
+                error="unsorted_date_rows",
+                reason="unsorted_dates",
+                message=(
+                    f"{source!r} is not in ascending date order: row {index + 1} "
+                    f"({dates[index].isoformat()}) precedes row {index} "
+                    f"({dates[index - 1].isoformat()})"
+                ),
+            )
     return rows
 
 
@@ -508,7 +769,7 @@ def _render_verify(body: dict) -> None:
     default=1,
     show_default=True,
     metavar="N",
-    help="Self-attested trial/variant count the DSR deflation is computed against (>= 1).",
+    help=f"Self-attested trial/variant count the DSR deflation is computed against (1..{_MAX_TRIALS}).",
 )
 @_api_url_session_option
 @_json_option
@@ -527,23 +788,50 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     than being silently scored as a pass. ``--local`` (this machine, no network, no
     account) is not implemented yet.
 
+    **The input contract is strict, and the server refuses rather than repairs it**
+    (#1803). Dates must be ``YYYY-MM-DD``, unique, and in ascending order; returns must
+    be finite simple decimals with ``|r| <= 1.0`` (+1.3% is ``0.013``, not ``1.3``); the
+    series must be at least **250 rows — one trading year, the minimum evaluation
+    window** — and at most 2,600 (~10 years); ``--trials`` is 1..10000. Under the window
+    there is no verdict at all: the answer is a refusal naming what it got and what it
+    needs, never a pass or a fail with a warning attached. A refusal comes back as a 422
+    whose ``reason`` is one of ``invalid_date``, ``duplicate_date``, ``unsorted_dates``,
+    ``non_finite``, ``out_of_range``, ``window_too_short``, ``too_many_rows``,
+    ``trials_out_of_range`` — printed here, and carried as ``reason`` in ``--json``.
+    Note ``unsorted_dates`` in particular: the walk-forward split is positional, so a
+    shuffled series could otherwise park its best 30% in the holdout, and the server
+    will not silently sort it for you because that would grade a series you did not send.
+
+    A series this CLI can already see is wrong — shorter than the evaluation window, or
+    carrying a non-finite or out-of-range return, a date that is not ``YYYY-MM-DD``, a
+    duplicate, or a row out of order — is refused HERE, before the request is sent,
+    carrying the same ``reason`` code the server would have used. The
+    server re-checks all of it and remains the authority; the local pass only spends fewer
+    round trips and keeps a malformed file from ever reaching the JSON encoder.
+
     Requires a cached session; run ``archimedes login`` first. Exits 0 when the gate
     passes and 1 when it fails, which is what makes ``archimedes verify returns.csv``
-    usable as a CI check before a deploy.
+    usable as a CI check before a deploy. A refused input exits 2 and an incomplete
+    evaluation exits 4 — never 1, which means only "the gate ran and said no".
     """
     if run_local:
         _unavailable("verify", as_json=as_json)
 
-    if trials < 1:
+    if not 1 <= trials <= _MAX_TRIALS:
+        # `error` stays `invalid_trials` — an exit/error string is an API and is
+        # never redefined (see exits.py) — while `reason` carries the SERVER's
+        # code for the identical refusal, so a caller can branch on one code
+        # whether the bound was caught here or at the API (#1803).
         _fail(
             "verify",
             as_json=as_json,
             exit_code=exits.USAGE,
             error="invalid_trials",
-            message="--trials must be >= 1",
+            message=f"--trials must be between 1 and {_MAX_TRIALS} (got {trials})",
+            extra={"reason": "trials_out_of_range"},
         )
 
-    returns = _parse_returns_csv(returns_csv)
+    returns = _parse_returns_csv(returns_csv, as_json=as_json)
     if not returns:
         _fail(
             "verify",
@@ -585,7 +873,9 @@ def verify(returns_csv: str, run_local: bool, trials: int, api_url: str | None, 
     else:
         _render_verify(body)
     # Not a bare `passes` read (#1481): an incomplete evaluation exits with its
-    # own code so a CI job cannot read "too few bars" as "strategy rejected".
+    # own code so a CI job cannot read "a leg could not run" as "strategy
+    # rejected". Shortness is not one of those cases any more — #1803 refuses a
+    # sub-window series before this point, with USAGE and `window_too_short`.
     _verdict = _verify_verdict(body)
     sys.exit(exits.OK if _verdict == "pass" else exits.GATE_FAILED if _verdict == "fail" else exits.INCOMPLETE)
 
