@@ -3,7 +3,7 @@
  * `GET /api/strategies/` already serves this per row as
  * `display_metrics_source` — the link of the backend's
  * `s.real_* -> bt.* -> s.stub_*` display chain that supplied the numbers
- * (`api/strategies_routes.py::_display_metrics_source`). The UI dropped the
+ * (`services/curated_metrics.py::display_metrics_source`). The UI dropped the
  * field, so a value carried on the strategy record and a value produced by a
  * persisted backtest run rendered as the same black number in the same cell.
  *
@@ -26,7 +26,7 @@
  */
 
 export const METRICS_SOURCE_NOTES = {
-	// `_display_metrics_source` returns this when `s.real_sharpe` is populated,
+	// `display_metrics_source` returns this when `s.real_sharpe` is populated,
 	// and its own comment is explicit that this is NOT "measured": for the
 	// curated library those columns trace to the migrated backtest-fixture
 	// snapshot (`backend/tests/fixtures/backtest_fixtures_snapshot.json`,

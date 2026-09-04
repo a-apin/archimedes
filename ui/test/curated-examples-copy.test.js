@@ -213,7 +213,7 @@ test("no mark claims the number was measured or verified", () => {
 // ── 6. The mark's vocabulary is the BACKEND's, and stays pinned to it ─────
 //
 // METRICS_SOURCE_NOTES' keys are bare string literals of what
-// `_display_metrics_source` returns. Renaming one there and in its own
+// `display_metrics_source` returns. Renaming one there and in its own
 // backend/tests/test_metrics_provenance.py — the normal way such a rename
 // lands — leaves that file at 9 passed and, without this test, the whole UI
 // suite green, while every "fixture" mark silently stops rendering AND the
@@ -221,21 +221,33 @@ test("no mark claims the number was measured or verified", () => {
 // on the exact honesty signal this change exists to add. Same idiom as
 // ui/test/security-claims.test.js and account-deletion.test.js: read the
 // backend source from the UI suite.
+//
+// The function moved to `services/curated_metrics.py` with #1746 / PR-B, which
+// made the display chain a WRITE-side resolution (the passport sync stores the
+// answer; every read surface serves the row). The four labels it returns are
+// unchanged, which is exactly what this pins.
 const routes = readFileSync(
-	new URL("../../backend/archimedes/api/strategies_routes.py", import.meta.url),
+	new URL(
+		"../../backend/archimedes/services/curated_metrics.py",
+		import.meta.url,
+	),
 	"utf8",
 );
 
 function displayMetricsSourceStates() {
-	const start = routes.indexOf("def _display_metrics_source(");
+	const start = routes.indexOf("def display_metrics_source(");
 	assert.notEqual(
 		start,
 		-1,
-		"_display_metrics_source not found — the mark's source is gone",
+		"display_metrics_source not found — the mark's source is gone",
 	);
 	const end = routes.indexOf("\ndef ", start + 1);
 	const body = routes.slice(start, end === -1 ? undefined : end);
-	return new Set([...body.matchAll(/return "([a-z_]+)"/g)].map((m) => m[1]));
+	return new Set(
+		[...body.matchAll(/return SOURCE_([A-Z_]+)/g)].map((m) =>
+			m[1].toLowerCase(),
+		),
+	);
 }
 
 test("every marked source is a value the backend actually returns", () => {
@@ -250,7 +262,7 @@ test("every marked source is a value the backend actually returns", () => {
 	]) {
 		assert.ok(
 			returned.has(state),
-			`_display_metrics_source no longer returns "${state}"`,
+			`display_metrics_source no longer returns "${state}"`,
 		);
 	}
 	for (const key of Object.keys(METRICS_SOURCE_NOTES)) {

@@ -2109,19 +2109,25 @@ def _refresh_passport_real_metrics(
         real_total_trades=result.total_trades,
         real_backtest_start=(result.backtest_start.isoformat() if isinstance(result.backtest_start, _date) else None),
         real_backtest_end=(result.backtest_end.isoformat() if isinstance(result.backtest_end, _date) else None),
-        deflated_sharpe_ratio=result.deflated_sharpe_ratio,
-        dsr_p_value=result.dsr_p_value,
         num_trials_in_selection=result.num_trials_in_selection,
-        pbo_score=result.pbo_score,
-        out_of_sample_sharpe=result.out_of_sample_sharpe,
         n_obs_daily=n_obs,
     )
+    # The four gate numbers ride WITH the verdict (#1746 / PR-B), not on the
+    # passport dataclass: they are the grade's output, and `_update_record` no
+    # longer writes them. Same values, same run, one indivisible write.
     ingest_passport(
         session,
         passport,
         generation_method=c.generation_method,
         force_update=True,
-        rigor_verdict=RigorVerdictWrite.from_verdict(verdict, cohort_n=1),
+        rigor_verdict=RigorVerdictWrite.from_verdict(
+            verdict,
+            cohort_n=1,
+            deflated_sharpe_ratio=result.deflated_sharpe_ratio,
+            dsr_p_value=result.dsr_p_value,
+            pbo_score=result.pbo_score,
+            out_of_sample_sharpe=result.out_of_sample_sharpe,
+        ),
     )
 
 
@@ -2473,11 +2479,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                     result.backtest_start.isoformat() if isinstance(result.backtest_start, _date) else None
                 ),
                 real_backtest_end=(result.backtest_end.isoformat() if isinstance(result.backtest_end, _date) else None),
-                deflated_sharpe_ratio=result.deflated_sharpe_ratio,
-                dsr_p_value=result.dsr_p_value,
                 num_trials_in_selection=result.num_trials_in_selection,
-                pbo_score=result.pbo_score,
-                out_of_sample_sharpe=result.out_of_sample_sharpe,
                 n_obs_daily=len(artifact["results"][0]["metrics"].get("daily_returns", [])),
             )
             # THE grading event for this path — the same one-time write the DSL
@@ -2485,12 +2487,21 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
             # real gate's four-state answer over the real returns; storing its
             # status verbatim is what keeps `degenerate` from collapsing into
             # `fail`. cohort_n=1: graded against itself alone.
+            # The four gate numbers ride WITH the verdict (#1746 / PR-B) rather
+            # than on the passport dataclass — same values, same run, one write.
             ingest_passport(
                 session,
                 passport,
                 generation_method="fusion",
                 force_update=True,
-                rigor_verdict=RigorVerdictWrite.from_verdict(live, cohort_n=1),
+                rigor_verdict=RigorVerdictWrite.from_verdict(
+                    live,
+                    cohort_n=1,
+                    deflated_sharpe_ratio=result.deflated_sharpe_ratio,
+                    dsr_p_value=result.dsr_p_value,
+                    pbo_score=result.pbo_score,
+                    out_of_sample_sharpe=result.out_of_sample_sharpe,
+                ),
             )
             session.commit()
 

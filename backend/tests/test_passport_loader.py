@@ -97,11 +97,17 @@ class TestIngestPassport:
         assert record.gate_version is None
         assert record.sharpe_ratio == 1.23
         assert record.sortino_ratio == 1.45
-        assert record.deflated_sharpe_ratio == 0.89
+        # …and the four GATE numbers do not travel on the dataclass either
+        # (#1746 / PR-B). They are the output of a gate run, so they move with
+        # the verdict and nothing else writes them. On a curated passport those
+        # dataclass fields carry the #1187 fixture snapshot, which is exactly
+        # what must not end up in a column that names a gate.
+        assert record.deflated_sharpe_ratio is None
+        assert record.pbo_score is None
 
     def test_an_explicit_verdict_is_what_grades_a_row(self, session: Session):
         """The other half of the contract above: a caller that IS the grading
-        event supplies a RigorVerdictWrite, and all five columns move together.
+        event supplies a RigorVerdictWrite, and all NINE columns move together.
 
         MUTATION: drop the `rigor_verdict` argument — every assert below reddens,
         which is what makes the `is False` assertion above a contract rather than
@@ -114,7 +120,14 @@ class TestIngestPassport:
             session,
             _make_passport(id="graded-001"),
             generation_method="fusion",
-            rigor_verdict=RigorVerdictWrite(status="pass", cohort_n=1),
+            rigor_verdict=RigorVerdictWrite(
+                status="pass",
+                cohort_n=1,
+                deflated_sharpe_ratio=0.71,
+                dsr_p_value=0.98,
+                pbo_score=0.12,
+                out_of_sample_sharpe=0.63,
+            ),
         )
         session.commit()
 
@@ -123,6 +136,43 @@ class TestIngestPassport:
         assert record.graded_at is not None
         assert record.gate_version == gate_version()
         assert record.cohort_n == 1
+        # The gate numbers this run produced — the dataclass's fixture values
+        # (0.89 / 0.25) must not be what landed.
+        assert record.deflated_sharpe_ratio == 0.71
+        assert record.dsr_p_value == 0.98
+        assert record.pbo_score == 0.12
+        assert record.out_of_sample_sharpe == 0.63
+
+    def test_an_ungraded_verdict_carries_no_provenance_and_no_numbers(self, session: Session):
+        """``pending`` means NO GATE RAN, so there is nothing to date, nothing to
+        attribute and nothing to show.
+
+        The column's own contract says so — ``graded_at`` NULL ⟺
+        ``rigor_gate_status == "pending"`` — and the verdict-of-record migration
+        honours it for every row it derived. This makes it true of WRITES too, so
+        ``graded_at is not None`` is a reliable test for "a gate produced these
+        numbers" and a never-graded row cannot carry a fabricated timestamp.
+
+        MUTATION: delete the ``if self.status == STATUS_PENDING`` branch from
+        ``RigorVerdictWrite.__post_init__``. Every ungraded curated row starts
+        claiming it was graded, now, by the current gate.
+        """
+        from archimedes.services.passport_loader import RigorVerdictWrite
+
+        record = ingest_passport(
+            session,
+            _make_passport(id="ungraded-001"),
+            generation_method="curated",
+            rigor_verdict=RigorVerdictWrite(status="pending", cohort_n=7, dsr_p_value=0.5),
+        )
+        session.commit()
+
+        assert record.rigor_gate_status == "pending"
+        assert record.passes_rigor_gate is False
+        assert record.graded_at is None
+        assert record.gate_version is None
+        assert record.cohort_n is None, "graded against nothing — never a guessed cohort"
+        assert record.dsr_p_value is None, "a run that did not happen produced no numbers"
 
     def test_paper_refs_persisted(self, session: Session):
         passport = _make_passport()

@@ -596,12 +596,14 @@ Decision #3 already rejected.
 both the response models and a live response shape and fails if one reappears.
 
 **Cache.** No new scheduler and no cache of its own. The `dsr_p_value`s it
-corrects arrive on already-built `StrategyResponse` objects, which for the
-curated cohort come from the rigor_cache-memoized
-`_live_rigor_results_for_strategies` — so the expensive part rides the
-leaderboard's existing cache/TTL semantics, and the BH itself (pure numpy over
-a few hundred floats) recomputes per request so the correction always matches
-the cohort actually served.
+corrects arrive on already-built `StrategyResponse` objects, which since
+[#1746](https://github.com/aprin-labs/archimedes/issues/1746) / PR-B are READ off
+each strategy's stored grade on `strategy_passports` (one batched query, no gate
+run) rather than recomputed per request; the BH itself (pure numpy over a few
+hundred floats) recomputes per request so the correction always matches the
+cohort actually served. Note what that makes true: every p-value in the cohort
+was produced by a gate run whose version the row records, so a board mixing two
+gate vintages is visible (`gate_version`) rather than silently averaged over.
 
 **Cohort = the whole board, before filters and before `limit`.** Load-bearing:
 BH's adjusted p is `p_(k)·m/k`, so a smaller *m* makes every row look *more*

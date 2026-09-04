@@ -173,8 +173,17 @@ a clock. Generated strategies are backtested once, at generation. Curated strate
 backtested when their code changes, when a data-quality fix lands, or when the owner asks, by
 an explicit out-of-band run of `python -m archimedes.scripts.run_backtests`.
 
-- Procedure: [`curated-backtests.md`](curated-backtests.md)
+**Grading follows the same rule.** A strategy's rigor verdict is produced once, by the real
+gate, at backtest time, stored on its passport, and READ by every surface — no route
+recomputes one ([#1746](https://github.com/aprin-labs/archimedes/issues/1746)).
+`run_backtests` grades at the end of its run; `python -m archimedes.scripts.grade_curated` is
+the standalone job for the one-time backfill and for a re-grade after a gate change. A
+curated strategy reads `pending` until that job has run against it, which is honest, not
+broken.
+
+- Procedure (both jobs): [`curated-backtests.md`](curated-backtests.md)
 - Policy and the incident: [`../adr/backtests-are-frozen-evidence.md`](../adr/backtests-are-frozen-evidence.md)
+- Why the verdict is stored, not recomputed: [`../adr/rigor-verdict-of-record.md`](../adr/rigor-verdict-of-record.md)
 
 ## Local↔prod parity
 

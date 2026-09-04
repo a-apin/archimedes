@@ -59,21 +59,59 @@ class RigorVerdictWrite:
       (``rigor_gate_version.gate_version()``), so a stored verdict always names
       the gate that produced it. A caller cannot forget it.
     * ``graded_at`` defaults to now, for the same reason.
+    * …**except for ``pending``**, which means no gate ran: provenance, cohort
+      size and the four numbers are all forced to NULL there, so
+      ``graded_at is not None`` is a reliable test for "a gate produced this
+      row" and a never-graded row cannot carry a fabricated timestamp.
 
     ``cohort_n`` is the number of return series in the cohort that supplied the
     grade's cohort-scoped inputs (PBO, average pairwise correlation). The
     generation path grades a strategy against itself alone, so it passes 1.
     ``None`` means the cohort size was not recorded — never a guessed 1.
+
+    **The four gate numbers travel WITH the verdict** (#1746 / PR-B). DSR, its
+    p-value, PBO and the OOS Sharpe are what a gate run produced; they are not
+    descriptive backtest statistics, and a refresh that carries no grade has no
+    business rewriting them — for the same reason it has no business rewriting
+    the verdict. Before this they were written by ``_update_record`` off the
+    passport dataclass, which is how a curated row ended up storing the #1187
+    FIXTURE snapshot's numbers in columns that name a gate, and how a boot-time
+    passport re-sync could have silently replaced a real grade's numbers with
+    them. They are optional because an ungraded row has none: a ``pending``
+    verdict writes four NULLs, which is the honest shape.
     """
 
     status: str
     graded_at: datetime | None = None
     gate_version: str | None = None
     cohort_n: int | None = None
+    deflated_sharpe_ratio: float | None = None
+    dsr_p_value: float | None = None
+    pbo_score: float | None = None
+    out_of_sample_sharpe: float | None = None
 
     def __post_init__(self) -> None:
         if self.status not in RIGOR_GATE_STATES:
             raise ValueError(f"rigor_gate_status must be one of {RIGOR_GATE_STATES}, got {self.status!r}")
+        if self.status == STATUS_PENDING:
+            # ``pending`` means NO GATE RAN. Provenance describes a gate run, so
+            # there is none to record, and a timestamp here would be a fabricated
+            # one — the same reason the verdict-of-record migration left
+            # ``graded_at`` NULL on every row it derived. This keeps the
+            # invariant the column's own docstring states ("NULL means never
+            # graded and agrees with rigor_gate_status == 'pending' by
+            # construction") true for WRITES as well as for the migration, and it
+            # is what lets every reader use ``graded_at is not None`` as the test
+            # for "these numbers came from a gate". The four numbers go with it:
+            # a run that did not happen produced nothing.
+            object.__setattr__(self, "graded_at", None)
+            object.__setattr__(self, "gate_version", None)
+            object.__setattr__(self, "cohort_n", None)
+            object.__setattr__(self, "deflated_sharpe_ratio", None)
+            object.__setattr__(self, "dsr_p_value", None)
+            object.__setattr__(self, "pbo_score", None)
+            object.__setattr__(self, "out_of_sample_sharpe", None)
+            return
         # Fill the provenance a caller left blank. Done here (rather than with a
         # default_factory) so ``from_verdict`` and a hand-built instance behave
         # identically, and so a stored verdict can never carry a NULL gate.
@@ -88,7 +126,17 @@ class RigorVerdictWrite:
         return self.status == STATUS_PASS
 
     @classmethod
-    def from_verdict(cls, verdict, *, cohort_n: int | None = None, graded_at: datetime | None = None):
+    def from_verdict(
+        cls,
+        verdict,
+        *,
+        cohort_n: int | None = None,
+        graded_at: datetime | None = None,
+        deflated_sharpe_ratio: float | None = None,
+        dsr_p_value: float | None = None,
+        pbo_score: float | None = None,
+        out_of_sample_sharpe: float | None = None,
+    ):
         """Build from a live :class:`~archimedes.services.live_rigor_gate.RigorGateVerdict`.
 
         This is the intended construction path: the argument is the object
@@ -96,8 +144,20 @@ class RigorVerdictWrite:
         over a persisted return series. Anything else — a generation-time fusion
         dict, a fixture row, a hand-typed boolean — has to name a four-state
         string deliberately, in code, in a diff a reviewer reads.
+
+        The four numeric arguments are the gate numbers this grade produced.
+        They are keyword-only and default to ``None`` so a caller that has none
+        stores none rather than leaving stale ones in place.
         """
-        return cls(status=verdict.status, cohort_n=cohort_n, graded_at=graded_at)
+        return cls(
+            status=verdict.status,
+            cohort_n=cohort_n,
+            graded_at=graded_at,
+            deflated_sharpe_ratio=deflated_sharpe_ratio,
+            dsr_p_value=dsr_p_value,
+            pbo_score=pbo_score,
+            out_of_sample_sharpe=out_of_sample_sharpe,
+        )
 
 
 def _compute_content_hash(passport: StrategyPassport) -> str:
@@ -155,19 +215,25 @@ def ingest_passport(
     (optionally updating fields if ``force_update=True``).
 
     **The rigor verdict does not travel on the passport dataclass.**
-    ``passport.passes_rigor_gate`` is deliberately NOT read here. The five
-    verdict-of-record columns (``passes_rigor_gate``, ``rigor_gate_status``,
-    ``graded_at``, ``gate_version``, ``cohort_n``) are written only from an
-    explicit ``rigor_verdict=RigorVerdictWrite(...)`` argument — see
+    ``passport.passes_rigor_gate`` is deliberately NOT read here. The nine grade
+    columns (``passes_rigor_gate``, ``rigor_gate_status``, ``graded_at``,
+    ``gate_version``, ``cohort_n``, and the four gate numbers
+    ``deflated_sharpe_ratio`` / ``dsr_p_value`` / ``pbo_score`` /
+    ``out_of_sample_sharpe``) are written only from an explicit
+    ``rigor_verdict=RigorVerdictWrite(...)`` argument — see
     ``docs/adr/rigor-verdict-of-record.md``. Without one:
 
     * a NEW row is inserted **ungraded** — ``rigor_gate_status="pending"``,
-      ``passes_rigor_gate=False``, no ``graded_at``, no ``gate_version``. That is
-      the honest state of a strategy whose backtest has not run.
-    * an EXISTING row keeps the verdict it already has. A ``force_update``
+      ``passes_rigor_gate=False``, no ``graded_at``, no ``gate_version``, and no
+      gate numbers. That is the honest state of a strategy whose backtest has
+      not run.
+    * an EXISTING row keeps the grade it already has. A ``force_update``
       refresh that does not carry a grade must not erase one, and must not
       silently overwrite one either: a re-grade is an explicit event that
-      supplies its own ``RigorVerdictWrite``.
+      supplies its own ``RigorVerdictWrite``. This is what makes the curated
+      boot-time passport sync (``strategy_provider._sync_to_unified_table``)
+      safe to run on every process start — it refreshes the card from the
+      strategy files and cannot touch what a gate decided.
 
     This is what removes the mixed-vintage column #1746/#1747 were about. The
     generation-time fusion verdict used to reach this table through
@@ -264,11 +330,16 @@ def ingest_passport(
         correlation_to_spy=passport.real_corr_spy,
         backtest_start=passport.real_backtest_start,
         backtest_end=passport.real_backtest_end,
-        # Rigor gate
-        deflated_sharpe_ratio=passport.deflated_sharpe_ratio,
-        dsr_p_value=passport.dsr_p_value,
-        pbo_score=passport.pbo_score,
-        out_of_sample_sharpe=passport.out_of_sample_sharpe,
+        # Rigor gate numbers: a new row starts with NONE of them. They are the
+        # OUTPUT of a gate run and travel with the verdict (_apply_rigor_verdict);
+        # ``passport.deflated_sharpe_ratio`` & co. are not read here, for the same
+        # reason ``passport.passes_rigor_gate`` is not — on a curated passport
+        # those fields carry the #1187 fixture snapshot, and a fixture number in a
+        # column that names a gate is the defect, not the data.
+        deflated_sharpe_ratio=None,
+        dsr_p_value=None,
+        pbo_score=None,
+        out_of_sample_sharpe=None,
         # Verdict of record: a new row starts UNGRADED. ``passport.passes_rigor_gate``
         # is not read — see the docstring and _apply_rigor_verdict below.
         passes_rigor_gate=False,
@@ -297,14 +368,16 @@ def ingest_passport(
 
 
 def _apply_rigor_verdict(record: StrategyPassportRecord, verdict: RigorVerdictWrite) -> None:
-    """Write the five verdict-of-record columns, together, from one grade.
+    """Write the nine grade columns, together, from one grade.
 
-    The ONLY place any of these five columns is assigned. All five move as a
+    The ONLY place any of these nine columns is assigned. All nine move as a
     unit — that is what makes ``passes_rigor_gate == (rigor_gate_status ==
-    "pass")`` an invariant of the table rather than a hope, and what makes
-    ``gate_version``/``graded_at`` real provenance: a verdict without them
+    "pass")`` an invariant of the table rather than a hope, what makes
+    ``gate_version``/``graded_at`` real provenance (a verdict without them
     cannot be written, because ``RigorVerdictWrite`` fills them in its
-    ``__post_init__``.
+    ``__post_init__``), and — since #1746's PR-B — what stops a badge from one
+    gate run standing beside DSR/PBO/OOS numbers from another. The four numbers
+    are gate OUTPUT; ``_update_record`` no longer touches them.
 
     A re-grade calls this again with a fresh ``RigorVerdictWrite``. That is the
     explicit, versioned event the ADR permits; a silent overwrite is prevented
@@ -315,6 +388,10 @@ def _apply_rigor_verdict(record: StrategyPassportRecord, verdict: RigorVerdictWr
     record.graded_at = verdict.graded_at
     record.gate_version = verdict.gate_version
     record.cohort_n = verdict.cohort_n
+    record.deflated_sharpe_ratio = verdict.deflated_sharpe_ratio
+    record.dsr_p_value = verdict.dsr_p_value
+    record.pbo_score = verdict.pbo_score
+    record.out_of_sample_sharpe = verdict.out_of_sample_sharpe
 
 
 def _update_record(
@@ -325,8 +402,9 @@ def _update_record(
 ) -> None:
     """Update an existing record's fields from a passport.
 
-    Writes the descriptive/backtest columns only. The verdict of record is NOT
-    among them — see :func:`_apply_rigor_verdict`.
+    Writes the descriptive card + display-metric columns only. Neither the
+    verdict nor the four gate numbers is among them — those are the grade, and
+    the grade has exactly one writer (:func:`_apply_rigor_verdict`).
     """
     record.content_hash = content_hash
     record.generation_method = generation_method
@@ -388,14 +466,14 @@ def _update_record(
     record.n_obs_daily = passport.n_obs_daily
     record.sharpe_ci_lower = passport.sharpe_ci_lower
     record.sharpe_ci_upper = passport.sharpe_ci_upper
-    record.deflated_sharpe_ratio = passport.deflated_sharpe_ratio
-    # dsr_p_value was not updated by _update_record (#passport-honesty): the
-    # _refresh_passport_real_metrics call from _persist_real_returns sets it on
-    # the StrategyPassport but _update_record never wrote it to the DB row,
-    # so strategy_passports.dsr_p_value stayed NULL even after the backtest ran.
-    record.dsr_p_value = passport.dsr_p_value
-    record.pbo_score = passport.pbo_score
-    record.out_of_sample_sharpe = passport.out_of_sample_sharpe
+    # NOTE (#1746 / PR-B): deflated_sharpe_ratio / dsr_p_value / pbo_score /
+    # out_of_sample_sharpe are NOT written here any more. They are gate OUTPUT,
+    # not descriptive backtest statistics, and they now move only through
+    # _apply_rigor_verdict — together with the four-state verdict the same gate
+    # run produced. Two things that used to be reachable stop being reachable:
+    # a curated row storing the #1187 FIXTURE snapshot's DSR in a column that
+    # names a gate, and a force_update refresh carrying no grade (the boot-time
+    # curated passport sync) overwriting a real grade's numbers.
     record.kelly_fraction = passport.kelly_fraction
 
 

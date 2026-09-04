@@ -44,7 +44,6 @@ import json
 import logging
 from datetime import UTC
 
-import numpy as np
 from fastapi import APIRouter, Depends, Query, Request, Response
 
 from archimedes.api._route_helpers import strategy_provider
@@ -64,105 +63,157 @@ from archimedes.api.selection_bias_routes import (
 )
 from archimedes.api.wallet_routes import get_linked_wallet_address
 from archimedes.models.strategy import Strategy, StrategyStatus
-from archimedes.services.live_rigor_gate import RigorGateVerdict
 from archimedes.services.passport_spec_parity import reconcile_card_fields
-from archimedes.services.rigor_evaluator import RigorGateResult
 
 logger = logging.getLogger(__name__)
 
 strategies_router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
 
-def _display_metrics_source(s, bt) -> str:
-    """Which link of the display-metric fallback chain actually supplied values.
+# The four-state verdict a surface serves for a strategy no stored passport row
+# knows about, and the fail-closed answer when the row exists but was never
+# graded. Same word, same meaning as ``passport_loader.STATUS_PENDING`` and
+# ``ui/src/rigorGateStatus.js`` — "no gate has looked at this", never "it lost".
+_UNGRADED_STATUS = "pending"
 
-    The chain is `s.real_* -> bt.* -> s.stub_*`, and its last link is a hardcoded
-    placeholder. Unlike the rigor fields (whose fallback #1187/#1340 removed
-    outright) these are descriptive stats, so the chain stays — but an
-    un-named chain means a stub renders identically to a real backtest.
 
-    Keyed on `real_sharpe` / `sharpe_ratio` as the representative field: the whole
-    block is populated from one link, so one probe describes all of them.
+def served_status(stored_status: str | None, rigor_gate_status: str | None, *, promote: bool = True) -> str:
+    """The lifecycle status a CARD shows, derived from the stored verdict.
+
+    A curator hand-declares a strategy file's ``STATUS`` (candidate / validated /
+    live / retired). A ``candidate`` whose stored rigor verdict is ``pass`` is
+    shown as ``validated``: the promotion is what "Archimedes Verified" means on
+    a curated card, and it is the only way a curated row reaches that word.
+
+    **This is a derivation of a STORED value, not a recompute.** Before #1746's
+    PR-B the same promotion was driven by a live ``run_rigor_gate`` call made
+    during the request, which is how ``GET /api/strategies/{id}`` came to answer
+    ``validated`` for a strategy whose own passport row said ``candidate``. The
+    inputs are now two columns of one row, so any surface that reads that row
+    can produce the same answer — and both of them do:
+    ``GET /api/strategies/passports/{id}`` publishes it as ``served_status``
+    beside the persisted ``status`` it has always published.
+
+    ``status`` stays the PERSISTED column on the passport payload on purpose: the
+    ``?status=`` filter queries that column, so overwriting it in the payload
+    would make the list and its own filter disagree.
+
+    ``promote`` is False for a GENERATED strategy, and that asymmetry is the
+    truth rather than an oversight: a curated strategy's status is hand-declared
+    in its file (``STATUS = "candidate"``) and promotion is the only way a
+    curated card reaches "validated", while a generated strategy's status is
+    already written by the pipeline that produced it — ``_passport_to_strategy_response``
+    serves ``record.status`` verbatim. Passing the flag makes ``served_status``
+    equal to what the detail route serves for EVERY id, curated or generated,
+    which is the property the parity guard rests on.
     """
-    if s.real_sharpe is not None:
-        # NOT "measured": for the curated library this traces to the #1187
-        # fixture snapshot. It is what the strategy record stores, no more.
-        return "strategy_record"
-    if bt is not None and bt.sharpe_ratio is not None:
-        return "persisted_backtest"
-    if s.stub_sharpe is not None:
-        return "stub_placeholder"
-    return "unavailable"
+    if promote and (stored_status or "").lower() == StrategyStatus.CANDIDATE.value and rigor_gate_status == "pass":
+        return StrategyStatus.VALIDATED.value
+    return stored_status or StrategyStatus.CANDIDATE.value
 
 
-def _to_strategy_response(
-    s: Strategy,
-    verdict: RigorGateVerdict | None = None,
-    rigor_result: RigorGateResult | None = None,
-) -> StrategyResponse:
-    """Map StrategyPassport + persisted BacktestResult to API schema.
+def stored_passports_for(session, strategy_ids: list[str]) -> dict:
+    """The stored passport rows for ``strategy_ids``, keyed by id — ONE query.
 
-    ``verdict`` is the LIVE rigor-gate verdict for this strategy (#821), computed
-    on its persisted real returns via ``run_rigor_gate`` — the SAME machinery the
-    ``/api/selection-bias/gate`` route uses. The served ``passes_rigor_gate`` badge
-    and the CANDIDATE → VALIDATED promotion are derived from it, NOT from the stored
-    fixture boolean. When ``verdict is None`` (single-strategy fetch) it is computed
-    on demand here. A strategy with no real returns yields a ``pending`` verdict so
-    the badge surfaces "unknown" rather than a fixture ``True``/``False``.
+    The read half of the verdict of record: every curated surface (detail, list,
+    leaderboard) resolves its rows through here and serves what it finds, so the
+    three cannot answer differently for one id. A missing row is a missing key,
+    and the caller serves the ungraded shape for it — never a fabricated verdict.
 
-    ``rigor_result`` is the companion full ``RigorGateResult`` (#868) — the SAME
-    live gate run ``verdict`` was reduced from — used to serve the numeric fields
-    (``deflated_sharpe_ratio``, ``dsr_p_value``, ``pbo_score``,
-    ``out_of_sample_sharpe``) so the leaderboard can never disagree with
-    ``GET /api/selection-bias/gate`` for a given strategy id. ``None`` means the
-    live gate could not run for this strategy (no/insufficient persisted returns,
-    or a batch/DB failure); the numeric fields then render as ``None`` — the API's
-    honest "not run" — rather than falling back to ``s.<field>``/``bt.<field>``
-    (#1187: those columns trace back to a migrated test-fixture snapshot
-    (``backend/tests/fixtures/backtest_fixtures_snapshot.json``, PR #863) that
-    predates the current DSR convention (raw vs. excess returns) and the gate
-    threshold (moved by #901, and again by #1794 — the bar now lives in exactly
-    one place, ``rigor_profiles.DSR_P_BADGE_MIN``) and cannot be reproduced by any single code
-    version — presenting it as a measured number next to a ``pending`` badge is a
-    claim-integrity defect, not a display nicety). When ``verdict is None``
-    (single-strategy fetch) ``rigor_result`` is also computed on demand here.
+    Never raises: a DB failure degrades to ``{}``, i.e. every strategy reads
+    ungraded. Fail-closed — the badge can go grey, never green, on an error.
+    """
+    if not strategy_ids:
+        return {}
+    try:
+        from archimedes.models.strategy_passport_record import StrategyPassportRecord
+
+        rows = session.query(StrategyPassportRecord).filter(StrategyPassportRecord.id.in_(strategy_ids)).all()
+        return {r.id: r for r in rows}
+    except Exception as exc:
+        logger.warning("stored passports read failed for %d ids (all → ungraded): %s", len(strategy_ids), exc)
+        return {}
+
+
+def _to_strategy_response(s: Strategy, stored=None) -> StrategyResponse:
+    """Map a curated ``Strategy`` + its STORED passport row to the API schema.
+
+    ``stored`` is the ``StrategyPassportRecord`` for ``s.id`` — the verdict of
+    record (``docs/adr/rigor-verdict-of-record.md``). Every claim this response
+    makes about the rigor gate, and every number it shows, is READ from that
+    row. Nothing here recomputes a verdict, and nothing here re-resolves the
+    display-metric chain.
+
+    **What this replaces, and why (#1746).** This function used to run the live
+    gate over the whole library on every call (``_live_verdict_and_result_for_one``)
+    and to resolve the ``real_* → backtest → stub`` display chain per request.
+    ``GET /api/strategies/passports/{id}`` did neither — it is a pure read of the
+    passport row. So one strategy id had two answers: ``1f9cfe96…``
+    (``harvey_2018_volatility_targeting``) served ``rigor_gate_status: "pass"``
+    with Sharpe ``0.406`` on the detail route and ``candidate`` / ``false`` /
+    ``null`` on its own passport, and the Sharpe moved between two reads 37s
+    apart because the provider memoises its backtest map per process and prod
+    runs two tasks. Both halves are gone: the grade is written by
+    ``services.curated_grading`` when a curated backtest runs, the display chain
+    is resolved by the passport sync (``services.curated_metrics``), and this
+    function serves the row both of them wrote.
+
+    ``stored=None`` means no passport row was found for this strategy. The
+    response is then the honest ungraded shape — ``pending``, no gate numbers —
+    with the display metrics resolved from the provider as a fallback, so a
+    caller holding a bare ``Strategy`` (a just-extracted file, a unit test) still
+    gets its card rather than an empty one.
     """
     from archimedes.api.schemas import PaperRefResponse
+    from archimedes.services.curated_metrics import (
+        DisplayMetrics,
+        display_metrics_source,
+        resolve_display_metrics,
+    )
     from archimedes.services.return_source_classifier import classify_strategy
-
-    if verdict is None:
-        # ONE cohort gate run, not two (#1645). Both the badge and the numeric
-        # fields are derived from the same memoized RigorGateResult — see
-        # `_live_verdict_and_result_for_one`. This mirrors what `list_strategies`
-        # has done since #868; the single-strategy path was the last caller
-        # still paying for a second, uncached full-library gate run.
-        verdict, rigor_result = _live_verdict_and_result_for_one(s)
 
     bt = strategy_provider().get_backtest_result(s.id)
     # has_real: a BacktestResultRecord (persisted daily-returns row) exists.
-    # Previously derived from ``s.real_sharpe is not None`` (a metric field that can
-    # be populated from fixture stubs without a real returns row — a false positive).
-    # Now strictly tied to the persisted backtest/daily-returns row so that
-    # ``is_backtest_placeholder`` is honest: it is False ONLY when we have actual
-    # persisted run data the rigor gate can re-grade (#passport-honesty).
+    # Strictly tied to that row so ``is_backtest_placeholder`` is honest: False
+    # ONLY when we have actual persisted run data a gate could grade.
     has_real = bt is not None
     return_source, return_source_note = classify_strategy(s)
 
-    # Served status overlays the LIVE gate verdict on the file-declared status:
-    # a CANDIDATE is promoted to VALIDATED only when the live gate PASSES on real
-    # returns (#821). The fixture boolean no longer promotes anything. Hand-declared
-    # advanced states (live/retired) are preserved.
-    served_status = s.status.value
-    if s.status == StrategyStatus.CANDIDATE and verdict.passes:
-        served_status = StrategyStatus.VALIDATED.value
+    # ── The verdict of record, read verbatim ────────────────────────────────
+    rigor_status = (stored.rigor_gate_status or _UNGRADED_STATUS) if stored is not None else _UNGRADED_STATUS
+    # Derived from the four-state and nothing else, exactly as the generated
+    # path does it (`_passport_to_strategy_response`), so the boolean and the
+    # status cannot be served apart even on a row whose columns were forced
+    # apart by hand.
+    passes = rigor_status == "pass"
+    # ``graded_at`` is set by, and only by, ``_apply_rigor_verdict``. It is the
+    # one field that separates "a gate produced this row's numbers" from "the
+    # #1187 FIXTURE snapshot did" — curated passports carried fixture DSR/PBO
+    # values in the gate-number columns until PR-B stopped writing them there,
+    # and those rows are still in the table until the grading job runs. No
+    # ``graded_at`` ⇒ no numbers, which is the same fail-closed answer the live
+    # gate used to give when it could not run.
+    graded = stored is not None and stored.graded_at is not None
 
-    # No spec reconciliation on this path (#1769). `strategy_provider` never
-    # sets `strategy_spec` on a curated `Strategy`, so the call would be a
-    # provable no-op today — dead code with a comment claiming an invariant it
-    # does not enforce. The curated card's source of truth is the YAML's
-    # POSITION_SIZING / REBALANCE_FREQUENCY metadata, and it gains DSL parity
-    # for free the day `strategy_provider` writes a spec: this function reads
-    # the same fields the generated path does.
+    if stored is not None:
+        metrics = DisplayMetrics(
+            sharpe_ratio=stored.sharpe_ratio,
+            sortino_ratio=stored.sortino_ratio,
+            cagr=stored.cagr,
+            max_drawdown=stored.max_drawdown,
+            win_rate=stored.win_rate,
+            calmar_ratio=stored.calmar_ratio,
+            correlation_to_spy=stored.correlation_to_spy,
+            total_trades=stored.total_trades,
+            backtest_start=stored.backtest_start,
+            backtest_end=stored.backtest_end,
+            # Which LINK of the chain the sync resolved these from. Derived from
+            # the same provider inputs the sync wrote from, so it names the link
+            # rather than re-deciding the number.
+            source=display_metrics_source(s, bt),
+        )
+    else:
+        metrics = resolve_display_metrics(s, bt)
 
     # Build papers list from passport
     papers_list = [
@@ -191,7 +242,9 @@ def _to_strategy_response(
         universe_source=s.universe_source,
         position_sizing=s.position_sizing.value,
         rebalance_frequency=s.rebalance_frequency.value,
-        status=served_status,
+        # Promoted from the STORED verdict by the shared derivation the passport
+        # payload publishes as ``served_status`` — see that function.
+        status=served_status(s.status.value, rigor_status),
         paper_venue=s.paper_venue,
         paper_year=s.paper_year,
         paper_doi=s.paper_doi,
@@ -203,399 +256,63 @@ def _to_strategy_response(
         on_chain_registration_tx=s.on_chain_registration_tx,
         paper_claimed_sharpe=bt.paper_claimed_sharpe if bt else s.paper_claimed_sharpe,
         paper_claim_blended_sharpe=s.paper_claim_blended_sharpe,
-        # Metric display: use s.real_* (fixture data) when available, fall through
-        # to the persisted backtest row, then the stub placeholder.  This is
-        # independent of ``has_real`` so curated strategies retain their fixture
-        # metrics even when no BacktestResultRecord row exists yet.
-        sharpe_ratio=s.real_sharpe if s.real_sharpe is not None else (bt.sharpe_ratio if bt else s.stub_sharpe),
-        sortino_ratio=s.real_sortino if s.real_sortino is not None else (bt.sortino_ratio if bt else None),
-        cagr=s.real_cagr if s.real_cagr is not None else (bt.cagr if bt else s.stub_cagr),
-        max_drawdown=s.real_max_dd if s.real_max_dd is not None else (bt.max_drawdown if bt else s.stub_max_dd),
-        win_rate=s.real_win_rate if s.real_win_rate is not None else (bt.win_rate if bt else s.stub_win_rate),
-        calmar_ratio=s.real_calmar if s.real_calmar is not None else (bt.calmar_ratio if bt else s.stub_calmar),
-        correlation_to_spy=s.real_corr_spy
-        if s.real_corr_spy is not None
-        else (bt.correlation_to_spy if bt else s.stub_corr_spy),
-        total_trades=s.real_total_trades if s.real_total_trades is not None else (bt.total_trades if bt else None),
-        # Numeric rigor fields (#868, honesty fix #1187): SOLELY the LIVE gate
-        # result — the SAME run_rigor_gate call that produced `verdict` above —
-        # so the leaderboard can never disagree with GET /api/selection-bias/gate
-        # for this id. rigor_result is None when the live gate could not run
-        # (no/insufficient persisted returns, or a batch failure); the field then
-        # renders None (served as the API's honest "not run"), NEVER the stale
-        # s.<field> / bt.<field> values. Those trace back to a migrated
-        # test-fixture snapshot (#1187) that predates the current DSR convention
-        # and gate threshold and cannot be reproduced by any single code version —
-        # falling back to it silently re-labels a `pending` verdict's numbers as
-        # measured. Do not reintroduce the s.<field>/bt.<field> fallback here;
-        # that is precisely the defect #1187 tracks. The basic display metrics
-        # below (sharpe_ratio, cagr, etc.) are a DIFFERENT, out-of-scope concern —
-        # they are descriptive backtest stats, not a rigor-gate pass/fail claim.
-        deflated_sharpe_ratio=(rigor_result.deflated_sharpe if rigor_result is not None else None),
-        dsr_p_value=(rigor_result.dsr_p_value if rigor_result is not None else None),
-        pbo_score=(rigor_result.pbo_score if rigor_result is not None else None),
-        out_of_sample_sharpe=(rigor_result.oos_sharpe if rigor_result is not None else None),
+        # Display metrics: the STORED answer to the `real_* -> persisted backtest
+        # -> stub` chain, resolved once by the passport sync. Same precedence and
+        # same numbers as before; what changed is that they are decided by a
+        # writer instead of re-decided per request per process.
+        sharpe_ratio=metrics.sharpe_ratio,
+        sortino_ratio=metrics.sortino_ratio,
+        cagr=metrics.cagr,
+        max_drawdown=metrics.max_drawdown,
+        win_rate=metrics.win_rate,
+        calmar_ratio=metrics.calmar_ratio,
+        correlation_to_spy=metrics.correlation_to_spy,
+        total_trades=metrics.total_trades,
+        # Numeric rigor fields: the four numbers the GRADE produced, read off the
+        # same row as the badge, so a badge from one gate run can never stand
+        # beside numbers from another. An ungraded row serves None — the API's
+        # honest "not run" — and NEVER the s.<field>/bt.<field> fixture values
+        # (#1187: that snapshot predates the current DSR convention and the gate
+        # threshold, and cannot be reproduced by any single code version).
+        deflated_sharpe_ratio=(stored.deflated_sharpe_ratio if graded else None),
+        dsr_p_value=(stored.dsr_p_value if graded else None),
+        pbo_score=(stored.pbo_score if graded else None),
+        out_of_sample_sharpe=(stored.out_of_sample_sharpe if graded else None),
         kelly_fraction=s.kelly_fraction,
-        # Badge from the LIVE gate verdict (#821) — never the fixture boolean.
-        # passes_rigor_gate is the fail-closed boolean (True only when status=="pass");
-        # rigor_gate_status carries the honest four-state badge (#1184):
-        # "pass" | "fail" | "pending" | "degenerate".
-        passes_rigor_gate=verdict.passes,
-        rigor_gate_status=verdict.status,
+        # THE STORED VERDICT. Graded once, at backtest time, by the real gate;
+        # served here without a recompute (docs/adr/rigor-verdict-of-record.md).
+        # passes_rigor_gate is the fail-closed boolean (True only when the
+        # four-state is "pass"); rigor_gate_status carries the four-state itself
+        # (#1184): "pass" | "fail" | "pending" | "degenerate".
+        passes_rigor_gate=passes,
+        rigor_gate_status=rigor_status,
         # A3: name the source of the numbers instead of leaving the reader to
-        # infer it. "live_gate" iff the live gate actually produced a result for
-        # this strategy; otherwise every rigor field above is None and this says
-        # so. No "persisted_backtest" branch exists here on purpose — see
-        # StrategyResponse.metrics_source.
-        metrics_source=("live_gate" if rigor_result is not None else "unavailable"),
-        display_metrics_source=_display_metrics_source(s, bt),
+        # infer it. "stored_grade" iff a real grade produced them; otherwise
+        # every rigor field above is None and this says so.
+        metrics_source=("stored_grade" if graded else "unavailable"),
+        display_metrics_source=metrics.source,
         # is_backtest_placeholder: True when no BacktestResultRecord row exists.
-        # ``has_real`` is now bt is not None so this is the honest gate.
         is_backtest_placeholder=not has_real,
         sharpe_ci_lower=s.sharpe_ci_lower,
         sharpe_ci_upper=s.sharpe_ci_upper,
         # num_trials provenance (#1358): curated strategies are ALWAYS graded
         # self-contained (num_trials=1, decouple #2 — never deflated by the
-        # library's size) whenever the live gate actually ran (rigor_result is
-        # the RigorGateResult that same run produced). No rigor_result means the
-        # gate never ran for this strategy (no/insufficient persisted returns) —
-        # the honest answer is "no provenance to report", not an assumed 1.
-        num_trials_in_selection=(rigor_result.num_trials if rigor_result is not None else None),
-        num_trials_scope=(_SCOPE_CURATED_SELF_CONTAINED if rigor_result is not None else "unspecified"),
-        backtest_start=(
-            s.real_backtest_start
-            if s.real_backtest_start
-            else (bt.backtest_start.isoformat() if bt and bt.backtest_start else None)
-        ),
-        backtest_end=(
-            s.real_backtest_end
-            if s.real_backtest_end
-            else (bt.backtest_end.isoformat() if bt and bt.backtest_end else None)
-        ),
-        # ── Engine attribution (left-behind batch close, docs/sprint/a6-rerun.md /
-        # sprint README row 5) ────────────────────────────────────────────────
-        # Both columns have lived on BacktestResultRecord since the cost SSOT /
-        # 2026-08-03 provenance audit and are already declared on StrategyResponse
-        # (see schemas.py "Engine attribution"), but no construction site ever
-        # populated them — the values stopped at the DB. `bt` here is the
-        # BacktestResult dataclass hydrated straight off the latest
-        # BacktestResultRecord row (BacktestResultRecord.to_backtest_result(),
-        # via LocalStrategyProvider.get_backtest_result), so these are real,
-        # never fabricated: None when no persisted backtest exists, or when the
-        # row predates the column (both honest NULLs, never a guessed engine).
+        # library's size). Reported only once a grade exists; an ungraded row's
+        # honest answer is "no provenance to report", not an assumed 1.
+        num_trials_in_selection=(1 if graded else None),
+        num_trials_scope=(_SCOPE_CURATED_SELF_CONTAINED if graded else "unspecified"),
+        backtest_start=metrics.backtest_start,
+        backtest_end=metrics.backtest_end,
+        # ── Engine attribution ──────────────────────────────────────────────
+        # Read off the BacktestResultRecord row the provider hydrated, so these
+        # are real or None — never a guessed engine. Not on the passport row, so
+        # not part of the stored-verdict block above.
         backtest_engine=(bt.backtest_engine if bt else None),
         cost_model_id=(bt.cost_model_id if bt else None),
         regime_tag=s.regime_tag,
         return_source=return_source,
         return_source_note=return_source_note,
     )
-
-
-def _live_verdict_and_result_for_one(s: Strategy) -> tuple[RigorGateVerdict, RigorGateResult | None]:
-    """Badge + numbers for a single strategy from ONE cohort gate run (#1645).
-
-    **Why this exists (perf).** ``_to_strategy_response`` used to call
-    ``_live_verdict_for_one`` (→ ``verdicts_for_strategies``) *and*
-    ``_live_rigor_result_for_one`` (→ ``_live_rigor_results_for_strategies``).
-    Both grade the FULL library, so one ``GET /api/strategies/{id}`` ran the
-    whole cohort gate **twice** — measured 68 ``run_rigor_gate`` calls against a
-    34-strategy library. Worse, only the second path is memoized in
-    ``services.rigor_cache``: ``verdicts_for_strategies`` has no cache at any
-    layer, so a warm cache still cost a full cohort recompute (34 calls) on
-    every request, forever. Measured on prod 2026-08-31, anonymous:
-    ``GET /api/strategies/{id}`` returned ``X-Response-Time-Ms: 28144.0`` /
-    ``25072.2`` / ``28554.9`` on three consecutive calls — ~2x the ~13s the
-    list route costs for the same cohort, and flat across repeats because the
-    uncached half can never warm up.
-
-    Deriving the badge from the already-computed ``RigorGateResult`` is exactly
-    what ``list_strategies`` has done since #868 (see ``_verdict_from_result``);
-    this makes the detail path use the same single computation.
-
-    **Why this is safe (correctness).** It is the same gate, not a cheaper one.
-    ``RigorGateVerdict.from_result`` is the identical reduction
-    ``verdict_from_returns`` applies, and it is applied to a result produced by
-    ``run_rigor_gate`` over the FULL library cohort (``_library_cohort_including``
-    — the #902/#1173 invariant is unchanged). Every non-graded case still
-    fail-closes to ``pending``: a strategy with <10 persisted returns is absent
-    from the batch dict, a DB/cohort failure degrades the batch to ``{}``, and
-    ``_verdict_from_result(None)`` is ``pending``.
-
-    It also *removes* a real divergence. ``verdicts_for_strategies`` builds cohort
-    PBO/avg-correlation from every series with ≥10 observations, while
-    ``_live_rigor_results_for_strategies`` first excludes zero-variance series
-    (#868) — both files carry a ``TODO(A7)`` naming that split. The detail route
-    was serving a badge from the first cohort filter next to numbers from the
-    second; now both come from one run, so the detail badge cannot disagree with
-    the detail numbers or with the list badge.
-    """
-    result = _live_rigor_result_for_one(s)
-    return _verdict_from_result(result), result
-
-
-def _live_verdict_for_one(s: Strategy) -> RigorGateVerdict:
-    """Live rigor-gate verdict for a single strategy (#821).
-
-    Grades over the FULL library so the verdict carries the same cohort PBO +
-    avg correlation context the list badge uses, keeping the detail view
-    consistent with the list. ``num_trials`` is self-contained (1 per strategy,
-    decouple #2) — it does NOT come from the library size; only
-    PBO/avg_correlation are cohort-derived. No real returns → ``pending``,
-    never a fixture value. Never raises: any failure degrades to ``pending``
-    (fail-closed badge).
-
-    Since #1645 this is the badge half of ``_live_verdict_and_result_for_one``
-    rather than a second, uncached gate run through ``verdicts_for_strategies``
-    — see that function's docstring for the measurement and the correctness
-    argument. Callers that also need the numbers should call the pair directly;
-    calling both this and ``_live_rigor_result_for_one`` would repeat the cache
-    lookup for no benefit.
-    """
-    return _live_verdict_and_result_for_one(s)[0]
-
-
-def _library_cohort_including(s: Strategy) -> list[Strategy]:
-    """The full library cohort, guaranteed to contain ``s``.
-
-    This cohort feeds cohort-scoped PBO + avg_correlation ONLY — it must NOT
-    drive ``num_trials`` (self-contained at 1 per strategy, decouple #2). ``s``
-    is appended only if the provider list somehow misses it (e.g. a
-    just-generated strategy not yet listed).
-    """
-    try:
-        cohort = list(strategy_provider().list_strategies())
-    except Exception:
-        cohort = []
-    if not any(x.id == s.id for x in cohort):
-        cohort.append(s)
-    return cohort
-
-
-def _live_rigor_result_for_one(s: Strategy) -> RigorGateResult | None:
-    """Full live ``RigorGateResult`` for a single strategy (#868).
-
-    Companion to ``_live_verdict_for_one``: that function reduces the live gate
-    to the four-state pass/fail/pending/degenerate badge (``RigorGateVerdict``
-    carries no numeric fields), but the served leaderboard numbers (``dsr_p_value``,
-    ``pbo_score``, ``out_of_sample_sharpe``, ``deflated_sharpe_ratio``) must
-    also come from the SAME live gate run, not the stale ``s.dsr_p_value`` /
-    ``bt.dsr_p_value`` fixture fields — otherwise the leaderboard can show
-    numbers that disagree with what ``GET /api/selection-bias/gate`` computes
-    for the same strategy right now. Delegates to
-    ``_live_rigor_results_for_strategies`` over the FULL library so the single
-    fetch carries the same cohort PBO + avg correlation context as the list.
-    ``num_trials`` is self-contained (1, decouple #2) — it does NOT come from
-    the library size. Returns ``None`` on no/insufficient persisted returns or
-    any failure — the caller (#1187) renders that as the numeric fields being
-    ``None``, never a fabricated number, matching the fail-closed badge contract.
-    """
-    try:
-        cohort = _library_cohort_including(s)
-        return _live_rigor_results_for_strategies(cohort).get(s.id)
-    except Exception as exc:
-        logger.warning("live rigor gate failed for %s (numbers → None): %s", s.id, exc)
-        return None
-
-
-def _live_rigor_results_for_strategies(strategies: list[Strategy]) -> dict[str, RigorGateResult]:
-    """Batch live ``RigorGateResult`` per strategy (#868), for the library list.
-
-    Companion to ``verdicts_for_strategies``: that function collapses the live
-    gate to a four-state pass/fail/pending/degenerate badge, discarding the underlying
-    DSR/PBO/OOS numbers. The served leaderboard numeric fields must equal what
-    ``GET /api/selection-bias/gate`` computes for the same strategy right now
-    (not the stale ``s.dsr_p_value``/``bt.dsr_p_value`` fixture fields), so this
-    mirrors that route's cohort context exactly: real persisted returns from
-    the DB, zero-variance series excluded before they can dilute avg_correlation
-    (same fix as #868's selection_bias_routes.py change), cohort PBO +
-    avg-correlation over the survivors, one ``run_rigor_gate`` call per
-    strategy. ``num_trials`` is self-contained (1 per strategy, decouple #2) —
-    it is NOT derived from this cohort. Strategies with no/insufficient
-    persisted returns are simply absent from the returned dict — the caller
-    (#1187) serves ``None`` for those ids' numeric rigor fields (fail-closed:
-    no fabricated number for a strategy the live gate cannot evaluate; the
-    pre-#1187 fixture-field fallback is gone). A degenerate (zero-variance)
-    series IS graded and included here — it just runs with self-contained
-    cohort context (see the ``gate_kwargs`` branch below) so it can't dilute
-    ``avg_correlation`` for the rest of the cohort.
-
-    Any DB or cohort-compute failure degrades to ``{}`` (every id's numeric
-    rigor fields render ``None``) rather than raising into the library-list
-    response.
-
-    **Perf (Library page load latency):** the batch cohort compute below (PBO,
-    average correlation, per-strategy look-ahead code load, one ``run_rigor_gate``
-    call per strategy — measured ~6s for this route) is memoized in
-    ``services.rigor_cache`` keyed on a data-version token
-    (``rigor_cache.cohort_key``) derived from the exact persisted-returns read just
-    above, PLUS each strategy's ``strategy_code_hash`` — the look-ahead audit
-    inside ``run_rigor_gate`` also depends on the strategy's code, so the code
-    hash has to participate in the key or a code edit could serve a stale
-    look-ahead verdict for up to the TTL (Copilot review, PR #1040). The DB read
-    itself is NEVER cached — it always runs live, which is what lets the key
-    react the instant persisted returns change. This is honest caching: the
-    cached value IS the real live-computed result, so a cache hit serves exactly
-    what a cache miss would have computed. ``rigor_cache.get_or_compute`` fails
-    open (any cache-layer error falls back to calling the compute closure
-    directly), so a cache bug can only make a request slow, never wrong. It also
-    never caches the ``{}`` failure sentinel (``cache_if=bool``) so
-    a transient cohort-compute failure can't strand every strategy on ``None``
-    numeric rigor fields for the full TTL.
-    """
-    if not strategies:
-        return {}
-
-    strategy_ids = [s.id for s in strategies]
-
-    try:
-        from archimedes.db import get_session
-        from archimedes.services.backtest_repository import get_all_daily_returns
-
-        with get_session() as session:
-            returns_by_strategy = get_all_daily_returns(session, strategy_ids)
-    except Exception as exc:
-        logger.warning("live rigor result batch: DB read failed (all → None): %s", exc)
-        return {}
-
-    from archimedes.services.rigor_cache import cohort_key, get_or_compute
-
-    # Fold each strategy's code-version token into the key (Copilot review, PR
-    # #1040): run_rigor_gate's look-ahead audit reads `strategy_code`, so a key
-    # built from returns alone can serve a stale look-ahead verdict/passes_all
-    # after a code edit even though returns are unchanged. `strategy_code_hash`
-    # is a SHA-256 of the strategy file contents already computed onto the
-    # Strategy object by LocalStrategyProvider — reading it here costs no extra
-    # I/O on the request path (the cheap-identifier preference `cohort_key`'s
-    # docstring calls for).
-    code_versions = {s.id: getattr(s, "strategy_code_hash", None) for s in strategies}
-    cache_key = "strategies_list:" + cohort_key(strategy_ids, returns_by_strategy, code_versions)
-
-    def _compute() -> dict[str, RigorGateResult]:
-        from archimedes.services.rigor_evaluator import (
-            assert_self_contained_cohort_correlation,
-            compute_average_pairwise_correlation,
-            compute_pbo,
-            run_rigor_gate,
-        )
-
-        # Exclude zero-variance (degenerate/placeholder-flat) series from the cohort
-        # context — same fix as selection_bias_routes.py's valid_returns filter
-        # (#868), so avg_correlation/pbo_scores here match that route's cohort gate
-        # exactly rather than drifting apart on this input.
-        # TODO(A7): cohort filter here diverges from live_rigor_gate's cohort — see
-        # docs/sprint/cluster-4-strategies-route.md
-        valid_returns = {
-            k: v
-            for k, v in returns_by_strategy.items()
-            if len(v) >= 10 and float(np.ptp(np.asarray(v, dtype=float))) > 0.0
-        }
-
-        try:
-            pbo_scores = compute_pbo(valid_returns) if len(valid_returns) >= 2 else {}
-            # num_trials = 1: each strategy is graded on ITS OWN Sharpe, never
-            # deflated by how many OTHER strategies sit in the library (decouple
-            # #2). PBO/avg_correlation stay cohort-wide (out of scope here).
-            num_trials = 1
-            avg_correlation = compute_average_pairwise_correlation(valid_returns) if len(valid_returns) >= 2 else 0.0
-            # V4 guard (num_trials-provenance audit 2026-08-03): cohort-wide
-            # avg_correlation is INERT at num_trials=1 (E[max_N]=0 when N==1) —
-            # this makes it IMPOSSIBLE for a future edit to silently reintroduce
-            # num_trials>1 here without re-coupling every strategy's DSR to the
-            # library's correlation structure; it raises instead (caught below,
-            # same fail-closed contract as the rest of this cohort-context block).
-            assert_self_contained_cohort_correlation(num_trials, avg_correlation)
-        except Exception as exc:
-            logger.warning("live rigor result batch: cohort-context compute failed (all → None): %s", exc)
-            return {}
-
-        # Load code for every strategy that has >= 10 returns — degenerate series
-        # (excluded from valid_returns) still run their own gate (#868) and need the
-        # look-ahead audit input.
-        code_by_id = {
-            s.id: _load_strategy_code_safe_local(s) for s in strategies if len(returns_by_strategy.get(s.id, [])) >= 10
-        }
-
-        computed: dict[str, RigorGateResult] = {}
-        for s in strategies:
-            daily_returns = returns_by_strategy.get(s.id, [])
-            if len(daily_returns) < 10:
-                continue  # No sufficient returns — caller (#1187) serves None, never a fixture number
-            if s.id in valid_returns:
-                # Non-degenerate series: num_trials is self-contained (1, decouple
-                # #2); pbo_scores / avg_correlation still come from the cohort so
-                # they match the library gate.
-                gate_kwargs: dict = {
-                    "num_trials": num_trials,
-                    "pbo_scores": pbo_scores,
-                    "average_correlation": avg_correlation,
-                }
-            else:
-                # Degenerate (zero-variance) series: excluded from cohort context to
-                # prevent diluting avg_correlation (#868); num_trials is self-contained
-                # (1) either way, but the strategy still runs its own gate so the
-                # caller gets a live "degenerate" verdict (#1184) rather than falling
-                # back to a stale fixture value.
-                gate_kwargs = {"num_trials": 1, "pbo_scores": {}, "average_correlation": 0.0}
-            try:
-                computed[s.id] = run_rigor_gate(
-                    strategy_id=s.id,
-                    daily_returns=daily_returns,
-                    strategy_code=code_by_id.get(s.id),
-                    in_sample_sharpe=None,
-                    paper_claimed_sharpe=getattr(s, "paper_claimed_sharpe", None),
-                    **gate_kwargs,
-                )
-            except Exception as exc:
-                logger.warning("live rigor gate failed for %s in batch (numbers → None): %s", s.id, exc)
-        return computed
-
-    # cache_if=bool: `_compute()` returns `{}` on a transient
-    # cohort-context compute failure (see the `except Exception` above), and an
-    # empty dict must never be memoized — caching it would make that transient
-    # failure "sticky" for the full TTL, serving every strategy's numeric rigor
-    # fields as None long after the underlying failure has passed (Copilot
-    # review, PR #1040). The live `{}` is still returned to THIS caller either
-    # way; only whether it's written to the store for the NEXT caller changes.
-    return get_or_compute(cache_key, _compute, cache_if=bool)
-
-
-def _load_strategy_code_safe_local(strategy: Strategy) -> str | None:
-    """Best-effort strategy-source read for the batch look-ahead audit input.
-
-    Local twin of ``live_rigor_gate._load_strategy_code_safe`` (out of scope for
-    #868 — that module is untouched) so ``_live_rigor_results_for_strategies``
-    doesn't need to reach into it. Never raises: ``None`` on any failure, which
-    makes the gate's look-ahead leg fail rather than crash the library list.
-    """
-    code_path = getattr(strategy, "strategy_code_path", None)
-    if not code_path:
-        return None
-    try:
-        from archimedes.api.selection_bias_routes import _load_strategy_code
-
-        return _load_strategy_code(code_path)
-    except Exception:
-        return None
-
-
-def _verdict_from_result(result: RigorGateResult | None) -> RigorGateVerdict:
-    """Derive a RigorGateVerdict from an already-computed RigorGateResult.
-
-    Used by list_strategies so the badge and the numeric rigor fields always
-    come from the same single live-gate computation — avoids the double DB read and
-    duplicate gate run that verdicts_for_strategies would add, and eliminates
-    the badge/numeric-fields divergence that arose when the two paths used different
-    cohort filtering (#868, Copilot review).
-
-    #1184: delegates to ``RigorGateVerdict.from_result`` (rather than
-    hand-rolling ``passed()``/``failed()`` off ``passes_all`` here) so a
-    zero-variance persisted series reports the distinct ``degenerate`` status
-    through this route too, not just through ``live_rigor_gate.verdict_from_returns``
-    — the two badge-producing call sites can't drift apart on this check.
-    """
-    if result is None:
-        return RigorGateVerdict.pending()
-    return RigorGateVerdict.from_result(result)
 
 
 def _publishable_strategy_ids(
@@ -675,42 +392,30 @@ def _publishable_strategy_ids(
 
 
 def _list_strategies_sync(request: Request, status: str | None, limit: int, offset: int) -> StrategyListResponse:
-    """Grade the library, then page it.
+    """Page the library and serve each row's stored verdict.
 
     The blocking half of the route below (#1818 P4): it holds every
     ``session.query`` and every synchronous compute, and it runs on a worker
     thread so a slow or lock-blocked read cannot stop the event loop from
     answering ``/health``.
+
+    **This route no longer grades anything (#1746 / PR-B).** It used to run the
+    live gate over the whole library on every request, which is what #1173's
+    "never a filtered or paginated subset" rule was defending: scoring over a
+    page made a badge depend on which page a strategy landed on (a short window
+    falls under ``MIN_LIBRARY_N_FOR_PBO_GATING`` and the CSCV/PBO value itself
+    shifts with the cohort), and grading ``list_strategies(status=…)`` graded a
+    subset, so ``?status=candidate`` and ``?status=validated`` could answer
+    differently for one id. Both were the list-vs-detail contradiction dfa8fc1
+    was written to prevent. The rule is now structural rather than defended by a
+    comment: the cohort belongs to the WRITER
+    (``services.curated_grading.grade_cohort``, always the full library), and
+    every read surface serves the one stored answer.
     """
     from archimedes.db import get_session
 
     status_filter = StrategyStatus(status) if status else None
 
-    # Grade over the FULL library — never a filtered or paginated subset (#1173).
-    # The detail route grades via _library_cohort_including(), which calls
-    # list_strategies() with NO status filter, so the cohort here must match it
-    # exactly or the same strategy's badge changes depending on how it was
-    # requested. Two distinct ways that broke:
-    #
-    #   1. Pagination. Scoring over `window` made the badge depend on which page
-    #      a strategy landed on: a short window can fall under
-    #      MIN_LIBRARY_N_FOR_PBO_GATING (criterion 4 skipped) and the CSCV/PBO
-    #      value itself shifts with the cohort. Verified live: strategy
-    #      d90b357a…4bbd graded False in a 5-item window but True in the
-    #      full-library view and True on its own detail/passport route.
-    #   2. The `status` filter. Grading `list_strategies(status=...)` graded a
-    #      SUBSET, so `?status=candidate` and `?status=validated` could return
-    #      different verdicts for the same strategy, and both could disagree with
-    #      the passport. Same class of bug as (1), same fix — the filter is a
-    #      display concern and must not reach the cohort.
-    #
-    # Both are the list-vs-detail contradiction dfa8fc1 was written to prevent,
-    # and which this route's docstring asserts cannot happen.
-    #
-    # Bonus: the cache key (see cohort_key) is derived from the cohort's ids, so
-    # grading the full library collapses the previous one-cohort-computation-per
-    # -offset AND per-status-filter (~6s each) into a single shared entry.
-    #
     # Provider failure must be visible on the wire, not a silent empty list
     # (#1356: `total=len(strats)` used to render as a confident, honest-
     # looking "0 strategies" whether the provider raised or the library was
@@ -749,24 +454,31 @@ def _list_strategies_sync(request: Request, status: str | None, limit: int, offs
             degraded = True
             degraded_reason = "library is empty"
 
-    rigor_results = _live_rigor_results_for_strategies(library)
-
-    # Filter/paginate only AFTER grading. Delegated to the provider rather than
-    # filtered in-process so the `status` semantics stay byte-identical to the
-    # previous behaviour (file-declared status, before the live-gate promotion
-    # overlay — see the docstring note above).
+    # Filter/paginate. Delegated to the provider rather than filtered in-process
+    # so the `status` semantics stay byte-identical (file-declared status, before
+    # the stored-verdict promotion overlay — see the docstring note above).
     strats = strategy_provider().list_strategies(status=status_filter) if status_filter else library
     total = len(strats)
     window = strats[offset : offset + limit]
     caller = get_linked_wallet_address(request)
     responses: list[StrategyResponse] = []
     with get_session() as session:
+        window_ids = [s.id for s in window]
         # One IN query for the whole window's publish rights (#1663) — this was
         # a per-row wallet_can_publish call, i.e. one round trip per response
         # row, paid only by signed-in callers.
-        publishable = _publishable_strategy_ids(session, [s.id for s in window], caller, is_example=True)
+        publishable = _publishable_strategy_ids(session, window_ids, caller, is_example=True)
+        # …and one for the window's stored verdicts. The cohort-wide live gate
+        # run this replaced (`_live_rigor_results_for_strategies`, ~6s per page
+        # even warm) is gone with it: the verdict is graded once, when a curated
+        # backtest runs (`services.curated_grading`), and read here. Nothing
+        # about the answer depends on which page a strategy landed on any more,
+        # which is what #1173's full-library-cohort rule was defending — that
+        # rule now lives on the write side, where the cohort is always the whole
+        # library by construction.
+        stored = stored_passports_for(session, window_ids)
         for s in window:
-            resp = _to_strategy_response(s, _verdict_from_result(rigor_results.get(s.id)), rigor_results.get(s.id))
+            resp = _to_strategy_response(s, stored.get(s.id))
             resp.can_publish = s.id in publishable
             responses.append(resp)
     return StrategyListResponse(
@@ -1132,6 +844,26 @@ async def run_stress_test(payload: dict, request: Request, response: Response): 
 # ── Unified Passport Store (Issue #160 Phase 2) ───────────────────────────
 
 
+def _passport_payload(record, caller: str | None) -> dict:
+    """The wire shape of one passport row: the stored dict + ``served_status``.
+
+    ``to_dict()`` publishes the PERSISTED ``status`` column, which is what the
+    ``?status=`` filter queries — overwriting it here would make the list and its
+    own filter disagree. ``served_status`` is the same value a CARD shows for
+    this row, produced by the one shared derivation :func:`served_status`, so an
+    agent comparing this payload with ``GET /api/strategies/{id}`` gets the two
+    under names that say which is which instead of one string with two answers
+    (#1746).
+    """
+    payload = _redact_owner_wallet(record.to_dict(), caller)
+    payload["served_status"] = served_status(
+        record.status,
+        record.rigor_gate_status,
+        promote=(record.generation_method or "").lower() == "curated",
+    )
+    return payload
+
+
 def _redact_owner_wallet(d: dict, caller: str | None) -> dict:
     """Strip ``owner_wallet`` from a public payload unless the caller IS the owner.
 
@@ -1205,7 +937,7 @@ def _list_strategy_passports_sync(request: Request, status: str | None, regime_t
     with get_session() as session:
         records = list_passports(session, status=status, regime_tag=regime_tag)
         records = _visible_passports(session, records, caller, user.id if user else None)
-        passports = [_redact_owner_wallet(r.to_dict(), caller) for r in records[:limit]]
+        passports = [_passport_payload(r, caller) for r in records[:limit]]
 
     return {"passports": passports, "total": len(passports), "source": "strategy_passports"}
 
@@ -1244,7 +976,7 @@ def _get_strategy_passport_sync(request: Request, strategy_id: str) -> dict:
         record = get_passport(session, strategy_id)
         if record is None or not _visible_passports(session, [record], caller, user.id if user else None):
             raise HTTPException(status_code=404, detail="Passport not found")
-        return _redact_owner_wallet(record.to_dict(), caller)
+        return _passport_payload(record, caller)
 
 
 @strategies_router.get("/passports/{strategy_id}")
@@ -1991,7 +1723,18 @@ def _get_strategy_sync(strategy_id: str, request: Request) -> StrategyResponse:
 
     strat = strategy_provider().get_strategy(strategy_id)
     if strat is not None:
-        resp = _to_strategy_response(strat)
+        # The curated branch reads the STORED verdict, exactly as the generated
+        # branch below does (#1746 / PR-B). This is the endpoint the issue
+        # reproduced on: it used to run a live cohort gate here and promote the
+        # file's ``candidate`` to ``validated`` off that live pass, so
+        # ``GET /api/strategies/1f9cfe96…`` answered ``pass``/``true``/``0.406``
+        # while ``GET /api/strategies/passports/1f9cfe96…`` — a pure read of the
+        # same strategy's row — answered ``candidate``/``false``/``null``.
+        from archimedes.db import get_session as _get_session
+        from archimedes.services.passport_loader import get_passport as _get_passport
+
+        with _get_session() as _session:
+            resp = _to_strategy_response(strat, _get_passport(_session, strategy_id))
         # The executable DSL spec (#1646). Set HERE, not inside
         # `_to_strategy_response`, because that helper also builds the list
         # route (line ~626) and the leaderboard (`leaderboard_routes.py:94`) —

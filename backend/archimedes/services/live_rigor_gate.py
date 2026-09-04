@@ -278,9 +278,10 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
 
     # Strategies WITHOUT real returns are pending; do NOT synthesize from stubs
     # (that is the circular validation the /gate route explicitly refuses).
-    # TODO(A7): cohort filter here diverges from strategies_routes's cohort
-    # (_live_rigor_results_for_strategies also excludes zero-variance series) —
-    # see docs/sprint/cluster-4-strategies-route.md
+    # TODO(A7): cohort filter here diverges from the curated grading job's cohort
+    # (curated_grading.grade_cohort also excludes zero-variance series) — see
+    # docs/sprint/cluster-4-strategies-route.md. This function now backs the vault
+    # deploy gate only; the library badge is the stored verdict (#1746 / PR-B).
     valid_returns = {k: v for k, v in returns_by_strategy.items() if len(v) >= _MIN_RETURNS_FOR_GATE}
 
     # num_trials = 1: each strategy is graded on ITS OWN Sharpe, NOT deflated by

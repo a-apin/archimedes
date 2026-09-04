@@ -260,13 +260,14 @@ def build_leaderboard(
     # the per-strategy gate.
     #
     # Cache: none of its own, deliberately. Every `dsr_p_value` here arrives on
-    # an already-built `StrategyResponse` — for the curated cohort those come
-    # from the rigor_cache-memoized `_live_rigor_results_for_strategies`, and
-    # the BH itself is pure numpy over at most a few hundred floats. So the
-    # expensive part rides the leaderboard's existing cache/TTL semantics
-    # (that IS the "recalculated periodically") and the cheap part recomputes
-    # per request, which is what guarantees the correction always matches the
-    # cohort actually being served rather than a cache-write-time one.
+    # an already-built `StrategyResponse` — since #1746 / PR-B those are read
+    # off the stored grade on `strategy_passports` (one batched query per
+    # request, no gate run at all), and the BH itself is pure numpy over at most
+    # a few hundred floats. So the correction always matches the cohort actually
+    # being served rather than a cache-write-time one. Note what this makes
+    # true: every p-value in the cohort was produced by a gate run whose version
+    # the row records, so a board mixing two gate vintages is now VISIBLE
+    # (`gate_version`) rather than silently averaged over.
     #
     # Cohort = ALL entries, BEFORE the regime/min_rigor filters and BEFORE
     # `limit`. This is load-bearing, not incidental: BH's adjusted p-value is

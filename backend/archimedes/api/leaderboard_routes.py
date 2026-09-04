@@ -85,26 +85,22 @@ def _curated_cohort_responses() -> tuple[list, bool, str]:
     """
     # Imported lazily to avoid import-time coupling with the heavy strategies
     # module (and any future cycle).
-    from archimedes.api.strategies_routes import (
-        _live_rigor_results_for_strategies,
-        _to_strategy_response,
-        _verdict_from_result,
-    )
+    from archimedes.api.strategies_routes import _to_strategy_response, stored_passports_for
+    from archimedes.db import get_session
 
     degraded = False
     degraded_reason = ""
     try:
         strategies = strategy_provider().list_strategies()
-        # One batched live-gate run over the whole cohort (single DB session),
-        # then derive the badge from each result. Calling _to_strategy_response
-        # with no verdict recomputes the full gate per strategy (2 DB reads +
-        # 2 gate runs each) — an unauthenticated DoS on a public endpoint.
-        # Mirrors GET /api/strategies/ (#868).
-        rigor_results = _live_rigor_results_for_strategies(strategies)
-        responses = [
-            _to_strategy_response(s, _verdict_from_result(rigor_results.get(s.id)), rigor_results.get(s.id))
-            for s in strategies
-        ]
+        # One batched read of the stored verdicts (#1746 / PR-B), not a batched
+        # gate run. This route used to run the live cohort gate on every call —
+        # an unauthenticated full-library compute on a public endpoint — and the
+        # board it produced could disagree with the same strategy's passport.
+        # The verdict is graded once, when a curated backtest runs, and the board
+        # reads it.
+        with get_session() as session:
+            stored = stored_passports_for(session, [s.id for s in strategies])
+            responses = [_to_strategy_response(s, stored.get(s.id)) for s in strategies]
     except Exception as exc:  # pragma: no cover - defensive
         # Full exception detail is logged server-side only — never echoed to
         # an anonymous, public caller (DB/RPC internals, hostnames, ports —
