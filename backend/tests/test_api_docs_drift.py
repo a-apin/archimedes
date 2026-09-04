@@ -124,6 +124,10 @@ _SIDECAR_ONLY_DOCS: dict[Pair, str] = {
     ("POST", "/api/auth/sign-out"): "Better Auth Node sidecar route, not a FastAPI route (auth-and-accounts.md)",
     ("GET", "/api/auth/get-session"): "Better Auth Node sidecar route, not a FastAPI route (auth-and-accounts.md)",
     ("GET", "/api/auth/verify-email"): "Better Auth Node sidecar route, not a FastAPI route (auth-and-accounts.md)",
+    (
+        "GET",
+        "/api/auth/verification-status",
+    ): "auth sidecar's own route (auth/server.js, #1748) — not a FastAPI route (auth-and-accounts.md)",
     ("GET", "/api/auth/providers"): "Better Auth Node sidecar route, not a FastAPI route (auth-and-accounts.md)",
     ("POST", "/api/auth/sign-in/social"): "Better Auth Node sidecar route, not a FastAPI route (auth-and-accounts.md)",
     (

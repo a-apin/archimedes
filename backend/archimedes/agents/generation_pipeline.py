@@ -1056,6 +1056,46 @@ def _passport_paper_refs(c: _CandidateResult) -> list[Any]:
     return refs
 
 
+def _paper_attribution_entry(c: _CandidateResult) -> dict[str, Any] | None:
+    """The ONE paper-attribution entry for a candidate, or ``None`` when there is
+    nothing to attribute.
+
+    Extracted out of :func:`_transcript_with_paper_record` because this entry
+    now has TWO consumers, and its summary sentence must exist in exactly one
+    place or they drift into two different claims about the same run:
+
+    * :func:`_transcript_with_paper_record` appends it to the persisted
+      ``debate_transcripts.transcript_json`` list, which is what the passport
+      reads back through ``GET /api/strategies/{id}/debate``;
+    * ``debate_engine._run_debate_leaderboard`` pushes it onto the live SSE
+      stream as ``debate_attribution``, so a user watching a generation sees
+      the per-paper record while it happens rather than only afterwards.
+
+    Callers on the SSE path MUST run it through
+    ``models.debate_transcript.sanitize_transcript`` themselves: both new keys
+    carry model prose (``fusion_reasoning`` directly, each ``paper_verdicts``
+    row's ``discard_reasons`` by way of ``_aggregate_paper_verdicts``), and only
+    the DB writer scrubs on the way in.
+    """
+    verdicts = c.debate_paper_verdicts or []
+    reasoning = (c.fusion_reasoning or "").strip()
+    if not verdicts and not reasoning:
+        return None
+    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
+    summary = (
+        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
+        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
+        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
+    )
+    return {
+        "role": "attribution",
+        "round": None,
+        "verdict": summary,
+        "paper_verdicts": verdicts,
+        "fusion_reasoning": reasoning,
+    }
+
+
 def _passport_spec_fields(c: _CandidateResult) -> dict[str, Any]:
     """The passport's three executable card fields, derived from the DSL spec (#1769).
 
@@ -1119,26 +1159,8 @@ def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     safe, whoever wrote the row.
     """
     transcript = list(c.debate_transcript or [])
-    verdicts = c.debate_paper_verdicts or []
-    reasoning = (c.fusion_reasoning or "").strip()
-    if not verdicts and not reasoning:
-        return transcript
-    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
-    summary = (
-        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
-        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
-        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
-    )
-    return [
-        *transcript,
-        {
-            "role": "attribution",
-            "round": None,
-            "verdict": summary,
-            "paper_verdicts": verdicts,
-            "fusion_reasoning": reasoning,
-        },
-    ]
+    entry = _paper_attribution_entry(c)
+    return transcript if entry is None else [*transcript, entry]
 
 
 async def _persist_debate_transcripts(
@@ -1348,6 +1370,7 @@ async def run_generation(
         # No silent fallback to the retired single-agent paths: if the society
         # cannot run, the job errors HONESTLY. The deterministic fixture runner
         # survives strictly for hermetic tests (TESTING / explicit fixture env).
+        from archimedes.agents.corpus_viability import REASON_CORPUS_UNAVAILABLE, assess_corpus_viability
         from archimedes.agents.debate_engine import _debate_can_run, _run_debate_leaderboard
 
         use_live = _llm_available()
@@ -1364,19 +1387,66 @@ async def run_generation(
             pipeline_reason = "deterministic fixture runner (tests only — no LLM in the environment)"
             runner = _run_fixture_candidate
         else:
-            reason = (
-                "no LLM backend reachable"
-                if not use_live
-                else "the corpus yielded <2 papers for this steer — the society cannot fuse"
-            )
+            # FAILED BEFORE SYNTHESIS. Nothing has been drafted, backtested or
+            # persisted at this point in the pipeline, so there is no partial
+            # strategy for Library/leaderboard to pick up — but the job record
+            # has to SAY so, with the reason, rather than carrying a bare
+            # "error" string. (The owner's screenshot of this failure: one red
+            # line in the event log, and no way forward.)
+            #
+            # Two distinct failures share the GENERATION_UNAVAILABLE code:
+            # no LLM backend (nothing about the brief can fix it), and a corpus
+            # that yielded < MIN_PAPERS candidates for this steer (which the
+            # user CAN act on). Only the second one pays for a corpus
+            # assessment — it re-runs the same retrieval the precheck just ran,
+            # this time keeping the count and deriving broadening suggestions
+            # from the corpus itself. No LLM call.
+            if not use_live:
+                reason = "no LLM backend reachable"
+                failure: dict[str, Any] = {"reason_code": "NO_LLM_BACKEND", "steer": brief.intent or ""}
+                message = (
+                    "Generation stopped before synthesis: no LLM backend is reachable right now, "
+                    "so no strategy was drafted or saved. Nothing in your brief caused this."
+                )
+            else:
+                viability = await asyncio.to_thread(assess_corpus_viability, brief)
+                # The machine reason, preserved verbatim from the previous
+                # wording so log greps and the job record read the same string
+                # they always did. `reason_code` carries the finer distinction
+                # (too few candidates vs. no corpus loaded at all).
+                reason = "the corpus yielded <2 papers for this steer — the society cannot fuse"
+                if viability.can_run:
+                    # The gate already said no; this second retrieval says yes
+                    # (transient DB failure into the file fallback, a concurrent
+                    # intake, …). We are committed to the failure branch, so its
+                    # counts would contradict it: "matched 3 papers … needs at
+                    # least 2" under a run that did not happen. Report the
+                    # disagreement with no numbers attached — CORPUS_UNAVAILABLE
+                    # renders the one-line message and no ways forward, which is
+                    # the honest reading when we cannot say what retrieval found.
+                    failure = {"reason_code": REASON_CORPUS_UNAVAILABLE, "steer": brief.intent or ""}
+                    message = (
+                        "Generation stopped before synthesis: the corpus check that gates the society "
+                        "and the one that explains it disagreed, so no strategy was drafted or saved."
+                    )
+                else:
+                    failure = viability.as_event_fields()
+                    message = viability.message()
             await emit.emit(
                 "error",
-                message=f"Generation is unavailable right now: {reason}.",
+                message=message,
                 recoverable=True,
                 code="GENERATION_UNAVAILABLE",
+                reason=reason,
+                **failure,
             )
             meter.set_meta("outcome", "generation_unavailable")
-            await store.update_status(job_id, "error", error=f"generation unavailable: {reason}")
+            await store.update_status(
+                job_id,
+                "error",
+                error=f"generation unavailable: {reason}",
+                result={"failed_before_synthesis": True, "failure": {"code": "GENERATION_UNAVAILABLE", **failure}},
+            )
             return
 
         # Regime plan AFTER the runner is final: the society owns its own
