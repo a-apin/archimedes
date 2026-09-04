@@ -24,9 +24,7 @@ VERSIONS = "backend/migrations/versions"
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
-    ).stdout
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout
 
 
 def _migration(rev: str, down: str | None) -> str:
