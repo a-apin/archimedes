@@ -16,7 +16,7 @@
 // ui/test/passport-dsl.test.js).
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { paperAttributionHeader } from "../src/paperAttribution.js";
@@ -276,4 +276,107 @@ test("the sentence introduces no number of its own", () => {
 	// this page (#1651) — no local formatting, in-domain or not.
 	assert.match(block, /metric="sharpe_ratio"/);
 	assert.match(block, /metric="deflated_sharpe_ratio"/);
+});
+
+// ── The Library carried the same header, three times (#1796) ──────────────
+//
+// `ui/src/components/Strategies.jsx` said "Fused from N papers" in three
+// places — the desktop row's chip tooltip, the expanded detail panel's
+// heading, and the mobile card's chip tooltip. #1783 left the file alone on
+// purpose (it belonged to the concurrent stored-verdict PR #1792), so the
+// overclaim the passport lost survived one route away from it, on the surface
+// most users reach first.
+
+const strategies = readFileSync(
+	new URL("../src/components/Strategies.jsx", import.meta.url),
+	"utf8",
+);
+
+/** `src` with WHOLE-LINE comments dropped.
+ *
+ * The phrase has to stay sayable: three files now explain the retired header
+ * by quoting it, and a guard that forbade the words outright would forbid
+ * saying what was fixed — the reason the passport assertions above match
+ * render forms instead of the bare phrase. Dropping only whole-line comments
+ * keeps that escape hatch as narrow as it can be: a trailing `// Fused from …`
+ * on a line of JSX still trips the guard. That is the safe direction to be
+ * wrong in — a false red is a sentence to rewrite, a false green is the
+ * overclaim back on the page.
+ */
+const withoutComments = (src) =>
+	src
+		.split("\n")
+		.filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+		.join("\n");
+
+/** Every .js/.jsx file under `dir`, recursively. */
+function jsSources(dir) {
+	const out = [];
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const child = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
+		if (entry.isDirectory()) out.push(...jsSources(child));
+		else if (/\.jsx?$/.test(entry.name)) out.push(child);
+	}
+	return out;
+}
+
+test("no rendered string in ui/src presents a citation count as fusion depth", () => {
+	// MUTATION: put `` title={`Fused from ${s.papers.length} papers`} `` back on
+	// either Strategies.jsx chip, or `Fused from {s.papers.length} papers` back
+	// in its detail-panel heading, and this goes red naming the file.
+	//
+	// Swept over the whole tree rather than the two files that had the phrase:
+	// this issue IS the fourth-copy failure mode — one wording fixed in one
+	// component while three copies of it sat in another — so the guard has to
+	// cover the copies nobody has written yet.
+	const offenders = [];
+	for (const file of jsSources(new URL("../src/", import.meta.url))) {
+		if (/Fused from/.test(withoutComments(readFileSync(file, "utf8")))) {
+			offenders.push(file.pathname.split("/src/")[1]);
+		}
+	}
+	assert.deepEqual(offenders, []);
+});
+
+test("all three Library sites read #1783's helper", () => {
+	assert.match(
+		strategies,
+		/import \{ paperAttributionHeader \} from '\.\.\/paperAttribution\.js'/,
+	);
+
+	// Sites 1 and 3 — the desktop row's chip and the mobile card's — are ONE
+	// component mounted twice. Two hand-written copies of a pill is how the
+	// tooltip came to disagree with the passport in the first place; the
+	// component is what makes a fourth wording impossible to add to one layout
+	// and forget in the other.
+	assert.match(strategies, /function PapersCitedChip\(/);
+	assert.equal((strategies.match(/<PapersCitedChip/g) || []).length, 2);
+	assert.match(
+		strategies,
+		/paperAttributionHeader\(papers, distinctMechanismPapers\)/,
+	);
+	// The chip is a COUNT and says what it counts, in the passport's own words
+	// (StrategyPassport.jsx's "{s.papers.length} papers cited", pinned above).
+	// The split it cannot fit goes in the tooltip — the attribute the old copy
+	// made its claim in.
+	assert.match(strategies, /\{attribution\.cited\} papers cited/);
+	assert.match(strategies, /title=\{attribution\.heading\}/);
+	// Both layouts thread the pipeline's own count, so the day the Library
+	// payload carries it the chips lower their claim without a second change.
+	assert.equal(
+		(strategies.match(/distinctMechanismPapers=\{s\.distinct_mechanism_papers\}/g) || [])
+			.length,
+		2,
+	);
+
+	// Site 2 — the expanded detail panel, one component behind both layouts.
+	assert.match(
+		strategies,
+		/const attribution = paperAttributionHeader\(s\.papers, s\.distinct_mechanism_papers\)/,
+	);
+	assert.match(strategies, /\{attribution\.heading\}/);
+	// The note is not optional here either: a heading ending "· 0" with silence
+	// under it reads as a rendering bug, and zero is the case a reader most
+	// needs told (#1636).
+	assert.match(strategies, /\{attribution\.note\}/);
 });

@@ -23,6 +23,7 @@ import {
 import { statusTag, statusLabel, statusTitle } from '../libraryStatus.js'
 import { signClass } from '../signClass.js'
 import { metricsSourceNote } from '../metricsSource.js'
+import { paperAttributionHeader } from '../paperAttribution.js'
 import { strategies as ROADMAP_COPY } from '../roadmapCopyApp.js'
 import {
   barName,
@@ -211,6 +212,33 @@ export function fmtUsd(n, fractionDigits = 0) {
 // + rigor metrics). One row per strategy; no visual hierarchy by status (the
 // STATUS column does that job).
 
+// The multi-paper chip beside a strategy's name, in BOTH layouts (#1796).
+//
+// It used to read "N papers" under a `Fused from N papers` tooltip — the same
+// citation-count-as-fusion-depth claim #1783 took off the passport (#1769), in
+// two more places. A count of cited papers says nothing about how many of them
+// were tied to a mechanism the strategy trades; on the strategy that surfaced
+// this, all five contribution cells were em-dashes and the chip still said
+// "fused".
+//
+// The chip is a COUNT, so it says what it counts — the same words the passport
+// chip settled on. The attribution split has nowhere to fit in a 0.66rem pill,
+// so it goes in the tooltip, where the old copy made its claim: the reader who
+// hovers gets `paperAttributionHeader`'s heading verbatim, the same sentence
+// the passport prints over its source-papers table. One vocabulary, three
+// surfaces, one helper.
+function PapersCitedChip({ papers, distinctMechanismPapers, style }) {
+  const attribution = paperAttributionHeader(papers, distinctMechanismPapers)
+  // Single-paper rows show their arxiv link / "Source paper" block instead —
+  // a "1 paper cited" pill next to a name is noise, not information.
+  if (!attribution || attribution.cited <= 1) return null
+  return (
+    <span className="tag tag-accent" style={style} title={attribution.heading}>
+      {attribution.cited} papers cited
+    </span>
+  )
+}
+
 function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, deploy, level, gatePending, extraActions }) {
   const [open, setOpen] = useState(isHighlighted)
   const rowRef = useRef(null)
@@ -304,15 +332,11 @@ function StrategyRow({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, d
             <span aria-hidden="true" className={`${open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'} w-3 h-3 mr-1.5 text-[var(--text-4)] flex-shrink-0 inline-block`} />
             {rowLabel}
           </button>
-          {(s.papers || []).length > 1 && (
-            <span
-              className="tag tag-accent"
-              style={{ fontSize: '0.68rem', marginLeft: 6, verticalAlign: 'middle', padding: '1px 5px' }}
-              title={`Fused from ${s.papers.length} papers`}
-            >
-              {s.papers.length} papers
-            </span>
-          )}
+          <PapersCitedChip
+            papers={s.papers}
+            distinctMechanismPapers={s.distinct_mechanism_papers}
+            style={{ fontSize: '0.68rem', marginLeft: 6, verticalAlign: 'middle', padding: '1px 5px' }}
+          />
         </td>
         <td className="caption">
           {citedPaperTitle && <div>{citedPaperTitle}</div>}
@@ -497,6 +521,17 @@ function RejectionReasons({ s }) {
 // same block un-collapsed above the fold — the desktop table row has nowhere
 // else to put it, so there it stays on.
 function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraActions, years, startStr, endStr, hideRejectionReasons }) {
+  // The multi-paper heading, from the same helper the passport's source-papers
+  // panel uses (#1783's `paperAttributionHeader`, #1796). It replaces
+  // "Fused from N papers" — a citation count presented as fusion depth — with
+  // the two counts kept apart, plus the sub-line that says what the smaller of
+  // them means. The note is not optional: a heading ending in "· 0" with
+  // nothing after it reads as a rendering bug, and the zero case is the one a
+  // reader most needs told (#1636's honest-shortfall rule).
+  //
+  // `null` for an empty `papers`, which the `length > 1` branch below never
+  // reaches — the single-paper "Source paper" block owns that case.
+  const attribution = paperAttributionHeader(s.papers, s.distinct_mechanism_papers)
   return (
     <>
       <div className="text-[0.82rem]" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
@@ -507,9 +542,8 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
         <div>
           {(s.papers || []).length > 1 ? (
             <>
-              <div className="label mb-2">
-                Fused from {s.papers.length} papers
-              </div>
+              <div className="label mb-2">{attribution.heading}</div>
+              <p className="caption mb-2">{attribution.note}</p>
               <div className="flex flex-col gap-2">
                 {s.papers.map((p, idx) => (
                   <div key={p.arxiv_id || idx}>
@@ -688,11 +722,11 @@ function StrategyCard({ s, isHighlighted, onOpenRigorExplainer, onOpenPassport, 
               own name when it has one; paper_title is the CITED PAPER and
               belongs under the "Source paper" heading in the detail panel. */}
           {s.strategy_name || s.paper_title}
-          {(s.papers || []).length > 1 && (
-            <span className="tag tag-accent" style={{ fontSize: '0.66rem', marginLeft: 6 }} title={`Fused from ${s.papers.length} papers`}>
-              {s.papers.length} papers
-            </span>
-          )}
+          <PapersCitedChip
+            papers={s.papers}
+            distinctMechanismPapers={s.distinct_mechanism_papers}
+            style={{ fontSize: '0.66rem', marginLeft: 6 }}
+          />
         </div>
       </div>
       <div className="lib-card-badges">
