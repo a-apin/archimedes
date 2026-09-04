@@ -62,7 +62,12 @@ def _use_tmp_db(tmp_path, monkeypatch):
     read as the badge by the next). Rebinding both globals, the way
     ``test_rigor_verdict_of_record.py`` does, makes the docstring true.
     """
-    import archimedes.db as db
+    # `from archimedes import db`, not `import archimedes.db as db`: the rest of
+    # this file reaches the same module with `from archimedes.db import ...`, and
+    # mixing the two import forms for one module is what the code-quality gate
+    # flags. Same module object either way — the binding is what monkeypatch
+    # needs, not the syntax.
+    from archimedes import db
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
