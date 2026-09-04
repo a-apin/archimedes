@@ -36,6 +36,15 @@ logger = logging.getLogger(__name__)
 
 _EULER_MASCHERONI = 0.5772156649
 _ANNUALIZATION = 252
+
+# The DSR's minimum sample, named because an API boundary has to reject against
+# THIS number rather than pick a second one (#1803). Below four bars the skew
+# and raw kurtosis the Bailey-LdP (2014) denominator is defined on are not
+# estimable, so every DSR entry point below returns ``None`` instead of a
+# number. `POST /api/rigor/verify` imports it to refuse a shorter series at the
+# schema, with a message that says the DSR could not have run anyway — the
+# alternative is a 200 whose every leg is `not_evaluable`.
+DSR_MIN_BARS = 4
 # GATE-side rf convention: the DSR deflates an EXCESS-return Sharpe, because
 # Bailey-LdP (2014) is defined on excess returns. This deliberately differs from
 # the passport DISPLAY Sharpe, which uses rf=0 (raw) — see fusion_evaluator.py's
@@ -134,7 +143,7 @@ def _sharpe_influence_lrv(
     the z-statistic), or ``None`` when the series is too short / degenerate.
     """
     T = len(arr)
-    if T < 4 or sigma <= 0.0:
+    if T < DSR_MIN_BARS or sigma <= 0.0:
         return None
     z = (arr - mean) / sigma
     influence = z - 0.5 * SR_hat * (z * z - 1.0)
@@ -179,7 +188,7 @@ def _sharpe_dsr_inputs(
     """
     arr = np.asarray(daily_returns, dtype=float)
     T = len(arr)
-    if T < 4:
+    if T < DSR_MIN_BARS:
         return None
     # numpy std(ddof=1) can be a tiny non-zero float for identical values due to
     # floating-point cancellation; check range first to catch constant series.
@@ -354,7 +363,7 @@ def _dsr_from_stats(
     Returns:
         (deflated_sharpe_annualized, dsr_p_value) or (None, None).
     """
-    if T < 4:
+    if T < DSR_MIN_BARS:
         return None, None
 
     N = max(1, N)

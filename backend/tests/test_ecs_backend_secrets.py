@@ -331,6 +331,42 @@ class TestTheCommentsTellTheTruth:
         )
 
 
+class TestTheFreeAllowanceIsPinnedNotInherited:
+    """`FREE_GENERATIONS_PER_ACCOUNT` must be a decision, not a code default.
+
+    Flip-list finding A5: prod served three free generations per account
+    because `free_generations.allowance()` falls back to `DEFAULT_ALLOWANCE`,
+    not because anybody put the number in a task definition. That is the same
+    config-drift shape `GENERATION_DAILY_CAP_*` and `GENERATION_TIMEOUT_SECONDS`
+    are plumbed here to avoid, and this is the one knob on that page that gives
+    away paid product.
+
+    Fails against `main` before this change: the name was nowhere in ecs.tf.
+    """
+
+    FREE_GENERATIONS_NAME = "FREE_GENERATIONS_PER_ACCOUNT"
+    FREE_GENERATIONS_VALUE = "3"
+
+    def test_the_allowance_is_declared_on_the_backend_container(self, backend_environment: dict[str, str]) -> None:
+        assert self.FREE_GENERATIONS_NAME in backend_environment, (
+            f"{self.FREE_GENERATIONS_NAME} is missing from the backend container's "
+            "`environment` block, so prod's free allowance is whatever "
+            "services/free_generations.py's code default happens to be (A5)."
+        )
+
+    def test_the_declared_value_is_the_owners_number(self, backend_environment: dict[str, str]) -> None:
+        assert backend_environment[self.FREE_GENERATIONS_NAME] == self.FREE_GENERATIONS_VALUE, (
+            f"{self.FREE_GENERATIONS_NAME} is "
+            f"{backend_environment[self.FREE_GENERATIONS_NAME]!r} in infra/ecs.tf; the "
+            f"owner's 2026-09-02 call is {self.FREE_GENERATIONS_VALUE!r}. Changing the "
+            "number someone gets for free is a policy change and wants its own review."
+        )
+
+    def test_it_is_environment_not_a_secret(self, backend_secrets: dict[str, str]) -> None:
+        """An allowance is not a credential; SSM would hide it from this guard."""
+        assert self.FREE_GENERATIONS_NAME not in backend_secrets
+
+
 class TestAntiGoals:
     """#1463 seeds credentials. It must not also arm what spends with them."""
 

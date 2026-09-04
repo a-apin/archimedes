@@ -41,7 +41,7 @@ generated: { by: "claude-code", at: "2026-08-31T05:55:43.566Z" }
 > ## ⚠ RESOLVED 2026-08-31 — hand-annotated, not regenerated
 >
 > *This block is a human edit to a generated page, added by
-> [#1598](https://github.com/a-apin/archimedes/issues/1598). Everything below it is the
+> [#1598](https://github.com/aprin-labs/archimedes/issues/1598). Everything below it is the
 > generator's output, preserved verbatim as the evidence record of what the 2026-08-31
 > 05:55 run found.*
 >
@@ -74,7 +74,7 @@ generated: { by: "claude-code", at: "2026-08-31T05:55:43.566Z" }
 > documents disagree; it cannot find that both are wrong. See Önder's eighth conflict on
 > #1598 — a stale `N_eff` formula that every doc in the slice reproduced *consistently*,
 > and which only a check against the code could catch (fixed separately in
-> [#1614](https://github.com/a-apin/archimedes/pull/1614)).
+> [#1614](https://github.com/aprin-labs/archimedes/pull/1614)).
 
 This page exists so a reader does not resolve a contradiction by trusting whichever page
 they happened to open first. Everything below is a disagreement **inside this slice**,

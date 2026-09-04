@@ -1060,6 +1060,84 @@ def _passport_paper_refs(c: _CandidateResult) -> list[Any]:
     return refs
 
 
+def _paper_attribution_entry(c: _CandidateResult) -> dict[str, Any] | None:
+    """The ONE paper-attribution entry for a candidate, or ``None`` when there is
+    nothing to attribute.
+
+    Extracted out of :func:`_transcript_with_paper_record` because this entry
+    now has TWO consumers, and its summary sentence must exist in exactly one
+    place or they drift into two different claims about the same run:
+
+    * :func:`_transcript_with_paper_record` appends it to the persisted
+      ``debate_transcripts.transcript_json`` list, which is what the passport
+      reads back through ``GET /api/strategies/{id}/debate``;
+    * ``debate_engine._run_debate_leaderboard`` pushes it onto the live SSE
+      stream as ``debate_attribution``, so a user watching a generation sees
+      the per-paper record while it happens rather than only afterwards.
+
+    Callers on the SSE path MUST run it through
+    ``models.debate_transcript.sanitize_transcript`` themselves: both new keys
+    carry model prose (``fusion_reasoning`` directly, each ``paper_verdicts``
+    row's ``discard_reasons`` by way of ``_aggregate_paper_verdicts``), and only
+    the DB writer scrubs on the way in.
+    """
+    verdicts = c.debate_paper_verdicts or []
+    reasoning = (c.fusion_reasoning or "").strip()
+    if not verdicts and not reasoning:
+        return None
+    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
+    summary = (
+        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
+        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
+        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
+    )
+    return {
+        "role": "attribution",
+        "round": None,
+        "verdict": summary,
+        "paper_verdicts": verdicts,
+        "fusion_reasoning": reasoning,
+    }
+
+
+def _passport_spec_fields(c: _CandidateResult) -> dict[str, Any]:
+    """The passport's three executable card fields, derived from the DSL spec (#1769).
+
+    ``**``-spread into every ``StrategyPassport(...)`` construction below, for
+    the same reason ``_passport_paper_refs`` is shared: the three writers
+    (``_persist_candidate`` and the two real-metric rebuilds) each re-declare the
+    passport from scratch, and a field only one of them sets is a field the next
+    rebuild silently reverts.
+
+    Before this, all three passed ``asset_universe=c.asset_universe or []`` and
+    passed NEITHER ``rebalance_frequency`` NOR ``position_sizing`` — so every
+    generated row in ``strategy_passports`` took the column defaults, ``weekly``
+    and ``equal_weight``, whatever its spec said. The card then described a
+    strategy nobody had backtested. Owner dogfood 2026-09-01 caught it on a spec
+    saying ``monthly`` / ``full_invested_when_in_market``.
+
+    Falls back to the candidate's own universe (and the dataclass defaults for
+    the other two) when there is no validating spec — the fixture /
+    buy-and-hold path has none, and inventing a cadence for it would be the same
+    defect with the sign flipped.
+    """
+    from archimedes.models.strategy import PositionSizing, RebalanceFrequency
+    from archimedes.services.passport_spec_parity import card_fields_from_spec
+
+    derived = card_fields_from_spec(c.strategy_spec, strategy_id=c.candidate_id)
+    if derived is None:
+        return {"asset_universe": c.asset_universe or []}
+    return {
+        "asset_universe": derived["asset_universe"],
+        # Both enums are supersets of the DSL's closed vocabulary (see
+        # PositionSizing's docstring), and `card_fields_from_spec` returns only
+        # values `validate_strategy_spec` admitted — so these constructions
+        # cannot raise on a spec that reached here.
+        "rebalance_frequency": RebalanceFrequency(derived["rebalance_frequency"]),
+        "position_sizing": PositionSizing(derived["position_sizing"]),
+    }
+
+
 def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     """The candidate's transcript plus one trailing paper-attribution entry (#1739).
 
@@ -1085,26 +1163,8 @@ def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     safe, whoever wrote the row.
     """
     transcript = list(c.debate_transcript or [])
-    verdicts = c.debate_paper_verdicts or []
-    reasoning = (c.fusion_reasoning or "").strip()
-    if not verdicts and not reasoning:
-        return transcript
-    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
-    summary = (
-        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
-        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
-        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
-    )
-    return [
-        *transcript,
-        {
-            "role": "attribution",
-            "round": None,
-            "verdict": summary,
-            "paper_verdicts": verdicts,
-            "fusion_reasoning": reasoning,
-        },
-    ]
+    entry = _paper_attribution_entry(c)
+    return transcript if entry is None else [*transcript, entry]
 
 
 async def _persist_debate_transcripts(
@@ -1314,6 +1374,7 @@ async def run_generation(
         # No silent fallback to the retired single-agent paths: if the society
         # cannot run, the job errors HONESTLY. The deterministic fixture runner
         # survives strictly for hermetic tests (TESTING / explicit fixture env).
+        from archimedes.agents.corpus_viability import REASON_CORPUS_UNAVAILABLE, assess_corpus_viability
         from archimedes.agents.debate_engine import _debate_can_run, _run_debate_leaderboard
 
         use_live = _llm_available()
@@ -1330,19 +1391,66 @@ async def run_generation(
             pipeline_reason = "deterministic fixture runner (tests only — no LLM in the environment)"
             runner = _run_fixture_candidate
         else:
-            reason = (
-                "no LLM backend reachable"
-                if not use_live
-                else "the corpus yielded <2 papers for this steer — the society cannot fuse"
-            )
+            # FAILED BEFORE SYNTHESIS. Nothing has been drafted, backtested or
+            # persisted at this point in the pipeline, so there is no partial
+            # strategy for Library/leaderboard to pick up — but the job record
+            # has to SAY so, with the reason, rather than carrying a bare
+            # "error" string. (The owner's screenshot of this failure: one red
+            # line in the event log, and no way forward.)
+            #
+            # Two distinct failures share the GENERATION_UNAVAILABLE code:
+            # no LLM backend (nothing about the brief can fix it), and a corpus
+            # that yielded < MIN_PAPERS candidates for this steer (which the
+            # user CAN act on). Only the second one pays for a corpus
+            # assessment — it re-runs the same retrieval the precheck just ran,
+            # this time keeping the count and deriving broadening suggestions
+            # from the corpus itself. No LLM call.
+            if not use_live:
+                reason = "no LLM backend reachable"
+                failure: dict[str, Any] = {"reason_code": "NO_LLM_BACKEND", "steer": brief.intent or ""}
+                message = (
+                    "Generation stopped before synthesis: no LLM backend is reachable right now, "
+                    "so no strategy was drafted or saved. Nothing in your brief caused this."
+                )
+            else:
+                viability = await asyncio.to_thread(assess_corpus_viability, brief)
+                # The machine reason, preserved verbatim from the previous
+                # wording so log greps and the job record read the same string
+                # they always did. `reason_code` carries the finer distinction
+                # (too few candidates vs. no corpus loaded at all).
+                reason = "the corpus yielded <2 papers for this steer — the society cannot fuse"
+                if viability.can_run:
+                    # The gate already said no; this second retrieval says yes
+                    # (transient DB failure into the file fallback, a concurrent
+                    # intake, …). We are committed to the failure branch, so its
+                    # counts would contradict it: "matched 3 papers … needs at
+                    # least 2" under a run that did not happen. Report the
+                    # disagreement with no numbers attached — CORPUS_UNAVAILABLE
+                    # renders the one-line message and no ways forward, which is
+                    # the honest reading when we cannot say what retrieval found.
+                    failure = {"reason_code": REASON_CORPUS_UNAVAILABLE, "steer": brief.intent or ""}
+                    message = (
+                        "Generation stopped before synthesis: the corpus check that gates the society "
+                        "and the one that explains it disagreed, so no strategy was drafted or saved."
+                    )
+                else:
+                    failure = viability.as_event_fields()
+                    message = viability.message()
             await emit.emit(
                 "error",
-                message=f"Generation is unavailable right now: {reason}.",
+                message=message,
                 recoverable=True,
                 code="GENERATION_UNAVAILABLE",
+                reason=reason,
+                **failure,
             )
             meter.set_meta("outcome", "generation_unavailable")
-            await store.update_status(job_id, "error", error=f"generation unavailable: {reason}")
+            await store.update_status(
+                job_id,
+                "error",
+                error=f"generation unavailable: {reason}",
+                result={"failed_before_synthesis": True, "failure": {"code": "GENERATION_UNAVAILABLE", **failure}},
+            )
             return
 
         # Regime plan AFTER the runner is final: the society owns its own
@@ -1847,19 +1955,36 @@ async def _persist_candidate(
                     id=record.id,
                     papers=papers,
                     methodology_summary=c.thesis or "",
-                    asset_universe=c.asset_universe or [],
+                    # asset_universe / rebalance_frequency / position_sizing —
+                    # the three executable card fields, from the validated spec
+                    # (#1769). See `_passport_spec_fields`.
+                    **_passport_spec_fields(c),
                     universe_source=c.universe_source,
                     status=StrategyStatus(record.status) if record.status else StrategyStatus.CANDIDATE,
                     regime_tag=_regime_tag,
-                    passes_rigor_gate=bool(c.rigor_verdict.get("passing", False)) if c.rigor_verdict else False,
-                    deflated_sharpe_ratio=c.rigor_verdict.get("dsr") if c.rigor_verdict else None,
-                    # dsr_p_value was missing from the initial passport persist (#passport-honesty):
-                    # the rigor verdict carries it under "dsr_p_value" but earlier code only wrote
-                    # "dsr", "pbo", and "oos_sharpe" — leaving the passport column NULL even when
-                    # the generation leaderboard had the correct value.
-                    dsr_p_value=c.rigor_verdict.get("dsr_p_value") if c.rigor_verdict else None,
-                    pbo_score=c.rigor_verdict.get("pbo") if c.rigor_verdict else None,
-                    out_of_sample_sharpe=c.rigor_verdict.get("oos_sharpe") if c.rigor_verdict else None,
+                    # NO RIGOR VERDICT, AND NO RIGOR NUMBERS, FROM HERE.
+                    #
+                    # This call used to write the generation-time FUSION verdict
+                    # onto the passport — `passes_rigor_gate` from
+                    # c.rigor_verdict["passing"], plus its dsr / dsr_p_value /
+                    # pbo / oos_sharpe. That made the passport's verdict column
+                    # mixed-vintage: it held the fusion gate's answer until (and
+                    # only if) the post-backtest re-grade below happened to run,
+                    # and every read surface presented it as the strategy's
+                    # grade. #1747 is what that looks like from the outside.
+                    #
+                    # Generation, backtesting and grading are one-time events
+                    # (docs/adr/rigor-verdict-of-record.md). At THIS point the
+                    # strategy has been generated and not yet graded, so the row
+                    # is written ungraded — ingest_passport with no
+                    # ``rigor_verdict=`` stores rigor_gate_status="pending",
+                    # passes_rigor_gate=False, no graded_at, no gate_version.
+                    #
+                    # The fusion verdict is not lost and is not demoted: it stays
+                    # on StrategyRecord.rigor_verdict (written by upsert_strategy
+                    # above) as the DEBATE RECORD — what the synthesis gate
+                    # thought, which is worth keeping precisely because the real
+                    # gate can disagree with it. It is simply not a rigor grade.
                 )
                 with get_session() as sess2:
                     ingest_passport(
@@ -1937,25 +2062,32 @@ def _portfolio_daily_returns(artifact: dict) -> list[float]:
 
 
 def _refresh_passport_real_metrics(
-    session: Any, c: _CandidateResult, strategy_id: str, result: Any, *, passes_rigor_gate: bool, n_obs: int
+    session: Any, c: _CandidateResult, strategy_id: str, result: Any, *, verdict: Any, n_obs: int
 ) -> None:
-    """Refresh the strategy_passports ``real_*`` columns + ``passes_rigor_gate`` for a
-    fusion/debate candidate whose real returns were just persisted.
+    """Refresh the strategy_passports ``real_*`` columns AND write the rigor verdict
+    of record for a fusion/debate candidate whose real returns were just persisted.
 
-    The single-strategy read path (``_passport_to_strategy_response``) derives
-    ``rigor_gate_status`` from the STORED passport columns (``pending`` while
-    ``sharpe_ratio is None``) and the deploy gate (``_strategy_rigor_status``) reads
-    ``record.passes_rigor_gate`` — neither re-grades the ``backtest_results`` row. So
-    persisting the row alone leaves both at ``pending``; this in-place passport update
-    is what makes the endpoint + deploy gate see the real verdict. Mirrors the passport
-    refresh in ``_backtest_and_persist``. ``passes_rigor_gate`` is the live-gate re-grade
-    of the real returns (single source of truth).
+    **This call is the grading event.** ``verdict`` is the
+    :class:`~archimedes.services.live_rigor_gate.RigorGateVerdict` that
+    ``verdict_from_returns`` produced by running the real gate over the real
+    persisted return series — the one moment in a strategy's life when a gate
+    actually looks at it. Every read surface serves what this writes; nothing
+    recomputes a verdict on read (docs/adr/rigor-verdict-of-record.md).
+
+    The four-state ``verdict.status`` is stored as-is, so ``degenerate`` (a
+    zero-variance persisted series, #1184) survives to the badge as itself
+    rather than being re-derived — or, worse, collapsing into ``fail``.
+    ``cohort_n=1`` because this grade is self-contained: the strategy was graded
+    against its own returns alone, not against a cohort
+    (docs/adr/num-trials-self-containment.md).
+
+    Mirrors the passport refresh in ``_backtest_and_persist``.
     """
     from datetime import date as _date
 
     from archimedes.models.strategy import StrategyPassport, StrategyStatus
     from archimedes.models.strategy_store import StrategyRecord
-    from archimedes.services.passport_loader import ingest_passport
+    from archimedes.services.passport_loader import RigorVerdictWrite, ingest_passport
 
     record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
     status_val = StrategyStatus(record.status) if record and record.status else StrategyStatus.CANDIDATE
@@ -1965,7 +2097,11 @@ def _refresh_passport_real_metrics(
         id=strategy_id,
         papers=papers,
         methodology_summary=c.thesis or "",
-        asset_universe=c.asset_universe or [],
+        # Same three spec-derived card fields the initial persist writes
+        # (#1769) — this rebuild replaces the row in place, so omitting them
+        # here would revert the card to the ``weekly``/``equal_weight`` column
+        # defaults the moment real metrics land.
+        **_passport_spec_fields(c),
         universe_source=c.universe_source,
         status=status_val,
         regime_tag=regime_tag,
@@ -1975,6 +2111,10 @@ def _refresh_passport_real_metrics(
         real_max_dd=result.max_drawdown,
         real_calmar=result.calmar_ratio,
         real_corr_spy=result.correlation_to_spy,
+        # The run measured a win rate; it was the one metric of the block this
+        # refresh never handed on, so the column stayed NULL beside a fresh
+        # Sharpe from the same run.
+        real_win_rate=result.win_rate,
         real_total_trades=result.total_trades,
         real_backtest_start=(result.backtest_start.isoformat() if isinstance(result.backtest_start, _date) else None),
         real_backtest_end=(result.backtest_end.isoformat() if isinstance(result.backtest_end, _date) else None),
@@ -1983,10 +2123,15 @@ def _refresh_passport_real_metrics(
         num_trials_in_selection=result.num_trials_in_selection,
         pbo_score=result.pbo_score,
         out_of_sample_sharpe=result.out_of_sample_sharpe,
-        passes_rigor_gate=passes_rigor_gate,
         n_obs_daily=n_obs,
     )
-    ingest_passport(session, passport, generation_method=c.generation_method, force_update=True)
+    ingest_passport(
+        session,
+        passport,
+        generation_method=c.generation_method,
+        force_update=True,
+        rigor_verdict=RigorVerdictWrite.from_verdict(verdict, cohort_n=1),
+    )
 
 
 async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Emitter, num_trials: int) -> None:
@@ -2139,9 +2284,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
                 artifact_json=artifact_json,
                 source_pipeline=SOURCE_PIPELINE_DSL_FUSION,
             )
-            _refresh_passport_real_metrics(
-                session, c, strategy_id, result, passes_rigor_gate=live.passes, n_obs=len(returns)
-            )
+            _refresh_passport_real_metrics(session, c, strategy_id, result, verdict=live, n_obs=len(returns))
             # WITHOUT this commit the flushed rows roll back on close → gate stays "pending"
             # (the sibling _backtest_and_persist commits too). Empirically: flush-only = 0 rows.
             session.commit()
@@ -2154,7 +2297,19 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             "backtest_done", candidate_id=c.candidate_id, strategy_id=strategy_id, source=c.generation_method
         )
     except Exception as exc:
-        logger.warning("persist_real_returns failed for %s: %s", strategy_id, exc)
+        # LOUD, not a warning. This is the swallow that decides whether a
+        # strategy ever gets graded at all: if it fires, no RigorVerdictWrite
+        # reaches the passport and the row stays honestly "pending" forever —
+        # invisible in prod unless someone goes looking for a strategy that
+        # never got a badge. error + exc_info so the traceback and the strategy
+        # id are both in the log line that matters
+        # (docs/adr/rigor-verdict-of-record.md).
+        logger.error(
+            "persist_real_returns FAILED for strategy %s — the passport stays UNGRADED (rigor_gate_status='pending'): %s",
+            strategy_id,
+            exc,
+            exc_info=True,
+        )
         await emit.emit("backtest_failed", candidate_id=c.candidate_id, strategy_id=strategy_id, error=str(exc))
 
 
@@ -2225,7 +2380,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
             insert_backtest_if_missing,
         )
         from archimedes.services.live_rigor_gate import verdict_from_returns
-        from archimedes.services.passport_loader import ingest_passport
+        from archimedes.services.passport_loader import RigorVerdictWrite, ingest_passport
         from archimedes.services.portfolio_backtester import backtest_portfolio
 
         # Run the actual backtest. Raises on insufficient data / fetch failure.
@@ -2309,7 +2464,9 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 id=strategy_id,
                 papers=papers,
                 methodology_summary=c.thesis or "",
-                asset_universe=c.asset_universe or [],
+                # Same three spec-derived card fields as the other two writers
+                # (#1769) — this is an in-place `force_update` rebuild.
+                **_passport_spec_fields(c),
                 status=status_val,
                 regime_tag=_regime_tag,
                 # Real backtest fields — the whole point of this function
@@ -2319,6 +2476,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 real_max_dd=result.max_drawdown,
                 real_calmar=result.calmar_ratio,
                 real_corr_spy=result.correlation_to_spy,
+                real_win_rate=result.win_rate,  # same gap as the DSL sibling above
                 real_total_trades=result.total_trades,
                 real_backtest_start=(
                     result.backtest_start.isoformat() if isinstance(result.backtest_start, _date) else None
@@ -2329,10 +2487,20 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 num_trials_in_selection=result.num_trials_in_selection,
                 pbo_score=result.pbo_score,
                 out_of_sample_sharpe=result.out_of_sample_sharpe,
-                passes_rigor_gate=passes,
                 n_obs_daily=len(artifact["results"][0]["metrics"].get("daily_returns", [])),
             )
-            ingest_passport(session, passport, generation_method="fusion", force_update=True)
+            # THE grading event for this path — the same one-time write the DSL
+            # sibling makes (see _refresh_passport_real_metrics). `live` is the
+            # real gate's four-state answer over the real returns; storing its
+            # status verbatim is what keeps `degenerate` from collapsing into
+            # `fail`. cohort_n=1: graded against itself alone.
+            ingest_passport(
+                session,
+                passport,
+                generation_method="fusion",
+                force_update=True,
+                rigor_verdict=RigorVerdictWrite.from_verdict(live, cohort_n=1),
+            )
             session.commit()
 
         return {
@@ -2360,7 +2528,16 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
     except Exception as exc:
         # Non-fatal — the strategy stays in the Library with the placeholder,
         # which is honest. The generation succeeded; the backtest didn't.
-        logger.warning("backtest_and_persist failed for %s: %s", strategy_id, exc)
+        # LOUD anyway: this is the other swallow that decides whether the
+        # grading event happens at all, and a silently ungraded strategy looks
+        # exactly like one whose backtest is merely still running
+        # (docs/adr/rigor-verdict-of-record.md).
+        logger.error(
+            "backtest_and_persist FAILED for strategy %s — the passport stays UNGRADED (rigor_gate_status='pending'): %s",
+            strategy_id,
+            exc,
+            exc_info=True,
+        )
         await emit.emit(
             "backtest_failed",
             strategy_id=strategy_id,
