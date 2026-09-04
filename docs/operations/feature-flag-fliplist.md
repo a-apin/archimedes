@@ -141,13 +141,46 @@ Exempt from the reverse guard: naming a name that is *gone* is what this
 section is for, and forcing it out would delete the history that stops a
 retired flag being re-added.
 
+**That exemption is now paid for, not assumed** ([#1824](https://github.com/aprin-labs/archimedes/issues/1824)).
+It left two holes the drift guard cannot see: a dead name gaining a reader, and
+a dead name being promoted back onto an actionable table — both pass every
+other check on this page. [`backend/tests/test_dead_flags_stay_dead.py`](../../backend/tests/test_dead_flags_stay_dead.py)
+closes them for the eight names #1824 classified DEAD (`DOCS_SITE_ENABLED`,
+`X402_WEBHOOK_SECRET`, `ARCHIMEDES_X402_ENABLED`, `MAX_USDC_PER_DAY`,
+`ARCHIMEDES_DEBATE_ENABLED`, `REQUIRE_SIWE_FOR_GENERATION`,
+`ARCHIMEDES_TRACE_PIN_ENABLED`, `PINATA_JWT`). It goes red on:
+
+- an env read or an env-name constant under the runtime source roots — **prose
+  is exempt**, so `debate_engine.py`'s two doc-comments are the record they were
+  always meant to be, and only a line that can *act* trips it;
+- **any** mention on a deploy-config surface — `infra/`, `.github/scripts`,
+  `.github/workflows`, `docker-compose*.yml` and all three `.env.example`
+  templates (root, `ui/`, `backend/`) — commented-out lines included, because a
+  commented template entry reads as "a secret you still need to generate",
+  which is how `X402_WEBHOOK_SECRET` outlived its own removal. `.github/workflows`
+  is on that list because it is the only surface `DOCS_SITE_ENABLED` ever lived
+  on, and a companion assertion keeps the set a superset of the one
+  `test_fusion_flag_retired.py` watches for its own name;
+- a mention anywhere on this page outside § DEAD / RETIRED and § Audit
+  findings — a section nobody has classified counts as actionable;
+- **an emptied row.** The positive half: deleting a name from the table below is
+  how a retired flag comes back through the exempt door, so all eight must still
+  be named here.
+
+`ARCHIMEDES_FUSION_ENABLED` and the four `BACKTEST_REFRESH_*` names are held by
+their own, stricter guards instead ([`test_fusion_flag_retired.py`](../../backend/tests/test_fusion_flag_retired.py),
+which also bans a *renamed* fusion switch on the generation path, and
+[`test_ecs_paper_advance_deploy_pin.py`](../../backend/tests/test_ecs_paper_advance_deploy_pin.py)) —
+all five are named in `.github/scripts/ecs_rewrite_task_def.py` on purpose, as
+the lines that strip them.
+
 | Name | Where it still appears | Status |
 |---|---|---|
 | `DOCS_SITE_ENABLED` | nowhere | **RETIRED** by [#1634](https://github.com/aprin-labs/archimedes/issues/1634). It gated a GitHub Pages deploy that never went live. The docs site is now served from our own S3 + CloudFront ([`docs-site/infra/main.tf`](../../docs-site/infra/main.tf)) and the publish job has no variable gate: the bucket's existence is the gate, so an unapplied stack prints a NO-OP notice instead of needing someone to remember a switch. Procedure: [`docs/runbooks/docs-site-setup.md`](../runbooks/docs-site-setup.md). If the variable was ever created in repo Settings, delete it — it now reads as a live switch that does nothing. |
 | `X402_WEBHOOK_SECRET` | nowhere | **REMOVED 2026-08-31** by this page's own audit. It was an HMAC secret for `POST /api/marketplace/payment-webhook` — a route that was never implemented (`backend/tests/api/test_marketplace_routes.py` says so in a comment) and never will be: the marketplace shipped via #958's x402 rail, not a gateway callback. It survived only as a commented-out `.env.example` entry, which read as "a secret you still need to generate". |
 | `ARCHIMEDES_X402_ENABLED`, `MAX_USDC_PER_DAY` | nowhere | **GONE.** The marketplace shipped via #958, not #749/#824 (both closed unmerged). Superseded by `PAYMENTS_DRY_RUN`. |
 | `ARCHIMEDES_DEBATE_ENABLED` | two explanatory doc-comments in [`agents/debate_engine.py`](../../backend/archimedes/agents/debate_engine.py) | **RETIRED** by #880; the last executable residue — two `monkeypatch.delenv` calls clearing a variable nothing can read — was removed 2026-08-31. The surviving mentions are prose that says *why* `_debate_can_run` has no flag check, which is the thing that stops it being re-added. The society is the unconditional sole pipeline; `_pick_pipeline` returns `debate` regardless. |
-| `ARCHIMEDES_FUSION_ENABLED` | nowhere — the reader, the OFF branch, the `ecs.tf` pin, both compose defaults and `infra/spike-1411/function-env.txt` all went in the same commit | **RETIRED 2026-09-02** (deck Q4). It was never a lever. The debate society is the sole generation pipeline ([`adr/debate-society-sole-generation-pipeline.md`](../adr/debate-society-sole-generation-pipeline.md)) and every proposer routes through `StrategyFusion.propose()` ([`adr/fusion-primary-generation.md`](../adr/fusion-primary-generation.md)), so OFF returned a `disabled` sentinel and Generate silently produced nothing; every deployed environment pinned it `"true"` while the *code* default was OFF — finding A3's footgun. Fusion is now unconditional and there is no switch to flip. [`backend/tests/test_fusion_flag_retired.py`](../../backend/tests/test_fusion_flag_retired.py) fails if the name, or a renamed fusion switch on the generation path, comes back. `/health` published a companion `fusion_enabled` field; it was **dropped on 2026-09-03** by owner decision rather than frozen at a constant `true` — a search of backend, ui, cli, mcp-server, docs, scripts and tests found no consumer beyond the contract test's own pinned field set, and a constant wearing a health signal's clothes is the claim-integrity failure the neighbouring `/health` fields exist to avoid. `test_health_always_answers.py::TestNoReportedFieldWasDropped::test_fusion_enabled_is_not_published` now pins the key ABSENT. **Operator action outstanding — same shape as `BACKTEST_REFRESH_ENABLED` above:** CI deploys clone the live task definition, which still carries `ARCHIMEDES_FUSION_ENABLED=true` on the `backend` container, so the now-inert name rides along until it is dropped deliberately — either by [#1797](https://github.com/aprin-labs/archimedes/pull/1797)'s `RETIRED_BACKEND_ENV` list in [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py) once that merges, or by the next `terraform apply`. |
+| `ARCHIMEDES_FUSION_ENABLED` | nowhere — the reader, the OFF branch, the `ecs.tf` pin, both compose defaults and `infra/spike-1411/function-env.txt` all went in the same commit | **RETIRED 2026-09-02** (deck Q4). It was never a lever. The debate society is the sole generation pipeline ([`adr/debate-society-sole-generation-pipeline.md`](../adr/debate-society-sole-generation-pipeline.md)) and every proposer routes through `StrategyFusion.propose()` ([`adr/fusion-primary-generation.md`](../adr/fusion-primary-generation.md)), so OFF returned a `disabled` sentinel and Generate silently produced nothing; every deployed environment pinned it `"true"` while the *code* default was OFF — finding A3's footgun. Fusion is now unconditional and there is no switch to flip. [`backend/tests/test_fusion_flag_retired.py`](../../backend/tests/test_fusion_flag_retired.py) fails if the name, or a renamed fusion switch on the generation path, comes back. `/health` published a companion `fusion_enabled` field; it was **dropped on 2026-09-03** by owner decision rather than frozen at a constant `true` — a search of backend, ui, cli, mcp-server, docs, scripts and tests found no consumer beyond the contract test's own pinned field set, and a constant wearing a health signal's clothes is the claim-integrity failure the neighbouring `/health` fields exist to avoid. `test_health_always_answers.py::TestNoReportedFieldWasDropped::test_fusion_enabled_is_not_published` now pins the key ABSENT. **No operator action — the deploy strips the pin** ([#1824](https://github.com/aprin-labs/archimedes/issues/1824), 2026-09-03). The residue this row used to describe was real: CI deploys clone the live task definition, which still carries `ARCHIMEDES_FUSION_ENABLED=true` on the `backend` container, so the now-inert name rode forward on every revision. It is now the fifth entry in `RETIRED_BACKEND_ENV` in [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py) — the same treatment `BACKTEST_REFRESH_ENABLED` got, and the option #1797 named — so **the first deploy after this merge registers the revision that drops it**, with no `terraform apply` and no operator ritual. Stripping it is a no-op on behaviour by construction: the reader-ban above proves nothing reads the name. Guarded by `test_fusion_flag_retired.py::test_the_deploy_strips_the_stale_pin_off_the_live_task_definition`. |
 | `REQUIRE_SIWE_FOR_GENERATION` | test docstrings, and one live assertion in `test_local_mode_contract.py` that the name does **not** reappear | **DELETED** by #1300. The flag, `gate_generation`, and `_generation_auth_required` are gone; generation/chat auth is unconditional. Setting it is a no-op. |
 | `ARCHIMEDES_TRACE_PIN_ENABLED` | [`docs/specs/ipfs-reasoning-traces-design-note.md`](../specs/ipfs-reasoning-traces-design-note.md) only | **NEVER IMPLEMENTED.** A proposed flag in a design note, not code. Named here so a reader who greps the docs does not go looking for the gate. |
 | `PINATA_JWT` | historical docs + this row | **REMOVED 2026-09-01** (#1526). The pin client shipped as code but the JWT was never in the backend Fargate `secrets{}` block, so prod never pinned. Outcome (b): delete the client rather than half-wire a secret nobody can seed here. Re-enabling is an owner action (SSM + `ecs.tf` + rebuilt client) — [`adr/ipfs-pinning-not-live.md`](../adr/ipfs-pinning-not-live.md). |
@@ -315,3 +348,13 @@ timeouts and lease TTLs, and dragging them in would bury the checklist.
    Kill switches, refuse-by-default guards, and permanently-one-valued pins all
    look dead by construction; that is the shape of a lever you hope never to
    pull.
+5. **A flag with no reader is deleted the same week its reader dies**
+   ([#1824](https://github.com/aprin-labs/archimedes/issues/1824)'s standing
+   rule). The pin, the `.env.example` line, the compose default and the row all
+   move in the same commit as the reader. When the pin lives in a **live task
+   definition the repo cannot edit**, the removal is the deploy-path strip that
+   drops it — `RETIRED_BACKEND_ENV` in
+   [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py),
+   never an operator ritual somebody has to remember. Every name that has
+   outlived its reader by more than a week is on § DEAD / RETIRED with the
+   evidence; read those rows before adding a ninth.
