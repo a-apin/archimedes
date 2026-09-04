@@ -42,7 +42,7 @@ whose entire job is to keep recording — the failure mode this issue exists to
 remove.
 
 Revision ID: e6b2a19c4d70
-Revises: d4b1f7c8e206
+Revises: d3a71f5c9e28
 Create Date: 2026-09-03 00:00:00.000000
 
 If another migration lands on main first, re-point ``down_revision`` at the
@@ -51,6 +51,13 @@ run with two heads and the pre-rollout migration task blocks every deploy (see
 9ad1c4e2b7f0's header for the two times this exact branch-vs-main race
 happened). This revision only ADDS two nullable columns to ``auth_users`` and
 reads nothing, so serialising it after any other revision is always safe.
+
+Re-pointed twice for exactly that reason: first from ``b3f19d6c47ae`` onto
+#1790's ``d4b1f7c8e206``, then onto ``d3a71f5c9e28`` (#1283's orphaned-legacy-
+row adoption) when that merged while this was in review. The second is safe on
+the same grounds AND on a specific one: ``d3a71f5c9e28`` INSERTs an
+``auth_users`` row naming its columns explicitly, so two more nullable columns
+appearing after it cannot change what that insert does.
 """
 
 from __future__ import annotations
@@ -61,7 +68,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e6b2a19c4d70"
-down_revision: str | Sequence[str] | None = "d4b1f7c8e206"
+down_revision: str | Sequence[str] | None = "d3a71f5c9e28"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
