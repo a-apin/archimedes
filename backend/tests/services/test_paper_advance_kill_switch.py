@@ -25,6 +25,12 @@ the prose that explains it.
 The fleet-lock tests cover the other half of arming: more than one task ticks,
 so exactly one of them may do the work in any cycle.
 
+The DDL tests cover #1818, the P0 that arming exposed: the cycle used to call
+``init_db()`` — hand-rolled ``ALTER TABLE`` patches — on every tick in every
+task, which wedged Postgres for 94 minutes on 2026-09-03. The seam is now armed
+to raise in ``_drive_one_tick``, so every driven tick in this file is a guard
+against it coming back.
+
 Hermetic: no DB, no network, no app import beyond the service module. The
 loop's ``asyncio.sleep`` is stubbed to break out after exactly one tick, its DB
 seam is a fake session, and the agent-execution module is a stub.
@@ -32,7 +38,9 @@ seam is a fake session, and the agent-execution module is a stub.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import logging
 import sys
 import types
@@ -104,6 +112,7 @@ class _Tick(NamedTuple):
     sleeps: list[float]
     agent_calls: int
     statements: list[str]
+    init_db_calls: int
 
 
 class _FakeResult:
@@ -157,7 +166,7 @@ def _drive_one_tick(
     monkeypatch.setenv("PAPER_ADVANCE_STARTUP_DELAY_S", "0")
     monkeypatch.setenv("PAPER_ADVANCE_INTERVAL_HOURS", "24")
 
-    calls = {"advance_all": 0, "agent": 0}
+    calls = {"advance_all": 0, "agent": 0, "init_db": 0}
     sleeps: list[float] = []
     statements: list[str] = []
 
@@ -177,7 +186,17 @@ def _drive_one_tick(
     # function body.
     import archimedes.db as db
 
-    monkeypatch.setattr(db, "init_db", lambda *a, **k: None)
+    # NOT a no-op stub (#1818). The cycle must never run DDL, so the seam that
+    # would run it is armed to blow up: every driven tick in this file is now a
+    # standing guard, and a re-introduced `init_db()` call cannot pass silently.
+    # It raises rather than merely counting because a counter alone would be
+    # satisfied by a call the loop's fail-soft arm swallowed — with this, the
+    # arm swallows a poisoned tick and `advances` drops to 0 as well.
+    def exploding_init_db(*a, **k):
+        calls["init_db"] += 1
+        raise AssertionError("paper_advance_loop called init_db() — the #1818 root cause")
+
+    monkeypatch.setattr(db, "init_db", exploding_init_db)
     monkeypatch.setattr(
         db,
         "get_session",
@@ -204,7 +223,7 @@ def _drive_one_tick(
     with pytest.raises(_StopLoop):
         asyncio.run(paper_trading.paper_advance_loop())
 
-    return _Tick(calls["advance_all"], sleeps, calls["agent"], statements)
+    return _Tick(calls["advance_all"], sleeps, calls["agent"], statements, calls["init_db"])
 
 
 class TestLoopHonoursTheSwitch:
@@ -375,6 +394,102 @@ class TestOneTickerPerFleet:
         assert "pg_try_advisory_xact_lock" in source
         assert "pg_try_advisory_lock(" not in source
         assert "pg_advisory_lock(" not in source
+
+
+# ─── The child never runs DDL (#1818) ──────────────────────────────────
+
+
+class TestTheCycleNeverRunsDdl:
+    """The 2026-09-03 root cause: the tick called ``init_db()`` every cycle.
+
+    ``init_db()`` runs hand-rolled ``ALTER TABLE … ADD COLUMN IF NOT EXISTS``
+    patches. Even a no-op one takes AccessExclusiveLock on the table for the
+    rest of its transaction, and a *waiting* exclusive-lock request queues every
+    later reader behind it. Two ECS tasks → two children → two concurrent DDL
+    transactions on a 24-hour clock; on 2026-09-03 they wedged each other in a
+    cycle PostgreSQL cannot see (the blocker was not itself waiting), and
+    production served 504s for 94 minutes.
+
+    Two guards, because either alone is escapable. The behavioural one would
+    pass if someone moved the DDL behind another module's helper; the source one
+    would pass if the seam were called through a variable. Together they say:
+    this function does not name ``init_db``, and driving it does not reach it.
+
+    Schema belongs to the migrate task (``alembic upgrade head``) and to the web
+    process's single boot-time call in ``main.py`` — not to a 24-hourly ticker.
+    """
+
+    def test_driving_a_tick_never_reaches_init_db(self, monkeypatch):
+        """Behavioural. ``_drive_one_tick`` arms ``archimedes.db.init_db`` to
+        raise, so a re-introduced call shows up twice over: the counter moves,
+        and the loop's fail-soft arm eats the exception so the ledger never
+        advances."""
+        tick = _drive_one_tick(monkeypatch, enabled_env="true")
+
+        assert tick.init_db_calls == 0, "the cycle ran schema DDL — the #1818 root cause is back"
+        assert tick.advances == 1, "the cycle did not complete"
+
+    def test_a_contended_cycle_also_runs_no_ddl(self, monkeypatch):
+        """The loser must not do schema work either.
+
+        This is the half that actually wedged: on 2026-09-03 both children
+        reached ``init_db()`` *before* asking for the fleet lock, so standing
+        down bought nothing — the DDL had already been issued. The lock is
+        asked for first now, and neither side issues DDL at all.
+        """
+        tick = _drive_one_tick(monkeypatch, enabled_env="true", lock_result=False)
+
+        assert tick.init_db_calls == 0
+        assert tick.advances == 0
+
+    def test_the_loop_source_does_not_name_init_db(self):
+        """Source-level, via AST so prose cannot satisfy or break it.
+
+        The docstring and the inline comment both *mention* ``init_db`` on
+        purpose — that is the record of why it is gone. A substring search would
+        therefore be red forever. An AST walk asks the only question that
+        matters: does this function import, reference, or call that name?
+        """
+        tree = ast.parse(inspect.getsource(paper_trading.paper_advance_loop))
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                offenders += [
+                    f"line {node.lineno}: imports {alias.name}" for alias in node.names if alias.name == "init_db"
+                ]
+            elif isinstance(node, ast.Name) and node.id == "init_db":
+                offenders.append(f"line {node.lineno}: references init_db")
+            elif isinstance(node, ast.Attribute) and node.attr == "init_db":
+                offenders.append(f"line {node.lineno}: references .init_db")
+
+        assert not offenders, "paper_advance_loop names init_db in executable code (#1818): " + "; ".join(offenders)
+
+    def test_the_docstring_says_where_schema_belongs(self):
+        """A deletion with no reason attached is re-added by the next person who
+        wants a column. The docstring has to carry the incident and the
+        alternative, or this guard is guarding a coincidence."""
+        doc = paper_trading.paper_advance_loop.__doc__ or ""
+
+        assert "#1818" in doc
+        assert "alembic" in doc.lower(), "the docstring does not say who owns schema instead"
+
+    def test_init_db_is_still_importable_and_still_the_boot_path(self):
+        """MUTATION CHECK for the guards above.
+
+        Deleting ``init_db`` outright — or letting the web process stop calling
+        it — would make every assertion in this class pass while breaking the
+        transitional columns the read paths depend on. The function must still
+        exist, and ``main.py`` must still call it once at boot.
+        """
+        from pathlib import Path
+
+        import archimedes.db as db
+
+        assert callable(db.init_db)
+        main_py = Path(paper_trading.__file__).resolve().parents[1] / "main.py"
+        assert "init_db()" in main_py.read_text(encoding="utf-8"), (
+            "the web process no longer runs the boot schema patches at all"
+        )
 
 
 class TestSwitchIsArmedInTheDeployedConfig:

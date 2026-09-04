@@ -307,7 +307,6 @@ class TestSelectCandidatesIntegration:
     def test_keyword_ranking_preserved_when_disabled(self, monkeypatch):
         """When FUSION_SEMANTIC_RETRIEVAL=false, select_candidates is pure keyword."""
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "false")
-        monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "true")
         from archimedes.agents.strategy_fusion import (
             FusionBrief,
             select_candidates,
@@ -345,7 +344,6 @@ class TestSelectCandidatesIntegration:
         """When FUSION_SEMANTIC_RETRIEVAL=true, select_candidates applies
         semantic rerank after keyword filter."""
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
-        monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "true")
         from archimedes.agents.strategy_fusion import (
             FusionBrief,
             select_candidates,
@@ -427,7 +425,6 @@ class TestGracefulFallback:
     def test_paper_budget_floor_respected(self, monkeypatch):
         """Even with semantic rerank, paper_budget floor/ceiling holds."""
         monkeypatch.setenv("FUSION_SEMANTIC_RETRIEVAL", "true")
-        monkeypatch.setenv("ARCHIMEDES_FUSION_ENABLED", "true")
         from archimedes.agents.strategy_fusion import (
             FUSION_MAX_PAPERS,
             MIN_PAPERS,
