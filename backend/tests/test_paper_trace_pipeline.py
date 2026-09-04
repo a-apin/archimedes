@@ -970,9 +970,20 @@ async def test_the_advance_cycle_opens_no_second_session(monkeypatch):
 
     So the guard is not about ``papers`` or about DDL, both of which P1 already
     moved off the cycle path: it is that the cycle is ONE connection, whatever
-    anyone later adds to it. ``archimedes.db.get_session`` is instrumented for
-    the whole advance; exactly one call is allowed, the cycle's own, and the
-    failure message names the file and line of every extra opener.
+    anyone later adds to it. Exactly one session may be opened for the whole
+    advance, the cycle's own, and the failure message names the file and line
+    of every extra opener.
+
+    ``archimedes.db.SessionLocal`` is what is instrumented, NOT ``get_session``.
+    Patching ``get_session`` only intercepts callers that resolve the name at
+    call time; this repo's dominant idiom is a module-level ``from archimedes.db
+    import get_session`` (``api/user_routes.py``, ``api/wallet_routes.py``,
+    ``marketplace/service.py``, ``services/corpus_service.py``,
+    ``scripts/run_backtests.py``, …), and those bindings are invisible to that
+    patch — a second session opened through one of them left this guard GREEN.
+    ``get_session()`` is ``return SessionLocal()``, resolving the module global
+    at call time, so instrumenting the factory counts every route to a session
+    including those bindings.
 
     The corpus row is seeded so the lookup genuinely resolves — a guard that
     passed because ``resolve_paper_hashes`` returned early on an empty corpus
@@ -995,14 +1006,20 @@ async def test_the_advance_cycle_opens_no_second_session(monkeypatch):
     monkeypatch.setattr(paper_trading, "replay_spec_with_decisions", one_decision)
 
     opens: list[str] = []
-    real_get_session = db_module.get_session
+    real_session_local = db_module.SessionLocal
+    db_file = db_module.__file__
 
-    def _recording_get_session():
-        caller = traceback.extract_stack()[-2]
+    def _recording_session_local(*args, **kwargs):
+        # Name the REAL opener: drop this wrapper, then any ``archimedes/db.py``
+        # frame, since ``get_session`` is only ``return SessionLocal()``. A
+        # future direct ``SessionLocal()`` caller is attributed just as
+        # precisely, which a fixed stack index would not manage.
+        stack = traceback.extract_stack()[:-1]
+        caller = next((f for f in reversed(stack) if f.filename != db_file), stack[-1])
         opens.append(f"{caller.filename}:{caller.lineno} in {caller.name}()")
-        return real_get_session()
+        return real_session_local(*args, **kwargs)
 
-    monkeypatch.setattr(db_module, "get_session", _recording_get_session)
+    monkeypatch.setattr(db_module, "SessionLocal", _recording_session_local)
 
     store = _Store()
     with _store(store):

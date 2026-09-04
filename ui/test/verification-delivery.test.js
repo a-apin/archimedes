@@ -139,12 +139,67 @@ test("no state anywhere in this module claims the mail was delivered", () => {
 		{ state: "failed", lastError: "AccessDeniedException", retryAfterSeconds: 0 },
 		{ state: "unknown", sends: 0, retryAfterSeconds: 0 },
 		{ state: "unknown", sends: null, retryAfterSeconds: 0 },
+		{ state: "bounced", bounce: { at: "2026-09-02T10:00:00.000Z", kind: "bounce" } },
+		{ state: "bounced", bounce: { at: "2026-09-02T10:00:00.000Z", kind: "complaint" } },
 	];
 	for (const status of states) {
 		const view = deriveVerificationDeliveryView(status);
 		assert.ok(view, `${status.state} must render something`);
 		assert.doesNotMatch(view.message, /was delivered|has been delivered|check your inbox|email has been sent/i);
 	}
+});
+
+// ── #1804: the PUSHED bounce ─────────────────────────────────────────────
+
+test("bounced takes the button away and tells the user to use another address", () => {
+	const view = deriveVerificationDeliveryView({
+		state: "bounced",
+		bounce: { at: "2026-09-02T10:00:00.000Z", kind: "bounce" },
+	});
+	assert.equal(view.state, DELIVERY_STATES.BOUNCED);
+	assert.equal(view.canResend, false, "resending to a mailbox that does not exist cannot work");
+	assert.equal(view.tone, "blocked");
+	assert.match(view.message, /does not exist/i);
+	assert.match(view.message, /different email address/i);
+});
+
+test("a COMPLAINT is never described as a broken mailbox — that would be a lie", () => {
+	// The person exists and their mail works; they told their provider our
+	// mail is spam. Telling them their address is dead is a false claim about
+	// their mailbox, and the only honest sentence is that we stopped sending.
+	const view = deriveVerificationDeliveryView({
+		state: "bounced",
+		bounce: { at: "2026-09-02T10:00:00.000Z", kind: "complaint" },
+	});
+	assert.equal(view.canResend, false);
+	assert.match(view.message, /spam/i);
+	assert.doesNotMatch(view.message, /bounced|does not exist/i);
+});
+
+test("bounced and suppressed are two different sentences, not one recycled", () => {
+	// They are different evidence — SES pushed one to us, we asked for the
+	// other — and #1790's suppressed copy names the account suppression list,
+	// which is a fact the pushed bounce does not establish.
+	const bounced = deriveVerificationDeliveryView({
+		state: "bounced",
+		bounce: { at: "2026-09-02T10:00:00.000Z", kind: "bounce" },
+	});
+	const suppressed = deriveVerificationDeliveryView({
+		state: "suppressed",
+		suppression: { checked: true, suppressed: true, reason: "BOUNCE" },
+	});
+	assert.notEqual(bounced.message, suppressed.message);
+	assert.equal(bounced.canResend, false);
+	assert.equal(suppressed.canResend, false);
+});
+
+test("the resend caption stands down for bounced, like every other recognised state", () => {
+	// Two answers to one question is the defect #1790's review push removed.
+	// A new state must not reintroduce it.
+	assert.equal(
+		shouldShowRequestedFallback({ state: "bounced", bounce: { at: "2026-09-02T10:00:00.000Z", kind: "bounce" } }),
+		false,
+	);
 });
 
 // ── 2. wiring the DOM-free suite cannot execute ──────────────────────────

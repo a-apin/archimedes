@@ -149,19 +149,47 @@ anything takes an exclusive lock on `papers` (a migration, a `VACUUM FULL`, a ha
    `papers` table would stop costing this lookup and start costing the cycle — every remaining
    deployment failing on `PendingRollbackError` and `session.commit()` raising. That would make
    the function's documented fail-soft return a lie about a wedged cycle.
-   `session.begin_nested()` scopes the failure to the query, so the caller's earlier work
-   survives and its later work still commits. A connection-level failure is still fatal, as it
-   must be — the cycle's writes were never going to commit either way.
+   `session.begin_nested()` scopes the failure to the query, so the caller's later work still
+   commits. A connection-level failure is still fatal, as it must be — the cycle's writes were
+   never going to commit either way.
+
+   **The savepoint does not cover the caller's work BEFORE it, and the call is deliberately
+   outside the `try`.** `session.begin_nested()` FLUSHES first: `SessionTransaction.__init__`
+   calls `_take_snapshot`, which runs `session.flush()` for a BEGIN_NESTED origin before the
+   savepoint is installed (SQLAlchemy 2.0 `orm/session.py`), and `SessionLocal` is
+   `autoflush=False` — so the caller's pending ORM rows are written by this lookup's own
+   savepoint, outside it. With `begin_nested()` inside the `try` (as first shipped), an
+   `IntegrityError` from that flush — a `DBAPIError` like any other — was caught by the corpus
+   handler: the trace was stored and HASHED with `consulted_paper_hashes = []` against a
+   perfectly healthy corpus, and on PostgreSQL the caller's transaction was already aborted with
+   no savepoint to roll back to — the exact wedge this savepoint exists to prevent, manufactured
+   by the savepoint. Reachable in the cycle: `_publish_decision_traces` adds `PaperDecisionTrace`
+   rows in its loop and can then raise `PaperTraceCoverageError`, which `advance_all` catches per
+   deployment WITHOUT rolling back, so the next deployment's `resolve_paper_hashes` is what
+   flushes the previous one's pending rows. Taking the savepoint outside the `try` sends that
+   failure to the caller as the honest per-deployment failure it is.
 
 Guards (all hermetic, tmp-file SQLite):
 
 - `backend/tests/test_paper_trace_pipeline.py::test_the_advance_cycle_opens_no_second_session`
-  instruments `archimedes.db.get_session` for the whole of `advance_all` and allows exactly one
+  instruments `archimedes.db.SessionLocal` for the whole of `advance_all` and allows exactly one
   call — the cycle's own — naming the file and line of any extra opener. Shown red by
   reinstating the old `with get_session() as session:` inside `resolve_paper_hashes`: *"the
-  advance cycle opened 2 sessions, not 1 … Openers: ['…/paper_trace.py:472 in
+  advance cycle opened 2 sessions, not 1 … Openers: ['…/paper_trace.py:494 in
   resolve_paper_hashes()']"*. The guard is about the CYCLE being one connection, not about
   `papers` or about DDL, so it also catches whatever is added to the cycle path next.
+
+  It instruments the FACTORY, not `get_session`, and that distinction is the whole of the claim
+  above. Patching `get_session` only intercepts callers that resolve the name at call time; this
+  repo's dominant idiom is a module-level `from archimedes.db import get_session`
+  (`api/user_routes.py`, `api/wallet_routes.py`, `marketplace/service.py`,
+  `services/corpus_service.py`, `scripts/run_backtests.py`, …), and those bindings are invisible
+  to it — as first shipped, a second session opened through one left the guard GREEN, so "catches
+  whatever is added next" was not true for the way most of this repo opens sessions.
+  `get_session()` is only `return SessionLocal()`, resolving the module global at call time, so
+  instrumenting `SessionLocal` counts every route to a session. Shown red on all three idioms in
+  `_publish_decision_traces`: a module-level-bound `get_session`, a direct `db.SessionLocal()`,
+  and the original in-function `get_session()`.
 - `test_the_outage_is_contained_by_a_savepoint_not_by_luck` drops the `papers` table for real
   and asserts the savepoint/rollback through SQLAlchemy's own connection events. The events are
   the guard rather than "the caller could still write afterwards", because SQLite does not abort
@@ -172,6 +200,12 @@ Guards (all hermetic, tmp-file SQLite):
 - `test_it_reads_on_the_session_it_was_given_and_opens_none` arms `get_session` to RAISE at unit
   scale, and `test_the_signature_requires_a_session_it_can_never_open_one` pins the absence of
   the `= None` default.
+- `test_a_caller_write_that_fails_is_not_laundered_into_a_corpus_outage` holds the savepoint's own
+  flush honest: a pending caller row that cannot flush, against a HEALTHY corpus, must reach the
+  caller as an `IntegrityError` and must NOT log the corpus-outage warning. Shown red with
+  `begin_nested()` back inside the `try`: *"Failed: DID NOT RAISE <class
+  'sqlalchemy.exc.IntegrityError'>"*. `test_a_healthy_corpus_still_resolves_with_a_pending_caller_row`
+  is the other side, so the fix cannot over-correct into "any pending state breaks the lookup".
 
 Note the cycle still holds a second connection deliberately: `paper_advance_loop` keeps the
 fleet-lock session open for the whole cycle, on its own connection, which is what the advisory

@@ -18,10 +18,21 @@ workflow on a separate read-only role, which reports drift and still applies not
 for that and for the ECS task-definition ownership split, which changes what an `infra/ecs.tf`
 edit means but leaves everything on this page intact.
 
-This runbook is the step between those two facts. It is written for the pending change
-first, then generalised.
+This runbook is the step between those two facts. It carries one section per change —
+the applied ones kept as worked examples, the pending one first in the operator's mind —
+and then generalises. Today: **#1768 applied**, **#1776 pending**.
 
-## Pending: issue #1768 — `/app` and `/sign-in*` on CachingDisabled
+## Applied: issue #1768 — `/app` and `/sign-in*` on CachingDisabled
+
+**Live as of 2026-09-03.** Verified read-only, no apply involved:
+
+```bash
+aws cloudfront get-distribution-config --id "$(cd infra && terraform output -raw cloudfront_distribution_id)" \
+  --query 'DistributionConfig.CacheBehaviors.Items[].PathPattern' --output text
+# /health  /health/*  /api/*  /events/*  /assets/*  /static/*  /app/*  /app  /sign-in*  *.js  *.css
+```
+
+Kept below as the worked example the generalised section refers back to.
 
 **What merged.** Three `ordered_cache_behavior` blocks — `/app/*`, `/app`, `/sign-in*` —
 bound to `data.aws_cloudfront_cache_policy.caching_disabled`, the `all_viewer` origin
@@ -171,16 +182,212 @@ Reverting restores the previous behaviour list; the distribution converges in th
 minutes. The 2026-09-01 defect is *not* reintroduced by the revert on its own, because
 #1767's origin `no-store` is a separate change in the nginx image and stays live.
 
+## Pending: issue #1776 — images, icons and fonts off the 60s html behaviour
+
+**What merged.** Seven `ordered_cache_behavior` blocks bound to
+`aws_cloudfront_cache_policy.static_assets` (1h default TTL, 1d max, cache key with
+`cookie_behavior`, `header_behavior` and `query_string_behavior` all `"none"`):
+
+| pattern | position | covers |
+|---|---|---|
+| `/fonts/*` | after `/static/*`, before `/app/*` | the self-hosted `.woff2` files and the OFL licence `.txt` beside them |
+| `*.png` `*.svg` `*.jpg` `*.webp` `*.woff2` `*.ico` | **last**, after `*.js` / `*.css` | `/og-image.png`, `/product-workspace.png`, the favicons and PWA icons |
+
+**Why the suffix patterns are last, and why that is the only thing in this change that
+can hurt.** A suffix pattern matches any path with that suffix — `/app/hero.png`
+included. Ordered ahead of the `/app` behaviours it would bind a gated page to a 1h
+cookie-blind cache: #1768's defect with a longer TTL. Nothing is served under
+`/app/*.png` today, which is exactly why the order has to be right before someone puts
+one there. `backend/tests/test_cloudfront_static_assets_cached.py::TestOrdering` and
+`test_cloudfront_session_paths_uncached.py::TestOrdering` both fail if it moves.
+
+**What it was doing before.** Measured on the live site, 2026-09-03:
+
+```
+$ curl -sSI https://archimedes-arc.com/og-image.png
+HTTP/2 200
+content-length: 69408
+x-cache: Hit from cloudfront
+age: 12
+                       # ...and NO cache-control header from the origin at all
+```
+
+nginx serves these off disk with no `Cache-Control`, so nothing overrode the behaviour's
+policy — and the behaviour was `default_cache_behavior`, i.e. the `html` policy's
+`default_ttl = 60`. `age` can never exceed 60 on that policy. `/product-workspace.png`
+is 135,993 bytes; that is the number being re-fetched from every edge POP once a minute.
+
+### 1. Preconditions
+
+```bash
+aws sts get-caller-identity     # must be account 037613907429
+ls infra/terraform.tfvars       # must exist — apply.sh refuses without it
+```
+
+```bash
+cd backend && pytest tests/test_cloudfront_static_assets_cached.py \
+                     tests/test_cloudfront_session_paths_uncached.py \
+                     tests/test_cloudfront_health_uncached.py -q
+```
+
+### 2. Plan, and read it
+
+```bash
+infra/apply.sh          # plan is the default; --apply is a separate, later step
+```
+
+**Expected:** `Plan: 0 to add, 1 to change, 0 to destroy`, the one resource being
+`aws_cloudfront_distribution.main`, and the behaviour list going from **11 patterns to
+18** — the eleven above plus `/fonts/*`, `*.png`, `*.svg`, `*.jpg`, `*.webp`, `*.woff2`,
+`*.ico`. No existing pattern changes policy.
+
+**The mid-list-insert caveat is not hypothetical here — read this before the plan, not
+after.** A read-only `terraform plan -target=aws_cloudfront_distribution.main -lock=false`
+against live state on 2026-09-03 rendered the seven insertions as **five `~` blocks and
+seven `+` blocks**, because `/fonts/*` lands at the index `/app/*` currently occupies and
+everything after it shifts down:
+
+```
+      ~ ordered_cache_behavior {
+          ~ allowed_methods            = [ - "DELETE", - "PATCH", - "POST", - "PUT", ... ]
+          ~ cache_policy_id            = "4135ea2d-…" -> "8cbade1c-…"
+          ~ compress                   = false -> true
+          ~ path_pattern               = "/app/*" -> "/fonts/*"
+        }
+      ~ ordered_cache_behavior { ~ path_pattern = "/app"      -> "/app/*"    }
+      ~ ordered_cache_behavior { ~ path_pattern = "/sign-in*" -> "/app"      }
+      ~ ordered_cache_behavior { ~ path_pattern = "*.js"      -> "/sign-in*" ; … }
+      ~ ordered_cache_behavior { ~ path_pattern = "*.css"     -> "*.js"      }
+      + ordered_cache_behavior { + path_pattern = "*.css"   … }
+      + ordered_cache_behavior { + path_pattern = "*.png"   … }
+      + ordered_cache_behavior { + path_pattern = "*.svg"   … }
+      + ordered_cache_behavior { + path_pattern = "*.jpg"   … }
+      + ordered_cache_behavior { + path_pattern = "*.webp"  … }
+      + ordered_cache_behavior { + path_pattern = "*.woff2" … }
+      + ordered_cache_behavior { + path_pattern = "*.ico"   … }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+```
+
+Read that as a **re-indexing, not a rewrite**. The first `~` block looks alarming — it
+appears to move `/app/*` off CachingDisabled onto `static_assets` — but the `+ *.css` and
+`+ *.js`-shaped blocks lower down put the shifted patterns back. The check that matters is
+on the SETS, not the diff hunks:
+
+- before: `/health /health/* /api/* /events/* /assets/* /static/* /app/* /app /sign-in* *.js *.css`
+- after: the same eleven, **plus** the seven new patterns, each `(pattern → policy)` pair
+  unchanged for the eleven.
+
+Get the "before" list without touching anything:
+
+```bash
+aws cloudfront get-distribution-config --id "$(cd infra && terraform output -raw cloudfront_distribution_id)" \
+  --query 'DistributionConfig.CacheBehaviors.Items[].PathPattern' --output text
+```
+
+If the summary line is anything but `1 to change` on `aws_cloudfront_distribution.main`,
+stop — the working tree is carrying something other than this change.
+
+### 3. Apply
+
+```bash
+infra/apply.sh --apply      # interactive confirmation; --yes skips it, don't
+```
+
+Roughly 3–5 minutes to `Deployed`:
+
+```bash
+aws cloudfront get-distribution --id "$(cd infra && terraform output -raw cloudfront_distribution_id)" \
+  --query 'Distribution.Status' --output text
+```
+
+### 4. Invalidation — deliberately NOT needed here
+
+Unlike #1768, **do not invalidate.** That change had to purge poisoned entries; this one
+only lengthens a TTL. Every object cached under the old behaviour was cached by the `html`
+policy, so it expires on its own within 60 seconds, and the new behaviour keys differently
+anyway (`query_string_behavior` goes `"all"` → `"none"`), so post-apply requests miss into
+a fresh key space regardless. Spending an invalidation path here buys nothing.
+
+**The cost this change does introduce, and the one thing to remember later:** these assets
+are now cached at the edge for an hour, and `deploy.yml`'s invalidation is deliberately
+narrow — `/`, `/?*`, `/index.html*`. It does **not** cover them. If a deploy changes
+`ui/public/og-image.png`, `product-workspace.png`, a favicon or a font *in place*, the edge
+serves the old bytes for up to an hour. Either rename the file (the `/assets/*` bundles get
+this for free via content hashing) or add its path to that deploy's invalidation.
+
+### 5. Verify against production
+
+`age` is the decisive signal, and it is a clean one: under the old `html` policy
+(`max_ttl = 60`) an `age` above 60 was impossible. Request twice, then once more after a
+minute:
+
+```bash
+curl -sSI https://archimedes-arc.com/og-image.png            | grep -iE '^HTTP/|^x-cache|^age'
+curl -sSI https://archimedes-arc.com/product-workspace.png   | grep -iE '^HTTP/|^x-cache|^age'
+sleep 90
+curl -sSI https://archimedes-arc.com/og-image.png            | grep -iE '^HTTP/|^x-cache|^age'
+curl -sSI https://archimedes-arc.com/fonts/gabarito-latin.woff2 | grep -iE '^HTTP/|^x-cache|^age'
+```
+
+Expected: `200`, `x-cache: Hit from cloudfront`, and on the third request an `age` that has
+kept climbing **past 60**. An `age` that resets below 60 on every check means the apply did
+not take and these paths are still on the default behaviour.
+
+Then the check that the ordering held — the failure this change could actually cause:
+
+```bash
+for i in 1 2; do curl -sSI https://archimedes-arc.com/app/generate | grep -iE '^HTTP/|^x-cache'; done
+for i in 1 2; do curl -sSI https://archimedes-arc.com/app/explore  | grep -iE '^HTTP/|^x-cache'; done
+```
+
+Expected on every iteration: `Miss from cloudfront` — unchanged from #1768's verification.
+A `Hit` on `/app/*` means a suffix pattern got ordered in front of the gated behaviours,
+which is #1768 reopened with a 1h TTL. Roll back immediately (below) rather than debugging
+it live.
+
+### 6. If it goes wrong
+
+There is no signed-out-`/app` failure mode in this change: the new behaviours carry the
+same `all_viewer` origin request policy as `/assets/*`, and none of them is ordered in
+front of a gated path. The realistic failures are (a) a gated path answering `Hit`, per the
+check above, and (b) a stale asset after an in-place file change, which is the named cost
+in step 4, not a fault.
+
+```bash
+git revert <merge sha> && infra/apply.sh && infra/apply.sh --apply
+```
+
+Reverting drops the seven behaviours; the assets fall back to the 60s `html` policy, which
+is where they were before this change. Objects already cached for an hour keep serving
+until they age out — invalidate them if the revert was for stale content:
+
+```bash
+DIST=$(cd infra && terraform output -raw cloudfront_distribution_id)
+aws cloudfront create-invalidation --distribution-id "$DIST" \
+  --paths '/og-image.png*' '/product-workspace.png*' '/fonts/*'
+```
+
+
 ## Generalising
 
 For any future cache-behaviour edit, the shape is the same and only step 2's expectation
 changes:
 
-1. State the expected plan **before** running it — how many behaviours, on which resource.
+1. State the expected plan **before** running it — how many behaviours, on which resource,
+   and as a *set* of `(path_pattern → cache_policy_id)` pairs. Terraform renders a mid-list
+   insert as edits to the trailing behaviours, so the diff hunks will not match the sentence
+   even when the outcome does (#1776, step 2, has the rendered example).
 2. Plan, and compare against that sentence rather than skimming for red text.
 3. Apply, wait for `Deployed`.
 4. Invalidate the paths whose *old* cached copies are now wrong (wildcard them if the cache
-   policy forwards query strings).
+   policy forwards query strings). A change that only **lengthens** a TTL needs no
+   invalidation — the old entries expire under the old, shorter TTL on their own (#1776,
+   step 4). A change that de-caches or re-keys a path that was being served wrongly does
+   (#1768, step 4). Ask which of the two you have before spending a path.
+5. Check what the new TTL takes *out* of `deploy.yml`'s invalidation reach: anything cached
+   longer than the deploy cycle and served from an unhashed filename is now yours to purge
+   by hand when it changes.
 5. Verify from outside: `x-cache` on repeat requests, then the user journey the behaviour
    exists to protect.
 
@@ -188,5 +395,8 @@ Two properties of this file are load-bearing enough to be guarded rather than tr
 by text-parsing tests that need no AWS: the behaviour list's **order** (CloudFront takes the
 first matching pattern, not the most specific) and each behaviour's **cache policy id**.
 `terraform validate` accepts a behaviour bound to the wrong policy or ordered behind a
-pattern that swallows it — see `backend/tests/test_cloudfront_session_paths_uncached.py` and
-`backend/tests/test_cloudfront_health_uncached.py`.
+pattern that swallows it — see `backend/tests/test_cloudfront_session_paths_uncached.py`,
+`backend/tests/test_cloudfront_health_uncached.py` and
+`backend/tests/test_cloudfront_static_assets_cached.py`. The last of those also enumerates
+`ui/public/` from disk, so a new asset type added to the site is a red test rather than a
+file that quietly rides the 60s policy.
