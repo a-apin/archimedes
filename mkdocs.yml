@@ -488,6 +488,8 @@ exclude_docs: |
   specs/selection-bias-corrections-spec.md
   # Merged into api/generation.md
   specs/generation-streaming-spec.md
+  # internal scoping memo (#714 sub-task C, PR #1529) — never on the site
+  specs/mnemonik-integration-scoping.md
   # Merged into adr/portfolio-constructor-consolidation.md
   adr/portfolio-constructor-decision-tree.md
   # Merged into adr/strategy-dsl-hardening-over-lean4.md
