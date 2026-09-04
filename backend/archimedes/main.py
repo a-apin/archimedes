@@ -1046,7 +1046,6 @@ async def health(response: Response):
     """
     _no_store(response)
 
-    from archimedes.agents.strategy_fusion import fusion_enabled
     from archimedes.chain.client import chain_client
     from archimedes.services.corpus_service import count_corpus_papers, get_corpus_meta, get_paper_count
     from archimedes.services.health_cache import health_probe_cache
@@ -1236,8 +1235,6 @@ async def health(response: Response):
     else:
         corpus_count = int(corpus_outcome.value or 0)
         corpus_probe_fields = corpus_outcome.payload_fields(_CORPUS_PROBE)
-
-    _fusion_on = fusion_enabled()
 
     # ── LLM backend ──────────────────────────────────────────────────────
     llm_provider = os.getenv("LLM_PROVIDER", "auto")
@@ -1634,7 +1631,12 @@ async def health(response: Response):
         "corpus_kg_entities": kg_entity_count,
         "corpus_kg_relations": kg_relation_count,
         "corpus_artifact_present": corpus_artifact_present,
-        "fusion_enabled": _fusion_on,
+        # `fusion_enabled` was published here until 2026-09-03. It was dropped
+        # by owner decision (deck Q4 follow-up): with ARCHIMEDES_FUSION_ENABLED
+        # retired, the key could only ever be the literal `True`, and a constant
+        # dressed as a health signal is exactly the claim-integrity problem the
+        # fields above exist to avoid. No consumer was found — the field set is
+        # asserted absent in backend/tests/test_health_always_answers.py.
         "llm_provider": llm_provider,
         "llm_backend": llm_backend,
         "llm_model": llm_model,
