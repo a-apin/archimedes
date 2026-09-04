@@ -995,9 +995,13 @@ def _app_url(api_url: str, path: str) -> str:
 def _passport_url(api_url: str, strategy_id: str) -> str:
     """Where the strategy passport for ``strategy_id`` is readable in a browser.
 
-    Matches ``ui/src/routes.js``'s deep route ``/app/strategy/<id>``, which is
-    deliberately reachable without a session, so this link works for whoever the
-    user forwards it to.
+    Matches ``ui/src/routes.js``'s deep route ``/app/strategy/<id>``. That route
+    is GATED as of #1753 (the owner's call, narrowing #1194 rev d): it
+    left ``ANON_APP_PAGES`` and nginx dropped its ungated carve-out, so a
+    recipient with no session is answered with ``302 /sign-in?next=<this URL>``
+    and lands here after signing in. The link is still correct and still worth
+    forwarding — it is no longer a link that opens without an account, and this
+    docstring said the opposite until #1753.
     """
     return _app_url(api_url, f"/app/strategy/{urllib.parse.quote(strategy_id, safe='')}")
 
