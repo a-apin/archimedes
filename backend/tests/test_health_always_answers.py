@@ -768,6 +768,14 @@ class TestNoReportedFieldWasDropped:
     PROXY for "nothing was deleted" and it moves whenever a probe *name* is
     added, so this asserts the property directly instead: every key /health
     published before #1594 is still published.
+
+    One key has been removed since, deliberately and by owner decision:
+    `fusion_enabled`, dropped 2026-09-03 (deck Q4 follow-up) once
+    `ARCHIMEDES_FUSION_ENABLED` was retired and the field could only ever be the
+    literal `True`. It is off the set above and pinned ABSENT by
+    `test_fusion_enabled_is_not_published` below, so re-adding a constant
+    dressed as a health signal trips a named test rather than passing as a
+    field addition.
     """
 
     # Captured from origin/main's handler by AST-walking its return dict, so the
@@ -787,7 +795,6 @@ class TestNoReportedFieldWasDropped:
             "corpus_last_intake",
             "corpus_papers",
             "corpus_source",
-            "fusion_enabled",
             "human_count",
             "llm_available",
             "llm_backend",
@@ -828,6 +835,32 @@ class TestNoReportedFieldWasDropped:
             body, _ = await _get_health()
 
         assert set(body) >= self._PRE_1594_KEYS, f"/health stopped reporting {sorted(self._PRE_1594_KEYS - set(body))}"
+
+    async def test_fusion_enabled_is_not_published(self):
+        """The one deliberate removal: `fusion_enabled` is gone, not constant-`True`.
+
+        `ARCHIMEDES_FUSION_ENABLED` was retired in the deck-Q4 change; fusion is
+        the unconditional generation path, so the field had no state left to
+        report. Publishing `True` forever would be a constant wearing a health
+        signal's clothes — the exact failure `corpus_embedded_at_rest` and
+        friends were added to avoid. Nothing consumed it (searched backend, ui,
+        cli, mcp-server, docs, scripts, tests; the only reader was this file's
+        own pinned set), so the key was dropped rather than frozen.
+
+        This asserts ABSENCE, so it is red the moment the key comes back.
+        """
+        with (
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            _fast_local_reads(),
+        ):
+            body, _ = await _get_health()
+
+        assert "fusion_enabled" not in body, (
+            "/health published `fusion_enabled` again. It was dropped on 2026-09-03 "
+            "(deck Q4 follow-up) because ARCHIMEDES_FUSION_ENABLED is retired and the "
+            f"field could only be a constant. Value seen: {body.get('fusion_enabled')!r}"
+        )
 
     async def test_the_status_code_stays_200_while_degraded(self):
         """Anti-goal: 200-while-degraded is deliberate.

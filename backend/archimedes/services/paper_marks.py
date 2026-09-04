@@ -46,9 +46,10 @@ the position. Closing it needs a per-sleeve position vector out of the graded
 engine: the marks-v2 follow-up.
 
 **Marks are not the track record.** ``paper_daily_returns`` remains
-append-only-by-law and remains the thing that carries to mainnet.
-``paper_marks`` is a decoration with a TTL and is safe to delete wholesale —
-which is what makes ``rollup_and_prune``'s third tier (``DELETE``) safe.
+append-only-by-law and remains the recorded paper track record (Arc testnet,
+no real funds). ``paper_marks`` is a decoration with a TTL and is safe to
+delete wholesale — which is what makes ``rollup_and_prune``'s third tier
+(``DELETE``) safe.
 
 **On the lease, if a runner takes one.** ``RunnerLeaseGuard`` exists because
 ``oracle_runner`` and ``agent_runner`` are FUNDS-ADJACENT singletons where a

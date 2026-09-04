@@ -558,9 +558,10 @@ def _tiingo_api_key() -> str:
         "TIINGO_API_TOKEN is not set (legacy alias TIINGO_API_KEY also empty). Required "
         "whenever a seam resolves to tiingo — MARKET_DATA_DAILY_PROVIDER, or "
         "MARKET_DATA_PROVIDER on the daily seam when that is unset (see .env.example). "
-        "NOT a task-definition secret in "
-        "infra/ecs.tf yet (#1806) — in prod it arrives, best-effort, through the "
-        "/archimedes/prod/ SSM path loader instead."
+        "Wired into infra/ecs.tf's backend `secrets` and pinned on the deploy clone path "
+        "by .github/scripts/ecs_rewrite_task_def.py (#1798), so in prod this means the "
+        "value is blank or the process is not the deployed container — see "
+        "docs/runbooks/market-data-provider-proof.md."
     )
 
 

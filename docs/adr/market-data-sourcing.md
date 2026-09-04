@@ -186,7 +186,17 @@ rather than breaking them.
 ### Proving the flip
 
 The flip is not done when the variable is set; it is done when a pull on the daily seam
-has been shown to come from the new vendor. The backend service runs with
+has been shown to come from the new vendor.
+
+The packaged version of that proof is
+[`../../scripts/verify_market_data.py`](../../scripts/verify_market_data.py), driven by
+[`../runbooks/market-data-provider-proof.md`](../runbooks/market-data-provider-proof.md) —
+it asks this seam by name over a fixed ten-bar window whose right answer is a constant, so
+it can say NO. Prefer it; the recipe below is the same read done by hand, kept here because
+the ADR should be readable without the runbook and because it is the form that works from
+inside a task (the repo-root `scripts/` tree is not in the backend image).
+
+The backend service runs with
 `enable_execute_command = true` ([`../../infra/ecs.tf`](../../infra/ecs.tf)), and a
 single-symbol read is exactly the "exec is for reading state" case
 ([`../runbooks/curated-backtests.md`](../runbooks/curated-backtests.md) § Alternative).
