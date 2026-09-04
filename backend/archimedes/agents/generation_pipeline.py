@@ -23,6 +23,11 @@ Dispatch rules:
 * **error** (``GENERATION_UNAVAILABLE``) — prod environment with no reachable LLM
   or an empty corpus. No silent fallback.
 
+``llm_call_recorded`` is emitted alongside the above, once per LLM call, from
+whichever stage made it (#1800). It is a **pointer** — call id, sequence, served
+model, body size and digest — never a prompt or a completion; the event log has
+no per-event owner gate, so bodies are read through an owner-gated route instead.
+
 K=1 persistence: only the leaderboard winner becomes a ``StrategyRecord``;
 alternates are recorded in ``strategy_memory.persist_proposal`` (verdict="rejected")
 and surfaced via the job's candidates payload.
@@ -47,7 +52,7 @@ from typing import Any
 
 from archimedes.agents.prompts import PROMPTS
 from archimedes.api.generate_schemas import GenerateBrief
-from archimedes.services import cost_meter
+from archimedes.services import cost_meter, llm_trace
 from archimedes.services.brief_screen import Surface, Verdict, screen
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import JobStore, get_job_store
@@ -661,6 +666,51 @@ class _Emitter:
         return await self.store.push_event(self.job_id, body)
 
 
+def _llm_pointer_sink(emit: _Emitter) -> Callable[[dict[str, Any]], None]:
+    """Build the sink that turns each recorded LLM call into ONE stream event.
+
+    **Pointer only.** The payload is ``{call_id, seq, model_served,
+    completion_bytes, completion_sha256}`` — identity and integrity, no prompt
+    and no completion. The generation event log has no per-event owner gate:
+    whoever holds the stream reads everything pushed to it, so a body on this
+    channel would be a body published to whoever is watching. Reading a body is
+    a separate owner-gated route in a later PR (#1800).
+
+    **Thread hop.** ``complete()`` runs off the event loop (``asyncio.to_thread``
+    in the debate engine), so the recorder cannot await the emitter. Capture the
+    loop that owns this job and schedule the push there with
+    ``call_soon_threadsafe``; the returned callable is safe to invoke from any
+    thread, including the loop's own.
+
+    Failures are swallowed at every layer — the scheduling call, the task, and
+    the recorder's own ``try`` around this sink. Losing a stream event must cost
+    the event and nothing else: the record is already buffered before the sink
+    runs, and instrumentation may not fail a generation.
+    """
+    loop = asyncio.get_running_loop()
+    pending: set[asyncio.Task[Any]] = set()
+
+    def _done(task: asyncio.Task[Any]) -> None:
+        pending.discard(task)
+        # Retrieve the exception so a failed push is not re-reported by the loop
+        # as "Task exception was never retrieved".
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            exc = task.exception()
+            if exc is not None:
+                logger.debug("llm-trace: pointer event push failed", exc_info=exc)
+
+    def _push(pointer: dict[str, Any]) -> None:
+        def _schedule() -> None:
+            task = asyncio.ensure_future(emit.emit("llm_call_recorded", **pointer))
+            pending.add(task)
+            task.add_done_callback(_done)
+
+        with contextlib.suppress(RuntimeError):  # loop already closed — job is over
+            loop.call_soon_threadsafe(_schedule)
+
+    return _push
+
+
 async def _abort_if_cancel_requested(store: JobStore, job_id: str, stage: str) -> None:
     """Stage-boundary poll of the shared cancellation flag (#1667).
 
@@ -1175,6 +1225,16 @@ async def run_generation(
     meter_token = cost_meter.bind(meter)
     meter.set_meta("n_candidates_requested", n_candidates)
     meter.set_meta("model_requested", model)
+
+    # Raw LLM trace capture (#1800). Bound over the same frame as the meter and
+    # for the same reason: every `complete()` beneath here — including the ones
+    # `asyncio.to_thread` runs on worker threads, which copy the context — hands
+    # its PROVIDER RESPONSE to this recorder before any lossy extraction runs.
+    # In-memory only in this PR: no S3, no Aurora, nothing outlives the job (the
+    # `unbind` in the `finally` clears the buffer). What the stream gets is a
+    # pointer per call, never a body.
+    trace = llm_trace.LLMTraceRecorder(job_id=job_id, pointer_sink=_llm_pointer_sink(emit))
+    trace_token = llm_trace.bind(trace)
 
     # The price quote in force as this job starts (#1326). Read once, here,
     # because that is the quote the caller was actually charged against — a
@@ -1780,6 +1840,11 @@ async def run_generation(
         # so a failure here is swallowed (CancelledError included: this runs
         # while a cancellation is already propagating).
         cost_meter.unbind(meter_token)
+        # Clears the buffered prompts + completions with it (#1800): nothing is
+        # persisted yet, so holding them past the job would be a retention
+        # surface nobody asked for. The S3 flush the next PR adds goes ABOVE
+        # this line.
+        llm_trace.unbind(trace_token)
         snapshot: dict[str, Any] | None = None
         with contextlib.suppress(Exception, asyncio.CancelledError):
             snapshot = meter.snapshot()
