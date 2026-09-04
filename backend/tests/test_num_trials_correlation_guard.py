@@ -1,7 +1,8 @@
 """V4 regression guard: num_trials-provenance audit, 2026-08-03.
 
 Three cohort-computing call sites — ``selection_bias_routes.evaluate_rigor_gate``,
-``strategies_routes._live_rigor_results_for_strategies``, and
+``curated_grading.grade_cohort`` (the curated grading job, which is where the
+library's cohort computation moved in #1746 / PR-B), and
 ``live_rigor_gate.verdicts_for_strategies`` — each compute a COHORT-WIDE
 ``average_correlation`` across every curated strategy with enough persisted
 returns, then grade each strategy at ``num_trials=1`` (Dan's decouple #2
@@ -114,10 +115,10 @@ def test_selection_bias_routes_evaluate_rigor_gate_calls_the_guard():
     assert _invokes(evaluate_rigor_gate)
 
 
-def test_strategies_routes_live_rigor_results_calls_the_guard():
-    from archimedes.api.strategies_routes import _live_rigor_results_for_strategies
+def test_the_curated_grading_cohort_calls_the_guard():
+    from archimedes.services.curated_grading import grade_cohort
 
-    assert _invokes(_live_rigor_results_for_strategies)
+    assert _invokes(grade_cohort)
 
 
 def test_live_rigor_gate_verdicts_for_strategies_calls_the_guard():

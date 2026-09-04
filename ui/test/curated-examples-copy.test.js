@@ -213,7 +213,7 @@ test("no mark claims the number was measured or verified", () => {
 // ── 6. The mark's vocabulary is the BACKEND's, and stays pinned to it ─────
 //
 // METRICS_SOURCE_NOTES' keys are bare string literals of what
-// `_display_metrics_source` returns. Renaming one there and in its own
+// `display_metrics_source` returns. Renaming one there and in its own
 // backend/tests/test_metrics_provenance.py — the normal way such a rename
 // lands — leaves that file at 9 passed and, without this test, the whole UI
 // suite green, while every "fixture" mark silently stops rendering AND the
@@ -221,21 +221,69 @@ test("no mark claims the number was measured or verified", () => {
 // on the exact honesty signal this change exists to add. Same idiom as
 // ui/test/security-claims.test.js and account-deletion.test.js: read the
 // backend source from the UI suite.
-const routes = readFileSync(
-	new URL("../../backend/archimedes/api/strategies_routes.py", import.meta.url),
+//
+// The function moved to `services/curated_metrics.py` with #1746 / PR-B, which
+// made the display chain a WRITE-side resolution (the passport sync stores the
+// answer; every read surface serves the row). The four labels it returns are
+// unchanged, which is exactly what this pins.
+//
+// That move also turned the branches from bare string literals into named
+// constants, and the first version of this guard extracted the CONSTANT NAMES
+// and lowercased them. Those coincide with the wire values only because each
+// name happens to match its own value: changing `SOURCE_STRATEGY_RECORD` to
+// `"fixture_snapshot"` left this guard extracting the identical set and still
+// green, while every "fixture" mark silently stopped rendering — verbatim the
+// failure this test exists to catch. So the names are RESOLVED to their values
+// before the comparison, and a wire-value rename reddens the UI suite again.
+const curatedMetrics = readFileSync(
+	new URL(
+		"../../backend/archimedes/services/curated_metrics.py",
+		import.meta.url,
+	),
 	"utf8",
 );
 
+/** `SOURCE_* = "..."` module constants, as a name -> WIRE VALUE map. */
+function sourceConstants() {
+	const constants = new Map(
+		[...curatedMetrics.matchAll(/^(SOURCE_[A-Z_]+)\s*=\s*"([^"]+)"/gm)].map(
+			(m) => [m[1], m[2]],
+		),
+	);
+	assert.ok(
+		constants.size >= 4,
+		`curated_metrics.py declares ${constants.size} SOURCE_* constants; the four chain links must each have one`,
+	);
+	return constants;
+}
+
 function displayMetricsSourceStates() {
-	const start = routes.indexOf("def _display_metrics_source(");
+	const constants = sourceConstants();
+	const start = curatedMetrics.indexOf("def display_metrics_source(");
 	assert.notEqual(
 		start,
 		-1,
-		"_display_metrics_source not found — the mark's source is gone",
+		"display_metrics_source not found — the mark's source is gone",
 	);
-	const end = routes.indexOf("\ndef ", start + 1);
-	const body = routes.slice(start, end === -1 ? undefined : end);
-	return new Set([...body.matchAll(/return "([a-z_]+)"/g)].map((m) => m[1]));
+	const end = curatedMetrics.indexOf("\ndef ", start + 1);
+	const body = curatedMetrics.slice(start, end === -1 ? undefined : end);
+	const returned = [...body.matchAll(/return (SOURCE_[A-Z_]+)/g)].map(
+		(m) => m[1],
+	);
+	assert.ok(
+		returned.length >= 4,
+		`display_metrics_source returns ${returned.length} branches; expected one per chain link`,
+	);
+	return new Set(
+		returned.map((name) => {
+			const value = constants.get(name);
+			assert.ok(
+				value !== undefined,
+				`display_metrics_source returns ${name}, which curated_metrics.py never assigns a string literal — the wire value cannot be checked`,
+			);
+			return value;
+		}),
+	);
 }
 
 test("every marked source is a value the backend actually returns", () => {
@@ -250,7 +298,7 @@ test("every marked source is a value the backend actually returns", () => {
 	]) {
 		assert.ok(
 			returned.has(state),
-			`_display_metrics_source no longer returns "${state}"`,
+			`display_metrics_source no longer returns "${state}"`,
 		);
 	}
 	for (const key of Object.keys(METRICS_SOURCE_NOTES)) {

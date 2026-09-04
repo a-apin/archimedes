@@ -16,8 +16,10 @@ is different: it **recomputes** the gate live on every call (it backs the
 Deploy ladder and the vault deploy gate). The two can therefore differ in
 vintage for the same strategy until the row is explicitly re-graded; when
 they do, the passport row is the verdict of record and the live route is a
-fresh opinion. Curated strategies currently serve `pending` on the stored
-path until they are graded (PR-B of the same program).
+fresh opinion. This holds for **curated and generated strategies alike** — a
+curated strategy is graded by an operator-run job when its backtest runs
+(`docs/runbooks/curated-backtests.md`), and reads `pending`, honestly, until
+that job has run against it.
 
 **Auth model.** Reads are anonymous by default — the library, passports,
 stress testing, and every `/api/selection-bias/*` route are public.
@@ -46,8 +48,9 @@ this doc describes only the second.
 
 ### GET /api/strategies/
 List strategies in the library, backed by `LocalStrategyProvider`; the badge
-and every numeric rigor field come from a single live-gate run over the FULL
-library, before pagination. | **Auth**: anonymous
+and every numeric rigor field are READ from each strategy's stored verdict of
+record — this route runs no gate, so a badge cannot depend on which page or
+`?status=` filter it was requested under. | **Auth**: anonymous
 
 Request: query `status: "candidate"|"validated"|"live"|"retired"|null, limit: int(1..100)=20, offset: int(>=0)=0`.
 Response (`StrategyListResponse`): `{strategies: [StrategyResponse], total: int, degraded: bool=false, degraded_reason: str=""}`. `degraded` is `true` when the strategy provider raised or the library came back empty for a reason other than a legitimate filter (e.g. `"strategy corpus not found in build"`) — a loud, specific unavailable state instead of the false claim "no strategies" (#1356). `StrategyResponse` carries `id, papers[], methodology_summary, asset_universe, universe_source, position_sizing, rebalance_frequency, status, sharpe_ratio, sortino_ratio, cagr, max_drawdown, win_rate, calmar_ratio, correlation_to_spy, deflated_sharpe_ratio, dsr_p_value, pbo_score, out_of_sample_sharpe, kelly_fraction, passes_rigor_gate: bool, rigor_gate_status: "pass"|"fail"|"pending"|"degenerate", is_backtest_placeholder: bool, sharpe_ci_lower/upper, backtest_start/end, regime_tag, return_source: "risk_premium"|"mispricing"|"productive_growth"|"noise", return_source_note, generation_cost, can_publish`.
@@ -142,9 +145,16 @@ stored rigor verdict, never a recompute: `passes_rigor_gate: bool`, `rigor_gate_
 plus its provenance — `graded_at: str|null` (ISO-8601; `null` ⟺ never graded), `gate_version: str|null` (which gate
 produced it; the literal `"legacy-derived"` marks a verdict INFERRED by the verdict-of-record migration from pre-existing
 columns rather than produced by a gate run), `cohort_n: int|null` (cohort size behind the grade's cohort-scoped inputs;
-`1` = graded self-contained). Curated passports currently serve `"pending"` — every curated row's stored
-`passes_rigor_gate` is the #821 fail-closed placeholder, not a gate result, and grading them is tracked separately; the
-curated badge on `GET /api/strategies/{id}` is unaffected and still comes from the live gate.
+`1` = graded self-contained). Also `served_status: str` — the card status the same stored verdict derives, which is
+exactly what `GET /api/strategies/{strategy_id}` serves in its `status` field; the `status` key here stays the PERSISTED
+lifecycle column, because that is what `?status=` filters on. Curated passports carry a real graded verdict once the
+grading job has run for them (`docs/runbooks/curated-backtests.md`); before that they read `"pending"`, which is true.
+Also `display_metrics_source: "strategy_record"|"persisted_backtest"|"stub_placeholder"|"unavailable"|null` — which link
+of the curated display chain supplied `sharpe_ratio`/`sortino_ratio`/`max_drawdown` on this row. It is stored beside
+those numbers by the same write, so this route and `GET /api/strategies/{strategy_id}` name the same link for the same
+number; `null` means the row predates the column (the next passport sync writes it) or the row is generated, where there
+is no chain to name. Read it before quoting a number: `"stub_placeholder"` is a constant hand-declared in the strategy
+file, not a measurement.
 See [`docs/adr/rigor-verdict-of-record.md`](../adr/rigor-verdict-of-record.md).
 Errors: 404 `Passport not found` (missing, or not visible to caller).
 
@@ -185,7 +195,8 @@ curl -s https://archimedes-arc.com/api/strategies/<strategy_id>/debate
 ### GET /api/strategies/{strategy_id}
 Get a single strategy by ID — tries the curated `LocalStrategyProvider` first,
 falls through to the `strategy_passports` table for fusion/architect-generated
-strategies. | **Auth**: anonymous
+strategies. Either way the rigor verdict and every number beside it are READ
+from the strategy's passport row; this route runs no gate. | **Auth**: anonymous
 
 Request: path `strategy_id`.
 Response: `StrategyResponse` (same shape as the list endpoint's items).

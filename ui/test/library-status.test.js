@@ -188,6 +188,19 @@ test("the tooltip fires on exactly the rows the pill calls ungraded", () => {
 		/pending a backtest run/,
 		"a degenerate row HAS a backtest — its tooltip must not say one is pending",
 	);
+	// Same argument, one row over. Since #1746 PR-B a backtest and a grade are
+	// separate events, so an UNGRADED row usually has a backtest too — every
+	// curated strategy does, between that PR's deploy and its grading run.
+	assert.doesNotMatch(
+		NOT_GRADED_TITLE,
+		/pending a backtest run/,
+		"an ungraded row may already HAVE a backtest and be waiting only on the grading run — the tooltip must not name the backtest as the missing thing",
+	);
+	assert.match(
+		NOT_GRADED_TITLE,
+		/grading run/,
+		"the ungraded tooltip must name the grading run as a possible cause, not only the backtest",
+	);
 	// A graded row gets no tooltip at all; its pill already says what it means.
 	assert.equal(statusTitle("live", true, "pass"), undefined);
 	assert.equal(statusTitle("live", false, "fail"), undefined);

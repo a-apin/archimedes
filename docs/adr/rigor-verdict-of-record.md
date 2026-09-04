@@ -160,15 +160,17 @@ looked at this" can no longer render identically.
   re-grades it. Both are non-pass; neither renders green. Going forward the
   writer stores `degenerate` as itself, so this is a one-time cost on existing
   rows only.
-- **Curated strategies go from a false `fail` to an honest `pending`.** Every
-  curated passport row's `passes_rigor_gate` is the #821 placeholder, not a gate
-  result. After the migration those rows say "not yet graded", which is true, and
-  the Library's curated tab keeps its live-gate SOURCE (the curated detail route
-  is unchanged in PR-A). Grading them for real is PR-B. The consequence a reader
-  should expect meanwhile: `GET /api/strategies/passports/{id}` answers `pending`
-  for a curated id while `GET /api/strategies/{id}` still answers that id's live
-  verdict, so those two routes disagree for curated ids until PR-B lands. That
-  disagreement is #1746 narrowed, not #1746 closed.
+- **Curated strategies went from a false `fail` to an honest `pending` (PR-A),
+  and from `pending` to a real graded verdict (PR-B).** Every curated passport
+  row's `passes_rigor_gate` used to be the #821 placeholder, not a gate result.
+  PR-A replaced it with `pending` — true, but it meant
+  `GET /api/strategies/passports/{id}` answered `pending` for a curated id while
+  `GET /api/strategies/{id}` answered that id's live verdict, so the two routes
+  still disagreed. PR-B closes it: the curated grade is produced by
+  `services/curated_grading.py` when a curated backtest runs, stored on the same
+  row, and the curated detail / list / leaderboard paths read it. **A curated row
+  reads `pending` until the grading job has run against it — see the deploy step
+  below.**
 - **Two curated pill labels change wording, on a tab PR-A does not otherwise
   touch.** The Library's pill helpers now read the four-state, and they read it
   for curated rows too. A curated row whose live verdict is `pending` or
@@ -198,13 +200,84 @@ looked at this" can no longer render identically.
 
 | PR | Scope | State |
 |---|---|---|
-| **PR-A** | Generated strategies: the columns, the migration + backfill, the single writer, every generated read surface, the UI pill, the ADR. | this PR |
-| **PR-B** | Curated grading: replace the `passes_rigor_gate = False` placeholder in `strategy_provider.py` with a real stored grade, and retire the curated detail route's live computation. | next |
+| **PR-A** | Generated strategies: the columns, the migration + backfill, the single writer, every generated read surface, the UI pill, the ADR. | landed (#1792) |
+| **PR-B** | Curated grading: a real stored grade from `services/curated_grading.py`, written when a curated backtest runs; the curated detail / list / leaderboard read-time gate run retired. | this PR (#1746) |
 | **PR-C** | The explicit re-grade of existing rows: a versioned event that replaces every `gate_version = 'legacy-derived'` verdict (and every `pending` the backfill could not resolve) with a real gate run. | after B |
 
 The order is deliberate. PR-A makes the column mean one thing; PR-B makes it mean
 that thing for curated rows too; PR-C fills it in for history. Doing C before A
 would re-grade rows into a column that still had two meanings.
+
+## PR-B: how a curated strategy gets graded, and the deploy step
+
+**The grading job.** `services/curated_grading.py::grade_curated_library` runs
+the real gate over the full curated library — the same cohort computation the
+read path used to do per request, moved verbatim to the write side — and writes
+each strategy's verdict, provenance and the four numbers that run produced onto
+its passport row, through the single writer. Two entry points, both operator-run:
+
+- `python -m archimedes.scripts.run_backtests` grades at the end of its run. New
+  evidence, new grade, one job.
+- `python -m archimedes.scripts.grade_curated` grades on its own. This is the
+  re-grade, and the one-time backfill.
+
+`backend/tests/test_curated_grading_is_write_side_only.py` is the choke point:
+nothing under `backend/archimedes/` but those two scripts may reach the job, so a
+recompute on read cannot come back under a new name.
+
+**THE DEPLOY STEP.** Merging PR-B grades nothing. Every curated passport row is
+`pending` until the job runs against the production database, and the curated
+badge reads "Not yet graded" until then. After deploying, run the one-off Fargate
+task exactly as `docs/runbooks/curated-backtests.md` § "Grading on its own" describes:
+
+```
+--overrides '{"containerOverrides":[{"name":"migrate",
+  "command":["python","-m","archimedes.scripts.grade_curated"]}]}'
+```
+
+It reads persisted returns and writes verdicts; it runs no backtest and fetches
+no market data, so it is minutes, not the ~15 of a library backtest run.
+
+PR-B carries one schema change, `a4d7e1b93c2f` (`strategy_passports.display_metrics_source`
+— which link of the curated display chain supplied a row's headline numbers), so
+the normal `alembic upgrade head` step has to land before the grading task. The
+column is nullable with no backfill and the read path falls back to its previous
+per-request derivation while it is NULL, so a deploy that ran the migration but
+not yet the grading job is a correct, if less informative, state.
+
+**What a curated row can and cannot get from it.** A strategy with fewer than ten
+persisted daily returns grades `pending` and stays there — the pairs family has
+no persisted row at all, by design (`run_backtests` refuses to persist an
+implausible artifact), so re-running the job does not move it. That is
+fail-closed working, not a bug to automate around.
+
+**Where the numbers come from now.** The four gate numbers
+(`deflated_sharpe_ratio`, `dsr_p_value`, `pbo_score`, `out_of_sample_sharpe`)
+moved out of `_update_record` and into the verdict write, so they can only be
+written by a gate run. A row with no `graded_at` serves `None` for all four —
+which is what keeps #1187's fixture snapshot, still sitting in those columns on
+un-regraded rows, off the wire. `metrics_source` says `stored_grade` when a grade
+produced them and `unavailable` when nothing did.
+
+**The display metrics moved too, and this is the other half of #1746.** A curated
+card's Sharpe came from a per-request `real_* → persisted backtest → stub` chain
+while the passport row stored only the first link — `null` for a strategy with no
+fixture row, which is why `1f9cfe96…` served `0.406` on one route and `null` on
+the other, and why the number moved between two reads 37 s apart (the provider
+memoises its backtest map per process; prod runs two tasks). The chain now runs
+once, in `services/curated_metrics.py`, when the passport sync writes the row.
+Same precedence, same numbers — decided by a writer instead of re-decided per
+request per process. Whether a fixture snapshot *should* outrank a real persisted
+backtest is a separate, open owner call; PR-B deliberately preserves today's
+answer rather than changing a displayed number while fixing a disagreement.
+
+**`served_status`.** `GET /api/strategies/passports/{id}` now publishes both the
+persisted `status` column (which `?status=` filters on) and `served_status` — the
+card status derived from the stored verdict by one shared helper, which is what
+the detail route serves. For every id, curated or generated,
+`detail.status == passport.served_status`. The curated CANDIDATE → VALIDATED
+promotion is that derivation; it used to be driven by a live gate run made during
+the request.
 
 ## Alternatives considered
 
