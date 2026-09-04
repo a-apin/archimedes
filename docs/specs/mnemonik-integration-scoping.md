@@ -131,10 +131,13 @@ are kept here as the record of what #714 still owed.
   "[chain] Retire the v1 publishTrace fallbacks from the agent tick (#714)", removed all
   three: `_commit_trace`, `_reveal_trace` and `_publish_trace` now anchor nothing and log
   loudly rather than falling back to a v1 anchor that binds no trade. On this branch
-  `grep -n "\.publish(" backend/archimedes/chain/agent_runner.py` returns nothing, and
-  the only callers left of `TracePublisher.publish`
-  (`backend/archimedes/chain/trace_publisher.py:69-143`) are two unit tests in
-  `backend/tests/test_trace_publisher.py`. The issue's anti-goal grep is 0.
+  `grep -n "\.publish(" backend/archimedes/chain/agent_runner.py` returns nothing, so
+  the agent TICK no longer reaches `TracePublisher.publish`
+  (`backend/archimedes/chain/trace_publisher.py:69-143`). The v1 anchor stays
+  callable from one internal-key-gated route — `POST /api/traces/publish`
+  (`backend/archimedes/api/traces_routes.py:463`) — and from two unit tests in
+  `backend/tests/test_trace_publisher.py`; retiring that route is outside #714's
+  anti-goal, which was the tick path, and its grep is 0.
 - **The IPFS pinning prod gap**, split to **#1526** — **closed 2026-09-01, as outcome (b):
   the path was removed rather than wired.** `PINATA_JWT` was never seeded, and seeding a
   production secret is an owner action, so `docs/adr/ipfs-pinning-not-live.md` records the
