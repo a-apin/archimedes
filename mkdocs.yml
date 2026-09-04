@@ -448,9 +448,9 @@ exclude_docs: |
   # names the distribution and its rollback. Same class as the two runbooks
   # above, so it is off the site for the same reason.
   runbooks/cloudfront-cache-behaviour-apply.md
-  # Same class again, landed 2026-09-03. Both name the AWS account number
-  # (037613907429) and a decrypt-and-export procedure for live SSM
-  # SecureStrings, which is the "has a key" half of the cut line above.
+  # Same class again, landed 2026-09-03. Both name the AWS account number and a
+  # decrypt-and-export procedure for live SSM SecureStrings, which is the
+  # "has a key" half of the cut line above.
   # market-data-provider-proof.md: `/archimedes/prod/TIINGO_API_TOKEN`,
   #   `aws ssm get-parameter --with-decryption`, an `ecs execute-command` probe.
   # terraform-apply-and-task-definition-ownership.md: `TF_VAR_aurora_master_password`
