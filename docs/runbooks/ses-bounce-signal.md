@@ -136,6 +136,13 @@ Rows stamped before #1804 do not exist: there was no configuration set, so those
 were published nowhere and cannot be reconstructed. The SES suppression list
 (`ses_suppression list`) is the only record of the pre-loop past.
 
+The **account owner** sees the same fact without SQL: `GET /api/auth/verification-status`
+answers `state: "bounced"` with `bounce: {at, kind}` for their own address, and the resend
+control on Account Settings and the Generate page renders it and disables the button. That
+state outranks `suppressed` — it is the same conclusion from a stronger source (SES pushed
+it) and it still answers when the suppression lookup cannot run. See
+[`../api/auth-and-accounts.md`](../api/auth-and-accounts.md).
+
 ## 5. Letting an address back in — **both halves, or neither**
 
 A wrongly-blocked address is blocked in **two** independent places, and clearing one alone
@@ -171,10 +178,15 @@ the column back to NULL, so a genuinely new bounce finds a NULL and records itse
 ## 6. What this does NOT do
 
 * **It does not run itself.** No schedule, no cron, no loop — see § 2.
-* **It does not write per-send delivery rows.** One row per send, and the
-  `GET /api/auth/verification-status` endpoint that reads it back, are
-  [#1790](https://github.com/aprin-labs/archimedes/pull/1790) — the pull half. Until that
-  merges, a signed-out visitor's resend still answers `200` and says nothing.
+* **It does not write per-send delivery rows, and it does not write feedback rows into
+  `auth_email_deliveries` either.** One row per SEND is
+  [#1790](https://github.com/aprin-labs/archimedes/pull/1790)'s, written by `auth/mailer.js`;
+  that table's `seq` is a database-assigned IDENTITY column with no SQLite equivalent, so a
+  second writer in Python could not be covered by this repo's SQLite-backed tests without
+  either diverging from the production schema or supplying `seq` by hand — and an explicit
+  `seq` does not advance the Postgres sequence, which would collide with the sidecar's next
+  insert and lose a real receipt. The per-user stamp above carries the fact the product acts
+  on; a per-event audit trail keyed on `MessageId` is a follow-up, not part of this loop.
 * **It does not refuse the anonymous resend.** `/send-verification-email` is reachable with
   no session and answers identically for unknown, verified and genuine sends; that
   uniformity is what stops it being an account-existence oracle. Only a caller signed in AS

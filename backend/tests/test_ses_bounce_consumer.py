@@ -72,10 +72,17 @@ def make_user(db, email: str, user_id: str = "user-1") -> AuthUser:
 class StubSqs:
     """Hands back canned batches, records every delete. Never touches AWS."""
 
-    def __init__(self, batches: list[list[dict]] | None = None, *, receive_error: Exception | None = None):
+    def __init__(
+        self,
+        batches: list[list[dict]] | None = None,
+        *,
+        receive_error: Exception | None = None,
+        delete_error: Exception | None = None,
+    ):
         self.batches = list(batches or [])
         self.deleted: list[str] = []
         self.receive_error = receive_error
+        self.delete_error = delete_error
         self.receive_calls = 0
 
     def receive_message(self, **_kwargs):
@@ -88,6 +95,8 @@ class StubSqs:
 
     def delete_message(self, *, QueueUrl, ReceiptHandle):  # noqa: N803 - boto3's own kwarg names
         assert QueueUrl == QUEUE_URL
+        if self.delete_error is not None:
+            raise self.delete_error
         self.deleted.append(ReceiptHandle)
 
 
@@ -333,6 +342,43 @@ def test_clear_is_a_dry_run_unless_applied(session):
 def test_clear_reports_an_unknown_address_rather_than_claiming_success(session):
     result = ses_events.clear_address(session, "nobody@example.com", apply=True)
     assert result == {"address": "nobody@example.com", "found": False, "applied": False, "cleared": 0}
+
+
+def test_the_write_is_committed_before_the_delete_so_a_crash_loses_nothing(session):
+    """The ordering claim in ``drain``, executed rather than asserted in a comment.
+
+    SQS is at-least-once and the delete is a SEPARATE call from the write, so
+    one of the two has to go first and the choice is not symmetric:
+
+    * commit → delete (what the code does). A crash in between leaves the row
+      stamped and the message on the queue; it comes back, ``record_event``
+      finds ``email_bounced_at`` already set, counts it ``already_stamped``,
+      and deletes it. A duplicate, which is a no-op.
+    * delete → commit. A crash in between loses the event permanently — the
+      only outcome nothing can recover, because SES will never resend it and
+      the address's death was published nowhere else.
+
+    A failing ``DeleteMessage`` is the observable stand-in for that crash. The
+    stamp must already be DURABLE at that point, which is what the rollback
+    below tests: a rollback discards everything not yet committed, so a row
+    that survives it was committed before the delete was attempted.
+    """
+    make_user(session, "gone@example.invalid")
+    client = StubSqs(
+        [[sns_message(bounce_event("gone@example.invalid"))]],
+        delete_error=RuntimeError("AWS.SimpleQueueService.NonExistentQueue"),
+    )
+
+    with pytest.raises(ses_events.QueueDrainFailed):
+        ses_events.drain(client, QUEUE_URL, session=session)
+
+    session.rollback()
+    stamped = session.query(AuthUser).one()
+    assert stamped.email_bounced_at is not None, (
+        "the stamp was still uncommitted when the delete was attempted — a crash there loses the bounce"
+    )
+    assert stamped.email_bounce_kind == ses_events.KIND_BOUNCE
+    assert client.deleted == []
 
 
 # ──────────────────────────────── the CLI ───────────────────────────────

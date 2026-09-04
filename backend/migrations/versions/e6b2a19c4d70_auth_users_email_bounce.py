@@ -42,7 +42,7 @@ whose entire job is to keep recording — the failure mode this issue exists to
 remove.
 
 Revision ID: e6b2a19c4d70
-Revises: b3f19d6c47ae
+Revises: d4b1f7c8e206
 Create Date: 2026-09-03 00:00:00.000000
 
 If another migration lands on main first, re-point ``down_revision`` at the
@@ -61,7 +61,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e6b2a19c4d70"
-down_revision: str | Sequence[str] | None = "b3f19d6c47ae"
+down_revision: str | Sequence[str] | None = "d4b1f7c8e206"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
