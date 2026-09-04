@@ -59,9 +59,18 @@ export const NOT_GRADED_LABEL = "Not yet graded";
  */
 export const DEGENERATE_LABEL = "Unevaluable — flat returns";
 
-/** Why an ungraded row is blank, in words. The pill says WHAT, this says WHY. */
+/** Why an ungraded row is blank, in words. The pill says WHAT, this says WHY.
+ *
+ * It does NOT say "pending a backtest run" any more, for the same reason
+ * `DEGENERATE_TITLE` never could: after the verdict of record
+ * (docs/adr/rigor-verdict-of-record.md, #1746 PR-B) a backtest and a grade are
+ * two separate events, so an ungraded row has two possible causes and the
+ * common one carries a real backtest. Between that PR's deploy and its
+ * `grade_curated` run EVERY curated strategy is exactly that: persisted
+ * returns on disk, no verdict yet. Naming the backtest as the missing thing
+ * would be a fresh false claim on the surface #1747 exists to keep honest. */
 export const NOT_GRADED_TITLE =
-	"No rigor gate has graded this strategy yet — DSR / PBO / OOS Sharpe are pending a backtest run.";
+	"No rigor gate has graded this strategy yet, so DSR / PBO / OOS Sharpe are blank — it is waiting on a backtest, on a grading run, or on both.";
 
 /** Why a degenerate row is blank. Deliberately NOT the ungraded sentence: these
  * returns exist and were read, they are just flat, so "pending a backtest run"
