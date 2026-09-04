@@ -97,8 +97,9 @@ account (existence is private, same rule as the routes above).
 
 **Marks are the unsettled view, not the track record.** `series` on the
 deployment summary comes from `paper_daily_returns`, which is append-only by
-law and is what carries to mainnet. A mark is a decoration with a TTL: raw
-15-minute marks are kept 7 days, rolled up to one-per-hour for 90, then
+law and is the recorded paper track record — Arc testnet, no real funds. A
+mark is a decoration with a TTL: raw 15-minute marks are kept 7 days, rolled
+up to one-per-hour for 90, then
 **deleted** (there is nothing worth aggregating to past that — the daily close
 is already stored permanently in the ledger). A client must render the two
 distinguishably and must never present a mark as a settled return.

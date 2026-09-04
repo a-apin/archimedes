@@ -339,7 +339,7 @@ export default function Leaderboard() {
             {isOwn
               ? <>Your strategies, ranked against each other by a transparent <strong>conviction score</strong> built
                   from real rigor-gate and backtest results — the ugly numbers included. Build your track record now;
-                  it carries to mainnet.</>
+                  paper deployments record it forward on Arc testnet, with no real funds.</>
               : <>The curated seed library, ranked by a transparent <strong>conviction score</strong> built from real
                   rigor-gate and backtest results — the ugly numbers included. A reference set, not a competition.</>}
             {' '}

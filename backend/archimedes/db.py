@@ -36,6 +36,7 @@ from archimedes.models.free_generation_grant import FreeGenerationGrantRecord
 from archimedes.models.generation_cost import GenerationCostRecord
 from archimedes.models.generation_credit import GenerationCreditRecord
 from archimedes.models.identity import ControlledWallet, IdentityEvent, WalletIdentity
+from archimedes.models.legacy_adoption import LegacyRowAdoption
 from archimedes.models.marketplace import (
     MarketplaceAgent,
     SettlementIntent,
@@ -56,13 +57,13 @@ from archimedes.models.user_profile import UserProfile
 # (``db.py`` is never ``import *``-ed, so ``__all__`` has no other effect.)
 __all__ = [
     "DATABASE_URL",
+    "ApiKeyRecord",
+    "AssetDailyBar",
     "AuthAccount",
     "AuthEmailDelivery",
     "AuthSession",
     "AuthUser",
     "AuthVerification",
-    "ApiKeyRecord",
-    "AssetDailyBar",
     "BacktestResultRecord",
     "Base",
     "ControlledWallet",
@@ -72,6 +73,7 @@ __all__ = [
     "GenerationCostRecord",
     "GenerationCreditRecord",
     "IdentityEvent",
+    "LegacyRowAdoption",
     "LinkedWallet",
     "MarketplaceAgent",
     "PaperRecord",

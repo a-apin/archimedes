@@ -12,10 +12,31 @@ paper→real promotion exists, THAT action takes the fresh-signature gate).
 ``owner_wallet`` is recorded as provenance only (the caller's linked wallet at
 deploy time, when one exists) — it never grants access. The table shipped with
 this feature, so there are no legacy wallet-owned rows and no fallback tier.
+
+**Every read route here is `async def` and every one of them does SYNCHRONOUS,
+BLOCKING database work, so the work runs on a worker thread (#1818 P4).** The
+2026-09-03 outage is the argument: a query that could not take its lock froze
+the event loop of both web processes, and `/health` — a sibling coroutine on
+that same loop — stopped answering, so the ALB saw a DEAD target instead of a
+slow endpoint and pulled the whole fleet out of service. Off the loop, the same
+blocked query costs one pool thread and `/health` keeps answering, which is the
+difference between a slow page and a 504.
+
+`asyncio.to_thread`, not a private pool: it uses the loop's default executor,
+which `main.py` sizes explicitly (`_install_default_executor`, floor 16) precisely
+so serving handlers and the generation fan-out share a pool somebody chose. The
+health probes are the one deliberate exception (`main._HEALTH_PROBE_EXECUTOR`) and
+they say why at their own definition.
+
+The sync half of each route is a module-level `_*_sync` function rather than a
+closure, so the guard in `backend/tests/test_handlers_off_the_loop.py` can name
+it and a reviewer can see at a glance that the coroutine body is the hop and
+nothing else.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -23,7 +44,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from archimedes.api.account_auth import CurrentUser, require_current_user
 from archimedes.api.limiter import limiter
 from archimedes.api.wallet_routes import get_linked_wallet_address
-from archimedes.db import get_session, init_db
+from archimedes.db import get_session
 from archimedes.models.paper_store import STATUS_STOPPED, PaperDeployment
 from archimedes.services.paper_marks import list_marks, mark_to_dict
 from archimedes.services.paper_trading import (
@@ -105,7 +126,6 @@ async def deploy_paper(
     # Provenance only — never an access grant, may be None (account-only user).
     linked_wallet = get_linked_wallet_address(request)
 
-    init_db()
     with get_session() as session:
         spec = _spec_for_strategy(session, strategy_id, linked_wallet, user.id)
         try:
@@ -177,18 +197,29 @@ def _page_verdicts(session, strategy_ids: list[str]) -> dict[str, dict]:
     return {**ungraded_verdicts_for(strategy_ids), **found}
 
 
-@paper_router.get("/deployments")
-async def list_paper_deployments(request: Request, user: CurrentUser = Depends(require_current_user)):  # noqa: ARG001
-    init_db()
+def _list_paper_deployments_sync(user_id: str) -> dict:
+    """The blocking half of ``GET /deployments`` — runs on a worker thread."""
     with get_session() as session:
         deps = (
             session.query(PaperDeployment)
-            .filter(PaperDeployment.owner_user_id == user.id)
+            .filter(PaperDeployment.owner_user_id == user_id)
             .order_by(PaperDeployment.created_at.desc())
             .all()
         )
         verdicts = _page_verdicts(session, [d.strategy_id for d in deps])
         return {"deployments": [deployment_summary(session, d, verdict=verdicts[d.strategy_id]) for d in deps]}
+
+
+@paper_router.get("/deployments")
+async def list_paper_deployments(request: Request, user: CurrentUser = Depends(require_current_user)):  # noqa: ARG001
+    return await asyncio.to_thread(_list_paper_deployments_sync, user.id)
+
+
+def _get_paper_deployment_sync(deployment_id: str, user_id: str) -> dict:
+    """The blocking half of ``GET /deployments/{id}`` — runs on a worker thread."""
+    with get_session() as session:
+        dep = _owned_deployment(session, deployment_id, user_id)
+        return deployment_summary(session, dep)
 
 
 @paper_router.get("/deployments/{deployment_id}")
@@ -197,10 +228,24 @@ async def get_paper_deployment(
     deployment_id: str,
     user: CurrentUser = Depends(require_current_user),
 ):
-    init_db()
+    return await asyncio.to_thread(_get_paper_deployment_sync, deployment_id, user.id)
+
+
+def _get_paper_deployment_marks_sync(deployment_id: str, limit: int, user_id: str) -> dict:
+    """The blocking half of ``GET /deployments/{id}/marks`` — runs on a worker thread.
+
+    The clamp lives here, with the query it bounds, rather than in the coroutine:
+    the coroutine is the hop and nothing else, so there is no second place a
+    reviewer has to look to know what the database was asked for.
+    """
     with get_session() as session:
-        dep = _owned_deployment(session, deployment_id, user.id)
-        return deployment_summary(session, dep)
+        dep = _owned_deployment(session, deployment_id, user_id)
+        rows = list_marks(session, dep.id, limit=max(1, min(limit, 2000)))
+        return {
+            "deployment_id": dep.id,
+            "marks": [mark_to_dict(row) for row in rows],
+            "latest": mark_to_dict(rows[-1]) if rows else None,
+        }
 
 
 @paper_router.get("/deployments/{deployment_id}/marks")
@@ -244,15 +289,7 @@ async def get_paper_deployment_marks(
     (a day of raw crypto marks is 96 rows, a week is 672) so a client cannot
     ask for an unbounded scan; the newest ``limit`` rows are returned.
     """
-    init_db()
-    with get_session() as session:
-        dep = _owned_deployment(session, deployment_id, user.id)
-        rows = list_marks(session, dep.id, limit=max(1, min(limit, 2000)))
-        return {
-            "deployment_id": dep.id,
-            "marks": [mark_to_dict(row) for row in rows],
-            "latest": mark_to_dict(rows[-1]) if rows else None,
-        }
+    return await asyncio.to_thread(_get_paper_deployment_marks_sync, deployment_id, limit, user.id)
 
 
 @paper_router.post("/deployments/{deployment_id}/stop")
@@ -261,7 +298,6 @@ async def stop_paper_deployment(
     deployment_id: str,
     user: CurrentUser = Depends(require_current_user),
 ):
-    init_db()
     with get_session() as session:
         dep = _owned_deployment(session, deployment_id, user.id)
         dep.status = STATUS_STOPPED

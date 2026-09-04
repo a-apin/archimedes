@@ -40,8 +40,8 @@ const MARKS_POLL_MS = 5 * 60 * 1000
 // number with no as-of time, or a raw "Backend returned NNN".
 //
 // Two series, two lifetimes, and the card must never let them blur:
-//   - `series` (paper_daily_returns) is the SETTLED, append-only track record
-//     that carries to mainnet;
+//   - `series` (paper_daily_returns) is the SETTLED, append-only paper track
+//     record — Arc testnet, no real funds (#1807);
 //   - the intraday marks from GET /api/paper/deployments/{id}/marks are an
 //     UNSETTLED re-pricing of that strategy's ASSET BASKET — not of its live
 //     position, which v1 cannot see (MARK_BASIS_DISCLOSURE) — and the backend
@@ -92,8 +92,8 @@ function StatusChip({ status, driftAt }) {
 // Minimal equity sparkline over series[].equity_index, with the UNSETTLED
 // intraday tail (paper_marks[].portfolio_value) drawn as a separate dashed,
 // half-weight segment. The visual break is load-bearing, not decoration: only
-// the settled daily ledger carries to mainnet, so a reader has to be able to
-// see at a glance where the recorded track record ends and the intraday view
+// the settled daily ledger is the recorded track record, so a reader has to
+// be able to see at a glance where that record ends and the intraday view
 // begins. Starts the path at the 1.0 baseline so day-1 deployments still draw
 // a meaningful segment.
 function Sparkline({ series, intraday }) {
@@ -319,8 +319,8 @@ export default function PaperTrading({ onNavigate }) {
         <p className="body" style={{ maxWidth: 760 }}>
           Simulated deployments of your strategies — <strong>no funds move</strong>. Each one
           snapshots the strategy spec at deploy time and appends one real-data return per trading
-          day; later regeneration of the strategy never rewrites a running ledger. This is the
-          track record that carries to mainnet. The <strong>live value</strong> beneath each total
+          day; later regeneration of the strategy never rewrites a running ledger. This is a
+          paper track record on Arc testnet — no real funds. The <strong>live value</strong> beneath each total
           return re-prices the strategy&apos;s asset basket every 15 minutes — it is unsettled,
           carries the time it was observed, and never changes what the strategy does.
         </p>

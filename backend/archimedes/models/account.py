@@ -32,6 +32,43 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# ── The platform legacy-adoption account (#1283) ───────────────────────────
+#
+# A real ``auth_users`` row, created idempotently by the alembic revision that
+# adopts orphaned pre-account rows, so the ownership FK those rows carry
+# (``owner_user_id -> auth_users.id``) points at something that exists. It is
+# an OWNER, never a LOGIN:
+#
+#   * no ``auth_accounts`` credential row and no ``auth_sessions`` row is ever
+#     written for it, so nothing can authenticate as it — adopted rows are
+#     therefore readable by nobody, which is the fail-closed direction;
+#   * the address is in the RFC 6761 ``.invalid`` TLD, which by definition
+#     resolves nowhere, so no email flow can ever reach it — and because
+#     ``auth_users.email`` is UNIQUE, a signup attempting this address is
+#     rejected by the database rather than taking the account over;
+#   * every published count of ACCOUNTS or of ACCOUNTS-WHO-DID-SOMETHING
+#     excludes it by id — a bookkeeping row must never inflate a user number
+#     the product publishes. Three filters, all pinned by tests:
+#       - ``services/user_stats.py::_query_distinct_user_count`` (the public
+#         "users" figure);
+#       - ``services/engagement_metrics.py::get_account_metrics``
+#         (total / new_7d / new_30d);
+#       - ``services/engagement_metrics.py::get_repeat_generation_metrics``
+#         — filtered on ``strategy_store.owner_user_id``, not on
+#         ``auth_users.id``, because that tile counts accounts by the rows
+#         they own and the adopted rows are the ones this account owns. The
+#         adjacent ``is_example`` filter does NOT cover them: an adopted row
+#         carries a real ``owner_wallet``, so it is not house content.
+#     Anything counting owners of adopted rows in future must join this list.
+#
+# The id is fixed and documented rather than generated: the migration, its
+# downgrade, the release path, and the metrics filters all have to name the
+# same account, and a generated id would make the migration non-idempotent.
+PLATFORM_LEGACY_USER_ID = "platform-legacy"
+PLATFORM_LEGACY_EMAIL = "platform-legacy@archimedes.invalid"
+PLATFORM_LEGACY_NAME = "Archimedes Platform (legacy rows)"
+
+
 class AuthUser(Base):
     __tablename__ = "auth_users"
 

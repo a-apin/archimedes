@@ -46,12 +46,18 @@ archimedes-mcp --help 2>/dev/null || true   # it speaks MCP over stdio; a client
 `archimedes login` caches at `~/.config/archimedes/session.json` (mode `600`), loaded
 through `archimedes_cli.session.load_session` — imported, not copied.
 
+`ARCHIMEDES_SESSION_FILE` in the same `env` block moves that file. Running more than one
+agent on a machine? Give each one its own path (`"ARCHIMEDES_SESSION_FILE":
+"/home/agent/.archimedes/lane-a.json"`, and `archimedes login --session-file` that same
+path). One file per agent is what keeps two agents from sharing one identity — the failure
+[#1752](https://github.com/aprin-labs/archimedes/issues/1752) reported.
+
 ## Authentication
 
 | Order | Source | Sent as |
 | --- | --- | --- |
 | 1 | `ARCHIMEDES_API_KEY` | `Authorization: Bearer <key>` |
-| 2 | `~/.config/archimedes/session.json` | the `better-auth.session_token` cookie |
+| 2 | `~/.config/archimedes/session.json`, or `$ARCHIMEDES_SESSION_FILE` | the `better-auth.session_token` cookie |
 
 **Exactly one credential goes on the wire.** When both exist the key wins here and no
 `Cookie` header is sent, so the server-side precedence rule (cookie wins) can never decide

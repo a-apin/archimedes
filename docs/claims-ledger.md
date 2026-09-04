@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-09-01
+> **updated:** 2026-09-03
 > **superseded-by:** —
 
 Every public claim Archimedes makes, with a verdict on each and the code that backs it.
@@ -16,6 +16,11 @@ citation stops resolving.
 tree on that date — the citation is the thing that was read, not a remembered fact. A row
 whose evidence could not be confirmed is not marked `TRUE`. The 2026-09-01 copy-honesty
 pass moved the remaining `OVER-CLAIMED` generation-on-chain tags to `CHANGED`.
+
+**Amended 2026-09-03 (#1807)** with the paper-trading section below — the one place the
+cancelled mainnet cutover ([#1240](https://github.com/aprin-labs/archimedes/issues/1240),
+owner call 2026-08-30) had left a live claim standing on four user-facing surfaces. Those
+rows were measured against `main` on 2026-09-03; no other row was re-measured.
 
 ## How to read a row
 
@@ -139,7 +144,7 @@ unset, so the boundary holds under both answers.
 | "x402-gated strategy access ... no endpoint returns 402 with payment requirements" (the 2026-08-10 retraction) | `CHANGED` | The retraction is itself out of date. `POST /api/generate/start` now returns 402 carrying x402 requirements (`backend/archimedes/api/generate_routes.py:449`), and 409 `wallet_link_required` first (`:459`). What remains true is the marketplace half: `GET /api/marketplace/published/{strategy_id}` is public (`backend/archimedes/api/marketplace_routes.py:753`). |
 | `agent.json` `erc8004` — "NO ERC-8004 identity, reputation, or validation claim is made" | `TRUE` | `ui/public/.well-known/agent.json` — self-disclosing, with `agentId` and `tokenURI` null, `status: "registration_pending"`, and the reason spelled out in the `note`. No `register()` transaction has been sent. |
 | `agent.json` `endpoints.marketplace.note` — "does not assert that a subscription's recurring USDC charge settles for real" | `TRUE` | `ui/public/.well-known/agent.json`. Correctly separates the two dry-run switches — `backend/archimedes/services/generation_payment.py:64` documents the split that let the generation rail go live without un-drying marketplace settlement — and declines to claim the one no public endpoint publishes. |
-| `agent.json` / llms.txt `POST /api/rigor/verify` — PBO and look-ahead "always report `not_evaluable`", `passes` is a capped quorum | `TRUE` | `backend/archimedes/api/rigor_verify_routes.py:47` states the capping contract; `:273` hard-codes both legs to `not_evaluable`; `:289` makes `passes` require every runnable leg to have run and passed. |
+| `agent.json` / llms.txt `POST /api/rigor/verify` — PBO and look-ahead "always report `not_evaluable`", `passes` is a capped quorum | `TRUE` | `backend/archimedes/api/rigor_verify_routes.py:47` states the capping contract; `:787` hard-codes both legs to `not_evaluable`; `:803` makes `passes` require every runnable leg to have run and passed. |
 | `ui/public/sitemap.xml` lists only routes that render real content for an anonymous visitor | `TRUE` | Six `<loc>` entries, checked one by one against the two allow-sets that between them cover all six: `ui/src/routes.js:3` (`PUBLIC_PATHS` — `/`, `/architecture`, `/security`) and `:43` (`ANON_APP_PAGES` — `explore`, `leaderboard`, `corpus`). **Verified by reading, not by a guard, and the row says so:** `ui/scripts/check-sitemap.mjs` enforces only the *forward* direction (every public route appears in the sitemap) and its own header documents the reverse — "every sitemap `<loc>` is actually anonymous-accessible" — as **NOT enforced**; `ui/test/sitemap.test.js` pins one specific exclusion (the admin-only `/insights` never appears anywhere in the served bytes), not this property. Claiming a test pins this would be the defect this ledger exists to catch. |
 
 ## `ui/index.html` — meta, OpenGraph, Twitter card, JSON-LD
@@ -189,11 +194,26 @@ unset, so the boundary holds under both answers.
 
 | Claim | Status | What backs it |
 |---|---|---|
-| "Archimedes Verified" cannot be earned by an imported return series | `CHANGED` | The 2026-08-20 reading — "no CSV/return-import endpoint exists, so the claim is vacuously true" — no longer holds: `POST /api/rigor/verify` accepts a bare returns series today. The claim survives on a stronger footing, by structure rather than by absence: two of the four legs are permanently `not_evaluable` on that transport (`backend/archimedes/api/rigor_verify_routes.py:273`), the verdict is explicitly `verdict_capped` and "not the strategy passport's gate" (`:47`), and the endpoint persists no strategy. |
+| "Archimedes Verified" cannot be earned by an imported return series | `CHANGED` | The 2026-08-20 reading — "no CSV/return-import endpoint exists, so the claim is vacuously true" — no longer holds: `POST /api/rigor/verify` accepts a bare returns series today. The claim survives on a stronger footing, by structure rather than by absence: two of the four legs are permanently `not_evaluable` on that transport (`backend/archimedes/api/rigor_verify_routes.py:787`), the verdict is explicitly `verdict_capped` and "not the strategy passport's gate" (`:47`), and the endpoint persists no strategy. |
 | Leaderboard figures are provisional | `CHANGED` | The broad two-defect banner is retired: the #1203 routing defect and the backtest/live interpreter divergence were both fixed and re-verified, so their clauses became false and were removed (`ui/src/components/Leaderboard.jsx:446`). One caveat remains, scoped to the own view: generated-strategy figures are fixed at generation time and are not re-backtested (`:477`). |
 | No public surface quotes a curated pass count | `TRUE` | Verified across Landing, `/security`, `ui/index.html`, `README.md`, `llms.txt`, and `agent.json` on 2026-08-31. |
 | `/app/paper` never shows a paper-performance number without the gate verdict beside it | `TRUE` | Was the open half of "Paper-trading a failing strategy is allowed. Relabelling one is not." (Landing, above): deploy genuinely had no rigor precondition, and the card genuinely said nothing about the gate — a bare "+2.10% · total return" for a rejected strategy. #1764: `deployment_summary` (`backend/archimedes/services/paper_trading.py`) now carries `rigor_gate_status` / `graded_at` / `gate_version` READ from `strategy_passports` (`passport_loader.stored_rigor_verdict`, never a recompute), and `ui/src/components/PaperTrading.jsx` renders `<GateVerdictChip>` unconditionally beside the figure with the two in one accessible name. Guarded both sides — `backend/tests/test_paper_deploy_verdict.py`, `ui/test/paper-gate-verdict.test.js` (one call site for the figure, no conditional on the chip, and a payload with the verdict DROPPED renders "verdict unavailable" rather than silence). |
 | No copy on `/app/paper` promotes a paper return into a verdict | `TRUE` | Pinned as a negative in `ui/test/paper-gate-verdict.test.js` over every label, tooltip and page note the surface renders: no "validates the vault / strategy", no "validated by paper", no "proves the strategy", no "guarantee". The positive obligation is pinned with it — `FORWARD_EVIDENCE_NOTE` says the forward record and the gate verdict do not re-label each other. |
+
+## Paper trading — the ledger, the passport card, and the own-leaderboard tab
+
+Added 2026-09-03 (#1807). The cutover to Arc mainnet was **cancelled** by owner call on
+2026-08-30 ([#1240](https://github.com/aprin-labs/archimedes/issues/1240)): Archimedes stays a
+testnet product until legal/regulatory review and sustained user traction justify charging real
+money, and no date is named. Four shipped surfaces were still promising that the paper ledger
+"carries to mainnet" — a claim about an event that is not scheduled, which is the strongest kind
+of over-claim this file exists to catch, because it is unfalsifiable rather than merely optimistic.
+
+| Claim | Status | What backs it |
+|---|---|---|
+| "This is the track record that **carries to mainnet**" — the paper ledger, on the Paper Trading page, the passport's paper-deploy card, and the own view of the research leaderboard | `RETRACTED` | #1807. All four carriers now say what is true: `ui/src/components/PaperTrading.jsx:319` and `ui/src/components/StrategyPassport.jsx:1438` say "a paper track record on Arc testnet — no real funds"; `ui/src/components/Leaderboard.jsx:341` says paper deployments record it forward on Arc testnet, with no real funds; and the module comment the other three were quoting is corrected at `ui/src/paperCopy.js:110`. |
+| The retraction is guarded, not just performed | `TRUE` | `ui/test/no-mainnet-track-record.test.js:72` (`PAPER_SURFACES`) bans the **word** `mainnet` on those four files rather than the one phrasing — "ahead of mainnet" and "mainnet-ready" are the rewrites a sentence-scrub would miss. Two repo-wide sweeps stop the sentence migrating to a fifth file: the literal `carries to mainnet`, and `:154` (`ledgerMainnetPairs`), which flags any line pairing the word `mainnet` with `track record`/`ledger` — over every text extension under `ui/src`, not just `.js`/`.jsx`, with `:179` (`wrappedLedgerMainnetClaim`) making a second sentence-wide pass so a claim split across a line wrap is not invisible to a line scan. The positive "nothing true replaced it" assertion reads `:120` (`readerText`), which strips comments and flattens `'…' + '…'` wrapping, so a note in a comment does not count as copy and a line break cannot change the verdict. The other UI files that name mainnet are the honest negations ("No mainnet money" at `ui/src/components/PublicLayout.jsx:23`) and are deliberately out of scope. The only way the word comes back is a line-level `mainnet-claim-exemption: owner=<name> date=<YYYY-MM-DD> issue=#<n>`, and the guard proves a malformed marker does **not** silence a line. |
+| The same sentence on the machine and doc surfaces | `RETRACTED` | Same change, same wording: `docs/api/paper-trading.md:100`, `backend/archimedes/models/paper_store.py:276`, `backend/archimedes/services/paper_marks.py:49`, `backend/migrations/versions/e41c7a9b2d63_add_paper_marks.py:10`. The design record is corrected in the open rather than rewritten in silence — `docs/plans/2026-08-30-intraday-paper-trading.md:8` carries a dated note saying what the plan used to claim and why it changed. These four are outside the UI guard's reach, so the phrase is pinned absent from them by `backend/tests/test_claims_ledger.py` (`_RETRACTED_PHRASE_PINS`) — without that, this row could rot back to false with every suite green. |
 
 ## Market data — the Explore page and what paid analysis runs on
 

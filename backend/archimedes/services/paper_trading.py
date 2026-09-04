@@ -608,7 +608,12 @@ def _publish_decision_traces(
         row.decision_date: row
         for row in session.query(PaperDecisionTrace).filter(PaperDecisionTrace.deployment_id == dep.id)
     }
-    paper_hashes = pt.resolve_paper_hashes(list(spec.source_arxiv_ids))
+    # The CYCLE's session, not a second one (#1818 P2). This lookup used to
+    # open its own connection while this transaction was still open, which is
+    # the shape that wedged the fleet on 2026-09-03: our AccessShareLock on
+    # `papers` in front, a sibling's ALTER TABLE queued behind it, and our
+    # second session queued behind the ALTER — a cycle PostgreSQL cannot see.
+    paper_hashes = pt.resolve_paper_hashes(session, list(spec.source_arxiv_ids))
 
     budget = pt.backfill_max()
     attempted = 0
