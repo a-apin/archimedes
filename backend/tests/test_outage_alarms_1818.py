@@ -19,7 +19,8 @@ the site. So P5 is three gaps, of which Terraform owns two:
    The alarms guarded below close that; ``aurora_connections_wedge`` fires at
    ~03:48 and is the only reason this set is worth applying.
 2. **Detection latency.** 9m46s is the 5-of-5-minute window plus lag. The
-   unhealthy-hosts retune to 2-of-2 buys back ~6 minutes.
+   unhealthy-hosts retune to 2-of-2 drops three of the five one-minute
+   datapoints, so it buys back ~3 minutes; the 2m46s evaluation lag stays.
 3. **The page did not reach the owner.** Nothing in Terraform fixes that. What
    the code can do is refuse to leave the destination unchosen —
    ``var.owner_alert_email`` has no default — and refuse to let that choice be
@@ -102,6 +103,7 @@ ALARM_SPECS: dict[str, dict[str, object]] = {
         "statistic": "Maximum",
         "comparison_operator": "GreaterThanOrEqualToThreshold",
         "threshold": 1,
+        "period": 60,
         "window_s": 120,
     },
     # "HTTPCode_ELB_5XX_Count >= 5 in 5 minutes"
@@ -111,6 +113,7 @@ ALARM_SPECS: dict[str, dict[str, object]] = {
         "statistic": "Sum",
         "comparison_operator": "GreaterThanOrEqualToThreshold",
         "threshold": 5,
+        "period": 300,
         "window_s": 300,
     },
     # "ECS service MemoryUtilization max > 85% for 5 minutes"
@@ -120,6 +123,7 @@ ALARM_SPECS: dict[str, dict[str, object]] = {
         "statistic": "Maximum",
         "comparison_operator": "GreaterThanThreshold",
         "threshold": 85,
+        "period": 60,
         "window_s": 300,
     },
     # "ECS CPUUtilization > 90% for 10 minutes"
@@ -129,6 +133,7 @@ ALARM_SPECS: dict[str, dict[str, object]] = {
         "statistic": "Average",
         "comparison_operator": "GreaterThanThreshold",
         "threshold": 90,
+        "period": 60,
         "window_s": 600,
     },
     # "RDS DatabaseConnections > 30 for 15 minutes (today's wedge sat at 33)"
@@ -138,6 +143,7 @@ ALARM_SPECS: dict[str, dict[str, object]] = {
         "statistic": "Average",
         "comparison_operator": "GreaterThanThreshold",
         "threshold": 30,
+        "period": 300,
         "window_s": 900,
     },
 }
@@ -311,8 +317,8 @@ class TestThePagingDestinationIsChosenDeliberately:
         """``alerts_email`` is live, confirmed, and delivering — do not touch it.
 
         Its ``count`` gate is a real landmine (a bare apply without
-        ``TF_VAR_alarm_email`` unsubscribes the only destination the topic has
-        subscription this topic has), but that landmine predates #1818 P5 and closing it
+        ``TF_VAR_alarm_email`` unsubscribes the only subscription this topic
+        has), but that landmine predates #1818 P5 and closing it
         means capturing the applied address in ``terraform.tfvars`` — the
         owner's to do. What this PR must not do is *widen* it: adding another
         term to the condition would make a plain apply destroy the working
@@ -342,14 +348,31 @@ class TestOutageAlarmShapes:
 
     @pytest.mark.parametrize("name", ALARM_NAMES)
     def test_the_window_is_the_duration_the_issue_asks_for(self, name: str) -> None:
-        """``period × datapoints_to_alarm``, checked as a product.
+        """Both ``period`` and the ``period × datapoints_to_alarm`` product.
 
-        Pinning the two fields separately lets them drift apart while each
-        still reads plausibly on its own line — the shape that turned the
-        unhealthy-hosts alarm into a 5-minute window in the first place.
+        The product alone is NOT sufficient, and assuming it was is a real hole
+        this file shipped with. A ``Sum`` alarm applies its threshold *per
+        period*, so reshuffling ``alb_elb_5xx_count`` from 300 × 1 to 60 × 5
+        holds the product at 300s and keeps ``datapoints_to_alarm ==
+        evaluation_periods`` — passing both this test and the consecutive-
+        datapoints test — while silently changing the alarm from ">= 5 errors
+        in five minutes" to ">= 5 errors in each of five consecutive minutes",
+        i.e. >= 25. That is a 5x weakening with no failing test.
+
+        So ``period`` is pinned directly. The product is kept as well, because
+        it is what catches the two fields drifting apart while each still reads
+        plausibly on its own line — the shape that turned the unhealthy-hosts
+        alarm into a 5-minute window in the first place.
         """
         body = _alarm(name)
-        window_s = _int_attr(body, "period") * _int_attr(body, "datapoints_to_alarm")
+        period = _int_attr(body, "period")
+        assert period == ALARM_SPECS[name]["period"], (
+            f"{name} uses period {period}s but issue #1818 P5 specifies "
+            f"{ALARM_SPECS[name]['period']}s. For a Sum statistic the threshold applies "
+            f"PER PERIOD, so a shorter period with proportionally more datapoints is a "
+            f"threshold increase, not the same alarm."
+        )
+        window_s = period * _int_attr(body, "datapoints_to_alarm")
         assert window_s == ALARM_SPECS[name]["window_s"], (
             f"{name} breaches after {window_s}s but issue #1818 P5 specifies {ALARM_SPECS[name]['window_s']}s"
         )
@@ -401,13 +424,26 @@ class TestThresholdsAreTiedToTheIncident:
         )
 
     def test_the_elb_5xx_alarm_watches_the_balancer_not_the_target(self) -> None:
-        """The distinction the outage turned on.
+        """Two different metrics, and the alarm must stay on the ELB-side one.
 
         ``alb_5xx_high`` counts ``HTTPCode_Target_5XX_Count`` — 5xx the backend
-        produced. On 2026-09-03 the backend produced none; it produced nothing
-        at all, and the ALB synthesised 504s. Only the ELB-side metric sees
-        that, and it has no ``TargetGroup`` dimension — adding one selects
-        nothing and parks the alarm in INSUFFICIENT_DATA.
+        produced and the ALB relayed. This alarm counts
+        ``HTTPCode_ELB_5XX_Count`` — 5xx the balancer generated itself.
+
+        On 2026-09-03 the *ELB-side* metric published no datapoints at all (all
+        of ``HTTPCode_ELB_5XX/500/502/503/504_Count`` return zero datapoints for
+        the day, while ``RequestCount`` returns them over the same minutes), so
+        this alarm would not have fired. The only 5xx were four target-side
+        responses at 13:31–13:33Z, which is what put ``alb_5xx_rate_high``
+        (#418) into ALARM at 13:39:16Z. The alarm is therefore general ELB-side
+        cover for a metric nothing watched — 1,254 errors on UTC day
+        2026-08-20 — not an #1818 detector.
+
+        What this test pins is the split: ``HTTPCode_ELB_5XX_Count`` has no
+        ``TargetGroup`` dimension, so adding one selects nothing and parks the
+        alarm in INSUFFICIENT_DATA; and if ``alb_5xx_high`` ever moves off the
+        target-side metric, this alarm becomes a duplicate rather than a
+        complement.
         """
         body = _alarm("alb_elb_5xx_count")
         dimensions = _dimensions(body)
