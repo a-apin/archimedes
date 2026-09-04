@@ -36,10 +36,13 @@ bound to the wrong cache policy, and a behaviour ordered behind a broader
 pattern that swallows it are all syntactically valid HCL.
 
 Not every path these patterns cover is session-dependent, and the suite says so
-rather than papering over it. ``nginx/nginx.conf:293-326`` is the anonymous-browse
-carve-out block (#1194 revision d) — bare ``/app``, ``/app/explore``,
-``/app/leaderboard``, ``/app/corpus`` and ``/app/strategy/*`` are PUBLIC, ungated,
-identical for every viewer. They are de-cached here **on purpose** (the owner's
+rather than papering over it. ``nginx/nginx.conf`` carries the anonymous-browse
+carve-out block (#1753, narrowing #1194 revision d) — bare ``/app``,
+``/app/explore`` and ``/app/corpus`` are PUBLIC, ungated, identical for every
+viewer. (``/app/leaderboard`` and ``/app/strategy/*`` were carve-outs under #1194
+rev d and are gated as of #1753; nothing here changed for them, because ``/app/*``
+already covered gated and public alike — which is the point of the ruling below.)
+They are de-cached here **on purpose** (the owner's
 ruling on the review of PR #1772, 2026-09-01) and
 ``TestThePublicCarveOutsAreDeCachedOnPurpose`` pins that, so a later "optimisation"
 that quietly puts them back on the ``html`` policy is a failing test rather than a
@@ -93,23 +96,29 @@ SESSION_DEPENDENT_PATHS = (
     "/app",
     "/app/generate",
     "/app/insights",
+    "/app/leaderboard",
     "/app/library",
     "/app/nonsense",
+    "/app/strategy/abc123",
     "/sign-in",
 )
 
-# The anonymous-browse carve-outs (#1194 revision d): PUBLIC pages that live
-# under /app and are NOT session-dependent — nginx serves them with no
-# `auth_request` (nginx/nginx.conf:293-326), and nginx's longest-prefix match
-# puts them ahead of the gated `^~ /app`. `/app/strategy/abc123` stands in for
-# a real strategy-detail URL. Listed separately from SESSION_DEPENDENT_PATHS so
-# the distinction survives in the file that asserts on it.
+# The anonymous-browse carve-outs (#1753, narrowing #1194 revision d): PUBLIC
+# pages that live under /app and are NOT session-dependent — nginx serves them
+# with no `auth_request`, and nginx's longest-prefix match puts them ahead of
+# the gated `^~ /app`. Listed separately from SESSION_DEPENDENT_PATHS so the
+# distinction survives in the file that asserts on it.
+#
+# `/app/leaderboard` and `/app/strategy/<id>` were on this list under #1194 rev
+# d and moved to SESSION_DEPENDENT_PATHS with #1753. That move is the whole
+# reason this file does not enumerate carve-outs in `infra/cloudfront.tf`: the
+# edge behaviour for both sets is the same `/app*` CachingDisabled pair, so a
+# page crossing the gated/public line needs no terraform change and cannot
+# reintroduce #1768 by being forgotten here.
 PUBLIC_APP_CARVE_OUTS = (
     "/app",
     "/app/explore",
-    "/app/leaderboard",
     "/app/corpus",
-    "/app/strategy/abc123",
 )
 
 # Anti-goal: this change must not pull anything else off its behaviour. The
@@ -125,7 +134,10 @@ STILL_CACHED = {
 # Ordering anchors. The session behaviours sit AFTER these (nothing may get in
 # front of the liveness or API paths) and BEFORE the suffix patterns.
 MUST_PRECEDE_SESSION = ("/health", "/health/*", "/api/*", "/events/*", "/assets/*", "/static/*")
-MUST_FOLLOW_SESSION = ("*.js", "*.css")
+# `*.png` and its siblings joined this list in #1776: every suffix pattern
+# bound to `static_assets` is a way for a gated /app path to acquire a 1h
+# cookie-blind cache, not just the two that existed when #1768 was written.
+MUST_FOLLOW_SESSION = ("*.js", "*.css", "*.png", "*.svg", "*.jpg", "*.webp", "*.woff2", "*.ico")
 
 
 def _by_pattern() -> dict[str, dict[str, str]]:
@@ -303,9 +315,9 @@ class TestThePublicCarveOutsAreDeCachedOnPurpose:
 
     Reviewed on PR #1772 (2026-09-01): `/app/*` and `/app` do not only cover
     session-dependent pages. The anonymous-browse carve-outs of #1194 revision
-    d — bare `/app` (the SPA's alias for Explore), `/app/explore`,
-    `/app/leaderboard`, `/app/corpus`, `/app/strategy/*` — are public, ungated
-    at nginx (`nginx/nginx.conf:293-326`, no `auth_request`, no
+    d, as narrowed by #1753 — bare `/app` (the SPA's alias for Explore),
+    `/app/explore` and `/app/corpus` — are public, ungated
+    at nginx (no `auth_request`, no
     `error_page 401 = @sign_in`), and identical for every viewer. Carving them
     back onto the `html` policy would be a defensible cache optimisation and
     the owner ruled AGAINST it, for two reasons:
@@ -316,7 +328,9 @@ class TestThePublicCarveOutsAreDeCachedOnPurpose:
     2. Per-carve-out behaviours here would make `infra/cloudfront.tf` a fourth
        copy of the anon-page list that `nginx/nginx.conf` and `ANON_APP_PAGES`
        in `ui/src/routes.js` already have to keep in lockstep — and a fourth
-       copy needs a fourth lockstep guard.
+       copy needs a fourth lockstep guard. #1753 moved two pages across the
+       line and this file needed no edit for it, which is reason 1 and reason 2
+       demonstrated rather than argued.
 
     The price paid is named in the comment above the blocks and asserted below:
     an origin hit per anonymous visitor for a ~4 KB static shell.
@@ -342,8 +356,8 @@ class TestThePublicCarveOutsAreDeCachedOnPurpose:
         behaviour instead of reading the ruling.
         """
         comment = _comment_above("/app/*")
-        assert "#1194" in comment, "the comment does not cite the carve-out decision (#1194 rev d)"
-        for page in ("/app/explore", "/app/leaderboard", "/app/corpus", "/app/strategy"):
+        assert "#1753" in comment, "the comment does not cite the carve-out decision (#1753, narrowing #1194 rev d)"
+        for page in ("/app/explore", "/app/corpus"):
             assert page in comment, f"the comment does not name {page} as a public page de-cached on purpose"
         assert "PUBLIC" in comment, "the comment does not say these carve-outs are public"
 

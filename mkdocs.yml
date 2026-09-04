@@ -10,12 +10,25 @@
 # asserts the product's Docs links point at the same host.
 #
 # ═══════════════════════════════════════════════════════════════════════════
-# THE NAV IS CURATED, AND `exclude_docs` IS WHAT UNPUBLISHES A PAGE.
+# THE NAV IS THE ALLOW-LIST. PUBLICATION IS DEFAULT-DENY (#1751).
 #
-# Removing a page from the nav does NOT take it off the site: six pages with no
-# nav entry were verified returning HTTP 200 on 2026-09-01, and /robots.txt is
-# 404, so all of it is crawlable. A page that should not be public goes in the
-# `exclude_docs` block at the bottom of this file, not merely out of the nav.
+# Removing a page from the nav used not to take it off the site: six pages with
+# no nav entry were verified returning HTTP 200 on 2026-09-01, and /robots.txt
+# is 404, so all of it was crawlable. `exclude_docs` fixed that page by page —
+# a deny-list, which only ever catches the files someone already thought of, so
+# a NEW docs/runbooks/*.md or docs/api/*.md published the day it was committed.
+#
+# It is inverted now. `.github/scripts/mkdocs_hooks.py` (`deny_unlisted`) keeps a
+# file under docs/ only if THIS nav names it or `not_in_nav` allow-lists it, and
+# marks everything else excluded — off the site — with a WARNING that
+# `mkdocs build --strict` fails on. So the three publication controls are:
+#
+#   nav:           publishes a page, and lists it.
+#   not_in_nav:    publishes a file without a nav entry (the site's own assets).
+#   exclude_docs:  states that a file is internal — it is never built.
+#
+# A file in none of the three does not publish, and turns the build red until
+# somebody says which of the three it is.
 #
 # Nav LABELS are the product's language; the PATHS under them are unchanged.
 # docs/CONVENTIONS.md § 2 — "The slug is a stable identifier — other docs, ADRs,
@@ -200,6 +213,7 @@ nav:
       - The journey, end to end: user-stories.md
       - Generate a strategy:
           - Writing a brief that works: writing-a-brief.md
+          - What a brief is rejected for, and why: brief-guidelines.md
           - What you can build over — the asset universe: asset-universe.md
           - Inside a generation run — the debate society: specs/multi-agent-debate-spec.md
           - Why a strategy fuses several papers: specs/strategy-fusion-spec.md
@@ -234,6 +248,7 @@ nav:
           - The rigor gate runs outside the generator: adr/k1-generation-external-rigor-gate.md
           - A strategy's trial count is self-contained: adr/num-trials-self-containment.md
           - Backtests are frozen evidence: adr/backtests-are-frozen-evidence.md
+          - A strategy is graded once, and the verdict is stored: adr/rigor-verdict-of-record.md
       - Measured findings (dated):
           - Library-level PBO (2026-06-11): quant/library-pbo.md
           - Third-wave retest — alpha-absent, not cost-bled (2026-06-11): quant/third-wave-retest.md
@@ -278,6 +293,11 @@ nav:
       - One job per screen — the surface roles: specs/page-roles-spec.md
       - Generation pipeline:
           - Where the research comes from — the paper corpus: corpus-architecture.md
+          # Generated from the agents/prompts.py registry by
+          # scripts/gen_prompt_inventory.py (#1800) — the file is regenerated,
+          # never hand-edited, and backend/tests/test_prompt_inventory_doc.py
+          # fails when it drifts from the registry.
+          - Every prompt we send a model (generated): specs/prompt-inventory.md
           - Corpus enrichment pipeline (designed, not built): specs/kb-integration-spec.md
           - Measuring what a generation costs: generation-cost-instrumentation.md
       - Execution and traces:
@@ -324,7 +344,12 @@ nav:
           - Building and publishing this site: runbooks/docs-site-setup.md
           - GitHub security toggles: runbooks/github-security-toggles.md
           - SES suppression list: runbooks/ses-suppression.md
+          - DMARC aggregate reports, and the p=none ramp: runbooks/dmarc-reports.md
+          - SES bounce and complaint feedback: runbooks/ses-bounce-signal.md
           - Re-running the curated backtests: runbooks/curated-backtests.md
+          # Incidents are evidence rather than procedure (docs/CONVENTIONS.md § 1),
+          # but an operator looking for "what went wrong last time" looks here.
+          - "2026-09-03: the paper-advance DDL wedge": incidents/2026-09-03-paper-advance-ddl-wedge.md
 
   # ── 7 ── FORCED TOP-LEVEL. backend/tests/test_docs_site.py:90 `_wiki_section`
   #         iterates TOP-LEVEL nav items only and raises when the label is not
@@ -368,8 +393,12 @@ nav:
 # whose test is "would we be comfortable if a competitor read this?".
 # docs/archive/README.md records the 2026-08-19 precedent for that port.
 #
-# `not_in_nav` is deliberately NOT used: with this block there are no
-# built-but-unlisted pages left for it to suppress.
+# This block is no longer the only thing between a file and the public site —
+# `deny_unlisted` is (see the banner at the top of this file). It stays, and
+# stays exact, because "off the site" and "recorded as internal" are different
+# claims: a page that is merely absent from the nav is one careless nav row away
+# from being public again, and a reviewer reading this block can see what was
+# decided about each one.
 # ═══════════════════════════════════════════════════════════════════════════
 exclude_docs: |
   # The site's own pinned toolchain. It lives under docs/ so the workflow and
@@ -420,6 +449,18 @@ exclude_docs: |
   # names the distribution and its rollback. Same class as the two runbooks
   # above, so it is off the site for the same reason.
   runbooks/cloudfront-cache-behaviour-apply.md
+  # Same class again, landed 2026-09-03. Both name the AWS account number and a
+  # decrypt-and-export procedure for live SSM SecureStrings, which is the
+  # "has a key" half of the cut line above.
+  # market-data-provider-proof.md: `/archimedes/prod/TIINGO_API_TOKEN`,
+  #   `aws ssm get-parameter --with-decryption`, an `ecs execute-command` probe.
+  # terraform-apply-and-task-definition-ownership.md: `TF_VAR_aurora_master_password`
+  #   read out of SSM, the plan/apply IAM role ARN, and the names of the rest of
+  #   the prod secret set (CIRCLE_ENTITY_SECRET, BETTER_AUTH_SECRET, DATABASE_URL).
+  # Neither is in the aprin-labs/docs#10 snapshot — that PR froze #1816's 89
+  # pages on 2026-09-03 and these two landed after it; they port next.
+  runbooks/market-data-provider-proof.md
+  runbooks/terraform-apply-and-task-definition-ownership.md
   # Deployer-key handling
   runbooks/t3.2-contract-redeploy.md
 
@@ -459,3 +500,37 @@ exclude_docs: |
   agent-operations.md
   api/admin-private.md
   database-relations.md
+
+# ═══════════════════════════════════════════════════════════════════════════
+# not_in_nav — the explicit allow-list for files that publish WITHOUT a nav row.
+#
+# Under default-deny (#1751) this is the only other way onto the site, so it is
+# deliberately short and deliberately extension-scoped: these are the site's own
+# assets, referenced from inside pages (the logo, the favicon, the two rendered
+# diagrams and the mermaid source one of them is generated from). A `**` glob
+# here would re-open the hole this closes — `reference/**` would silently
+# publish a future `docs/reference/internal-notes.md` with no nav entry and no
+# review — so every pattern names a non-page file type.
+#
+# mkdocs' own use of this key is narrower (it suppresses the "exists but is not
+# in the nav" message for documentation pages, and media files never produce
+# that message). `deny_unlisted` reads the same patterns, which is what makes
+# them an allow-list rather than a comment.
+# ═══════════════════════════════════════════════════════════════════════════
+not_in_nav: |
+  assets/*.png
+  assets/*.svg
+  reference/*.svg
+  reference/*.mmd
+
+# The backstop for "somebody deleted the hook". `deny_unlisted` normally marks an
+# unlisted page excluded before mkdocs ever looks at the nav, so this level is not
+# what fires day to day. Without the hook it is: mkdocs logs every documentation
+# page that is in no nav and no `not_in_nav` at this level, and the docs-site
+# workflow builds with `--strict`, which fails on WARNING. `warn` is the strictest
+# value mkdocs accepts here (mkdocs/config/defaults.py `_LogLevel`: warn/info/
+# ignore); the default is `info`, which --strict ignores — that default is half
+# the reason a page could be published by nobody in the first place.
+validation:
+  nav:
+    omitted_files: warn

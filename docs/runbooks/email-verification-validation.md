@@ -2,7 +2,7 @@
 
 > **status:** current
 > **owner:** Dan Browne
-> **updated:** 2026-08-31
+> **updated:** 2026-09-01
 > **superseded-by:** —
 
 **Scope:** proving, with a real inbox, that the two transactional mail flows Better Auth
@@ -42,6 +42,7 @@ spam filter, and that the link inside it works when a human clicks it.
 | Reset link lifetime | `emailAndPassword.resetPasswordTokenExpiresIn` | **1 hour** (same) |
 | Sessions on reset | `revokeSessionsOnPasswordReset` | `true` — every existing session dies |
 | Enforcement | `EMAIL_VERIFICATION_ENFORCED` in `infra/ecs.tf` (auth container) | `"false"` |
+| Delivery feedback | `GET /api/auth/verification-status` ([`auth/server.js`](../../auth/server.js)) | live since #1748 — reports `sent` / `suppressed` / `rate_limited` / `failed` / `unknown` for the SIGNED-IN caller's own address, from `auth_email_deliveries` plus a SESv2 suppression lookup |
 | Logs | CloudWatch log group `/archimedes/app`, stream prefix `auth` | 90-day retention |
 
 Two properties worth holding in mind for the whole of this runbook, because they change
@@ -346,6 +347,29 @@ token**: a verification URL is a live sign-in credential for an hour (§ 1).
   colleague's "this is spam" click is a complaint against the domain's reputation.
 
 ---
+
+## 9b. "The mail is not arriving" — read the delivery state first
+
+Before rehearsing anything below, ask the product what it recorded. Since
+[#1748](https://github.com/aprin-labs/archimedes/issues/1748) item 2 the auth sidecar keeps
+one row per send in `auth_email_deliveries` (the SES `MessageId` when SES accepted the
+message, the error **name** when it did not) and exposes the reading at
+`GET /api/auth/verification-status`. Signed in as the affected account:
+
+```bash
+curl -sS -b /tmp/session.jar https://archimedes-arc.com/api/auth/verification-status
+```
+
+| `state` | What it means | What to do |
+|---|---|---|
+| `suppressed` | The address is on the **account-level** SES suppression list (`suppression.reason` = `BOUNCE` or `COMPLAINT`). SES accepts sends to it and drops them. | Nothing in this runbook helps — this is suppression-list hygiene ([#1748](https://github.com/aprin-labs/archimedes/issues/1748) item 4), and an address is only ever removed when its owner confirms it is real. |
+| `failed` | The last send threw; `lastError` is the AWS SDK error name. Nothing left the building. | `AccessDeniedException` → the task role's SES policy (`infra/ecs.tf`). `MessageRejected` → sender identity / sandbox. |
+| `rate_limited` | The resend window is full (`retryAfterSeconds` says how long). | Wait. This is the limiter working. |
+| `sent` | The mailer **accepted** the last send. Not delivery — SES returns a MessageId for a suppressed address too. | Continue with the rehearsals below; the failure is downstream of AWS. |
+| `unknown` | `sends: 0` — no send on record. `sends: null` — the delivery log could not be read. | `0`: the send never happened, look at the auth logs. `null`: check the migration ran and `DATABASE_URL` is set for the auth container. |
+
+`suppression.checked: false` means the lookup itself did not run (console mailer, throttling,
+or a missing `ses:GetSuppressedDestination` grant). It is **not** "the address is fine".
 
 ## 10. What is already proven without an inbox
 

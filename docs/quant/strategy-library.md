@@ -30,15 +30,15 @@ sufficient. Which strategies pass all four gates is not recorded here — the li
 > are reading now.
 
 > **Corrected 2026-08-31 (#1598).** This paragraph used to explain Faber's failure by
-> calling 0.612 a walk-forward out-of-sample Sharpe and comparing it to the 0.90 gate. Both
+> calling 0.612 a walk-forward out-of-sample Sharpe and comparing it to the DSR gate. Both
 > halves were wrong. **0.612 is a DSR p-value** — the live pull recorded in
 > [`../analysis/faber-dsr-finding.md`](../analysis/faber-dsr-finding.md) (2026-05-27) puts
-> Faber's `dsr_p_value` at 0.612 and its out-of-sample Sharpe at **0.930**. And **0.90 is
-> not an out-of-sample-Sharpe threshold at all**: it is the level-1 DSR p-value bar, a
-> probability in `[0, 1]`. The out-of-sample Sharpe has two thresholds of its own — an
+> Faber's `dsr_p_value` at 0.612 and its out-of-sample Sharpe at **0.930**. And **the DSR
+> bar is not an out-of-sample-Sharpe threshold at all**: it is the level-1 DSR p-value bar,
+> a probability in `[0, 1]`. The out-of-sample Sharpe has two thresholds of its own — an
 > always-on floor of `> 0` and a cliff of `OOS/IS ≥ 0.5` — and 0.930 clears both
 > comfortably. Faber's recorded failure is on **criterion 1**, `dsr_p_value` against the
-> `0.90` bar; the verdict is unchanged, the reason was misattributed. As with every strategy
+> DSR bar; the verdict is unchanged, the reason was misattributed. As with every strategy
 > on this page, the current verdict comes from the live gate, not from this file.
 
 A recurring honesty theme: many files set `paper_claimed_*` to **null** when the

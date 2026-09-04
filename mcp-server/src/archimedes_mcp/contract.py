@@ -66,7 +66,8 @@ CREDENTIAL_SOURCES = (
     "ARCHIMEDES_API_KEY  ->  Authorization: Bearer <key>",
     "~/.config/archimedes/session.json  ->  the session cookie `archimedes login` cached "
     "(mode 600) -- __Secure-better-auth.session_token in production, "
-    "better-auth.session_token on local HTTP",
+    "better-auth.session_token on local HTTP. ARCHIMEDES_SESSION_FILE moves that file, "
+    "which is how concurrent agents on one machine hold separate identities",
 )
 
 TOOLS: tuple[dict, ...] = (
@@ -116,7 +117,21 @@ TOOLS: tuple[dict, ...] = (
             "candidate strategies and the look-ahead audit needs strategy source code. Both "
             "come back not_evaluable with the decisive reason rather than being scored as "
             "passes, so a `passes: true` here is a CAPPED verdict, not the full gate. Your "
-            "strategy code is never uploaded — only the returns series you pass in."
+            "strategy code is never uploaded — only the returns series you pass in. "
+            "THE INPUT CONTRACT IS STRICT AND THE SERVER REPAIRS NOTHING: dates must be strict "
+            "YYYY-MM-DD, unique, and in ASCENDING order; daily_return must be a finite simple "
+            "decimal with |r| <= 1.0 (+1.3% is 0.013, not 1.3); the series is 250 to 2600 rows "
+            "and trials is 1 to 10000. THE MINIMUM EVALUATION WINDOW IS 250 DAILY BARS — one "
+            "trading year. Under it you get a refusal (422, reason window_too_short, with "
+            "bars_received and bars_required), never a verdict and never a verdict with a warning "
+            "on it, so do not retry a short series expecting a caveated answer: fetch more "
+            "history. A violating body comes back 422 with a machine-readable "
+            "reason: invalid_date, duplicate_date, unsorted_dates, non_finite, out_of_range, "
+            "window_too_short, too_many_rows or trials_out_of_range. It will not sort or "
+            "deduplicate your rows for you — the walk-forward split is positional, so re-ordering "
+            "them server-side would return a verdict on a series you did not send. A verdict can "
+            "still be INCOMPLETE (legs_evaluated < legs_runnable) when a leg cannot run on the "
+            "numbers themselves — a zero-variance series, say — which is never a pass."
         ),
     },
     {
@@ -179,10 +194,24 @@ TOOLS: tuple[dict, ...] = (
         "cost": COST_FREE,
         "routes": ("GET /api/strategies/passports/{strategy_id}",),
         "description": (
-            "Read one strategy passport — the unified record carrying the gate result, the "
-            "papers it was built from, and its provenance. Free and public. Unpublished "
-            "passports that are not yours answer 404, never 403 (a 403 would confirm the "
-            "id exists). Owner wallet addresses are redacted for anyone but the owner."
+            "Read one strategy passport — the RIGOR VERDICT OF RECORD, the papers the "
+            "strategy was built from, and its provenance. Free and public. The verdict is "
+            "graded once, at backtest time, and stored: this route serves it verbatim and "
+            "never recomputes it, so for a GENERATED strategy it agrees with "
+            "archimedes_strategy for the same id by construction (for a curated strategy it "
+            "does not yet — see below). rigor_gate_status is the same four-state that tool "
+            "documents "
+            "('pass'|'fail'|'pending'|'degenerate'), and passes_rigor_gate is true only for "
+            "'pass'. Three provenance fields say WHICH grade you are reading: graded_at "
+            "(null means never graded, which agrees with 'pending'), gate_version (the gate "
+            "that produced it — the literal 'legacy-derived' means the verdict was inferred "
+            "from older columns by a migration, not produced by a gate run, so treat it as "
+            "un-regraded), and cohort_n (1 = graded against itself alone). Curated "
+            "strategies currently answer 'pending' here: their stored boolean is a "
+            "fail-closed placeholder, not a gate result — read archimedes_strategy for a "
+            "curated strategy's live verdict. Unpublished passports that are not yours "
+            "answer 404, never 403 (a 403 would confirm the id exists). Owner wallet "
+            "addresses are redacted for anyone but the owner."
         ),
     },
     {
