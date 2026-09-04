@@ -227,7 +227,7 @@ user moves.
 > *"As a first-time visitor, I want to understand in 30 seconds what this is and why
 > I might trust it, before I'm asked to connect anything."*
 
-**Surfaces:** product framing (Linus-for-q-fin tagline), the 5-step spine
+**Surfaces:** product framing, the 5-step spine
 visualization, the wedge (research-grounded + rigor-gated; generation is not
 anchored on-chain), the honest-framing statement (testnet posture, no-alpha-promise).
 Big CTA: **Generate a strategy** (no wallet required).

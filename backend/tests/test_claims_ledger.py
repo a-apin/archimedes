@@ -43,7 +43,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER = REPO_ROOT / "docs" / "claims-ledger.md"
-DOCS_INDEX = REPO_ROOT / "docs" / "README.md"
+DOCS_INDEX = REPO_ROOT / "docs" / "doc-index.md"
 
 # The statuses a row is allowed to carry. Adding one is a deliberate act — a new word is a
 # new promise to the reader about what the row means — so it goes here and in the ledger's
@@ -452,9 +452,9 @@ class TestLedgerClaimsMatchTheTree:
 
 class TestLedgerIsIndexed:
     def test_docs_index_links_the_ledger(self):
-        """`docs/README.md` says a doc not listed there does not exist. Hold it to that."""
+        """`docs/doc-index.md` says a doc not listed there does not exist. Hold it to that."""
         assert "claims-ledger.md" in DOCS_INDEX.read_text(encoding="utf-8"), (
-            "docs/README.md has no row for claims-ledger.md — add one in the same commit"
+            "docs/doc-index.md has no row for claims-ledger.md — add one in the same commit"
         )
 
     def test_no_index_row_is_two_rows_glued_together(self):
@@ -471,7 +471,7 @@ class TestLedgerIsIndexed:
             if line.lstrip().startswith("|") and "||" in line
         ]
         assert not glued, (
-            "docs/README.md has table rows with `||`, which renders as dropped columns: "
+            "docs/doc-index.md has table rows with `||`, which renders as dropped columns: "
             + "; ".join(glued)
             + ". Split them into separate rows, or write an empty cell as `| |`."
         )

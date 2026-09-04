@@ -143,7 +143,7 @@ jobs:
         # the index URL and the two torch packages (issue #1522), so CI installs
         # it directly instead of grepping the exclusions back out at runtime.
         run: |
-          pip install --quiet -r backend/requirements-base.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0" "fakeredis[lua]>=2.26.0"
+          pip install --quiet -r backend/requirements-base.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0" "fakeredis[lua]>=2.26.0" "pathspec>=0.12"
       - name: Test
         run: pytest -m "not integration" --tb=short -q
       - name: CLI tests
@@ -334,7 +334,7 @@ jobs:
       # Same torch/sentence-transformers skip as the unit-test job above
       # (CDN-independent) — requirements-base.txt is exactly that set (#1522).
       - run: |
-          pip install --quiet -r backend/requirements-base.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0"
+          pip install --quiet -r backend/requirements-base.txt "pytest>=8.3" "pytest-asyncio>=0.24" "pytest-cov>=5.0" "pathspec>=0.12"
       - run: pytest -m "not integration" --cov=archimedes --cov-fail-under=60 --tb=short -q
 
   supply-chain:
