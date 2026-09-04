@@ -193,6 +193,55 @@ export function sendChangeEmailConfirmation(mailer, { user, newEmail, url }) {
   })
 }
 
+// ── #1804: an address SES has told us is dead is refused, with a reason ─────
+//
+// `auth_users.emailBouncedAt` / `emailBounceKind` are written by exactly one
+// thing — `archimedes.scripts.ses_events` draining the SES bounce/complaint
+// feedback queue (infra/ses_events.tf). Nothing in this service ever writes
+// them (`input: false` on both additional fields below), it only reads them.
+//
+// WHY A TYPED CODE AND NOT JUST A MESSAGE. Before this, an address whose
+// mailbox does not exist was answered `USER_ALREADY_EXISTS` at signup — true,
+// and useless: it tells the person to sign in to an account they can never
+// verify, because every verification mail SES accepts for that address is
+// dropped inside AWS. The two states need different words, so they need
+// different codes; the UI keys off `error.code`, and a code is also the thing
+// a support conversation can quote.
+//
+// The kinds are distinguished for the same reason. A permanent bounce is a
+// mailbox that does not exist — "use a different address" is actionable. A
+// complaint is a real person who told their provider our mail is spam, and
+// telling them their address is broken would be a lie; the honest answer is
+// that we stopped sending.
+export const BOUNCE_REFUSALS = {
+  bounce: {
+    code: 'EMAIL_ADDRESS_BOUNCED',
+    message:
+      'Mail to this address bounced — the mailbox does not exist, so we cannot send a verification link to it. '
+      + 'Please use a different email address.',
+  },
+  complaint: {
+    code: 'EMAIL_ADDRESS_COMPLAINED',
+    message:
+      'This address reported our mail as spam, so we no longer send to it. '
+      + 'Please use a different email address, or contact support if this was a mistake.',
+  },
+}
+
+// Exported for direct unit testing, and so the "is this address refused"
+// question has exactly one answer in this file. Returns null when the address
+// is fine — which is every address SES has never complained about, including
+// every address that simply has not been verified yet.
+//
+// An unrecognised kind falls back to the bounce wording rather than to
+// "allowed": the timestamp is the fact, the kind is only how we phrase it, and
+// a future SES event type the consumer learns to record must not silently turn
+// the refusal off here.
+export function bounceRefusal(user) {
+  if (!user?.emailBouncedAt) return null
+  return BOUNCE_REFUSALS[user.emailBounceKind] ?? BOUNCE_REFUSALS.bounce
+}
+
 export function createAuth({ database, env = process.env, mailer = createMailer(env) } = {}) {
   const production = env.NODE_ENV === 'production'
   const baseURL = env.BETTER_AUTH_URL || 'http://localhost:5173'
@@ -370,6 +419,27 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     // decorative.
     user: {
       modelName: 'auth_users',
+      // #1804. Declared here so Better Auth's own schema and the Alembic
+      // migration (backend/migrations/versions/e6b2a19c4d70_…) produce the
+      // SAME two columns — `emailBouncedAt` / `emailBounceKind`, camelCase for
+      // the same reason `emailVerified` is. Better Auth derives its column
+      // names from these keys, so renaming one half in isolation makes this
+      // service query a column that does not exist.
+      //
+      // `input: false` is the security-relevant half: without it Better Auth
+      // adds both fields to the /sign-up/email body schema and writes whatever
+      // the request sends, so a caller could stamp — or, far worse, could keep
+      // its own address UNstamped through a later update. Nothing in this
+      // service writes them; `archimedes.scripts.ses_events` does, from what
+      // AWS reported. Pinned by auth/test/bounced-address.test.js's "a signup
+      // body cannot set its own bounce state".
+      //
+      // `required: false` keeps both columns nullable, which is what NULL has
+      // to mean here: "SES has never told us anything bad about this address".
+      additionalFields: {
+        emailBouncedAt: { type: 'date', required: false, input: false },
+        emailBounceKind: { type: 'string', required: false, input: false },
+      },
       changeEmail: {
         enabled: true,
         // Two-step for an already-verified address: confirm from the old
@@ -597,6 +667,81 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     // (a lying 200) the moment the ownership comparison is removed.
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
+        // ── #1804: refuse an address SES has reported dead ───────────────
+        //
+        // WHAT THIS NARROWS, STATED PLAINLY. Because `autoSignIn: false` is
+        // set above, better-auth answers a signup for an ALREADY-REGISTERED
+        // address with a generic 200 carrying a SYNTHETIC user object and no
+        // token (sign-up.mjs:162-206 `shouldReturnGenericDuplicateResponse`;
+        // it even hashes the password first to equalise timing). Nothing is
+        // written and nothing is disclosed — deliberate anti-enumeration, and
+        // verified against the installed better-auth@1.6.25, not assumed.
+        //
+        // A refusal here gives that up for one subset: an address that both
+        // has an account AND has had a permanent bounce or complaint recorded
+        // against it now answers 422 where an unregistered address answers
+        // 200. That is an account-existence disclosure, and it is a
+        // deliberate trade rather than an oversight:
+        //
+        //   * the disclosed set is exactly the addresses that CANNOT RECEIVE
+        //     MAIL. Knowing an account exists there buys an attacker nothing
+        //     they can act on — no reset link, no verification link, and no
+        //     sign-in help can ever be delivered to it;
+        //   * the alternative is the defect #1804 is about. Someone who typos
+        //     their address gets the generic 200, never receives the mail,
+        //     retries the same typo, and gets the same cheerful 200 forever,
+        //     with `emailVerified` (and so the free tier) stuck false and no
+        //     way to find out why. The refusal is the only moment anything in
+        //     the product can tell them the address is dead;
+        //   * timing is unaffected — the lookup below runs for EVERY signup,
+        //     not only for refused ones.
+        //
+        // The resend path below makes the opposite call, for a reason that is
+        // spelled out there: nothing about it forces this one.
+        if (ctx.path === '/sign-up/email') {
+          const email = ctx.body?.email
+          // A missing/ill-typed email is the endpoint's own zod schema to
+          // reject; answering "your address bounced" to a malformed body
+          // would be a claim about an address that was never supplied.
+          if (typeof email !== 'string' || email === '') return
+          const found = await ctx.context.internalAdapter.findUserByEmail(email)
+          const refusal = bounceRefusal(found?.user)
+          if (refusal) throw APIError.from('UNPROCESSABLE_ENTITY', refusal)
+          return
+        }
+
+        // The resend is refused ONLY for the signed-in caller's own address,
+        // and that restriction is deliberate rather than timidity.
+        // /send-verification-email is reachable with NO session at all
+        // (better-auth/dist/api/routes/email-verification.mjs:95-117) and
+        // answers 200 for an unknown address, an already-verified address and
+        // a genuine send alike — that uniformity is what stops it being an
+        // account-existence oracle, and better-auth backs it with a 500ms
+        // constant-time floor (see the sendVerificationEmail comment above,
+        // and the "the anonymous resend path does not leak..." test in
+        // auth/test/email-flows.test.js). A 4xx here for anonymous callers
+        // would hand any stranger "this address is registered AND its mail
+        // bounces" for free — strictly more than they knew before, and a
+        // worse trade than the one this issue is about.
+        //
+        // A caller holding a session for the address already knows both facts,
+        // so telling them costs nothing and is the whole point: AccountSettings
+        // and the Generate page's resend control both call this while signed
+        // in, which is where a locked-out user actually is. The anonymous
+        // resend on the sign-in page keeps today's behaviour; #1790's
+        // session-required GET /api/auth/verification-status is the honest
+        // reporter for the rest.
+        if (ctx.path === '/send-verification-email') {
+          const email = ctx.body?.email
+          if (typeof email !== 'string' || email === '') return
+          const session = await getSessionFromCtx(ctx)
+          const caller = session?.user
+          if (!caller || String(caller.email ?? '').toLowerCase() !== email.toLowerCase()) return
+          const refusal = bounceRefusal(caller)
+          if (refusal) throw APIError.from('UNPROCESSABLE_ENTITY', refusal)
+          return
+        }
+
         if (ctx.path === '/link-social') {
           const session = await getSessionFromCtx(ctx)
           // No session at all: fall through to the endpoint's own

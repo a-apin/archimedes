@@ -201,3 +201,20 @@ output "kb_runner_log_group_name" {
   description = "CloudWatch log group the kb-runner scheduled task ships to — `aws logs tail <this> --since 10m` to verify a run."
   value       = aws_cloudwatch_log_group.kb_runner.name
 }
+
+# ── SES bounce/complaint feedback (#1804, infra/ses_events.tf) ──────────────
+
+output "ses_configuration_set_name" {
+  description = "SES configuration set every outgoing message names (auth container's SES_CONFIGURATION_SET) — without it SES publishes no bounce or complaint event at all. `aws sesv2 get-configuration-set-event-destinations --configuration-set-name <this>` to confirm the destination is ENABLED."
+  value       = aws_sesv2_configuration_set.mail.configuration_set_name
+}
+
+output "ses_events_queue_url" {
+  description = "SQS queue URL the SES bounce/complaint events land in (via SNS). The value the backend container receives as SES_EVENTS_QUEUE_URL, and the argument `python -m archimedes.scripts.ses_events drain --queue-url <this>` takes when run from an operator shell."
+  value       = aws_sqs_queue.ses_events.id
+}
+
+output "ses_events_dlq_url" {
+  description = "Dead-letter queue for SES events the consumer could not parse or write five times running — a non-empty ApproximateNumberOfMessages here means the parser is behind an AWS schema change, not that mail is fine."
+  value       = aws_sqs_queue.ses_events_dlq.id
+}
