@@ -556,9 +556,14 @@ class TestResolvePaperHashesAgainstTheCorpus:
                     status="active",
                 )
             )
-            # Deliberately NOT flushed: pending ORM state is the harder case —
-            # a savepoint that opened before the caller's own work would roll
-            # it back along with the failed query.
+            # Deliberately NOT flushed. Note what actually happens to it:
+            # ``begin_nested()`` flushes pending ORM state BEFORE it opens the
+            # savepoint, so this row is written by the lookup's own flush and
+            # is never inside the savepoint at all — which is why the failed
+            # corpus query below cannot take it with it. (The flush being
+            # outside the savepoint is also why that call sits outside
+            # ``resolve_paper_hashes``' ``try``; see
+            # ``test_a_caller_write_that_fails_is_not_laundered_into_a_corpus_outage``.)
             savepoints.clear()  # the caller's own work is not what is being measured
 
             with caplog.at_level("WARNING"):
@@ -583,11 +588,97 @@ class TestResolvePaperHashesAgainstTheCorpus:
 
         with get_session() as session:
             assert session.get(PaperDeployment, "dep-1818-p2") is not None, (
-                "the savepoint rolled back the caller's earlier work, not just the corpus query"
+                "the caller's earlier work did not survive the corpus outage — the savepoint's flush "
+                "wrote it before the savepoint opened, so only the corpus query should have rolled back"
             )
             assert session.get(PaperDeployment, "dep-1818-p2-after") is not None, (
                 "the caller could not write after the corpus outage — the transaction was aborted"
             )
+
+    def test_a_caller_write_that_fails_is_not_laundered_into_a_corpus_outage(self, caplog):
+        """The savepoint's own FLUSH must not be swallowed as an outage.
+
+        ``session.begin_nested()`` is not free of the caller's state.
+        ``SessionTransaction.__init__`` calls ``_take_snapshot``, which runs
+        ``self.session.flush()`` for a BEGIN_NESTED origin BEFORE the savepoint
+        is installed (sqlalchemy 2.0 ``orm/session.py``), and ``SessionLocal``
+        is ``autoflush=False`` — so the caller's pending ORM rows are written
+        to the database by this function's own savepoint, outside it.
+
+        With ``begin_nested()`` inside the ``try``, an ``IntegrityError`` from
+        THAT flush — a ``DBAPIError`` like any other — was caught by the
+        corpus-outage handler. Two lies at once: the trace was stored and
+        HASHED with ``consulted_paper_hashes=[]`` while the corpus was
+        perfectly healthy, and on PostgreSQL the caller's transaction was
+        already aborted with no savepoint to roll back to — precisely the
+        wedge (``PendingRollbackError`` for every remaining deployment, a
+        raising ``commit()``) the savepoint exists to prevent.
+
+        Reachable in the cycle: ``_publish_decision_traces`` does
+        ``session.add(PaperDecisionTrace(...))`` in its loop and can then raise
+        ``PaperTraceCoverageError``; ``advance_all`` catches it per deployment
+        and moves on WITHOUT a rollback, so the next deployment's
+        ``resolve_paper_hashes`` is the thing that flushes the previous one's
+        pending rows.
+
+        The corpus here is HEALTHY. Only the caller's own row is bad, so the
+        error must reach the caller — never a WARNING that blames the corpus.
+        """
+        from archimedes.db import get_session
+        from archimedes.models.paper_store import PaperDailyReturn, PaperDeployment
+        from sqlalchemy.exc import IntegrityError
+
+        self._seed(arxiv_id="0706.1497", title="Faber", content_hash="c" * 64)
+        with get_session() as session:
+            session.add(
+                PaperDeployment(
+                    id="dep-flush",
+                    strategy_id="aa11bb22cc33dd44",
+                    spec_json="{}",
+                    deployed_at=date(2026, 9, 3),
+                    status="active",
+                )
+            )
+            session.flush()
+            session.add(PaperDailyReturn(deployment_id="dep-flush", date=date(2026, 1, 2), daily_return=0.01))
+            session.commit()
+
+        with get_session() as session:
+            # The caller's pending row duplicates (deployment_id, date) — it
+            # cannot flush. Nothing is wrong with the corpus.
+            session.add(PaperDailyReturn(deployment_id="dep-flush", date=date(2026, 1, 2), daily_return=0.02))
+
+            with caplog.at_level("WARNING"), pytest.raises(IntegrityError):
+                resolve_paper_hashes(session, ["0706.1497"])
+
+            assert not [r for r in caplog.records if "content-hash lookup failed" in r.getMessage()], (
+                "a CALLER-side write failure was reported as a corpus outage — the trace would be hashed "
+                "with consulted_paper_hashes=[] while the corpus was healthy, and on PostgreSQL the "
+                "caller's transaction is aborted with no savepoint to roll back to (#1818 P2)"
+            )
+
+    def test_a_healthy_corpus_still_resolves_with_a_pending_caller_row(self):
+        """The same shape with a row that flushes CLEANLY still resolves.
+
+        Guards the fix from over-correcting into "any pending state breaks the
+        lookup": the flush is the caller's, so when it succeeds the corpus
+        query must run normally on top of it.
+        """
+        from archimedes.db import get_session
+        from archimedes.models.paper_store import PaperDeployment
+
+        self._seed(arxiv_id="0706.1497", title="Faber", content_hash="c" * 64)
+        with get_session() as session:
+            session.add(
+                PaperDeployment(
+                    id="dep-flush-ok",
+                    strategy_id="aa11bb22cc33dd44",
+                    spec_json="{}",
+                    deployed_at=date(2026, 9, 3),
+                    status="active",
+                )
+            )
+            assert resolve_paper_hashes(session, ["0706.1497"]) == ["0706.1497:" + "c" * 64]
 
     def test_the_savepoint_is_released_not_leaked_on_the_healthy_path(self):
         """The other side of the same mechanism: a lookup that SUCCEEDS must
