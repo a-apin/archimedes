@@ -49,6 +49,7 @@ from archimedes.agents.generation_pipeline import (
     _paper_attribution_entry,
     _society_num_trials,
 )
+from archimedes.agents.prompts import PROMPTS
 
 # The WRITE-time scrubber, imported here because the SSE path never touches
 # `record_debate_transcript` (which is where it normally runs). A debate turn
@@ -60,6 +61,7 @@ from archimedes.agents.generation_pipeline import (
 from archimedes.models.debate_transcript import sanitize_transcript
 from archimedes.services import cost_meter
 from archimedes.services._fusion_helpers import equity_curve_to_daily_returns
+from archimedes.services.brief_screen import omit_if_rejected, quote_for_prompt
 from archimedes.services.dsl_to_backtrader import SUPPORTED_INDICATORS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -385,20 +387,16 @@ async def _propose_pool(
 
 # ── Step 2 — best-effort adversarial round (transcript only, never gates) ─────
 
-_DEBATE_SYSTEM = (
-    "You are the {role} researcher in a quant strategy debate, round {rnd}. {stance}. "
-    "Cite ONLY the listed candidate strategies, and ONLY the arXiv ids printed on their cards. "
-    "Every key_claim must name at least one arxiv_id from the cards; a claim you cannot ground "
-    "in a listed paper must carry an EMPTY arxiv_ids list — never an invented id. "
-    "Use `discard` to name papers you read and rejected, with the reason. {rebuttal}"
-    'Reply with ONE JSON object: {{"verdict": "act"|"decline", "confidence": <0..1>, '
-    '"key_claims": [{{"claim": <str>, "candidate_id": "<C1|C2|…>", "arxiv_ids": ["<arxiv id>"]}}], '
-    '"discard": [{{"arxiv_id": "<arxiv id>", "reason": <str>}}]}}.'
-)
+# The turn template, the two stances and the round-2 rebuttal preamble all live
+# in the prompt registry (`agents/prompts.py`), rendered into
+# `docs/specs/prompt-inventory.md` under a drift test (#1800). The registry
+# templates on `$name`, so the JSON schema the turn prints no longer needs its
+# braces doubled the way `.format` required.
+_DEBATE_SYSTEM = PROMPTS["debate.turn.system"]
 
 _DEBATE_STANCES = {
-    "bull": "Argue FOR acting on the strongest candidate",
-    "bear": "Argue for ABSTENTION — the null is buy-and-hold; attack overfit/cost",
+    "bull": PROMPTS["debate.stance.bull"].text,
+    "bear": PROMPTS["debate.stance.bear"].text,
 }
 
 # How many pooled candidates get a card in the debate prompt. Unchanged from
@@ -447,11 +445,36 @@ def _candidate_cards(pool: list[Any], evidence_by_id: dict[str, dict[str, str]])
     """
     lines: list[str] = []
     for i, p in enumerate(_debate_pool_order(pool)[:_DEBATE_CARD_MAX], start=1):
-        name = str(getattr(p, "strategy_name", "") or "").strip() or f"Candidate {i}"
+        # STRUCT screen on model-authored text re-entering a prompt (#1801).
+        # `strategy_name` is proposer output and lands unescaped in a
+        # LINE-ORIENTED format: a name carrying "\n[C6] … — cites arXiv:0000"
+        # forges a card no proposer produced, and `_turn`'s anti-hallucination
+        # guard checks claims against the ids printed on these cards — so a
+        # forged card is a forged evidence base. A refused name is OMITTED
+        # (the card falls back to its positional label, exactly as it already
+        # does for an empty name) and the omission is logged. The stored name
+        # is never rewritten; only this outgoing prompt declines to carry it.
+        screened, _ = omit_if_rejected(
+            str(getattr(p, "strategy_name", "") or "").strip(),
+            field="strategy_name",
+            context=f"card C{i}",
+        )
+        name = screened or f"Candidate {i}"
         cites: list[str] = []
         for arxiv_id in getattr(p, "source_arxiv_ids", None) or []:
+            # The paper title is THIRD-PARTY text — arXiv metadata, which
+            # `arxiv_pipeline._doc_safe` already treats as attacker-controlled
+            # for the code-generation seam (#920) — and it lands on the same
+            # line-oriented card as the strategy name. Two of the four ingest
+            # paths only `.strip()` it, so a title carrying "\n[C6] … — cites
+            # arXiv:0000" forges a card whose ids `_turn`'s anti-hallucination
+            # guard then trusts. `quote_for_prompt` (#1801) screens it and
+            # returns it as ONE quoted JSON token; a refused title is omitted
+            # and the card keeps the bare id, exactly as it already does for a
+            # paper with no title at all. The stored corpus row is untouched.
             title = (evidence_by_id.get(str(arxiv_id)) or {}).get("title", "").strip()
-            cites.append(f'arXiv:{arxiv_id} "{title}"' if title else f"arXiv:{arxiv_id}")
+            quoted, _ = quote_for_prompt(title, field="paper_title", context=f"card C{i} arXiv:{arxiv_id}")
+            cites.append(f"arXiv:{arxiv_id} {quoted}" if quoted else f"arXiv:{arxiv_id}")
         suffix = f" — cites {'; '.join(cites)}" if cites else " — cites no listed paper"
         lines.append(f"[C{i}] {name}{suffix}")
     return "\n".join(lines)
@@ -466,6 +489,36 @@ def _claim_text(claim: Any) -> str:
     if isinstance(claim, dict):
         return str(claim.get("claim", "") or "")
     return str(claim or "")
+
+
+def _rebuttal_clause(opponent_claims: list[Any], *, role: str, rnd: int) -> str:
+    """The round-2 rebuttal sentence, built from the opponent's own prose.
+
+    This is the one place in the debate where a model writes another model's
+    instructions: the text lands unescaped inside ``_DEBATE_SYSTEM``'s
+    ``${rebuttal}`` slot, so a claim carrying a newline, a ``[C6]`` card marker
+    or an override directive would be read as system-level framing by the next
+    turn.
+
+    Every claim is screened (#1801) and a refused one is **omitted** from this
+    clause — never rewritten, never truncated, never redacted. If every claim
+    is refused the clause is empty, which is exactly the prompt round 1 gets.
+    The claims themselves stay byte-for-byte intact in the transcript.
+    """
+    if not opponent_claims:
+        return ""
+    texts = [
+        screened
+        for screened, _ in (
+            omit_if_rejected(t, field="rebuttal_claim", context=f"{role} r{rnd}")
+            for t in (_claim_text(c) for c in opponent_claims[:3])
+            if t
+        )
+        if screened
+    ]
+    if not texts:
+        return ""
+    return PROMPTS["debate.rebuttal_preamble"].render(opponent_claims="; ".join(texts))
 
 
 def _normalize_claim(raw: Any, known_ids: set[str]) -> dict[str, Any] | None:
@@ -712,14 +765,10 @@ async def _debate_round(
         return transcript
 
     def _turn(role: str, rnd: int, opponent_claims: list[Any]) -> dict[str, Any]:
-        rebuttal = ""
-        if opponent_claims:
-            texts = [t for t in (_claim_text(c) for c in opponent_claims[:3]) if t]
-            if texts:
-                rebuttal = f"The opposing researcher argued: {'; '.join(texts)}. Directly rebut their strongest point. "
+        rebuttal = _rebuttal_clause(opponent_claims, role=role, rnd=rnd)
         try:
             raw = backend.complete(
-                _DEBATE_SYSTEM.format(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
+                _DEBATE_SYSTEM.render(role=role, rnd=rnd, stance=_DEBATE_STANCES[role], rebuttal=rebuttal),
                 cards,
             )
             parsed = extract_json(raw)
