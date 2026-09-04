@@ -62,7 +62,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`asset-universe.md`](asset-universe.md) | current | Dan Browne | — | Tradable universe and how it is assembled. |
 | [`brief-guidelines.md`](brief-guidelines.md) | current | Dan Browne | 2026-09-03 | The RULES page for the Generate brief (#1801) — the 600-character bound, the reason-code vocabulary the deterministic screen returns (`shape.*`, `lang.*`, `inject.*`, `struct.*`, `pii.*`), what is explicitly still allowed and why the near-misses matter, how model text re-entering a prompt is omitted rather than rewritten and how third-party paper titles are quoted as data, and what a `BRIEF_UNVALIDATED` refusal means. Companion to `writing-a-brief.md`, which is the tutorial; this one is what trips. |
 | [`writing-a-brief.md`](writing-a-brief.md) | current | Dan Browne | 2026-08-31 | The long-form prompting guide for the Generate page — the three parts of a brief that works, what the pipeline does with each, the five failure modes, and worked upgrades. Moved out of `Generate.jsx` by #1642, which leaves a one-line hint plus a link to this page. Also documents the Surprise Me bank (`ui/src/data/surpriseBriefs.js`) and the honest limits of what its machine checks prove. |
-| [`demo-script-lepton.md`](demo-script-lepton.md) | current | Dan Browne | 2026-07-06 | Current demo video script. |
+| [`archive/demo-script-lepton.md`](archive/demo-script-lepton.md) | archived | Dan Browne | 2026-09-01 | Lepton-era demo script (June 2026); carries retired branding, kept as history. |
 
 ## Quant and rigor — the math layer
 
