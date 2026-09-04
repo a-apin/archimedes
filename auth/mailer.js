@@ -37,6 +37,20 @@ import { nullDeliveryLog } from './delivery-log.js'
 // and same reason as suppression.js's.
 export function createMailer(env = process.env, { deliveryLog = nullDeliveryLog(), loadClient } = {}) {
   const sender = env.EMAIL_SENDER || 'no-reply@archimedes-arc.com'
+  // #1804. A send that does NOT name a configuration set produces no bounce
+  // event, no complaint event, nothing — SES's per-message feedback is
+  // published by the configuration set, not by the identity, so an unset
+  // ConfigurationSetName is exactly the deaf state this repo was in.
+  //
+  // Blank/unset is still honoured rather than defaulted to a literal, and the
+  // property is omitted (not sent as an empty string, which SES rejects):
+  // `infra/ses_events.tf` is what creates the set and `infra/ecs.tf` is what
+  // sets this variable, both in the same terraform apply, so before that apply
+  // the only truthful thing to do is send the way we always have. The name
+  // itself is never hardcoded here for the same reason — the terraform
+  // resource is its single source, and backend/tests/test_ses_event_wiring.py
+  // fails if the two files stop agreeing.
+  const configurationSet = (env.SES_CONFIGURATION_SET || '').trim()
 
   // Never throws, never rejects — delivery-log.js's record() already swallows
   // its own failures, and this wrapper keeps a mis-shaped custom log from
@@ -64,6 +78,7 @@ export function createMailer(env = process.env, { deliveryLog = nullDeliveryLog(
     return {
       kind: 'ses',
       sender,
+      configurationSet,
       async send({ to, subject, text, kind = 'unknown', userId = null }) {
         const { ses, client } = await sesClient()
         let messageId = null
@@ -72,6 +87,11 @@ export function createMailer(env = process.env, { deliveryLog = nullDeliveryLog(
             FromEmailAddress: sender,
             Destination: { ToAddresses: [to] },
             Content: { Simple: { Subject: { Data: subject }, Body: { Text: { Data: text } } } },
+            // #1804: the ONLY thing that makes SES publish a bounce or
+            // complaint event for this message. Omitted entirely when blank —
+            // SES rejects an empty ConfigurationSetName — so the send keeps
+            // working before the terraform apply that sets the variable.
+            ...(configurationSet ? { ConfigurationSetName: configurationSet } : {}),
           }))
           messageId = output?.MessageId ?? null
         } catch (error) {
@@ -98,6 +118,7 @@ export function createMailer(env = process.env, { deliveryLog = nullDeliveryLog(
   return {
     kind: 'console',
     sender,
+    configurationSet,
     async send({ to, subject, text, kind = 'unknown', userId = null }) {
       console.log(`[mailer:console] from=${sender} to=${to} subject=${subject}\n${text}`)
       // Recorded in console mode too, so local dev exercises the same

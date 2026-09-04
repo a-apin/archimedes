@@ -391,6 +391,73 @@ test('a suppression lookup that FAILED never reads as suppressed and never reads
   assert.equal(status.suppression.suppressed, false)
 })
 
+// ── #1804: the PUSHED bounce outranks everything the pull half can say ────
+
+test('a bounce SES pushed to us is reported as BOUNCED, above suppressed', async () => {
+  // Both facts present. `suppressed` would also be true here, and the answer
+  // must still be `bounced`: it is the same conclusion from the stronger
+  // source, and it is the one the signup/resend refusal in auth.js keys off,
+  // so anything else would contradict the 422 this account gets from the
+  // button beside the panel.
+  const status = await resolveVerificationStatus({
+    user: {
+      id: 'u1',
+      email: 'gone@example.com',
+      emailVerified: false,
+      emailBouncedAt: new Date('2026-09-02T10:00:00Z'),
+      emailBounceKind: 'bounce',
+    },
+    deliveryLog: history({ status: 'sent', messageId: 'ses-1', error: null, createdAt: ago(300) }),
+    suppression: { async check() { return { checked: true, suppressed: true, reason: 'BOUNCE', since: null } } },
+    now: NOW,
+  })
+  assert.equal(status.state, VERIFICATION_STATES.BOUNCED)
+  assert.equal(status.bounce.at, '2026-09-02T10:00:00.000Z')
+  assert.equal(status.bounce.kind, 'bounce')
+  assert.equal(status.checkSpam, false)
+})
+
+test('the pushed bounce answers even when the suppression lookup could not run', async () => {
+  // The pull half's whole discipline is that a failed lookup guesses nothing
+  // (`checked: false`), which before #1804 meant an address SES was binning
+  // read as an ordinary `sent`. This is the case the push half exists for.
+  const status = await resolveVerificationStatus({
+    user: {
+      id: 'u1',
+      email: 'gone@example.com',
+      emailVerified: false,
+      emailBouncedAt: new Date('2026-09-02T10:00:00Z'),
+      emailBounceKind: 'complaint',
+    },
+    deliveryLog: history({ status: 'sent', messageId: 'ses-1', error: null, createdAt: ago(300) }),
+    suppression: { async check() { return { checked: false, suppressed: false, reason: null, since: null, error: 'AccessDeniedException' } } },
+    now: NOW,
+  })
+  assert.equal(status.state, VERIFICATION_STATES.BOUNCED)
+  assert.equal(status.bounce.kind, 'complaint')
+  assert.equal(status.suppression.checked, false)
+})
+
+test('an address with no stamp is untouched by #1804 — NULL is not a bounce', async () => {
+  // The stamp is nullable and every row that exists today carries NULL, so
+  // "no stamp" must remain exactly the behaviour #1790 shipped. Both the
+  // never-stamped and the explicitly-cleared (`ses_events clear --apply`)
+  // shapes are covered.
+  for (const user of [
+    { id: 'u1', email: 'dan@example.com', emailVerified: false },
+    { id: 'u1', email: 'dan@example.com', emailVerified: false, emailBouncedAt: null, emailBounceKind: null },
+  ]) {
+    const status = await resolveVerificationStatus({
+      user,
+      deliveryLog: history({ status: 'sent', messageId: 'ses-1', error: null, createdAt: ago(300) }),
+      suppression: cleanSuppression,
+      now: NOW,
+    })
+    assert.equal(status.state, VERIFICATION_STATES.SENT)
+    assert.deepEqual(status.bounce, { at: null, kind: null })
+  }
+})
+
 test('FAILED surfaces the last send\'s error name instead of a green "sent"', async () => {
   const status = await resolveVerificationStatus({
     user: { id: 'u1', email: 'dan@example.com', emailVerified: false },
