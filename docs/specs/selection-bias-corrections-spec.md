@@ -32,7 +32,7 @@ Three corrections, each populating specific fields on
 [`backend/archimedes/models/backtest.py`](../../backend/archimedes/models/backtest.py)
 `BacktestResult`:
 
-1. **Deflated Sharpe Ratio (DSR)** — excess Sharpe tested at 90% one-sided
+1. **Deflated Sharpe Ratio (DSR)** — excess Sharpe tested at 95% one-sided
    confidence under standard errors robust to non-normality and
    autocorrelation, deflated by the expected best-of-`N` **only where a
    candidate pool exists** (Bailey & López de Prado 2014). On the curated
@@ -418,14 +418,15 @@ The critical distinction: only some checks are risk-tolerance knobs.
 
 | Level | Label | DSR p ≥ | PBO < | OOS/IS ≥ |
 | ----- | ----------- | ------- | ----- | -------- |
-| 1 | Conservative | 0.90 | 0.50 | 0.50 |
+| 1 | Conservative | 0.95 | 0.50 | 0.50 |
 | 2 | Balanced | 0.80 | 0.55 | 0.45 |
 | 3 | Moderate | 0.70 | 0.60 | 0.40 |
 | 4 | Aggressive | 0.60 | 0.65 | 0.35 |
 | 5 | Speculative | 0.50 | 0.70 | 0.30 |
 
-> The level-1 DSR bar is **0.90** (recalibrated from the historical 0.95 on
-> 2026-07-05, a deliberate team decision). Thresholds relax monotonically with
+> The level-1 DSR bar is **0.95** — `rigor_profiles.DSR_P_BADGE_MIN`, the one place the
+> number is written down (#1794, owner call 2026-09-03; PR #901's lower bar is retired).
+> Thresholds relax monotonically with
 > level, so "passes at level L" is monotonic in L and a well-defined
 > `min_passing_level` exists (`RigorGateResult.min_passing_level`).
 

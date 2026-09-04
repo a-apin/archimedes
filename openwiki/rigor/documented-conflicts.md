@@ -28,6 +28,16 @@ generated: { by: "claude-code", at: "2026-08-31T05:55:43.566Z" }
 
 # Conflicts inside the quant docs
 
+> **STALE ON ONE NUMBER — regenerate.** This page was generated 2026-08-31 and is the
+> *evidence record* of what that run found, so it deliberately reproduces the strings the
+> quant-docs guards forbid. On 2026-09-03, [#1794](https://github.com/aprin-labs/archimedes/issues/1794)
+> retired the lower DSR bar: the badge bar is **0.95**, defined once as `DSR_P_BADGE_MIN` in
+> `backend/archimedes/services/rigor_profiles.py`. Every `0.90` below is the retired bar,
+> and conflicts 1 and 3 — both of which turn on which bar is live — were resolved by that
+> call. The body is left exactly as generated, so the `generated:` provenance above stays
+> true and the record of what the run saw is not rewritten after the fact. The next openwiki
+> run supersedes this page.
+
 > ## ⚠ RESOLVED 2026-08-31 — hand-annotated, not regenerated
 >
 > *This block is a human edit to a generated page, added by

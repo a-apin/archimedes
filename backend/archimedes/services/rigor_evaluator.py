@@ -549,11 +549,12 @@ def compute_board_level_fdr(
         fdr_level: Target board-level FDR (α). Default ``DEFAULT_BOARD_FDR_LEVEL``
             (0.05), matching ``benjamini_hochberg_fdr``'s own default and the
             conventional BH significance level. NOT derived from the DSR
-            badge's ``dsr_p_min`` (0.90 at strictest level, PR #901 — complement
-            0.10, not 0.05): the two are deliberately different axes (per-
-            strategy admission bar vs. board-level multiple-testing rate) and
-            the board-level α is intentionally stricter than the badge's
-            implied 0.10, not derived from it.
+            badge's ``dsr_p_min`` (``rigor_profiles.DSR_P_BADGE_MIN``): the two
+            are deliberately different axes — a per-strategy admission bar vs. a
+            board-level multiple-testing rate. Since #1794 the badge's implied
+            one-sided α and this BH level happen to coincide numerically; that
+            is a coincidence, not a derivation, and moving one must not move the
+            other.
 
     Returns:
         ``{strategy_id: {"board_fdr_significant": bool, "board_fdr_adjusted_p":

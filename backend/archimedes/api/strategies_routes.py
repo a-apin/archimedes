@@ -120,8 +120,9 @@ def _to_strategy_response(
     honest "not run" — rather than falling back to ``s.<field>``/``bt.<field>``
     (#1187: those columns trace back to a migrated test-fixture snapshot
     (``backend/tests/fixtures/backtest_fixtures_snapshot.json``, PR #863) that
-    predates the current DSR convention (raw vs. excess returns) and gate
-    threshold (#901, 0.95 → 0.90) and cannot be reproduced by any single code
+    predates the current DSR convention (raw vs. excess returns) and the gate
+    threshold (moved by #901, and again by #1794 — the bar now lives in exactly
+    one place, ``rigor_profiles.DSR_P_BADGE_MIN``) and cannot be reproduced by any single code
     version — presenting it as a measured number next to a ``pending`` badge is a
     claim-integrity defect, not a display nicety). When ``verdict is None``
     (single-strategy fetch) ``rigor_result`` is also computed on demand here.
