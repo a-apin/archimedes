@@ -2405,7 +2405,7 @@ if __name__ == "__main__":
 
     # Root-logger config lives here for the same reason: an importable module
     # must not reconfigure its importer's root logger, and this one is imported
-    # (by ~16 test modules today, and by anything that reaches for
+    # (by 7 test modules today, and by anything that reaches for
     # StrategyRunner — dev.sh's import check does). It ran at import time until
     # #1719. Nothing in the API process imports this module: the marketplace
     # adapter calls `execution.core.compute_trades` directly, so this is
