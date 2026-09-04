@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiGet, apiPost } from '../api'
+import GateVerdictChip from './GateVerdictChip'
 import {
   DEPLOY_AT_WILL_NOTE,
   FORWARD_EVIDENCE_NOTE,
   MARK_BASIS_DISCLOSURE,
   driftTooltip,
   formatTotalReturn,
-  gateVerdict,
-  gateVerdictText,
   markAnnouncement,
   markBasisNote,
   markLabel,
@@ -128,39 +127,6 @@ function Sparkline({ series, intraday }) {
         />
       )}
     </svg>
-  )
-}
-
-// The verdict of record, rendered on the same card as the forward record
-// (#1764). Deploy is at will — a gate-FAILED strategy can be paper-traded, and
-// deliberately so — which is exactly why this chip has no conditional render
-// arm: `gateVerdict` returns a state for every payload, including one that
-// carried no verdict at all, so there is no input for which this component
-// draws nothing beside the percentage above it.
-//
-// Colour is decoration and never the message: the words say "Gate: failed", so
-// a colour-blind reader, a high-contrast theme and a screenshot all still carry
-// the verdict (1.4.1). `pass` is the only state that is ever green.
-function GateVerdictChip({ dep }) {
-  const v = gateVerdict(dep)
-  const color =
-    v.tone === 'positive' ? 'var(--accent)' : v.tone === 'negative' ? 'var(--negative)' : 'var(--text-3)'
-  return (
-    <div
-      className="caption"
-      title={v.title}
-      style={{
-        marginTop: 6,
-        color,
-        fontFamily: 'var(--mono, monospace)',
-        // The verdict is a statement, not a truncatable decoration: a long
-        // state ("Gate: unevaluable — flat returns") wraps rather than being
-        // clipped by the column's min-width.
-        whiteSpace: 'normal',
-      }}
-    >
-      {gateVerdictText(dep)}
-    </div>
   )
 }
 
@@ -465,8 +431,13 @@ export default function PaperTrading({ onNavigate }) {
                 {/* Unconditional. A performance number on this card is never
                     rendered without the gate verdict beside it — including when
                     the payload carried no verdict, which draws the explicit
-                    "verdict unavailable" state rather than nothing. */}
-                <GateVerdictChip dep={dep} />
+                    "verdict unavailable" state rather than nothing.
+
+                    `ariaHidden` because the figure's sr-only line above already
+                    ends with this exact verdict, from the same call: without it
+                    a screen reader hears the verdict twice per card. The chip
+                    is the SIGHTED half of one statement, not a second one. */}
+                <GateVerdictChip dep={dep} ariaHidden />
                 <LiveValue dep={dep} marks={marks[dep.deployment_id]} error={marksErrors[dep.deployment_id]} />
                 {dep.status === 'active' && (
                   <button

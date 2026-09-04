@@ -286,6 +286,16 @@ client should:
    absent (an old server behind a new client), say so — never fall back to
    silence beside the number, and never to a pass.
 
+**The same verdict is on the live-paper board.** `GET
+/api/leaderboard/live-paper` — the "Live paper trading" tab, whose rows are
+these same deployments ranked by realised forward return — carries
+`rigor_gate_status`, `graded_at` and `gate_version` on every row, read from the
+same passport row by the same code. It deliberately does NOT carry
+`passes_rigor_gate`: a bare boolean beside a forward return is the field a
+consumer would blend or sort on, and that board's whole point is that nothing
+backtest-era enters its ranking. See
+[`leaderboard-and-metrics.md`](leaderboard-and-metrics.md).
+
 **There is no `outside_window` field, and no deployment window.** #1764's
 acceptance asked for one; nothing in this product declares a deployment time
 window — not the DSL spec, not `strategy_store`, not `strategy_passports`, not
