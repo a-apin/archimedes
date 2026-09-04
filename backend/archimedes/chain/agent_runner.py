@@ -2403,11 +2403,16 @@ if __name__ == "__main__":
     # (Copilot #765)
     from dotenv import load_dotenv
 
-    # Root-logger config lives here for the same reason: this module is now
-    # imported by the API process (marketplace/service.py calls the canonical
-    # compute_trades, #1719), and an import must not reconfigure the importer's
-    # logging. Running as `python -m archimedes.chain.agent_runner` still lands
-    # here, so the standalone runner logs exactly as before.
+    # Root-logger config lives here for the same reason: an importable module
+    # must not reconfigure its importer's root logger, and this one is imported
+    # (by ~16 test modules today, and by anything that reaches for
+    # StrategyRunner — dev.sh's import check does). It ran at import time until
+    # #1719. Nothing in the API process imports this module: the marketplace
+    # adapter calls `execution.core.compute_trades` directly, so this is
+    # hygiene, not a fix for a live import chain. Both prod entrypoints are
+    # `python -m archimedes.chain.agent_runner` (docker-compose.yml,
+    # infra/runner-user-data.sh), which still lands here, so the standalone
+    # runner logs exactly as before.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
