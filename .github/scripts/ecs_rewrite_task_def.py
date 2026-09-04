@@ -23,7 +23,9 @@ This script is the path that actually ships. It:
    on the backend container, for the same reason (#1643 finding A5): prod was
    giving away three generations per account by accident of a code default,
    which is the only knob on the flip-list that hands out paid product.
-4. Points the backend container's ``healthCheck`` at ``/health/ready`` and
+4. Ensures the backend container carries the :data:`TIINGO_SECRET_NAME`
+   secret, resolving from ``/archimedes/prod/TIINGO_API_TOKEN``.
+5. Points the backend container's ``healthCheck`` at ``/health/ready`` and
    pins ``HEALTH_STALE_UNREADY_S`` beside it (#1818 P3), for the same reason:
    this job never terraform-applies, so a ``healthCheck`` that exists only in
    ``infra/ecs.tf`` is not live until somebody does, and a clone registered
@@ -32,7 +34,7 @@ This script is the path that actually ships. It:
    [container_definitions]`` makes terraform stop writing container settings at
    ALL and this script becomes not merely the first writer but the only one —
    a strengthening, not a premise.
-5. Drops the describe-only fields ``register-task-definition`` rejects.
+6. Drops the describe-only fields ``register-task-definition`` rejects.
 
 The pinned value is ``"true"`` as of 2026-09-01 (#1778, the #1632 lift): the
 paper-advance tick is ARMED. It never runs in the web interpreter —
@@ -109,6 +111,13 @@ FREE_GENERATIONS_NAME = "FREE_GENERATIONS_PER_ACCOUNT"
 FREE_GENERATIONS_VALUE = "3"
 
 BACKEND_CONTAINER = "backend"
+
+# #1798. The env var name is the canonical one the provider reads first
+# (``market_data_provider._TIINGO_TOKEN_ENV_VARS[0]``); the SSM path is the
+# owner-seeded SecureString. Both halves are pinned against their real
+# sources by backend/tests/test_ecs_backend_secrets.py.
+TIINGO_SECRET_NAME = "TIINGO_API_TOKEN"
+TIINGO_SSM_PATH = "parameter/archimedes/prod/TIINGO_API_TOKEN"
 
 # Same drop-list the previous inline jq used. These fields come back from
 # ``describe-task-definition`` and ``register-task-definition`` will not
@@ -232,6 +241,55 @@ def pin_backend_free_generations(environment: list[dict[str, Any]] | None) -> li
     return pinned
 
 
+def tiingo_secret_arn(task_def: dict[str, Any]) -> str:
+    """Build the Tiingo SSM ARN from the cloned definition's OWN ARN.
+
+    Region and account are read out of ``taskDefinitionArn``
+    (``arn:aws:ecs:<region>:<account>:task-definition/<family>:<rev>``), which
+    ``aws ecs describe-task-definition`` always returns, rather than taken from
+    a workflow env var or a CLI flag. Same reasoning as
+    :data:`PAPER_ADVANCE_VALUE`'s: a parameter someone can forget to pass has a
+    default, and that default silently decides production. Deriving it means
+    the ARN is correct in whatever account and region this deploy is actually
+    talking to, and wrong nowhere.
+
+    Raises :class:`RewriteError` rather than guessing. A guessed account id
+    produces a syntactically perfect ARN that fails at task-launch time with
+    ``ResourceInitializationError`` — the whole service down, not one feature
+    degraded.
+    """
+    arn = task_def.get("taskDefinitionArn")
+    if not isinstance(arn, str):
+        raise RewriteError(
+            "cloned task definition has no taskDefinitionArn — cannot derive the "
+            f"account/region for the {TIINGO_SECRET_NAME} secret ARN"
+        )
+    parts = arn.split(":")
+    # arn : partition : service : region : account : resource[ : qualifier ]
+    if len(parts) < 6 or parts[0] != "arn" or not parts[1] or not parts[3] or not parts[4]:
+        raise RewriteError(
+            f"taskDefinitionArn {arn!r} is not a parseable ARN — cannot derive the "
+            f"account/region for the {TIINGO_SECRET_NAME} secret ARN"
+        )
+    partition, region, account = parts[1], parts[3], parts[4]
+    return f"arn:{partition}:ssm:{region}:{account}:{TIINGO_SSM_PATH}"
+
+
+def ensure_backend_tiingo_secret(secrets: list[dict[str, Any]] | None, arn: str) -> list[dict[str, Any]]:
+    """Return a copy of ``secrets`` carrying exactly one Tiingo entry.
+
+    Idempotent in the same shape as :func:`pin_backend_paper_advance`: any
+    existing entry under the name is dropped and the canonical one appended, so
+    a clone that already has it (every deploy after the first, and every clone
+    of a terraform-registered revision) comes out unchanged in content and
+    carrying it exactly once, while a clone that predates the wiring gains it.
+    Other secrets are preserved in order.
+    """
+    kept = [entry for entry in (secrets or []) if entry.get("name") != TIINGO_SECRET_NAME]
+    kept.append({"name": TIINGO_SECRET_NAME, "valueFrom": arn})
+    return kept
+
+
 def rewrite_registered_task_definition(
     task_def: dict[str, Any],
     *,
@@ -239,7 +297,8 @@ def rewrite_registered_task_definition(
     nginx_image: str,
     auth_image: str,
 ) -> dict[str, Any]:
-    """Clone ``task_def``, retag images, pin the tick + allowance flags and the readiness check.
+    """Clone ``task_def``, retag application images, pin the tick + allowance
+    flags, the Tiingo secret and the readiness check.
 
     Raises :class:`RewriteError` if there is no backend container — a silent
     skip would register a revision whose ``PAPER_ADVANCE_ENABLED`` and whose
@@ -255,6 +314,8 @@ def rewrite_registered_task_definition(
     if not isinstance(containers, list) or not containers:
         raise RewriteError("task definition has no containerDefinitions")
 
+    secret_arn = tiingo_secret_arn(task_def)
+
     rewritten: list[dict[str, Any]] = []
     saw_backend = False
     for container in containers:
@@ -266,6 +327,7 @@ def rewrite_registered_task_definition(
             next_container["environment"] = pin_backend_health_stale_unready(
                 pin_backend_free_generations(pin_backend_paper_advance(container.get("environment")))
             )
+            next_container["secrets"] = ensure_backend_tiingo_secret(container.get("secrets"), secret_arn)
             next_container["healthCheck"] = rewrite_backend_health_check(container.get("healthCheck"))
         elif name == "nginx":
             next_container["image"] = nginx_image
@@ -277,6 +339,7 @@ def rewrite_registered_task_definition(
         raise RewriteError(
             f"no {BACKEND_CONTAINER!r} container in the cloned task definition — "
             "refusing to register a revision that cannot pin PAPER_ADVANCE_ENABLED "
+            f"or {TIINGO_SECRET_NAME}, "
             "or point the container health check at /health/ready"
         )
 
