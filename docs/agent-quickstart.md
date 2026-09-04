@@ -170,6 +170,13 @@ host you asked*:
 > honest case for many agents — the wallet path is the whole answer, and the free tier is
 > not something to wait for.
 >
+> **A run that delivers nothing does not cost a free generation.** The slot is claimed at
+> step 6 and handed back if the job then fails without persisting a strategy — the corpus
+> being too thin to fuse, a crash, a cancel. So a failed generation is not a spent one, and
+> step 5 is where you find out: re-read it after a failure rather than decrementing your own
+> counter. (A run that DID persist a strategy keeps its slot even if it errored afterwards —
+> the strategy is in your library.)
+>
 > This **reverses** the 2026-08-19 directive that earlier revisions of this page
 > documented ("a wallet is required before the first generation"); the verification
 > condition is the owner's 2026-08-31 amendment to it. Read your remaining allowance and
@@ -630,6 +637,91 @@ created and no capital was deployed, because paper trading is free and simulated
 
 ---
 
+## Grading returns you already have — `POST /api/rigor/verify`
+
+The whole path above generates a strategy. If you already have a returns series and only
+want the gate's verdict on it, this one route does that, free, at 5 requests a minute, with
+an account session or an `archim_` key. It is also the backend for the CLI's
+`archimedes verify RETURNS_CSV` and the `archimedes_rigor_verify` MCP tool. Full reference:
+[`api/strategies-and-rigor.md`](api/strategies-and-rigor.md).
+
+The body carries **at least 250 daily bars — one trading year, the minimum evaluation
+window** — so build it from your series rather than by hand:
+
+```bash
+python - <<'PY'
+import csv, json
+rows = []
+with open("returns.csv", newline="") as fh:          # two columns: date, daily_return
+    for date, value in csv.reader(fh):
+        try:
+            rows.append({"date": date, "daily_return": float(value)})
+        except ValueError:
+            continue                                  # the header row
+json.dump({"returns": rows, "trials": 12}, open("body.json", "w"))
+PY
+curl -s -X POST $BASE/api/rigor/verify \
+  -b /tmp/session.jar -H "Content-Type: application/json" --data-binary @body.json
+```
+
+Each row is `{"date": "2025-01-02", "daily_return": 0.01078}` — a strict `YYYY-MM-DD` date
+and a simple decimal return, oldest first. **Under 250 bars there is no verdict**: the
+answer is a refusal, `422 {"detail": {"reason": "window_too_short", "bars_received": 249,
+"bars_required": 250, …}}`, and never a `passes` field with a warning beside it. Do not
+retry a short series expecting a caveated answer — fetch more history. At 250 both runnable
+legs can actually run, which is the point of the floor.
+
+**The input contract is strict and the server repairs nothing.** Build the body to these
+rules or it is refused — there is no coercion, no sorting, no deduplication and no
+truncation anywhere in this path:
+
+| Rule | `detail.reason` on violation |
+|---|---|
+| `date` is a strict `YYYY-MM-DD` calendar date (not epoch seconds, not `YYYYMMDD`) | `invalid_date` |
+| no two rows share a date | `duplicate_date` |
+| dates ascend | `unsorted_dates` |
+| every `daily_return` is finite (JSON `NaN`/`Infinity` are refused, not ignored) | `non_finite` |
+| `abs(daily_return) <= 1.0` in simple-return units — **+1.3% is `0.013`, not `1.3`** | `out_of_range` |
+| 250 rows minimum — one trading year, the minimum evaluation window | `window_too_short` |
+| 2,600 rows maximum (~10 years of daily bars) | `too_many_rows` |
+| `1 <= trials <= 10000` | `trials_out_of_range` |
+
+A refusal is one object, not a validation list — `{"detail": {"error": "input_rejected",
+"reason": "unsorted_dates", "reasons": [...], "message": "…", "loc": ["body", "returns"]}}`
+— so branch on `detail.reason` and show the caller `detail.message`. The MCP tool promotes
+that code straight to its `error` field.
+
+Ordering is the rule most worth understanding, because it is the one you are most likely to
+break by accident and the one that would otherwise be exploitable: the walk-forward split is
+**positional**, the first 70% of *rows* against the last 30%. Row order therefore *is* the
+time order being graded, and a series sorted by return would park its best bars in the
+holdout and collect a pass. The server refuses an out-of-order series rather than sorting
+it, because sorting would hand you a verdict on a series you did not send.
+
+Be clear about what that closes: the **row-order** form of the attack, which is the
+accidental one and the detectable one. It does not close relabelling — a caller who writes
+ascending dates onto return-sorted values sends a body no server can tell from a real
+series, and gets a 200. That is why every response says `self_attested: true` and
+`verdict_capped: true`: this route grades the numbers you sent, it does not attest that
+they are yours or that they happened in that order.
+
+**What the verdict can and cannot claim.** Two of the gate's four legs can never run on a
+bare returns series — PBO needs a trial matrix of candidate strategies, and the look-ahead
+audit needs strategy source, which is never uploaded — so both always come back
+`not_evaluable` and `verdict_capped` is always `true`. `passes` is a quorum over the two
+runnable legs: true only when DSR **and** walk-forward OOS both ran and both passed. A leg
+can still fail to *run* on the numbers — a zero-variance series has no Sharpe to compute —
+and that shows up as `legs_evaluated < legs_runnable`. When **no leg actually failed**,
+that is an **incomplete evaluation** — neither a pass nor a fail, and it must not be
+reported as either. When a leg *did* fail, the failure is a real verdict and stands: an
+unevaluable second leg does not launder it (the CLI exits `1` there, not `4`). Shortness is
+no longer one of the ways to reach that state: the 250-bar window sits above the ~70 bars
+the walk-forward split needs, so a series too short to grade is **refused** — `422
+window_too_short` from the API, exit `2` from the CLI — rather than partially graded.
+`trials` is self-attested and unverifiable, so the DSR is only as honest as the number you
+declared. Nothing here earns "Archimedes Verified"; the passport gate (step 9) is the
+verdict that does.
+
 ## Error table
 
 Every row below is a body this journey can actually produce. Note the two shapes of
@@ -652,6 +744,7 @@ you will only see after step 3 succeeds. Fix the session first, then re-read the
 | **422** | `{"detail": "strategy_id is required"}` | `POST /api/paper/deployments` with an empty or missing `strategy_id` | Send `{"strategy_id": "<id from step 8>"}`. |
 | **422** | `{"detail": {"reason": "no_strategy_spec", "message": "This strategy has no machine-readable spec to paper-trade."}}` | The strategy exists but carries no executable spec | Pick a different candidate from step 8. Not every generated row is paper-tradeable. |
 | **422** | `{"detail": {"reason": "invalid_strategy_spec", "message": "Stored spec fails validation: …"}}` | The stored spec failed DSL validation at deploy time | Not caller-fixable — pick another candidate and report the `strategy_id`. |
+| **422** | `{"detail": {"error": "input_rejected", "reason": "unsorted_dates", "message": "…"}}` | `POST /api/rigor/verify` refused the body — one of `invalid_date`, `duplicate_date`, `unsorted_dates`, `non_finite`, `out_of_range`, `window_too_short`, `too_many_rows`, `trials_out_of_range` | Fix the input and resend. The server does not sort, deduplicate or clip for you; see the section above for what each code means. |
 | **429** | `{"detail": {"reason": "generation_daily_cap", "scope": "user", "cap": 10, "message": "…"}}` | Daily generation cap hit, per account (`scope: "user"`) or per IP (`scope: "ip"`) | Wait for the daily reset. Call step 5 **before** step 6 to see this coming; the caps it reports are the caps enforced. |
 | **429** | `{"detail": {"reason": "generation_queue_full", "message": "… No payment was taken. …"}}` | The generation wait queue is full | Retry in a few minutes. No payment was taken — admission control runs before the paywall. |
 | **429** | `{"detail": "Rate limit exceeded. Please slow down and try again later."}` + `X-RateLimit-*` | Per-route request-rate limit (`/api/generate/start` 5/min, `/api/paper/deployments` 10/min) | Back off. This is requests-per-minute, distinct from the daily cap above — same status, different `detail` shape, different fix. |
@@ -707,6 +800,12 @@ the server falls back to the session cookie `archimedes login` caches at
 produces. **Exactly one of the two goes on the wire** — when both exist the key wins in the
 client and no cookie is sent, so the server-side precedence rule can never decide which
 account a call acts as. Neither credential is ever logged, returned, or rendered.
+
+**Running a fleet on one machine?** Add `ARCHIMEDES_SESSION_FILE` to that `env` block —
+one path per agent — and pass `archimedes login --session-file` the same path. One session
+file shared between two agents is one identity shared between two agents: the second
+`login` wins and the first agent keeps working, as somebody else
+([#1752](https://github.com/aprin-labs/archimedes/issues/1752)).
 
 **One honest caveat about the key.** Scoped API keys are owner decision **D3** on the same
 PR and are not on `main` at the time of writing, so against production today a bearer key

@@ -50,7 +50,7 @@ layer that actually decides:
 | Layer | File | Applies to |
 |---|---|---|
 | ECS task definition | [`infra/ecs.tf`](../../infra/ecs.tf) | The Fargate web/API tier — the live production backend. A change here is a `terraform apply` (new task-def revision + service roll), no image rebuild. **Does not ship on a GitHub deploy.** `deploy.yml` clones the currently registered task definition and retags images; it does not apply terraform. |
-| CI task-def rewrite | [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) via [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py) | The path that actually ships. Clones the live task-def, retags images, and can pin env that terraform has not yet applied. `PAPER_ADVANCE_ENABLED` is injected here — `"true"` since 2026-09-01 (#1778) — so a deploy cannot leave the tick to whatever value a cloned last-good revision happened to carry. terraform apply is still required for other `ecs.tf` drift; this flag must not depend on it. |
+| CI task-def rewrite | [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) via [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py) | The path that actually ships. Clones the live task-def, retags images, and can pin env that terraform has not yet applied. `PAPER_ADVANCE_ENABLED` is injected here — `"true"` since 2026-09-01 (#1778) — so a deploy cannot leave the tick to whatever value a cloned last-good revision happened to carry. It also points the backend container's `healthCheck.command` at `/health/ready` and pins `HEALTH_STALE_UNREADY_S=900` (#1818 P3) — since [#1799](https://github.com/aprin-labs/archimedes/issues/1799) put `ignore_changes = [container_definitions]` on `aws_ecs_task_definition.backend`, this script is the ONLY writer of anything inside `containerDefinitions`; the `infra/ecs.tf` lines are documented twins. terraform apply is still required for other `ecs.tf` drift outside `container_definitions`; these pins must not depend on it. |
 | Lambda environment | [`infra/cost_kill_switch.tf`](../../infra/cost_kill_switch.tf) and friends | The out-of-band Lambdas (cost kill switch, deploy drift). Terraform spells these as bare `variables { X = "..." }` assignments rather than the ECS `{ name, value }` list — a shape that hid `COST_KILL_SWITCH_DRY_RUN` from this page's guard until 2026-08-31. |
 | SSM Parameter Store | seeded by [`infra/scripts/setup-ssm-secrets.sh`](../../infra/scripts/setup-ssm-secrets.sh) | Secrets and the agent-runner switches. Not readable from this repo — verify with `aws ssm get-parameter`. |
 | Compose | [`docker-compose.yml`](../../docker-compose.yml) / [`docker-compose.production.yml`](../../docker-compose.production.yml) | Local dev and the legacy EC2 box. |
@@ -70,7 +70,6 @@ from here.
 
 | Flag | Reader | Deployed value | What it gates |
 |---|---|---|---|
-| `ARCHIMEDES_FUSION_ENABLED` | `fusion_enabled()` — [`agents/strategy_fusion.py`](../../backend/archimedes/agents/strategy_fusion.py) | `"true"` in `infra/ecs.tf`; compose defaults `:-true` | **Hard prerequisite, not a flip.** Debate is the sole generation pipeline and every proposer routes through `StrategyFusion.propose()`, which returns a disabled sentinel when off — off means Generate silently returns no candidates. Must be ON everywhere. Code default is still OFF; see finding A3. |
 | `GENERATION_PAYMENT_REQUIRED` | `payment_required()` — [`services/generation_payment.py`](../../backend/archimedes/services/generation_payment.py) | `"true"` in `infra/ecs.tf` | The x402 paywall + wallet-link precondition on `POST /api/generate/start`. **Flipped on 2026-08-20** at `GENERATION_PRICE_USD="2.00"`, recipient `GENERATION_PAYMENT_RECIPIENT` (TF var, #1414). Only the literal `"true"` enables. Since #1643 the free allowance sits *above* this gate — the first `FREE_GENERATIONS_PER_ACCOUNT` runs on a verified account never reach it. |
 | `GENERATION_PAYMENTS_DRY_RUN` | `_payments_dry_run()` — [`services/generation_payment.py`](../../backend/archimedes/services/generation_payment.py) | `"false"` in `infra/ecs.tf` | The generation-scoped settlement switch (#1428 split). `"false"` = the generation rail settles for real on the caller-signed metered-API path. Unset inherits `PAYMENTS_DRY_RUN`. |
 | `PAPER_TRADING` | the `paper_trading` startup read in [`main.py`](../../backend/archimedes/main.py) (marketplace-engine construction) | `"true"` in `infra/ecs.tf` | Marketplace engine executes simulated fills instead of on-chain trades. |
@@ -129,7 +128,7 @@ the part an operator reaches for under pressure.
 | `GENERATION_TIMEOUT_SECONDS` | `_generation_timeout_seconds()` — [`api/generate_routes.py`](../../backend/archimedes/api/generate_routes.py) | `"300"` literal in `infra/ecs.tf` (#1692); code default 600 | **Fail-soft, so mistypes are silent:** `"300s"`, `"5m"`, `"0"` and `"-1"` all fall back to 600 without complaint. `inf` is the one intended escape hatch. Keep it a bare positive number; pinned by [`test_ecs_generation_timeout.py`](../../backend/tests/test_ecs_generation_timeout.py). |
 | `GENERATION_DAILY_CAP_PER_USER` / `_PER_IP` | `user_daily_cap()` / `ip_daily_cap()` — [`services/generation_quota.py`](../../backend/archimedes/services/generation_quota.py) | `"100"` / `"200"` in `infra/ecs.tf` | `<= 0` disables that layer. Both layers must pass. |
 | `PUBLIC_TRACE_VAULTS` | `trace_visibility.py`'s `_PUBLIC_VAULTS_ENV`, falling back to `AGENT_VAULT_ADDRESSES` — [`services/trace_visibility.py`](../../backend/archimedes/services/trace_visibility.py) | `var.public_trace_vaults` in `infra/ecs.tf`; empty default → **unarmed** | Unarmed is the *wider* setting: every unowned trace is house-public. Arming it narrows visibility to the listed vaults. Counter-intuitive direction — check it before assuming an empty value is the safe one. |
-| `FREE_GENERATIONS_PER_ACCOUNT` | `allowance()` — [`services/free_generations.py`](../../backend/archimedes/services/free_generations.py) | **not in `infra/ecs.tf`** → code default `3`; `.env.example` also says `3`. See finding A5. | `<= 0` disables the free path entirely, and does so *without dangling a carrot* — `locked_reason()` returns `None` rather than a lock reason. Sits above `GENERATION_PAYMENT_REQUIRED`: the allowance is spendable only on a **verified** account (`LOCK_EMAIL_UNVERIFIED`). #1643/#1658. |
+| `FREE_GENERATIONS_PER_ACCOUNT` | `allowance()` — [`services/free_generations.py`](../../backend/archimedes/services/free_generations.py) | `"3"` pinned on **both** task-definition paths (owner, 2026-09-02, deck Q3): the literal in `infra/ecs.tf` and `FREE_GENERATIONS_VALUE` in [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py), which is the one that actually ships (`deploy.yml` clones the live task-def and never applies terraform). Equal to the code default, so the pin was plumbing-only. Change **both** or the next CI deploy overwrites you. Guards: [`test_ecs_free_generations_pin.py`](../../backend/tests/test_ecs_free_generations_pin.py), [`test_ecs_backend_secrets.py`](../../backend/tests/test_ecs_backend_secrets.py). Closes A5. | `<= 0` disables the free path entirely, and does so *without dangling a carrot* — `locked_reason()` returns `None` rather than a lock reason. Sits above `GENERATION_PAYMENT_REQUIRED`: the allowance is spendable only on a **verified** account (`LOCK_EMAIL_UNVERIFIED`). #1643/#1658. |
 | `DEBATE_BACKTEST_WORKERS` | `_backtest_max_workers()` — [`agents/debate_engine.py`](../../backend/archimedes/agents/debate_engine.py) | not deployed → code default `2` | Clamped `[1, 2]`. **The clamp is the point:** the knob can make the dedicated backtest pool narrower, never wider, so an operator typo cannot reintroduce the GIL-contention fan-out #1689 removed. |
 | `SERVER_THREAD_POOL_WORKERS` | `_default_executor_workers()` — [`main.py`](../../backend/archimedes/main.py) | not deployed → `0` = auto | `0`/unset picks `min(32, max(16, cpu_count*4))`; a positive value overrides, capped at 64. Floor of 16 exists because one generation parks up to `DEBATE_POOL_MAX` IO-bound proposer threads on this pool (#1689). |
 | `TIINGO_MIN_REQUEST_INTERVAL_S` | `_tiingo_min_request_interval_s()` — [`services/market_data_provider.py`](../../backend/archimedes/services/market_data_provider.py) | commented out in `.env.example` → code default `1.1` s | `0` disables client-side pacing entirely, leaving only Tiingo's own HTTP 429. Negative or unparseable values log a warning and fall back to 1.1 (#1627). |
@@ -148,6 +147,7 @@ retired flag being re-added.
 | `X402_WEBHOOK_SECRET` | nowhere | **REMOVED 2026-08-31** by this page's own audit. It was an HMAC secret for `POST /api/marketplace/payment-webhook` — a route that was never implemented (`backend/tests/api/test_marketplace_routes.py` says so in a comment) and never will be: the marketplace shipped via #958's x402 rail, not a gateway callback. It survived only as a commented-out `.env.example` entry, which read as "a secret you still need to generate". |
 | `ARCHIMEDES_X402_ENABLED`, `MAX_USDC_PER_DAY` | nowhere | **GONE.** The marketplace shipped via #958, not #749/#824 (both closed unmerged). Superseded by `PAYMENTS_DRY_RUN`. |
 | `ARCHIMEDES_DEBATE_ENABLED` | two explanatory doc-comments in [`agents/debate_engine.py`](../../backend/archimedes/agents/debate_engine.py) | **RETIRED** by #880; the last executable residue — two `monkeypatch.delenv` calls clearing a variable nothing can read — was removed 2026-08-31. The surviving mentions are prose that says *why* `_debate_can_run` has no flag check, which is the thing that stops it being re-added. The society is the unconditional sole pipeline; `_pick_pipeline` returns `debate` regardless. |
+| `ARCHIMEDES_FUSION_ENABLED` | nowhere — the reader, the OFF branch, the `ecs.tf` pin, both compose defaults and `infra/spike-1411/function-env.txt` all went in the same commit | **RETIRED 2026-09-02** (deck Q4). It was never a lever. The debate society is the sole generation pipeline ([`adr/debate-society-sole-generation-pipeline.md`](../adr/debate-society-sole-generation-pipeline.md)) and every proposer routes through `StrategyFusion.propose()` ([`adr/fusion-primary-generation.md`](../adr/fusion-primary-generation.md)), so OFF returned a `disabled` sentinel and Generate silently produced nothing; every deployed environment pinned it `"true"` while the *code* default was OFF — finding A3's footgun. Fusion is now unconditional and there is no switch to flip. [`backend/tests/test_fusion_flag_retired.py`](../../backend/tests/test_fusion_flag_retired.py) fails if the name, or a renamed fusion switch on the generation path, comes back. `/health` published a companion `fusion_enabled` field; it was **dropped on 2026-09-03** by owner decision rather than frozen at a constant `true` — a search of backend, ui, cli, mcp-server, docs, scripts and tests found no consumer beyond the contract test's own pinned field set, and a constant wearing a health signal's clothes is the claim-integrity failure the neighbouring `/health` fields exist to avoid. `test_health_always_answers.py::TestNoReportedFieldWasDropped::test_fusion_enabled_is_not_published` now pins the key ABSENT. **Operator action outstanding — same shape as `BACKTEST_REFRESH_ENABLED` above:** CI deploys clone the live task definition, which still carries `ARCHIMEDES_FUSION_ENABLED=true` on the `backend` container, so the now-inert name rides along until it is dropped deliberately — either by [#1797](https://github.com/aprin-labs/archimedes/pull/1797)'s `RETIRED_BACKEND_ENV` list in [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py) once that merges, or by the next `terraform apply`. |
 | `REQUIRE_SIWE_FOR_GENERATION` | test docstrings, and one live assertion in `test_local_mode_contract.py` that the name does **not** reappear | **DELETED** by #1300. The flag, `gate_generation`, and `_generation_auth_required` are gone; generation/chat auth is unconditional. Setting it is a no-op. |
 | `ARCHIMEDES_TRACE_PIN_ENABLED` | [`docs/specs/ipfs-reasoning-traces-design-note.md`](../specs/ipfs-reasoning-traces-design-note.md) only | **NEVER IMPLEMENTED.** A proposed flag in a design note, not code. Named here so a reader who greps the docs does not go looking for the gate. |
 | `PINATA_JWT` | historical docs + this row | **REMOVED 2026-09-01** (#1526). The pin client shipped as code but the JWT was never in the backend Fargate `secrets{}` block, so prod never pinned. Outcome (b): delete the client rather than half-wire a secret nobody can seed here. Re-enabling is an owner action (SSM + `ecs.tf` + rebuilt client) — [`adr/ipfs-pinning-not-live.md`](../adr/ipfs-pinning-not-live.md). |
@@ -167,7 +167,6 @@ pin, or no deployment at all. Each one is deliberate.
 | `ROADMAP_SURFACES_ENABLED` / `VITE_ROADMAP_SURFACES` | Permanently `false` in every built image, which makes it look like a constant. It is the gate that keeps not-yet-shipped vault/marketplace surfaces out of the product, and CLAUDE.md's claims-must-be-true rule plus `ui/test/roadmap-copy.test.js` both lean on it. |
 | `GENERATION_PIPELINE_FIXTURE` / `GENERATION_PIPELINE_SKIP_BACKTEST` | Unset in every deployed environment. They are the hermetic-test escape hatches; deleting them costs the suite its no-LLM path. |
 | `ALLOW_LEGACY_HTTPS_SETUP` / `BOOTSTRAP_ALLOW_LEGACY_VAULTS` | Refuse-by-default guards on scripts that must not fire accidentally. The flag *is* the guard — removing it makes the script runnable, which is the failure it was added to prevent. |
-| `ARCHIMEDES_FUSION_ENABLED` | Its disabled branch is reachable and would return an empty Generate, so it is not dead — but it is a footgun (code default OFF, mandatory ON). See finding A3; making it default-ON is a code change with its own blast radius, not part of a flag audit. |
 
 ---
 
@@ -218,16 +217,14 @@ correct and the comment is not. Left as-is here — this page is not the place t
 edit terraform — but a reader trusting the comment would draw the wrong
 conclusion about whether the paywall is live.
 
-**A3 — `ARCHIMEDES_FUSION_ENABLED` is still absent from `.env.example`.**
-`docker-compose.yml` defaults it `:-true` and `infra/ecs.tf` sets `"true"`, so
-every real path is safe. The gap only bites a non-compose `python -m uvicorn`
-run, which would default the flag OFF and get a silently empty Generate. Named
-in #834 since 2026-07-07 and still open. **Update:** the PR this finding waited
-on ([#1595](https://github.com/aprin-labs/archimedes/pull/1595)) merged
-2026-08-31 without closing it, so the block is gone and the fix is now
-unowned rather than blocked. Two candidate fixes, both owner calls: add the line
-to `.env.example`, or make the code default ON and retire the gate (the
-disabled branch exists only to produce an empty Generate).
+**A3 — `ARCHIMEDES_FUSION_ENABLED` — absent from `.env.example`, now retired entirely.**
+`docker-compose.yml` defaulted it `:-true` and `infra/ecs.tf` set `"true"`, so
+every real path was safe. The gap only bit a non-compose `python -m uvicorn`
+run, which defaulted the flag OFF and got a silently empty Generate. Named
+in #834 since 2026-07-07. **CLOSED 2026-09-02 (deck Q4)** by the second of the
+two candidate fixes — not "add the line to `.env.example`" but "retire the
+gate". The flag is gone from the code and from every injection site, so there
+is no longer a default that can be wrong; the row moved to § DEAD / RETIRED.
 
 **A4 — superseded: one dead flag was removable, and was removed.** The original
 finding said no dead flag could be removed because every zero-reader name lived
@@ -236,6 +233,17 @@ in `.env.example`, which open PR #1595 was rewriting. #1595 merged on
 in the same PR as this revision. The remaining zero-reader `.env.example`
 entries are contract addresses and credentials, not flags — out of scope for
 #834, and each is a legitimate template line rather than dead config.
+
+**A5 — RESOLVED (2026-09-02): `FREE_GENERATIONS_PER_ACCOUNT` is now pinned on
+both task-definition paths.** The finding as written stands below; the fix
+landed as the literal `{ name = "FREE_GENERATIONS_PER_ACCOUNT", value = "3" }`
+in `infra/ecs.tf` **and** `FREE_GENERATIONS_VALUE = "3"` in
+`.github/scripts/ecs_rewrite_task_def.py`. Both, not either: ecs.tf is the
+declared baseline but is drifted and is not applied by `deploy.yml`, while the
+rewrite script is the path that registers every revision. That is the same
+two-path treatment `PAPER_ADVANCE_ENABLED` already has, for the same reason
+(task-def :211). The value equals the code default, so nothing about what prod
+serves changed — only whether it was decided. Original finding:
 
 **A5 — `FREE_GENERATIONS_PER_ACCOUNT` is not in the task definition.**
 It is read by `free_generations.allowance()` with a code default of 3 and is set
@@ -248,6 +256,7 @@ one knob on this page that gives away paid product. Fix: add
 `{ name = "FREE_GENERATIONS_PER_ACCOUNT", value = "3" }` to ecs.tf, matching the
 code default so the apply is plumbing-only. **Not done here** — this page is not
 the place to edit terraform, and a value change wants its own review.
+*(Done separately, 2026-09-02 — see the resolution note above.)*
 
 **A6 — five rows' reader citations had drifted in one night.**
 `ARCHIMEDES_FUSION_ENABLED`, `GENERATION_PAYMENT_REQUIRED`,

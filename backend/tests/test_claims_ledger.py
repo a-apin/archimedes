@@ -119,6 +119,10 @@ _SYMBOL_PINS: tuple[tuple[str, str], ...] = (
     ("infra/ecs.tf", '{ name = "GENERATION_PAYMENT_REQUIRED", value = "true" }'),
     ("infra/ecs.tf", '{ name = "GENERATION_PAYMENTS_DRY_RUN", value = "false" }'),
     ("ui/test/roadmap-copy.test.js", "EXECUTION_CLAIM_PATTERN"),
+    # Paper-trading row (2026-09-03, #1807). The ledger says the "carries to mainnet"
+    # retraction is guarded by a word-level ban over four named files; PAPER_SURFACES is
+    # that list. Renaming or deleting it leaves the row asserting a guard that is gone.
+    ("ui/test/no-mainnet-track-record.test.js", "const PAPER_SURFACES"),
 )
 
 # The ledger records that board-level FDR MOVED to the leaderboard (#1564/#1580), so the
@@ -126,6 +130,17 @@ _SYMBOL_PINS: tuple[tuple[str, str], ...] = (
 # still *mentions* the old field names in the comment that records the move, and a blunt
 # substring ban would fail on that comment while proving nothing.
 _ABSENCE_PIN = ("backend/archimedes/api/selection_bias_routes.py", "class BoardLevelFdr")
+
+# The paper-trading row says the "carries to mainnet" retraction reached the machine and doc
+# surfaces too. Those four are outside `ui/test/no-mainnet-track-record.test.js`, which pins
+# ui files only, so without this the row could rot back to false with every suite green —
+# the phrase reappearing in a docstring a `git grep` would find and no test would.
+_RETRACTED_PHRASE_PINS: tuple[tuple[str, str], ...] = (
+    ("docs/api/paper-trading.md", "carries to mainnet"),
+    ("backend/archimedes/models/paper_store.py", "carries to mainnet"),
+    ("backend/archimedes/services/paper_marks.py", "carries to mainnet"),
+    ("backend/migrations/versions/e41c7a9b2d63_add_paper_marks.py", "carries to mainnet"),
+)
 
 # The sentences the ledger's OVER-CLAIMED rows say are still live. See the module
 # docstring: fixing one of these SHOULD break this test.
@@ -359,6 +374,38 @@ class TestLedgerClaimsMatchTheTree:
             "leaderboard. Either the move was reverted or the ledger row is wrong."
         )
 
+    def test_retracted_phrases_have_not_come_back(self):
+        """The RETRACTED rows are absences, and an absence rots silently unless it is pinned."""
+        back = [
+            f"{path} :: {phrase!r}"
+            for path, phrase in _RETRACTED_PHRASE_PINS
+            if phrase in (REPO_ROOT / path).read_text(encoding="utf-8", errors="replace")
+        ]
+        assert not back, (
+            "claims-ledger.md marks these RETRACTED, but the phrase is in the tree again: "
+            + "; ".join(back)
+            + ". The Arc mainnet cutover is cancelled (#1240) — say what is true today (a paper "
+            "track record on Arc testnet, no real funds), or move the ledger row off RETRACTED."
+        )
+
+    def test_the_retracted_phrase_pins_are_not_vacuous(self):
+        """A pin that names a file with no such phrase to begin with proves nothing.
+
+        Each pinned path must be a file that still *discusses* the paper record, so the
+        absence being asserted is an absence from the surface that carried the claim rather
+        than from an unrelated file that would trivially never contain it.
+        """
+        assert _RETRACTED_PHRASE_PINS, "the retracted-phrase pins were emptied out"
+        contextless = [
+            path
+            for path, _ in _RETRACTED_PHRASE_PINS
+            if "paper track record" not in (REPO_ROOT / path).read_text(encoding="utf-8", errors="replace")
+        ]
+        assert not contextless, (
+            "these pinned paths no longer carry the corrected sentence, so the absence they assert "
+            "is vacuous: " + ", ".join(contextless)
+        )
+
     def test_the_published_exit_code_table_covers_every_code_the_cli_defines(self):
         """Successor to ``test_published_exit_codes_still_omit_incomplete``.
 
@@ -408,4 +455,23 @@ class TestLedgerIsIndexed:
         """`docs/README.md` says a doc not listed there does not exist. Hold it to that."""
         assert "claims-ledger.md" in DOCS_INDEX.read_text(encoding="utf-8"), (
             "docs/README.md has no row for claims-ledger.md — add one in the same commit"
+        )
+
+    def test_no_index_row_is_two_rows_glued_together(self):
+        """A `||` inside a table row silently eats the rest of the line in GFM.
+
+        This is how the ledger's own index row came to exist twice: one copy glued onto the
+        end of the row above it with `||`, where the renderer reads the surplus cells as
+        extra columns and drops them. The row looks present in the file and is absent on the
+        page — the exact rot an index is supposed to be immune to. An empty cell is `| |`.
+        """
+        glued = [
+            f"{n}: {line.strip()[:90]}"
+            for n, line in enumerate(DOCS_INDEX.read_text(encoding="utf-8").splitlines(), start=1)
+            if line.lstrip().startswith("|") and "||" in line
+        ]
+        assert not glued, (
+            "docs/README.md has table rows with `||`, which renders as dropped columns: "
+            + "; ".join(glued)
+            + ". Split them into separate rows, or write an empty cell as `| |`."
         )
