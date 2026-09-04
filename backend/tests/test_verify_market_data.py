@@ -10,10 +10,14 @@ since the provider refuses to fall back to yfinance).
 
 Hermetic by construction: the provider seam is replaced with a stub that
 returns a frame from memory, so nothing here reaches Tiingo, Yahoo, Postgres or
-the network. The one thing that is NOT stubbed is the arithmetic of the known
-window — that is checked against the calendar, because a hand-edited window
-whose expected row count no longer matches would make every future run's
-verdict meaningless.
+the network. Two things are NOT stubbed. The arithmetic of the known window is
+checked against the calendar, because a hand-edited window whose expected row
+count no longer matches would make every future run's verdict meaningless. And
+`TestItSpeaksTheRealSeamApi` runs the script's own calls against the REAL
+`market_data_provider` functions with only the vendor registry swapped —
+because a stub of `get_provider` accepts whatever the script passes it, so
+every other test here stayed green when #1798 made `seam` a required argument
+and the operator's run died with a `TypeError` on line one.
 """
 
 from __future__ import annotations
@@ -84,9 +88,24 @@ class _StubCachingWrapper(_StubVendor):
         self._inner = inner
 
 
-def _install(monkeypatch, provider, *, vendor: str = "tiingo") -> None:
-    monkeypatch.setattr(vmd.mdp, "get_provider", lambda: provider)
-    monkeypatch.setattr(vmd.mdp, "provider_name", lambda: vendor)
+def _install(monkeypatch, provider, *, vendor: str = "tiingo") -> list[str]:
+    """Stub the seam. Returns the list of seam names the script asked for, so a
+    caller can assert it named one rather than taking whatever was handed over.
+
+    The stubs take the arguments the real functions take: `seam` keyword-only
+    on `get_provider`, positional on `provider_name`. Keep it that way — a
+    permissive `lambda *a, **k` here would re-open exactly the hole
+    `TestItSpeaksTheRealSeamApi` exists to close.
+    """
+    asked: list[str] = []
+
+    def _get_provider(*, seam: str):
+        asked.append(seam)
+        return provider
+
+    monkeypatch.setattr(vmd.mdp, "get_provider", _get_provider)
+    monkeypatch.setattr(vmd.mdp, "provider_name", lambda seam: vendor)
+    return asked
 
 
 def _run(**kwargs) -> tuple[int, str]:
@@ -193,6 +212,75 @@ class TestItSaysNo:
         assert code == 0
         assert "[custom]" in text
         assert "NOT checked" in text
+
+
+class TestItNamesTheDailySeam:
+    """Daily bars are the licensed-data cutover; intraday keeps its own vendor.
+
+    A proof that read the intraday seam would print a vendor nobody flipped and
+    be pasted on the issue as evidence for a seam it never touched.
+    """
+
+    def test_the_script_asks_the_daily_seam(self, monkeypatch) -> None:
+        asked = _install(monkeypatch, _StubVendor(frame=_frame(_known_window_dates())))
+
+        code, text = _run()
+
+        assert code == 0
+        assert asked == [vmd.mdp.DAILY_SEAM]
+        assert f"seam         : {vmd.mdp.DAILY_SEAM}" in text
+
+    def test_the_module_constant_is_the_daily_seam(self) -> None:
+        """Not a literal inside `verify()`: the seam is the first thing a reader
+        of this script has to be able to find."""
+        assert vmd.SEAM == vmd.mdp.DAILY_SEAM
+
+
+class TestItSpeaksTheRealSeamApi:
+    """The one class here that does NOT stub `get_provider`/`provider_name`.
+
+    Everything else in this file replaces the seam wholesale, so it proves the
+    script's arithmetic and never its calling convention. Only the vendor
+    registry is swapped below, which leaves `get_provider(seam=...)`,
+    `provider_name(seam)` and the real wrapper nesting in the path.
+    """
+
+    def _stub_vendor(self, monkeypatch) -> _StubVendor:
+        vendor = _StubVendor(frame=_frame(_known_window_dates()))
+        monkeypatch.setitem(vmd.mdp._VENDOR_PROVIDERS, "yfinance", lambda: vendor)
+        monkeypatch.delenv("MARKET_DATA_DAILY_PROVIDER", raising=False)
+        monkeypatch.delenv("MARKET_DATA_PROVIDER", raising=False)
+        return vendor
+
+    def test_the_scripts_own_calls_satisfy_the_real_signatures(self, monkeypatch) -> None:
+        """Demonstrated to reject: reverting `verify()` to `mdp.provider_name()`
+        or `_provider` to `mdp.get_provider()` fails here with a TypeError,
+        which is the failure an operator would otherwise have hit in prod."""
+        vendor = self._stub_vendor(monkeypatch)
+
+        code, text = _run(no_cache=True)
+
+        assert code == 0, text
+        assert "provider     : yfinance" in text
+        assert vendor.calls == [(vmd.DEFAULT_SYMBOL, vmd.DEFAULT_START, vmd.DEFAULT_END)]
+
+    def test_one_unwrap_is_the_cache_not_the_vendor(self, monkeypatch) -> None:
+        """Anti-vacuity for the loop in `_provider`. `get_provider` nests two
+        deep since #1798, so a single `_inner` hop lands on the cache — and
+        `--no-cache` would have read through it while printing 'bypassed'."""
+        vendor = self._stub_vendor(monkeypatch)
+
+        routed = vmd.mdp.get_provider(seam=vmd.SEAM)
+
+        assert isinstance(routed, vmd.mdp.SeamRoutedProvider)
+        assert isinstance(routed._inner, vmd.mdp.CachingMarketDataProvider)
+        assert vmd._provider(no_cache=True) is vendor
+        # ...and the default keeps the whole production stack in the path.
+        # (`get_provider` builds a fresh object per call, so this is a shape
+        # assertion, not an identity one.)
+        default = vmd._provider(no_cache=False)
+        assert isinstance(default, vmd.mdp.SeamRoutedProvider)
+        assert isinstance(default._inner, vmd.mdp.CachingMarketDataProvider)
 
 
 class TestTheCacheFlag:

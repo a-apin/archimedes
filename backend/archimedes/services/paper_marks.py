@@ -381,6 +381,10 @@ def mark_all(session, *, now: datetime | None = None, provider=None) -> dict:
     ``get_intraday_quotes_batch``. That is the honest cost argument for
     starting here: 26 calls/day for an equity session, 96 for crypto 24/7,
     against the ~1,440/day the oracle runner already makes.
+
+    Seam: ``intraday`` (#1798) — live quotes, and the ``source`` stamped on
+    every mark is that seam's vendor, so a daily-bar vendor flip leaves both
+    the marks and their provenance untouched.
     """
     from archimedes.services import fusion_market_data
     from archimedes.services.market_data_provider import get_provider, intraday_is_delayed, provider_name
@@ -414,8 +418,8 @@ def mark_all(session, *, now: datetime | None = None, provider=None) -> dict:
     if not union:
         return {"deployments": len(deps), "marked": 0, "skipped": len(deps), "tickers": 0}
 
-    quotes = (provider or get_provider()).get_intraday_quotes_batch(union)
-    source = provider_name()
+    quotes = (provider or get_provider(seam="intraday")).get_intraday_quotes_batch(union)
+    source = provider_name("intraday")
     is_delayed = intraday_is_delayed()
 
     marked = 0
