@@ -19,22 +19,6 @@ edit_uri: edit/main/docs/
 
 docs_dir: docs
 
-# Pages that live in the repo but must NOT be published (#1751 — publication is
-# default-deny; this list is the deny half that exists on `main` today). An
-# excluded file is not rendered, not copied, and never reaches the search index.
-#
-# `docs/README.md` still carries a row for each one, because the docs gate's
-# index check ("a doc not listed here does not exist") is about the REPOSITORY
-# index, not the site — and the row keeps its ordinary relative link, which
-# mkdocs reports at INFO ("contains a link to X which is excluded from the
-# built site"), not WARNING, so `--strict` stays green.
-#
-# An excluded page must also stay OUT of the `nav:` below: a nav entry naming
-# an excluded file is a build error, not a silent no-op.
-# Guarded by backend/tests/test_docs_site.py::test_internal_specs_are_excluded_from_the_site.
-exclude_docs: |
-  specs/assoc-v1-spec.md
-
 theme:
   name: material
   palette:
@@ -301,6 +285,17 @@ nav:
 # stays green while the link resolves nowhere. docs/README.md is the index every doc must
 # appear in (.github/scripts/docs_index.py), so its row for an excluded page is exactly
 # that case until #1832 lands the hook that rewrites such links to their GitHub blob URL.
+# ONE `exclude_docs:` key, and it has to stay that way. YAML silently keeps the
+# LAST of two duplicate keys, so a second block further up this file does not
+# merge with this one — it deletes it, and every page the earlier block was
+# protecting is published again with `--strict` still green. That is not
+# hypothetical: it is what the #1637 and #1529 branches produced when both added
+# their own block and then met in a merge, and
+# backend/tests/test_docs_site.py::test_internal_specs_are_excluded_from_the_site
+# is what caught it.
 exclude_docs: |
   # Third-party scoping memo: names a vendor and grades its maturity and maintainer.
   specs/mnemonik-integration-scoping.md
+  # assoc/v1 — internal engineering reference for the paper-association contract
+  # (#1637 owner decision Q6: land the spec, keep it off the published site).
+  specs/assoc-v1-spec.md

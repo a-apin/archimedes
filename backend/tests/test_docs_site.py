@@ -120,15 +120,22 @@ def test_every_nav_target_exists() -> None:
 #: publication is default-deny; on `main` the deny half is mkdocs' own
 #: `exclude_docs`). Each one still carries a row in docs/README.md, because the
 #: docs gate's index check is about the REPOSITORY index, not the site.
-INTERNAL_ONLY_DOCS = ("specs/assoc-v1-spec.md",)
+INTERNAL_ONLY_DOCS = (
+    "specs/assoc-v1-spec.md",
+    "specs/mnemonik-integration-scoping.md",
+)
 
 
 def _exclude_patterns() -> list[str]:
-    """`exclude_docs` as a list of patterns. mkdocs accepts a block string."""
+    """`exclude_docs` as a list of patterns. mkdocs accepts a block string.
+
+    Gitignore-style `#` lines are comments and are dropped — a pattern that is
+    really a comment matches nothing, which is the failure mode this whole
+    check exists to notice.
+    """
     raw = _mkdocs_config().get("exclude_docs") or ""
-    if isinstance(raw, str):
-        return [line.strip() for line in raw.splitlines() if line.strip()]
-    return [str(x).strip() for x in raw]
+    lines = raw.splitlines() if isinstance(raw, str) else [str(x) for x in raw]
+    return [s for line in lines if (s := line.strip()) and not s.startswith("#")]
 
 
 def _publication_violations(excluded: set[str], navigated: set[str]) -> list[str]:
@@ -164,10 +171,13 @@ def test_the_publication_guard_fires_on_both_failure_modes() -> None:
     """
     rel = INTERNAL_ONLY_DOCS[0]
     dropped = _publication_violations(excluded={"something/else.md"}, navigated=set())
-    assert any("not in exclude_docs" in p for p in dropped), dropped
+    assert [p for p in dropped if p.startswith(f"{rel}:") and "not in exclude_docs" in p], dropped
 
     both = _publication_violations(excluded={"something/else.md"}, navigated={rel})
-    assert len(both) == 2, both
+    assert len([p for p in both if p.startswith(f"{rel}:")]) == 2, both
+
+    # …and the real config is clean, so a green result above is not vacuous.
+    assert _publication_violations(set(_exclude_patterns()), set(_nav_targets(_mkdocs_config()["nav"]))) == []
 
 
 def test_every_openwiki_page_is_in_the_nav() -> None:
