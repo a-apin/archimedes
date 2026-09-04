@@ -34,14 +34,11 @@
 #     Enumerating those by hand instead would buy very little and would turn the
 #     gate red the first time a new resource type lands in `infra/`.
 #
-#     Be clear-eyed about the size of it: ReadOnlyAccess includes `s3:Get*` on
-#     every bucket in the account and `ssm:Get*` on every parameter. The
-#     marginal exposure over "can read terraform state" is small — the state
-#     file already contains `tls_private_key.deploy`'s private key and the
-#     `database_url` output — but it is not zero, and a run of this workflow is
-#     a GitHub-hosted runner holding those credentials for the length of a plan.
-#     If that trade stops being acceptable, replace the attachment below with an
-#     explicit per-service policy; nothing else in the workflow changes.
+#     Be clear-eyed about the size of it. Read from the live document on
+#     2026-09-03: ReadOnlyAccess is three `Allow` statements on `Resource: "*"`
+#     and contains no `Deny` of any kind. Two of its grants matter here —
+#     `ssm:Get*` on EVERY parameter in the account, and `s3:Get*` on EVERY
+#     object in every bucket.
 #
 #   * `kms:Decrypt`, restricted to the AWS-managed SSM key AND to calls that
 #     arrive `ViaService: ssm.<region>.amazonaws.com`. This is the ONE gap in
@@ -53,9 +50,50 @@
 #     there is an output diff — a false drift report. (`aws_rds_cluster.main`
 #     itself ignores `master_password`, so nothing is at risk of rotation.)
 #
+#   * TWO EXPLICIT `Deny`s, and they are the load-bearing part of this file.
+#     Say plainly what the two bullets above add up to without them: `ssm:Get*`
+#     on every parameter, PLUS `kms:Decrypt` on the key those parameters use,
+#     is permission to read every SecureString in the account in cleartext. All
+#     19 of them, enumerated 2026-09-03 and every one encrypted under
+#     `alias/aws/ssm` — CIRCLE_ENTITY_SECRET, BETTER_AUTH_SECRET, DATABASE_URL,
+#     EMAIL_ENCRYPTION_KEY, INTERNAL_AGENT_API_KEY, TIINGO_API_TOKEN,
+#     GOOGLE_CLIENT_SECRET, WALLET_ADDRESS, and the rest. That is NOT a small
+#     increment over "can read terraform state": the state file holds
+#     `tls_private_key.deploy`'s private key and the `database_url` output, and
+#     none of the other eighteen. And this role is assumable from
+#     `repo:<org>/<repo>:pull_request` — from ANY in-repo pull-request branch,
+#     including one that edits the workflow that assumes it.
+#
+#     A `Deny` beats an `Allow` from any policy, so a `NotResource` Deny in
+#     this inline policy re-scopes the managed attachment without enumerating
+#     it:
+#       - ssm:GetParameter / GetParameters / GetParametersByPath /
+#         GetParameterHistory on anything that is NOT the Aurora parameter.
+#       - s3:GetObject / GetObjectVersion on anything that is NOT an object in
+#         the terraform state bucket.
+#     Neither costs the plan anything, and that is checked rather than assumed:
+#     `infra/` declares no `aws_ssm_parameter` and no `aws_s3_object` (the SSM
+#     ARNs in ecs.tf are `valueFrom` STRINGS handed to ECS, never read by
+#     terraform), and both lambdas load their code from a local `filename`, not
+#     from S3. Verified 2026-09-03 with `aws iam simulate-custom-policy` over
+#     this document plus the live ReadOnlyAccess grant: the Aurora parameter,
+#     the state object, the state lockfile and `s3:ListBucket` on the state
+#     bucket all evaluate `allowed`; GetParameter on CIRCLE_ENTITY_SECRET /
+#     BETTER_AUTH_SECRET / DATABASE_URL, GetParametersByPath on
+#     /archimedes/prod, and GetObject on another bucket all evaluate
+#     `explicitDeny`. Bucket-level reads (`s3:GetBucketPolicy`, `GetBucketAcl`)
+#     stay `allowed`, so refreshing bucket configuration is untouched.
+#
+#     What survives, and is accepted: `ssm:Describe*` still lists parameter
+#     NAMES and metadata account-wide (no values), and `s3:Get*`/`List*` still
+#     read bucket CONFIGURATION account-wide. If even that becomes
+#     unacceptable, replace the managed attachment with an explicit per-service
+#     policy; nothing else in the workflow changes.
+#
 #   * An explicit read grant on the state bucket. Redundant with
 #     ReadOnlyAccess today, written out anyway so that tightening the
-#     attachment above does not silently break `terraform init`.
+#     attachment above does not silently break `terraform init` — and it is
+#     what the s3 Deny's `NotResource` is carved around.
 #
 # NOT granted, on purpose: any `s3:Put*`/`s3:Delete*` on the state bucket. The
 # workflow passes `-lock=false`, and the backend's S3-native locking
@@ -221,11 +259,16 @@ fi
 say "Attach ${READONLY_POLICY_ARN}"
 do_ "aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $READONLY_POLICY_ARN"
 
-# ─── 5. The two things ReadOnlyAccess does not cover ─────────────────────────
+# ─── 5. What ReadOnlyAccess misses, and what it over-grants ──────────────────
+# Misses: kms:Decrypt. Over-grants: ssm:Get* on every parameter and s3:GetObject
+# on every object. The two Denys below are what keep the pairing from becoming
+# "decrypt every SecureString in the account" — read the WHAT THIS GRANTS
+# section at the top of this file before touching either of them.
+#
 # The SSM KMS key is resolved rather than hardcoded: it is account- and
 # region-specific, and a wrong ARN here fails at plan time with an opaque
 # AccessDenied on a parameter read.
-say "Inline policy: state-bucket read + the one SecureString"
+say "Inline policy: state-bucket read, the one SecureString, and the two Denys"
 SSM_KEY_ARN="$(aws kms describe-key --key-id alias/aws/ssm --query KeyMetadata.Arn --output text 2>/dev/null || true)"
 if [ -z "$SSM_KEY_ARN" ] || [ "$SSM_KEY_ARN" = "None" ]; then
   echo "ERROR: could not resolve the alias/aws/ssm KMS key in ${REGION}." >&2
@@ -249,7 +292,13 @@ cat > "$TMP/perms.json" <<JSON
     {"Sid":"AuroraPasswordDecrypt","Effect":"Allow",
      "Action":["kms:Decrypt"],
      "Resource":"${SSM_KEY_ARN}",
-     "Condition":{"StringEquals":{"kms:ViaService":"ssm.${REGION}.amazonaws.com"}}}
+     "Condition":{"StringEquals":{"kms:ViaService":"ssm.${REGION}.amazonaws.com"}}},
+    {"Sid":"DenyEveryOtherParameter","Effect":"Deny",
+     "Action":["ssm:GetParameter","ssm:GetParameters","ssm:GetParametersByPath","ssm:GetParameterHistory"],
+     "NotResource":"arn:aws:ssm:${REGION}:${ACCOUNT_ID}:parameter${AURORA_PARAM}"},
+    {"Sid":"DenyEveryOtherObjectRead","Effect":"Deny",
+     "Action":["s3:GetObject","s3:GetObjectVersion"],
+     "NotResource":"arn:aws:s3:::${STATE_BUCKET}/*"}
   ] }
 JSON
 $APPLY || { echo "  inline policy that would be written:"; sed 's/^/    /' "$TMP/perms.json"; }

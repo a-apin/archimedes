@@ -95,6 +95,15 @@
 # │ for a reason no PR author caused — production drifting while they were  │
 # │ writing a docs change — which is precisely the signal it exists to      │
 # │ produce and precisely the wrong thing to block a merge on.              │
+# │                                                                         │
+# │ And the mirror image, which is just as important to know before arming: │
+# │ a PR that DELIBERATELY changes infra/** plans its own new resources as  │
+# │ `create`, and the classifier fails on every planned change except one   │
+# │ exemption. On the pull_request arm this gate would therefore be red BY  │
+# │ CONSTRUCTION on exactly the PRs that are doing the right thing. That is │
+# │ why the classify step is `continue-on-error` on that arm only (see the  │
+# │ comment on the step). Consequence to internalise: on a PR, a green tick │
+# │ does NOT mean "no infra change here" — read plan.txt.                   │
 # └─────────────────────────────────────────────────────────────────────────┘
 
 name: terraform-drift
@@ -122,8 +131,20 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: terraform-drift-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # `github.event_name` is in the key on purpose. Without it a push to `main`
+  # and the Monday schedule both resolve to the same group — `github.ref` is
+  # refs/heads/main for both — and with an unconditional cancel-in-progress a
+  # push touching infra/** silently kills the scheduled run. That is the one
+  # trigger that exists to catch drift nobody committed (the deploy pipeline,
+  # console edits, AWS changing defaults under us), so cancelling it is exactly
+  # backwards.
+  #
+  # Cancellation is then narrowed to the only trigger that genuinely races
+  # itself: a force-push to a PR branch makes the older plan worthless. A
+  # second push to `main`, a dispatch, or a schedule QUEUES behind its
+  # predecessor rather than replacing it, so no drift verdict is discarded.
+  group: terraform-drift-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -252,8 +273,25 @@ jobs:
       # runs identically on a laptop:
       #   terraform -chdir=infra show -json tfplan.binary > plan.json
       #   python3 .github/scripts/tf_drift_gate.py plan.json
-      - name: Classify the plan (fails on drift)
+      - name: Classify the plan (fails on drift, advisory on pull requests)
         if: steps.plan.outputs.exitcode == '2'
+        # Blocking on push/schedule/workflow_dispatch, advisory on pull
+        # requests. On those three arms a planned change means production and
+        # `infra/` genuinely disagree, which is the whole point of the gate. On
+        # a PR it usually means the opposite: the author is CHANGING infra/**,
+        # so their new resources plan as `create` and the classifier fails on
+        # them. Left blocking, this arm would be red on every intentional infra
+        # PR — the "a gate that is red teaches everyone to ignore it" failure
+        # the TF_DRIFT_ENABLED note below is written to avoid, aimed at the
+        # people the gate most needs to keep reading it.
+        #
+        # Nothing is hidden by this: the verdict is still printed in this
+        # step's log, the step is still annotated as failed, and plan.txt is
+        # still uploaded by the step above (which runs `if: always()`), so a
+        # reviewer reads the same plan either way. And a BROKEN plan still
+        # fails everywhere, on every arm — that is the `plan` step above, which
+        # carries no continue-on-error.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
           trap 'rm -f plan.json' EXIT

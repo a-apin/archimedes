@@ -122,6 +122,23 @@ Anything else in the plan is real drift. Read it before approving.
 pushes to `main`, and every Monday, and fails when it finds changes outside that one
 exemption. It is **advisory** — never a required status check (see the box in the workflow).
 
+Two things about reading it, both worth knowing before you arm it:
+
+- **A PR that deliberately changes `infra/**` will show planned changes, and that is
+  expected.** New resources plan as `create`, and the classifier fails on every planned
+  change except the `local_sensitive_file.private_key` exemption. So on the `pull_request`
+  arm the classify step is `continue-on-error`: the plan still runs, the verdict is still in
+  the step log, `plan.txt` is still uploaded — but an intentional infra PR is not painted
+  red for doing its job. **On a PR, a green tick does not mean "no infra change here."** Read
+  `plan.txt`. On pushes to `main`, the Monday schedule, and manual dispatches — where a
+  planned change means production and `infra/` really have diverged — the step still fails
+  the job. A *broken* plan (any exit code other than 0 or 2) fails on every arm, PRs
+  included.
+- **A push to `main` cannot cancel the Monday run.** The concurrency group includes
+  `github.event_name`, and `cancel-in-progress` is limited to pull requests. Without both,
+  a push and the schedule share a group key (`github.ref` is `refs/heads/main` for each) and
+  the push would kill the one trigger that catches drift nobody committed.
+
 It is **off until armed**. `infra/scripts/setup-github-plan-role.sh` creates the read-only
 role it assumes (`archimedes-github-plan`; the existing `archimedes-github-deploy` cannot be
 reused — its trust policy is `main`-only and its permissions are ECR/SSM writes, not reads),
@@ -134,6 +151,19 @@ gh variable set TF_PLAN_ROLE_ARN --body "arn:aws:iam::037613907429:role/archimed
 gh secret   set TF_VAR_ALARM_EMAIL --body "<address subscribed to archimedes-alerts>"
 gh variable set TF_DRIFT_ENABLED --body "true"     # arm LAST
 ```
+
+What that role can reach: the AWS-managed `ReadOnlyAccess` policy, plus `kms:Decrypt`
+restricted to the SSM key and to calls arriving `ViaService: ssm.us-east-1.amazonaws.com`.
+`ReadOnlyAccess` alone grants `ssm:Get*` on every parameter in the account, so pairing it
+with that decrypt grant would be permission to read all 19 SecureStrings in cleartext —
+`CIRCLE_ENTITY_SECRET`, `BETTER_AUTH_SECRET`, `DATABASE_URL` and the rest — from any in-repo
+pull-request branch. The inline policy therefore carries two `NotResource` **Deny**
+statements that cut it back to the one Aurora parameter and the state bucket's objects. A
+`Deny` beats an `Allow` from any policy, so those override the managed attachment. The
+script's header documents the whole trade, including what deliberately survives (parameter
+*names* via `ssm:Describe*`, bucket *configuration* via `s3:Get*`). Neither Deny costs the
+plan anything: `infra/` declares no `aws_ssm_parameter` and no `aws_s3_object`, and both
+lambdas load their code from a local `filename`.
 
 `TF_VAR_ALARM_EMAIL` is not optional: `infra/cloudwatch.tf` creates the alarm subscription
 only when `var.alarm_email` is non-empty, so an unset value makes the gate report

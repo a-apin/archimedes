@@ -103,6 +103,67 @@ def _plan_command(workflow: str) -> str:
     return executable[start : end if end != -1 else len(executable)]
 
 
+def _step(workflow: str, name_fragment: str) -> str:
+    """One ``- name: ...`` step block, up to the next step at the same indent."""
+    start = workflow.find(f"- name: {name_fragment}")
+    assert start != -1, f"the drift workflow has no step named {name_fragment!r}"
+    rest = workflow[start:]
+    end = rest.find("\n      - ")
+    return rest if end == -1 else rest[:end]
+
+
+def _concurrency(workflow: str) -> dict[str, str]:
+    """The workflow-level ``concurrency:`` mapping, values kept as raw strings."""
+    executable = _without_comments(workflow)
+    marker = "\nconcurrency:\n"
+    start = executable.find(marker)
+    assert start != -1, "the drift workflow lost its concurrency block"
+    out: dict[str, str] = {}
+    for line in executable[start + len(marker) :].splitlines():
+        if not line.startswith("  "):
+            break
+        key, _, value = line.strip().partition(":")
+        out[key.strip()] = value.strip()
+    return out
+
+
+def _group_for(workflow: str, event_name: str) -> str:
+    """Render the concurrency group key GitHub would compute for one trigger.
+
+    Substitutes the two contexts that actually vary. ``push`` and ``schedule``
+    both run on ``refs/heads/main``, which is the whole point: if the group
+    expression does not distinguish them, they collide.
+    """
+    group = _concurrency(workflow)["group"]
+    ref = "7" if event_name == "pull_request" else "refs/heads/main"
+    return (
+        group.replace("${{ github.event_name }}", event_name)
+        .replace("${{ github.event.pull_request.number || github.ref }}", ref)
+        .replace("${{ github.workflow }}", "terraform-drift")
+    )
+
+
+def _plan_role_policy() -> dict[str, Any]:
+    """The inline IAM policy ``setup-github-plan-role.sh`` writes, parsed.
+
+    Reads the real heredoc rather than grepping for statement names, so a test
+    below can compare a ``Deny``'s ``NotResource`` against the matching
+    ``Allow``'s ``Resource``. Shell interpolations become ``<NAME>`` sentinels;
+    the same variable renders to the same sentinel on both sides, so the
+    comparison holds exactly as it would after substitution.
+    """
+    source = PLAN_ROLE_SH.read_text(encoding="utf-8")
+    anchor = source.find('cat > "$TMP/perms.json" <<JSON')
+    assert anchor != -1, "setup-github-plan-role.sh no longer writes an inline policy heredoc"
+    start = source.index("<<JSON\n", anchor) + len("<<JSON\n")
+    end = source.index("\nJSON\n", start)
+    return json.loads(re.sub(r"\$\{(\w+)\}", r"<\1>", source[start:end]))
+
+
+def _as_list(value: Any) -> list[str]:
+    return [value] if isinstance(value, str) else list(value)
+
+
 @pytest.fixture(scope="module")
 def ecs_tf() -> str:
     assert ECS_TF.is_file(), f"missing {ECS_TF}"
@@ -308,6 +369,182 @@ class TestDriftWorkflow:
             "setup-github-plan-role.sh must not touch archimedes-github-deploy — widening "
             "that role's trust to pull_request would let any PR branch push to ECR and "
             "SendCommand into production."
+        )
+
+
+class TestTheGateIsNotRedByConstruction:
+    """A gate nobody can keep green is a gate nobody reads.
+
+    ``terraform-drift.yml``'s own header invokes that failure mode to justify
+    the ``TF_DRIFT_ENABLED`` switch. Two ways it could have reappeared anyway,
+    both fixed and both pinned here.
+    """
+
+    @pytest.fixture(scope="class")
+    def workflow(self) -> str:
+        return DRIFT_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_a_push_to_main_cannot_cancel_the_weekly_scheduled_run(self, workflow: str) -> None:
+        """`push` and `schedule` both run on refs/heads/main.
+
+        With the ref alone as the group key and an unconditional
+        ``cancel-in-progress``, a push touching ``infra/**`` silently cancels
+        the Monday run — the only trigger that sees drift nobody committed
+        (the deploy pipeline, console edits, AWS changing defaults). This
+        renders the key GitHub would actually compute for each trigger rather
+        than grepping for a fix, so either escape counts: distinct group keys,
+        or cancellation that does not apply to them.
+        """
+        cancels = _concurrency(workflow)["cancel-in-progress"]
+        push = _group_for(workflow, "push")
+        schedule = _group_for(workflow, "schedule")
+        assert push != schedule or cancels != "true", (
+            f"a push and the weekly schedule both resolve to concurrency group {push!r} "
+            f"with cancel-in-progress={cancels!r}, so a push to main kills the scheduled "
+            "drift run. Put github.event_name in the group key, or scope "
+            "cancel-in-progress to pull requests."
+        )
+
+    def test_a_pull_request_still_cancels_its_own_superseded_run(self, workflow: str) -> None:
+        """Paired with the above: prove the fix was not 'turn concurrency off'.
+
+        A force-push to a PR branch makes the older plan worthless, and that is
+        the one trigger that genuinely races itself.
+        """
+        cancels = _concurrency(workflow)["cancel-in-progress"]
+        assert cancels == "true" or "pull_request" in cancels, (
+            "cancel-in-progress no longer applies to pull requests, so every force-push to "
+            "a PR branch leaves a stale plan running."
+        )
+        assert _group_for(workflow, "pull_request") != _group_for(workflow, "push"), (
+            "a pull request and a push to main share a concurrency group."
+        )
+
+    def test_an_intentional_infra_pr_is_not_red_by_construction(self, workflow: str) -> None:
+        """A PR that CHANGES infra/** plans its own resources as `create`.
+
+        ``tf_drift_gate.py`` fails on every planned change outside the single
+        ``local_sensitive_file.private_key`` exemption, so left blocking, the
+        ``pull_request`` arm would be red on exactly the PRs doing the right
+        thing. plan.txt still uploads and the verdict is still logged, so
+        nothing is hidden by making that one arm advisory.
+        """
+        step = _without_comments(_step(workflow, "Classify the plan"))
+        match = re.search(r"continue-on-error:\s*(.+)", step)
+        assert match is not None, (
+            "the classify step is blocking on the pull_request arm, where a deliberate "
+            "infra/** change plans as `create` and fails the gate by construction."
+        )
+        assert match.group(1).strip() == "${{ github.event_name == 'pull_request' }}", (
+            "continue-on-error must be scoped to pull requests and nothing else — a bare "
+            "`true` would also silence real drift on pushes to main and on the weekly "
+            "schedule, which is the entire signal this workflow exists to produce."
+        )
+
+    def test_a_broken_plan_still_fails_on_every_arm(self, workflow: str) -> None:
+        """The advisory arm is the CLASSIFIER, never the plan.
+
+        Exit codes other than 0 and 2 mean the plan itself is broken — bad
+        credentials, an unparseable root, a missing variable. That is never
+        drift and must never be advisory, on any trigger.
+        """
+        step = _without_comments(_step(workflow, "terraform plan"))
+        assert "continue-on-error" not in step, (
+            "the terraform plan step became advisory. A broken plan would then report as a "
+            "passing drift check on every trigger, which is worse than having no gate."
+        )
+
+
+class TestThePlanRoleCannotReadEveryProdSecret:
+    """The Denys are the load-bearing half of that role's policy.
+
+    Read from the live AWS-managed document on 2026-09-03: ``ReadOnlyAccess``
+    is three ``Allow`` statements on ``Resource: "*"`` with no ``Deny`` of any
+    kind, and it grants ``ssm:Get*`` on every parameter in the account. The
+    script additionally grants ``kms:Decrypt`` on ``alias/aws/ssm`` — the one
+    thing ReadOnlyAccess withholds — and all 19 of the account's SecureStrings
+    are encrypted under that key. Without the Denys below, the pairing is
+    permission to read CIRCLE_ENTITY_SECRET, BETTER_AUTH_SECRET, DATABASE_URL
+    and the rest in cleartext, from a role assumable by any in-repo
+    pull-request branch. A Deny beats an Allow from any policy, so a
+    ``NotResource`` Deny re-scopes the managed attachment without enumerating
+    it.
+    """
+
+    @staticmethod
+    def _denies() -> list[dict[str, Any]]:
+        return [st for st in _plan_role_policy()["Statement"] if st["Effect"] == "Deny"]
+
+    @staticmethod
+    def _allow(sid: str) -> dict[str, Any]:
+        for st in _plan_role_policy()["Statement"]:
+            if st.get("Sid") == sid:
+                return st
+        raise AssertionError(f"the inline policy lost its {sid!r} statement")
+
+    def test_every_value_returning_ssm_action_is_denied_elsewhere(self) -> None:
+        ssm = [d for d in self._denies() if any(a.startswith("ssm:") for a in _as_list(d["Action"]))]
+        assert len(ssm) == 1, (
+            "expected exactly one ssm Deny in setup-github-plan-role.sh's inline policy; "
+            "without it ReadOnlyAccess's `ssm:Get*` on `*` plus this role's kms:Decrypt "
+            "reads every SecureString in the account."
+        )
+        assert set(_as_list(ssm[0]["Action"])) >= {
+            "ssm:GetParameter",
+            "ssm:GetParameters",
+            "ssm:GetParametersByPath",
+            "ssm:GetParameterHistory",
+        }, (
+            "the ssm Deny must cover every action that RETURNS a parameter value. Leaving "
+            "one out leaves that one call able to read all 19 SecureStrings."
+        )
+
+    def test_object_reads_outside_the_state_bucket_are_denied(self) -> None:
+        s3 = [d for d in self._denies() if any(a.startswith("s3:") for a in _as_list(d["Action"]))]
+        assert len(s3) == 1, "expected exactly one s3 Deny in the inline policy"
+        assert set(_as_list(s3[0]["Action"])) >= {"s3:GetObject", "s3:GetObjectVersion"}
+
+    def test_the_denys_are_scoped_with_notresource_never_resource(self) -> None:
+        """The inversion that would look right and be catastrophic.
+
+        ``{"Effect":"Deny","Resource": <the Aurora parameter>}`` denies the one
+        thing the workflow needs and permits all eighteen other secrets — the
+        exact opposite of the intent, and it still reads as "there is a Deny
+        here" to anyone skimming.
+        """
+        for deny in self._denies():
+            assert "NotResource" in deny, (
+                f"Deny {deny.get('Sid')!r} has no NotResource. A Deny scoped with `Resource` "
+                "denies ONLY that resource and leaves everything else allowed by "
+                "ReadOnlyAccess — it inverts the protection."
+            )
+            assert "Resource" not in deny, (
+                f"Deny {deny.get('Sid')!r} carries both Resource and NotResource; IAM rejects that statement outright."
+            )
+
+    def test_each_deny_carves_out_exactly_what_its_allow_grants(self) -> None:
+        """A widened Allow with an unwidened Deny is dead permission; the
+        reverse is a silent hole. Keep the pair in lockstep."""
+        ssm = [d for d in self._denies() if any(a.startswith("ssm:") for a in _as_list(d["Action"]))][0]
+        assert ssm["NotResource"] == self._allow("AuroraPasswordParameter")["Resource"], (
+            "the ssm Deny exempts a different parameter from the one the Allow grants."
+        )
+        s3 = [d for d in self._denies() if any(a.startswith("s3:") for a in _as_list(d["Action"]))][0]
+        assert s3["NotResource"] == self._allow("TerraformStateObjectRead")["Resource"], (
+            "the s3 Deny exempts a different prefix from the one the Allow grants — "
+            "`terraform init` would break, or objects outside state stay readable."
+        )
+
+    def test_the_decrypt_grant_is_still_pinned_to_ssm(self) -> None:
+        """The Denys block the SSM path; kms:Decrypt must stay unreachable by
+        any other route (an encrypted S3 object, say)."""
+        decrypt = self._allow("AuroraPasswordDecrypt")
+        assert _as_list(decrypt["Action"]) == ["kms:Decrypt"]
+        via = decrypt.get("Condition", {}).get("StringEquals", {}).get("kms:ViaService", "")
+        assert via.startswith("ssm."), (
+            "kms:Decrypt lost its `kms:ViaService` pin to SSM, so the SSM key becomes usable "
+            "through every other service that encrypts with it — and the ssm Deny, which "
+            "only closes the SSM path, no longer bounds this grant."
         )
 
 
