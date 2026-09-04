@@ -24,9 +24,33 @@ The second polices the *organisation* rename (#1758). Adding a bare `a-apin` to
 by the docs-site guards (`test_docs_site.py`, `ui/test/docs-link.test.js`'s
 `FORBIDDEN_HOSTS`, `docs-site/infra/main.tf`) to record the Pages host #1634
 moved off, and the OIDC and deploy notes quote "a-apin -> aprin-labs" to explain
-what the rename broke. So the second scan forbids the **repository pointer**
-`github.com/a-apin/` on live surfaces and leaves the *host* and the *rename
-narrative* alone.
+what the rename broke. So the second scan forbids the **repository pointer** and
+leaves the *host* and the *rename narrative* alone.
+
+#1756 widened *what counts as a pointer*. The first cut matched the literal
+substring `github.com/a-apin/`, which is one of three shapes the same dead
+coordinate takes:
+
+* the browser URL — `https://github.com/a-apin/archimedes/issues/1756`
+* the **SSH remote** — `git@github.com:a-apin/archimedes.git`, which a
+  `git clone` line in a runbook carries and which the substring missed entirely
+  because the separator is a colon
+* the **bare coordinate** — `gh issue list --repo a-apin/archimedes`,
+  `repo:a-apin/archimedes:*` in an OIDC trust policy, `a-apin/<any repo>` in
+  prose. No `github.com` in front of it at all.
+
+All three break the same way the redirect does, so the rule is now one regex
+(`_PRE_RENAME_COORDINATE`) over `<old org>/<repo>` with a word boundary in
+front. The boundary is what preserves the allow-list: in `a-apin.github.io` the
+org name is followed by a dot, not a slash, so the *host* — including
+`https://a-apin.github.io/archimedes/` — never matches, and "a-apin ->
+aprin-labs" has no slash at all. `FORBIDDEN_POINTER_SHAPES` and
+`ALLOWED_MENTION_SHAPES` run those claims through the real matcher, so the
+prose above cannot drift away from the rule.
+
+#1756 also put `openwiki/` — the published wiki tree — under both scans. It was
+outside every root, and was carrying four live `github.com/a-apin/archimedes`
+links at the time (`INSTRUCTIONS.md`, `rigor/documented-conflicts.md`).
 
 `CANONICAL_REPO` and `CANONICAL_ORG` are **documentation**. They are the names
 the failure messages point offenders at; no live surface is checked *against*
@@ -61,8 +85,18 @@ CANONICAL_REPO = "aprin-labs/archimedes"
 # Assembled at runtime so this file does not match its own scan.
 PRE_RENAME_NAMES = ("archimedes-" + "arcadia",)
 
-#: Trees whose contents describe the project as it is now.
-LIVE_ROOTS = ("ui/src", "ui/public", "infra", "backend", "contracts", "docs/runbooks", "scripts")
+#: Trees whose contents describe the project as it is now. ``openwiki`` is the
+#: published wiki tree and was outside every root until #1756.
+LIVE_ROOTS = (
+    "ui/src",
+    "ui/public",
+    "infra",
+    "backend",
+    "contracts",
+    "docs/runbooks",
+    "scripts",
+    "openwiki",
+)
 
 #: Point-in-time records, and other people's repositories.
 EXEMPT_PARTS = ("archive", "handovers", "audits", "submodules", "node_modules", "dist", ".git")
@@ -109,6 +143,8 @@ def test_the_scan_reaches_the_files_it_is_policing() -> None:
         "infra/README.md",
         "docs/runbooks/github-security-toggles.md",
         "CLAUDE.md",
+        # The published wiki tree, brought under the scan by #1756.
+        "openwiki/INSTRUCTIONS.md",
     ):
         assert expected in scanned, f"{expected} not scanned — the guard is blind"
 
@@ -147,18 +183,61 @@ CANONICAL_ORG = "aprin-labs"
 #: that flags its own docstring is a guard nobody keeps.
 PRE_RENAME_ORG = "a-" + "apin"
 
-#: What is forbidden is the **repository pointer**, not the organisation name.
-#: ``<old org>.github.io`` is a *host* — the GitHub Pages origin #1634 moved off
-#: — and "old org -> new org" is a *rename narrative*; both are quoted on
-#: purpose and stay green. ``github.com/<old org>/<anything>`` is a link that
-#: only resolves while GitHub keeps redirecting, which is the thing that breaks.
-PRE_RENAME_REPO_POINTER = f"github.com/{PRE_RENAME_ORG}/"
+#: What is forbidden is the **repository coordinate**, not the organisation
+#: name. ``<old org>.github.io`` is a *host* — the GitHub Pages origin #1634
+#: moved off — and "old org -> new org" is a *rename narrative*; both are quoted
+#: on purpose and stay green. ``<old org>/<repo>`` is a pointer that only
+#: resolves while GitHub keeps redirecting, which is the thing that breaks.
+#:
+#: The slash is the whole distinction, and it is why one regex covers all three
+#: shapes #1756 asked for: the HTTPS URL (``github.com/<old org>/…``), the SSH
+#: remote (``github.com:<old org>/…`` — a *colon*, which the old substring check
+#: could not see), and the bare coordinate with nothing in front of it at all
+#: (``gh --repo <old org>/<repo>``, ``repo:<old org>/<repo>:*``). The lookbehind
+#: keeps the match to a whole token, so a longer name ending in the old org's
+#: spelling is not swept in; the required ``/`` right after the org name is what
+#: lets ``<old org>.github.io`` — dot, not slash — through untouched.
+_PRE_RENAME_COORDINATE = re.compile(rf"(?<![0-9A-Za-z._-]){re.escape(PRE_RENAME_ORG)}/[0-9A-Za-z._-]+")
+
+#: The shapes that must be caught, and the mentions that must survive. These are
+#: *inputs to the real matcher* (``test_the_matcher_catches_every_forbidden_shape``
+#: and ``test_the_matcher_lets_every_deliberate_mention_through``), not prose:
+#: #1758's whole lesson is that a constant no assertion reads is a comment with a
+#: colon in it. Assembled from ``PRE_RENAME_ORG`` so this file does not match its
+#: own scan by hand-spelling the stale org.
+FORBIDDEN_POINTER_SHAPES = (
+    f"see https://github.com/{PRE_RENAME_ORG}/archimedes/issues/1756 for context",
+    f"git clone git@github.com:{PRE_RENAME_ORG}/archimedes.git",
+    f"gh issue list --repo {PRE_RENAME_ORG}/archimedes",
+    f"the wiki lives at {PRE_RENAME_ORG}/openwiki these days",
+    f'"token.actions.githubusercontent.com:sub": "repo:{PRE_RENAME_ORG}/archimedes:*"',
+)
+
+#: Deliberate, correct mentions. The Pages host #1634 moved off, that host with a
+#: path on it, the rename narrative in both spellings the repo uses, and the
+#: canonical coordinate itself.
+ALLOWED_MENTION_SHAPES = (
+    f"FORBIDDEN_HOSTS = [{PRE_RENAME_ORG}.github.io]",
+    f"docs was never a CNAME to https://{PRE_RENAME_ORG}.github.io/archimedes/",
+    f"after the org rename {PRE_RENAME_ORG} -> {CANONICAL_ORG}, every deploy broke",
+    f"On 2026-09-01 the `{PRE_RENAME_ORG}` → `{CANONICAL_ORG}` rename landed",
+    f"https://github.com/{CANONICAL_REPO}/issues/1756",
+)
 
 #: Files handed to a reader, or to a package manager, as current truth.
 ORG_LIVE_FILES = ("README.md", "SETUP.md", "CLAUDE.md", "AGENTS.md")
 
-#: Trees that ship: the app, the two published packages, the docs tree.
-ORG_LIVE_ROOTS = ("ui/src", "ui/public", "backend/archimedes", "cli", "mcp-server", "docs")
+#: Trees that ship: the app, the two published packages, the docs tree, and the
+#: published wiki (``openwiki``, added by #1756 — it was outside every root).
+ORG_LIVE_ROOTS = (
+    "ui/src",
+    "ui/public",
+    "backend/archimedes",
+    "cli",
+    "mcp-server",
+    "docs",
+    "openwiki",
+)
 
 ORG_EXEMPT_PARTS = ("archive", "handovers", "audits", "submodules", "node_modules", "dist", "build", ".git")
 
@@ -212,6 +291,11 @@ def _org_live_files() -> list[Path]:
     return _org_walk(apply_exemptions=True)
 
 
+def _points_at_pre_rename_repo(line: str) -> bool:
+    """The rule, in one place, so every test below is proving the same thing."""
+    return bool(_PRE_RENAME_COORDINATE.search(line))
+
+
 def _repo_pointer_offenders(paths: list[Path]) -> list[str]:
     """Report ``path:line`` for every line pointing at the pre-rename org's repo."""
     offenders: list[str] = []
@@ -223,7 +307,7 @@ def _repo_pointer_offenders(paths: list[Path]) -> list[str]:
         except (UnicodeDecodeError, OSError):
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
-            if PRE_RENAME_REPO_POINTER in line:
+            if _points_at_pre_rename_repo(line):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
     return offenders
 
@@ -247,6 +331,10 @@ def test_the_org_scan_reaches_the_live_surfaces() -> None:
         "backend/archimedes/main.py",
         # A live doc that quotes the rename narrative and must stay green.
         "docs/runbooks/docs-site-setup.md",
+        # The published wiki: outside every root until #1756, and it was
+        # carrying four live pre-rename links when that was noticed.
+        "openwiki/INSTRUCTIONS.md",
+        "openwiki/rigor/documented-conflicts.md",
     ):
         assert expected in scanned, f"{expected} not scanned — the guard is blind"
 
@@ -276,11 +364,39 @@ def test_no_live_surface_points_at_the_pre_rename_org() -> None:
     """
     offenders = _repo_pointer_offenders(_org_live_files())
     assert not offenders, (
-        f"{sorted(offenders)} point at '{PRE_RENAME_REPO_POINTER}'. The canonical repository is "
-        f"'{CANONICAL_REPO}' under the '{CANONICAL_ORG}' organisation. GitHub's redirect makes the "
-        "stale link work today, so nothing else catches this — and the redirect dies the moment "
-        f"'{PRE_RENAME_ORG}' is re-claimed by anyone."
+        f"{sorted(offenders)} name a repository under '{PRE_RENAME_ORG}/' — as an https:// link, an "
+        f"SSH remote (github.com:{PRE_RENAME_ORG}/…), or a bare coordinate. The canonical repository "
+        f"is '{CANONICAL_REPO}' under the '{CANONICAL_ORG}' organisation. GitHub's redirect makes the "
+        "stale pointer work today, so nothing else catches this — and the redirect dies the moment "
+        f"'{PRE_RENAME_ORG}' is re-claimed by anyone. (The *host* '{PRE_RENAME_ORG}.github.io' and the "
+        f"'{PRE_RENAME_ORG} -> {CANONICAL_ORG}' rename narrative are deliberate and do not trip this.)"
     )
+
+
+@pytest.mark.parametrize("shape", FORBIDDEN_POINTER_SHAPES)
+def test_the_matcher_catches_every_forbidden_shape(shape: str) -> None:
+    """#1756: the same dead coordinate wears three different clothes.
+
+    The first cut of this guard matched the literal substring
+    ``github.com/<old org>/``. An SSH remote uses a colon, and a
+    ``gh --repo``/OIDC-``sub`` coordinate has no host in front of it at all —
+    both walked straight past. This runs each shape through the *live* matcher,
+    so widening the rule is a claim the suite checks rather than one the
+    docstring makes.
+    """
+    assert _points_at_pre_rename_repo(shape), f"{shape!r} is a live pointer at the pre-rename org and was not caught"
+
+
+@pytest.mark.parametrize("shape", ALLOWED_MENTION_SHAPES)
+def test_the_matcher_lets_every_deliberate_mention_through(shape: str) -> None:
+    """The widened rule must not swallow the allow-list it was built around.
+
+    ``<old org>.github.io`` is the Pages host #1634 moved off and is quoted on
+    purpose; "old org -> new org" is the rename narrative the OIDC and deploy
+    notes need. A rule that flagged either would be reverted within a day, which
+    is the failure mode a bare-substring widening walks into.
+    """
+    assert not _points_at_pre_rename_repo(shape), f"{shape!r} is a deliberate mention and must stay green"
 
 
 @pytest.mark.parametrize("keep", DELIBERATE_ORG_MENTIONS)
