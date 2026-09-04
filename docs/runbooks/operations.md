@@ -160,23 +160,21 @@ const block = await client.getBlockNumber();
 2. **Per-team rate limiting.** Without auth, one runaway loop from any team would degrade the testnet for everyone.
 3. **Operational control.** Canteen can spin the testnet up/down and revoke individual tokens without distributing new node URLs.
 
-## Automated backtest refresh (no operator ritual)
+## Curated backtests are run by hand, on purpose
 
-Relocated from `README.md` (2026-08-20).
+There is **no automated backtest refresh**. `services/backtest_scheduler.py` and its
+`BACKTEST_REFRESH_*` / `BACKTEST_MAX_AGE_HOURS` knobs were deleted 2026-09-01
+([#1760](https://github.com/aprin-labs/archimedes/issues/1760)): the loop re-ran the whole
+curated library inside the serving process at +180 s on every cold boot, pegged the 1-vCPU
+Fargate task, and got tasks killed by their own container health check.
 
-[`backend/archimedes/services/backtest_scheduler.py`](../../backend/archimedes/services/backtest_scheduler.py)
-runs a long-lived task that checks staleness on startup and then on a fixed cadence, and
-refreshes any curated strategy that has **no persisted backtest** or whose latest run is
-older than the max age. Nobody has to remember to re-run anything.
+A backtest is a one-time artifact of evidence with a stated data window — never revisited on
+a clock. Generated strategies are backtested once, at generation. Curated strategies are
+backtested when their code changes, when a data-quality fix lands, or when the owner asks, by
+an explicit out-of-band run of `python -m archimedes.scripts.run_backtests`.
 
-| Env var | Default | Meaning |
-| --- | --- | --- |
-| `BACKTEST_REFRESH_INTERVAL_HOURS` | `24` | how often the staleness check runs |
-| `BACKTEST_MAX_AGE_HOURS` | `168` (7 days) | a persisted backtest older than this is stale |
-
-The staleness check fails **closed**: if the check itself raises, it reports "not stale"
-rather than stampeding a refresh across the whole library. Read the module docstring before
-changing either bound — both are clamped.
+- Procedure: [`curated-backtests.md`](curated-backtests.md)
+- Policy and the incident: [`../adr/backtests-are-frozen-evidence.md`](../adr/backtests-are-frozen-evidence.md)
 
 ## Local↔prod parity
 
@@ -188,7 +186,7 @@ The local docker-compose stack runs the same code as the EC2 deployment. To veri
 ./scripts/check-parity.sh https://archimedes-arc.com   # or against prod
 ```
 
-This checks `/health` and asserts: live LLM backend, non-empty corpus (`corpus_papers > 0`; do not freeze a floor here), fusion enabled.
+This checks `/health` and asserts two things: live LLM backend, and a non-empty corpus (`corpus_papers > 0`; do not freeze a floor here). There used to be a third assertion, `fusion_enabled` — it went with the flag when `ARCHIMEDES_FUSION_ENABLED` was retired (deck Q4; see the [flip-list](../operations/feature-flag-fliplist.md)), and `/health` stopped publishing the field on 2026-09-03. Fusion is now the unconditional generation path, so there is nothing left to assert.
 
 Full production infrastructure (ECS Fargate behind an ALB, CloudFront + WAF, Aurora PostgreSQL 18.3, ElastiCache Redis 7.1, CI/CD and Terraform) is documented in [`docs/architecture.md`](../architecture.md) and the Terraform under `infra/`. The old `docs/infra-setup.md` is archived and describes a single EC2 box that no longer exists.
 

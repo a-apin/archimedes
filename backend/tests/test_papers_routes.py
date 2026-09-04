@@ -25,6 +25,8 @@ from archimedes.models.corpus_store import PaperRecord
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+from tests.db_isolation import isolated_empty_sqlite
+
 
 @pytest.fixture
 def session():
@@ -111,7 +113,15 @@ class TestListPapersAuthorsFallback:
 
     def test_empty_db_falls_back_to_file_manifest(self, session, monkeypatch, tmp_path):
         """DB has zero rows — falls through to the file-manifest loader (which
-        genuinely has no author data), not an error."""
+        genuinely has no author data), not an error.
+
+        ``papers_routes.get_session`` is this test's empty in-memory sqlite,
+        but the last-resort fallback calls ``load_corpus()`` with no path,
+        which reads the *process-global* engine. A sibling TestClient /
+        lifespan seed of ~18k rows occupies that branch (18752-vs-0 on
+        Quality Gate). Isolate ``archimedes.db`` onto an empty tmp sqlite
+        so the missing-manifest fallback is what this assertion measures.
+        """
         from archimedes.api import papers_routes
 
         monkeypatch.setattr(papers_routes, "get_session", lambda: _ctx_session(session))
@@ -120,9 +130,10 @@ class TestListPapersAuthorsFallback:
         # whatever manifest happens to exist on this machine.
         monkeypatch.setenv("ARCHIMEDES_CORPUS_MANIFEST", str(tmp_path / "does-not-exist.jsonl"))
 
-        result = asyncio.run(
-            papers_routes.list_papers(page=1, page_size=20, category=None, search=None, processed_only=True)
-        )
+        with isolated_empty_sqlite(tmp_path):
+            result = asyncio.run(
+                papers_routes.list_papers(page=1, page_size=20, category=None, search=None, processed_only=True)
+            )
 
         assert result["total"] == 0
         assert result["papers"] == []

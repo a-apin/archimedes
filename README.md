@@ -54,8 +54,9 @@ not. The locked spine is [`docs/user-stories.md`](docs/user-stories.md).
 ## The rigor gate
 
 The gate is evidence, not proof. The deflation prices in how many candidates were searched
-before this one was picked; the 0.90 DSR bar is a deliberate calibration, a one-sided ~10%
-test. PBO is computed and disclosed on every passport but does not block the badge while the
+before this one was picked; the DSR bar is 0.95 — a one-sided 5% test — and it has exactly
+one definition in the tree (`DSR_P_BADGE_MIN` in
+`backend/archimedes/services/rigor_profiles.py`, #1794). PBO is computed and disclosed on every passport but does not block the badge while the
 library holds fewer than ten graded strategies — below that, CSCV lacks the power to gate
 honestly, so it reports `NOT_RUN` with the reason rather than a pass. A check that cannot
 run says so; it never reports a silent pass.
@@ -88,7 +89,7 @@ describe a brief, and read the verdict.
 ### Run it locally
 
 ```bash
-git clone --recurse-submodules https://github.com/a-apin/archimedes.git
+git clone --recurse-submodules https://github.com/aprin-labs/archimedes.git
 cd archimedes
 cp .env.example .env
 # REQUIRED: generate a local auth secret, then paste it after BETTER_AUTH_SECRET=
@@ -206,14 +207,14 @@ re-derive from one of those.
   publishes `corpus_embedded_at_rest: false` for the corpus itself, and publishes
   `rerank_candidate_cap` because only that many candidates reach the model. Read those
   fields rather than this line. Tracked in
-  [#778](https://github.com/a-apin/archimedes/issues/778) and
-  [#1488](https://github.com/a-apin/archimedes/issues/1488).
+  [#778](https://github.com/aprin-labs/archimedes/issues/778) and
+  [#1488](https://github.com/aprin-labs/archimedes/issues/1488).
 - **The knowledge graph is not built.** No KB artifact has ever been produced, so `/health`
   reports `corpus_kg_built: false` with zero entities and zero relations,
   `GET /api/corpus/graph` refuses with **503 `kb_artifact_not_found`** instead of
   synthesizing a graph, and `GET /api/corpus/kg/*` returns empty entity and relation sets.
   Citation-link extraction over the corpus is roadmap. Tracked in
-  [#778](https://github.com/a-apin/archimedes/issues/778).
+  [#778](https://github.com/aprin-labs/archimedes/issues/778).
 - **Vault execution is not shipped**, per the spine above. The contracts are deployed and
   the routes exist, but the journey is flag-gated off every public surface and no user vault
   has been deployed.

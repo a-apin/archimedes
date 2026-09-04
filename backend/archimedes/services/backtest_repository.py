@@ -396,9 +396,9 @@ def latest_backtests_by_strategy(
     # ~30-96 rows it does return dragged its `artifact_json` blob across the
     # wire. Nothing downstream of this function reads that column:
     # `BacktestResultRecord.to_backtest_result()` never touches it, and neither
-    # does any caller (strategy_provider._load_backtests, backtest_scheduler's
-    # staleness/backoff checks, the num_trials/returns/rigor route lookups, and
-    # audit_backtest_universe all read scalars or call to_backtest_result). The
+    # does any caller (strategy_provider._load_backtests, the
+    # num_trials/returns/rigor route lookups, and audit_backtest_universe all
+    # read scalars or call to_backtest_result). The
     # readers that genuinely need the blob — `get_daily_returns` and
     # `get_all_daily_returns` above — issue their OWN queries with their own
     # projections and are unaffected by a per-query option here.
