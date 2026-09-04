@@ -47,13 +47,20 @@ Honesty rules this module keeps
   a passed check is the same overclaim this module exists to remove.
 * ``unattributed`` is True when a row did not pass yet no recorded check fails
   the bar above. The surface then says exactly that instead of naming a culprit
-  it cannot support. The known source of that gap is a DSR-bar divergence: the
-  agent path's ``passing`` uses a STRICTER 0.95 (hardcoded in
-  ``_rigor_verdict_for``) than the badge profile's ``dsr_p_min`` (0.90), so a
-  p-value in [0.90, 0.95) lands a rejected row with every badge-bar check clear.
-  With ``_rigor_verdict_for`` currently uncalled in production that shape reaches
-  the surface via stored rows rather than new writes — the state is still
-  rendered, because a row the surface cannot attribute must say so either way.
+  it cannot support. The original source of that gap was a DSR-bar divergence:
+  the agent path's ``passing`` hardcoded its own, stricter bar in
+  ``_rigor_verdict_for`` while the badge profile's ``dsr_p_min`` was a looser
+  number, so a p-value between the two landed a rejected row with every
+  badge-bar check clear. #1794 retired that split — both are now
+  ``rigor_profiles.DSR_P_BADGE_MIN``, the one place the bar is written down —
+  so no NEW write can open that particular gap. The state is still computed and
+  still rendered, because the gap outlives its first cause. Rows STORED under
+  the retired bar keep the ``passing`` they were given. And a leg with nothing
+  on record blocks admission (the fusion gate fails closed on a missing or
+  non-finite DSR p, PBO, or look-ahead verdict) while this report calls it
+  ``not_computed`` rather than ``fail`` — so a row rejected for a measurement
+  that never happened has no failing check to point at. A row the surface
+  cannot attribute must say so either way.
 """
 
 from __future__ import annotations

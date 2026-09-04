@@ -23,6 +23,15 @@ WHAT GOES INTO THE DIGEST — the complete list, and why each item is in it:
   bypasses. A change here can flip a pass to a fail with no threshold on the
   ladder moving.
 * **``STRICTEST_LEVEL``** — which rung the badge is anchored to.
+* **``DSR_P_BADGE_MIN``** — the one place the Archimedes Verified DSR bar is
+  written down (#1794). Today it IS level 1's ``dsr_p_min`` above, so hashing it
+  is redundant *while that holds*. It is hashed on its own anyway for two
+  reasons: ``generation_pipeline`` compares against the constant directly rather
+  than through a profile, so the constant is a gate input in its own right; and
+  the identity between the two is a source-level property that no runtime check
+  can enforce (equal float constants in one module are the same object, so an
+  ``is`` assertion cannot see them come apart). Hashing the constant means the
+  bar cannot move without this digest moving, however the ladder is wired.
 * **``_MIN_RETURNS_FOR_GATE``** (``live_rigor_gate``): the boundary between
   ``pending`` and a graded verdict. Moving it re-labels rows without regrading
   anything.
@@ -73,7 +82,11 @@ GATE_CODE_REVISION = 1
 # The digest's own layout version. Bump when the INPUT SET above changes (an item
 # added or removed), so a reader can tell "different thresholds" from "different
 # things being hashed".
-GATE_VERSION_SCHEMA = 1
+#
+# 1 → 2: ``badge_bar`` (``DSR_P_BADGE_MIN``) joined the inputs with #1794, so the
+# one place the badge's DSR bar is written down is hashed directly rather than
+# only through level 1 of the ladder.
+GATE_VERSION_SCHEMA = 2
 
 # Marker written by the verdict-of-record migration onto rows whose verdict was
 # DERIVED from pre-existing columns rather than produced by a gate run. It is not
@@ -91,6 +104,7 @@ def gate_version_inputs() -> dict:
     from archimedes.services.rigor_evaluator import MIN_LIBRARY_N_FOR_PBO_GATING
     from archimedes.services.rigor_profiles import (
         CPCV_MIN_POSITIVE_FRACTION,
+        DSR_P_BADGE_MIN,
         DSR_P_FLOOR,
         OOS_ABS_FLOOR,
         STRICTEST_LEVEL,
@@ -101,6 +115,7 @@ def gate_version_inputs() -> dict:
         "schema": GATE_VERSION_SCHEMA,
         "code_revision": GATE_CODE_REVISION,
         "badge_level": STRICTEST_LEVEL,
+        "badge_bar": DSR_P_BADGE_MIN,
         "profiles": [
             {
                 "level": p.level,
