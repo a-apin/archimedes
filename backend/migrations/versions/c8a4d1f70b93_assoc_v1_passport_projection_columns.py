@@ -63,7 +63,8 @@ defaults to ``cited`` — what every pre-#1637 association was. The full
 argument, with the standing cost, is in ``strategy_store``'s module docstring
 under "Legacy rows are not rewritten".
 
-The one interim cost, stated rather than hidden: ``_compute_content_hash`` now
+A second, separate cost — this one from the hash REDEFINITION rather than from
+the deferred normalization: ``_compute_content_hash`` now
 produces a value no pre-existing row carries, so re-upserting the *same*
 content inserts a second row instead of matching the first. Nothing downstream
 joins on ``content_hash`` (``id`` is the FK every other table uses, and it
