@@ -2,7 +2,9 @@ import { betterAuth } from 'better-auth'
 import { APIError, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api'
 import pg from 'pg'
 
+import { DELIVERY_KINDS } from './delivery-log.js'
 import { createMailer } from './mailer.js'
+import { RESEND_WINDOW_MAX, RESEND_WINDOW_SECONDS } from './verification-status.js'
 
 const { Pool } = pg
 
@@ -140,6 +142,8 @@ export async function notifyAccountChange(mailer, endpointContext, account, acti
     const label = CONNECTED_ACCOUNT_LABELS[account.providerId] || account.providerId
     const verb = action === 'added' ? 'added to' : 'removed from'
     await mailer.send({
+      kind: DELIVERY_KINDS.ACCOUNT_CHANGE,
+      userId: account.userId,
       to: user.email,
       subject: `A sign-in method was ${verb} your Archimedes account`,
       text:
@@ -180,6 +184,8 @@ export async function notifyAccountChange(mailer, endpointContext, account, acti
 // claims delivery for exactly this reason.
 export function sendChangeEmailConfirmation(mailer, { user, newEmail, url }) {
   mailer.send({
+    kind: DELIVERY_KINDS.CHANGE_EMAIL,
+    userId: user.id,
     to: user.email,
     subject: 'Confirm your Archimedes email change',
     text:
@@ -242,6 +248,35 @@ export function bounceRefusal(user) {
   return BOUNCE_REFUSALS[user.emailBounceKind] ?? BOUNCE_REFUSALS.bounce
 }
 
+// The service's Postgres pool, extracted from createAuth (#1748 item 2) so
+// server.js can hand the SAME connection to both Better Auth and the email
+// delivery log — one pool, not two, and no second place that has to get the
+// sslmode translation below right. Body unchanged from what lived inline in
+// createAuth, comment included.
+//
+// node-postgres does NOT honor libpq's `sslmode` query parameter — it must
+// be translated into an explicit `ssl` config or the connection goes out in
+// plaintext and TLS-enforcing servers (Aurora) reject it. `sslmode=require`
+// in libpq means "encrypt, do not verify the CA", so rejectUnauthorized:false
+// is the faithful translation, not a shortcut. verify-ca/verify-full would
+// need the RDS CA bundle shipped in the image (follow-up: #1284's image work).
+// pg's connection-string parser gives an in-URL `sslmode` precedence over the
+// constructor's `ssl` object — with sslmode=require left in the string, full
+// certificate verification still ran and failed on Aurora with
+// UNABLE_TO_GET_ISSUER_CERT_LOCALLY (no RDS CA in the image). So: STRIP the
+// parameter from the string and pass the ssl config explicitly. Proven
+// against live Aurora in-container before this commit: SELECT succeeds.
+// verify-full + the RDS CA bundle remains the #1284 follow-up.
+export function createPool(env = process.env) {
+  const rawUrl = env.DATABASE_URL || ''
+  const wantsTls = /[?&]sslmode=(require|prefer|verify-ca|verify-full)/.test(rawUrl)
+  const connectionString = rawUrl.replace(/[?&]sslmode=[^&]+/, '')
+  return new Pool({
+    connectionString,
+    ...(wantsTls ? { ssl: { rejectUnauthorized: false } } : {}),
+  })
+}
+
 export function createAuth({ database, env = process.env, mailer = createMailer(env) } = {}) {
   const production = env.NODE_ENV === 'production'
   const baseURL = env.BETTER_AUTH_URL || 'http://localhost:5173'
@@ -264,26 +299,7 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
     )
   }
 
-  // node-postgres does NOT honor libpq's `sslmode` query parameter — it must
-  // be translated into an explicit `ssl` config or the connection goes out in
-  // plaintext and TLS-enforcing servers (Aurora) reject it. `sslmode=require`
-  // in libpq means "encrypt, do not verify the CA", so rejectUnauthorized:false
-  // is the faithful translation, not a shortcut. verify-ca/verify-full would
-  // need the RDS CA bundle shipped in the image (follow-up: #1284's image work).
-  // pg's connection-string parser gives an in-URL `sslmode` precedence over the
-  // constructor's `ssl` object — with sslmode=require left in the string, full
-  // certificate verification still ran and failed on Aurora with
-  // UNABLE_TO_GET_ISSUER_CERT_LOCALLY (no RDS CA in the image). So: STRIP the
-  // parameter from the string and pass the ssl config explicitly. Proven
-  // against live Aurora in-container before this commit: SELECT succeeds.
-  // verify-full + the RDS CA bundle remains the #1284 follow-up.
-  const rawUrl = env.DATABASE_URL || ''
-  const wantsTls = /[?&]sslmode=(require|prefer|verify-ca|verify-full)/.test(rawUrl)
-  const connectionString = rawUrl.replace(/[?&]sslmode=[^&]+/, '')
-  const db = database ?? new Pool({
-    connectionString,
-    ...(wantsTls ? { ssl: { rejectUnauthorized: false } } : {}),
-  })
+  const db = database ?? createPool(env)
 
   return betterAuth({
     appName: 'Archimedes',
@@ -337,6 +353,8 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
         // existence via status code) — loud single line, logged
         // asynchronously after the response has already gone out.
         mailer.send({
+          kind: DELIVERY_KINDS.RESET,
+          userId: user.id,
           to: user.email,
           subject: 'Reset your Archimedes password',
           text:
@@ -400,6 +418,8 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
       // sign-in.
       sendVerificationEmail: async ({ user, url }) => {
         mailer.send({
+          kind: DELIVERY_KINDS.VERIFICATION,
+          userId: user.id,
           to: user.email,
           subject: 'Verify your Archimedes account',
           text:
@@ -834,7 +854,14 @@ export function createAuth({ database, env = process.env, mailer = createMailer(
         // it makes the bound readable here and stops a library upgrade from
         // moving a security-relevant number silently.
         '/request-password-reset': { window: 60, max: 3 },
-        '/send-verification-email': { window: 60, max: 3 },
+        // Built from verification-status.js's constants rather than
+        // literals (#1748 item 2): GET /api/auth/verification-status
+        // QUOTES this window back to a waiting human ("wait 40s"), so the
+        // number it quotes and the number the limiter enforces must be the
+        // same object, not two copies. Still 60/3 — email-flows.test.js
+        // asserts the literal `{ window: 60, max: 3 }` on the built options,
+        // which is what stops the constants drifting.
+        '/send-verification-email': { window: RESEND_WINDOW_SECONDS, max: RESEND_WINDOW_MAX },
       },
     },
     advanced: {

@@ -170,6 +170,13 @@ host you asked*:
 > honest case for many agents — the wallet path is the whole answer, and the free tier is
 > not something to wait for.
 >
+> **A run that delivers nothing does not cost a free generation.** The slot is claimed at
+> step 6 and handed back if the job then fails without persisting a strategy — the corpus
+> being too thin to fuse, a crash, a cancel. So a failed generation is not a spent one, and
+> step 5 is where you find out: re-read it after a failure rather than decrementing your own
+> counter. (A run that DID persist a strategy keeps its slot even if it errored afterwards —
+> the strategy is in your library.)
+>
 > This **reverses** the 2026-08-19 directive that earlier revisions of this page
 > documented ("a wallet is required before the first generation"); the verification
 > condition is the owner's 2026-08-31 amendment to it. Read your remaining allowance and

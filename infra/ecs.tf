@@ -322,6 +322,26 @@ resource "aws_iam_role_policy" "ecs_task_ses_send" {
           # the bounce signal on from turning verification mail off.
           "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:configuration-set/${aws_sesv2_configuration_set.mail.configuration_set_name}",
         ]
+      },
+      # #1748 item 2: GET /api/auth/verification-status asks SES whether the
+      # caller's own address is on the account suppression list, because
+      # SendEmail SUCCEEDS for a suppressed address (it returns a MessageId and
+      # the message is then dropped) — so without this lookup the resend button
+      # can only ever answer "requested", forever.
+      #
+      # Resource "*" is not laziness: the suppression list is an ACCOUNT-level
+      # resource in SESv2 and has no per-identity ARN to scope to, unlike the
+      # send statement above. Read-only, one action, and the only thing it can
+      # reveal is whether an address AWS already refuses to mail is suppressed.
+      # Without it the lookup fails AccessDeniedException, which auth/
+      # suppression.js reports as "we could not look" — never as "not
+      # suppressed" — so a missing grant degrades to an honest unknown rather
+      # than a false all-clear.
+      {
+        Sid      = "ReadAccountSuppressionListForDeliveryFeedback"
+        Effect   = "Allow"
+        Action   = ["ses:GetSuppressedDestination"]
+        Resource = "*"
       }
     ]
   })
