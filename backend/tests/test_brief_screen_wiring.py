@@ -37,6 +37,14 @@ from tests.auth_helpers import auth_cookies
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATE_JSX = REPO_ROOT / "ui" / "src" / "components" / "Generate.jsx"
+
+#: The docs index, under either of its names. #1832 renames ``docs/README.md``
+#: to ``docs/doc-index.md``; the invariant this file pins — "a doc not listed
+#: here does not exist" — is about the index, not about its filename, so the
+#: test resolves whichever one is on disk and survives the rename in either
+#: merge order. Both names are named explicitly rather than globbed, so a
+#: missing index is still a failure and never a silent skip.
+DOCS_INDEX_NAMES = ("README.md", "doc-index.md")
 RECIPIENT = "0x00000000000000000000000000000000000000a1"
 
 
@@ -82,10 +90,19 @@ def test_the_generate_page_links_the_guidelines():
     assert "docs/brief-guidelines.md" in GENERATE_JSX.read_text()
 
 
+def _docs_index() -> Path:
+    """Resolve the docs index by whichever of its names is on disk (#1832)."""
+    for name in DOCS_INDEX_NAMES:
+        candidate = REPO_ROOT / "docs" / name
+        if candidate.is_file():
+            return candidate
+    raise AssertionError(f"no docs index on disk — expected one of {['docs/' + n for n in DOCS_INDEX_NAMES]}")
+
+
 def test_the_guidelines_doc_exists_and_is_indexed():
-    """'A doc not listed here does not exist' — docs/README.md."""
+    """'A doc not listed here does not exist' — the docs index."""
     assert (REPO_ROOT / "docs" / "brief-guidelines.md").is_file()
-    assert "brief-guidelines.md" in (REPO_ROOT / "docs" / "README.md").read_text()
+    assert "brief-guidelines.md" in _docs_index().read_text()
     assert "brief-guidelines.md" in (REPO_ROOT / "docs" / "api" / "generation.md").read_text()
 
 
