@@ -48,8 +48,9 @@ not. The locked spine is [`docs/user-stories.md`](docs/user-stories.md).
 ## The rigor gate
 
 The gate is evidence, not proof. The deflation prices in how many candidates were searched
-before this one was picked; the 0.90 DSR bar is a deliberate calibration, a one-sided ~10%
-test. PBO is computed and disclosed on every passport but does not block the badge while the
+before this one was picked; the DSR bar is 0.95 — a one-sided 5% test — and it has exactly
+one definition in the tree (`DSR_P_BADGE_MIN` in
+`backend/archimedes/services/rigor_profiles.py`, #1794). PBO is computed and disclosed on every passport but does not block the badge while the
 library holds fewer than ten graded strategies — below that, CSCV lacks the power to gate
 honestly, so it reports `NOT_RUN` with the reason rather than a pass. A check that cannot
 run says so; it never reports a silent pass.

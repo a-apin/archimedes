@@ -262,7 +262,7 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
     strategy_ids = [s.id for s in strategies]
 
     try:
-        from archimedes.db import get_session, init_db
+        from archimedes.db import get_session
         from archimedes.services.backtest_repository import get_all_daily_returns
         from archimedes.services.rigor_evaluator import (
             assert_self_contained_cohort_correlation,
@@ -270,7 +270,6 @@ def verdicts_for_strategies(strategies: list) -> dict[str, RigorGateVerdict]:
             compute_pbo,
         )
 
-        init_db()
         with get_session() as session:
             returns_by_strategy = get_all_daily_returns(session, strategy_ids)
     except Exception as exc:

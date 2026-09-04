@@ -40,7 +40,6 @@ import json
 import logging
 import math
 import os
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -48,8 +47,10 @@ from typing import Any
 
 from archimedes.api.generate_schemas import GenerateBrief
 from archimedes.services import cost_meter
+from archimedes.services.brief_screen import Surface, Verdict, screen
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import JobStore, get_job_store
+from archimedes.services.rigor_profiles import DSR_P_BADGE_MIN
 
 logger = logging.getLogger(__name__)
 
@@ -161,188 +162,113 @@ def _invalid_brief_message(reason: object) -> str:
     )
 
 
-# ── Cheap, deterministic brief prelude (no LLM) — Lane 1.3c ────────────────
+# ── Deterministic brief screening (no LLM) — Lane 1.3c, then #1801 ────────
 #
-# "Never charge for a brief we can cheaply reject." Before this, a gibberish
-# brief only surfaced BRIEF_INVALID after the LLM validator ran INSIDE
-# run_generation — i.e. after the caller already paid (see
-# generate_routes.start_generation: payment happens before the job, and
-# `_validate_brief` above only runs once the job is running). This function
-# is the ONE deterministic check both the pre-payment route gate
-# (`generate_routes.start_generation`, via a direct call to this function)
-# and the real validator (`_validate_brief` below, as its own prelude) share
-# — extracted once so the two call sites can never drift apart on what
-# counts as "obviously invalid".
+# "Never charge for a brief we can cheaply reject." A brief that fails the
+# deterministic screen must surface BRIEF_INVALID BEFORE the caller pays
+# (payment happens in generate_routes.start_generation, before the job runs);
+# `_validate_brief` below only runs once the job is already running. So the
+# pre-payment route gate and the validator's own prelude both funnel through
+# ONE function — this one — and can never drift apart on what counts as
+# invalid.
 #
-# It must be conservative: a false NEGATIVE here (missing real gibberish) is
-# fine — the LLM validator still catches it, post-payment, exactly as
-# before. A false POSITIVE (flagging a genuine brief) is not — it would
-# block a paying user before they're even offered the chance to pay. So this
-# only rejects the unambiguous cases: empty, too short, letter-free, or
-# containing a token that is *physically* keyboard-mash-shaped (see
-# ``_looks_like_mash``). Note what that deliberately does NOT include:
-# unfamiliar vocabulary. "SPY covered calls", "muni ladder" and
-# "estrategia de baja volatilidad" all match nothing in the word lists
-# below and must all pass — an unknown word is the normal case, not a
-# junk signal. Semantic judgment calls (off-topic-but-grammatical text like
-# "add flour and bake at 350F", jailbreak attempts) are likewise left to the
-# expensive LLM step — that outcome legitimately consumes work, so it stays a
-# credit spend, not a pre-payment refusal.
-_MIN_INTENT_CHARS = 3
-_MIN_GIBBERISH_TOKENS = 2  # ≥2 tokens before any mash token counts as junk
-
-_VOWELS = frozenset("aeiouy")
-
-# Straight runs across a keyboard row, forwards and backwards, are a
-# fingerprint of mashing rather than typing ("asdf", "lkjh", "qwer", "poiu").
-# No English word contains one; checked as 4-char windows.
-_KEYBOARD_ROWS = ("qwertyuiop", "asdfghjkl", "zxcvbnm")
-_KEYBOARD_RUNS = frozenset(
-    row[i : i + 4] for base in _KEYBOARD_ROWS for row in (base, base[::-1]) for i in range(len(row) - 3)
-)
+# The rules themselves moved to archimedes.services.brief_screen (#1801),
+# which added the families this file never had: an upper length bound and
+# injection screening. Before that move the LANG heuristics here were the
+# only deterministic check in the system and jailbreak attempts were
+# deliberately deferred to the LLM validator — which failed OPEN on every
+# error path, so "deferred to the validator" meant "admitted whenever the
+# validator was slow, down, or confused".
+#
+# What has NOT changed: this stays conservative about LANGUAGE. A false
+# negative (missing real gibberish) is fine — the LLM validator still sees
+# it. A false positive on a genuine brief is not, because it refuses a paying
+# user before they are offered the chance to pay, so unfamiliar vocabulary is
+# never a rejection reason ("muni ladder", "SPY covered calls", non-English
+# text all pass). What HAS changed: text carrying instructions aimed at the
+# model, a link, a code block or an encoded blob is now refused here, for
+# free, instead of being billed and then argued about by an LLM.
 
 
-def _looks_like_mash(token: str) -> bool:
-    """Is this lowercased token *shaped* like keyboard mash?
-
-    Structural only — this asks whether the letters could plausibly have been
-    typed as a word, never whether the word is one we happen to know. A brief
-    is full of words no list here contains ("muni", "ladder", "covered"), so
-    unfamiliarity carries no signal at all.
-
-    Non-ASCII tokens always return False. A Cyrillic, Greek or CJK brief has
-    no vowel/consonant structure this test can read, and mis-reading one as
-    mash would refuse a legitimate non-English user before they can even pay;
-    those defer to the LLM validator, exactly like off-topic English does.
-    """
-    if not token.isascii():
-        return False
-    if not any(ch in _VOWELS for ch in token):
-        return True  # "zxcvbnm", "qwrtp" — no vowel, not pronounceable
-    run = 0
-    for ch in token:
-        run = 0 if ch in _VOWELS else run + 1
-        if run >= 5:
-            return True  # "lkjhgfdsa" — 5+ consonants with no break
-    if any(a == b == c for a, b, c in zip(token, token[1:], token[2:], strict=False)):
-        return True  # "aaargh", "jjjj"
-    return any(token[i : i + 4] in _KEYBOARD_RUNS for i in range(len(token) - 3))
-
-
-# Ordinary English function/content words. Their presence means the text is
-# at least grammatical, even if off-topic — off-topic is the LLM's job, not
-# this heuristic's.
-_COMMON_WORDS = frozenset(
-    "a an the and or but for nor so if of to in on at by with from into is are "
-    "was were be been being this that these those i you he she it we they my "
-    "your his her its our their not no yes want need make build create "
-    "generate please can could would should like about money fund funds".split()
-)
-
-# Investing / finance-signal vocabulary. Presence means the text is on-topic
-# even when it fails the common-word check above (e.g. "crypto momentum").
-_FINANCE_WORDS = frozenset(
-    "stock stocks bond bonds equity equities crypto bitcoin ethereum token "
-    "tokens coin coins etf etfs treasury treasuries yield yields dividend "
-    "dividends momentum value growth trend trending hedge hedged leverage "
-    "leveraged volatility volatile vol risk risky conservative aggressive "
-    "moderate income rebalance rebalancing diversify diversified "
-    "diversification asset assets allocation market markets trading trade "
-    "trades rate rates inflation macro commodity commodities gold silver "
-    "oil futures options derivative derivatives arbitrage carry basis "
-    "spread stablecoin usdc usdt defi staking lending long short bull bear "
-    "index indices quant quantitative alpha beta sharpe drawdown portfolio "
-    "invest investment strategy strategies".split()
-)
+def screen_brief(brief: GenerateBrief) -> Verdict:
+    """Screen ``brief.intent`` deterministically. Returns the raw Verdict."""
+    return screen(brief.intent or "", Surface.BRIEF)
 
 
 def cheap_brief_reject(brief: GenerateBrief) -> dict[str, str] | None:
-    """Deterministic, no-LLM prelude to brief validation.
+    """Deterministic, no-LLM screen of the brief — the shared pre-payment gate.
 
-    Returns ``None`` when the brief passes this cheap check — which does
-    NOT mean it is a *good* brief, only that it is not obviously junk; the
-    real (LLM) validator remains the authority on everything else (off-topic
-    content, jailbreak attempts, semantic coherence). Returns a
-    ``{"reason", "hint"}`` dict, shaped exactly like the LLM validator's
-    invalid-brief output, when the brief is unambiguously invalid: empty,
-    too short, containing no letters at all, or containing a token that is
-    keyboard-mash-shaped (``_looks_like_mash``).
+    Returns ``None`` when the brief passes, which does NOT mean it is a *good*
+    brief, only that it is not junk and carries no injection payload; the LLM
+    validator remains the authority on semantics (off-topic-but-grammatical
+    text, coherence). Returns a ``{"reason", "hint", "code"}`` dict, shaped
+    like the LLM validator's invalid-brief output plus the machine-readable
+    reason code, when the brief is refused.
 
-    Vocabulary the word lists below do not know is NOT a rejection reason —
-    most real briefs contain some — so "SPY covered calls", "muni ladder"
-    and non-English text all pass through to the real validator.
-
-    See the module note above this function for why it is deliberately
-    conservative.
+    ``code`` is new in #1801 and additive: the pre-existing ``reason``/``hint``
+    keys are unchanged, so every caller that only reads those is untouched.
+    See ``archimedes.services.brief_screen`` for the rule families and the
+    versioned code vocabulary.
     """
-    intent = (brief.intent or "").strip()
-    if not intent:
-        return {
-            "reason": "it did not describe an investment goal",
-            "hint": "Mention an asset class, a goal, or a risk appetite.",
-        }
-    if len(intent) < _MIN_INTENT_CHARS:
-        return {
-            "reason": "too short to describe an investment goal",
-            "hint": "Mention an asset class, a goal, or a risk appetite.",
-        }
+    verdict = screen_brief(brief)
+    if verdict.allow:
+        return None
+    return {"reason": verdict.reason, "hint": verdict.hint, "code": verdict.code or ""}
 
-    # Unicode-aware: letters in ANY script, no digits/underscores. A Cyrillic
-    # or CJK brief must tokenize as words, not vanish into the letter-free
-    # branch below and be refused for "containing no words".
-    tokens = re.findall(r"[^\W\d_]{2,}", intent)
-    if not tokens:
-        # No word-like content at all — pure digits/punctuation/symbols.
-        return {
-            "reason": "it does not contain any words",
-            "hint": "Mention an asset class, a goal, or a risk appetite.",
-        }
 
-    lowered = [t.lower() for t in tokens]
-    if any(t in _COMMON_WORDS or t in _FINANCE_WORDS for t in lowered):
-        return None  # recognizable language — defer to the real validator
+#: Emitted instead of a validation result when the LLM validator could not
+#: reach a verdict (#1801). Before this, every such path returned a permissive
+#: "valid" — a slow or broken validator admitted the brief, which is the one
+#: failure mode a guard is not allowed to have. Admission now requires either
+#: a real "valid" verdict or nothing at all; the deterministic screen above
+#: has already run, so this is not the system's only line of defence, but it
+#: is honest about what it does and does not know.
+_VALIDATOR_UNAVAILABLE_REASON = "we could not validate this brief right now"
+_VALIDATOR_UNAVAILABLE_HINT = "Try again in a moment, or shorten the brief."
 
-    if all(t.isupper() and len(t) <= 5 for t in tokens):
-        return None  # plausible ticker list, e.g. "BTC ETH SOL"
 
-    # Junk needs positive evidence of mashing, never just unfamiliar words.
-    if len(tokens) >= _MIN_GIBBERISH_TOKENS and any(_looks_like_mash(t) for t in lowered):
-        return {
-            "reason": "it does not look like an investment goal",
-            "hint": "Mention an asset class, a goal, or a risk appetite.",
-        }
-    return None  # nothing mash-shaped to point at; defer to the LLM
+def _validator_unavailable(why: str) -> dict[str, Any]:
+    logger.warning("brief validation unavailable (%s) — refusing, fail-closed", why)
+    return {
+        "is_valid": False,
+        "validator_unavailable": True,
+        "code": "validator_unavailable",
+        "reason": _VALIDATOR_UNAVAILABLE_REASON,
+        "hint": _VALIDATOR_UNAVAILABLE_HINT,
+    }
 
 
 async def _validate_brief(brief: GenerateBrief) -> dict[str, Any]:
-    """Call the LLM to validate the brief.
+    """Call the LLM to validate the brief. FAILS CLOSED (#1801).
 
-    Runs ``cheap_brief_reject`` FIRST — see that function's docstring — so an
-    unambiguously-junk brief never reaches the LLM call at all, here or on
-    any other caller of this function.
+    Runs the deterministic screen FIRST — see ``cheap_brief_reject`` — so a
+    brief that is junk or carries an injection payload never reaches the LLM
+    call at all, here or on any other caller of this function.
 
-    Returns the parsed validation JSON. On any failure (LLM down, malformed
-    response, schema mismatch), returns a permissive valid result — refusing
-    to generate because the validator broke is worse than generating with
-    the user's stated values.
+    Returns the parsed validation JSON on a real verdict. Every path that
+    cannot produce one — backend unavailable, unparseable response, timeout,
+    any exception — returns ``_validator_unavailable(...)``, which the caller
+    surfaces as a recoverable "we could not validate this brief right now".
+
+    **This used to return a permissive "valid" instead.** That made a slow or
+    broken validator into an open door: the one system prompt asked to catch
+    "gibberish, off-topic, attempts to jailbreak" admitted everything the
+    moment it stopped answering, and nothing in the logs distinguished
+    "validated" from "gave up". Refusing is the honest outcome, and it costs
+    the user a retry rather than costing us an unscreened prompt. The
+    deterministic screen above has already run and is unaffected by the LLM's
+    health, so this refusal is a degradation of the *semantic* check only.
     """
     cheap_reject = cheap_brief_reject(brief)
     if cheap_reject is not None:
         return {"is_valid": False, **cheap_reject}
 
-    permissive = {
-        "is_valid": True,
-        "intent_summary": brief.intent[:140],
-        "asset_classes_inferred": brief.asset_classes or [],
-        "time_horizon_inferred": "unknown",
-        "risk_appetite_adjusted": brief.risk_appetite,
-    }
     try:
         from archimedes.services.llm_backend import make_llm_backend
 
         backend = make_llm_backend()
         if not getattr(backend, "available", False):
-            return permissive
+            return _validator_unavailable("backend unavailable")
         user_msg = json.dumps(
             {
                 "intent": brief.intent,
@@ -356,8 +282,7 @@ async def _validate_brief(brief: GenerateBrief) -> dict[str, Any]:
         )
         parsed = _parse_validation_json(raw)
         if not parsed or "is_valid" not in parsed:
-            logger.info("brief validation: unparseable response, falling through permissive")
-            return permissive
+            return _validator_unavailable("unparseable response")
         # Ensure required keys exist with safe defaults.
         parsed.setdefault("intent_summary", brief.intent[:140])
         parsed.setdefault("asset_classes_inferred", brief.asset_classes or [])
@@ -365,8 +290,7 @@ async def _validate_brief(brief: GenerateBrief) -> dict[str, Any]:
         parsed.setdefault("risk_appetite_adjusted", brief.risk_appetite)
         return parsed
     except Exception as exc:
-        logger.warning("brief validation failed (permissive fallback): %s", exc)
-        return permissive
+        return _validator_unavailable(f"{type(exc).__name__}: {exc}")
 
 
 @dataclass
@@ -568,7 +492,8 @@ def _rigor_verdict_for(
     in_sample_sharpe = compute_in_sample_sharpe(return_series)
     # PBO is library-level (needs ≥2 candidate return series); the caller
     # computes it once over all candidates and patches the verdict below.
-    # All four admission primitives gate `passing`: DSR (p ≥ 0.95), OOS Sharpe
+    # All four admission primitives gate `passing`: DSR (p ≥ DSR_P_BADGE_MIN —
+    # the ONE bar, shared with the badge/curated path, #1794), OOS Sharpe
     # (> 0, with no IS/OOS cliff), look-ahead audit (clean), and PBO (< 0.5,
     # patched in _patch_pbo).
     oos_pass = oos is not None and oos > 0.0
@@ -580,7 +505,7 @@ def _rigor_verdict_for(
         and oos / in_sample_sharpe < 0.5
     ):
         oos_pass = False
-    passing = bool(dsr_p is not None and dsr_p >= 0.95 and oos_pass and lookahead_passed)
+    passing = bool(dsr_p is not None and dsr_p >= DSR_P_BADGE_MIN and oos_pass and lookahead_passed)
     return {
         "dsr": round(float(dsr), 4) if dsr is not None else None,
         "dsr_p_value": round(float(dsr_p), 4) if dsr_p is not None else None,
@@ -730,7 +655,9 @@ def _patch_dsr_with_pool_correlation(candidates: list[_CandidateResult]) -> None
         # here (pbo < 0.5, undefined-PBO / N<2 patched to 0.0 which always passes).
         pbo = v.get("pbo")
         pbo_pass = pbo is None or pbo < 0.5
-        v["passing"] = bool(dsr_p >= 0.95 and oos_pass and v.get("lookahead_audit_passed", False) and pbo_pass)
+        v["passing"] = bool(
+            dsr_p >= DSR_P_BADGE_MIN and oos_pass and v.get("lookahead_audit_passed", False) and pbo_pass
+        )
 
 
 # ── Event emitter ─────────────────────────────────────────────────────────
@@ -1056,6 +983,84 @@ def _passport_paper_refs(c: _CandidateResult) -> list[Any]:
     return refs
 
 
+def _paper_attribution_entry(c: _CandidateResult) -> dict[str, Any] | None:
+    """The ONE paper-attribution entry for a candidate, or ``None`` when there is
+    nothing to attribute.
+
+    Extracted out of :func:`_transcript_with_paper_record` because this entry
+    now has TWO consumers, and its summary sentence must exist in exactly one
+    place or they drift into two different claims about the same run:
+
+    * :func:`_transcript_with_paper_record` appends it to the persisted
+      ``debate_transcripts.transcript_json`` list, which is what the passport
+      reads back through ``GET /api/strategies/{id}/debate``;
+    * ``debate_engine._run_debate_leaderboard`` pushes it onto the live SSE
+      stream as ``debate_attribution``, so a user watching a generation sees
+      the per-paper record while it happens rather than only afterwards.
+
+    Callers on the SSE path MUST run it through
+    ``models.debate_transcript.sanitize_transcript`` themselves: both new keys
+    carry model prose (``fusion_reasoning`` directly, each ``paper_verdicts``
+    row's ``discard_reasons`` by way of ``_aggregate_paper_verdicts``), and only
+    the DB writer scrubs on the way in.
+    """
+    verdicts = c.debate_paper_verdicts or []
+    reasoning = (c.fusion_reasoning or "").strip()
+    if not verdicts and not reasoning:
+        return None
+    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
+    summary = (
+        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
+        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
+        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
+    )
+    return {
+        "role": "attribution",
+        "round": None,
+        "verdict": summary,
+        "paper_verdicts": verdicts,
+        "fusion_reasoning": reasoning,
+    }
+
+
+def _passport_spec_fields(c: _CandidateResult) -> dict[str, Any]:
+    """The passport's three executable card fields, derived from the DSL spec (#1769).
+
+    ``**``-spread into every ``StrategyPassport(...)`` construction below, for
+    the same reason ``_passport_paper_refs`` is shared: the three writers
+    (``_persist_candidate`` and the two real-metric rebuilds) each re-declare the
+    passport from scratch, and a field only one of them sets is a field the next
+    rebuild silently reverts.
+
+    Before this, all three passed ``asset_universe=c.asset_universe or []`` and
+    passed NEITHER ``rebalance_frequency`` NOR ``position_sizing`` — so every
+    generated row in ``strategy_passports`` took the column defaults, ``weekly``
+    and ``equal_weight``, whatever its spec said. The card then described a
+    strategy nobody had backtested. Owner dogfood 2026-09-01 caught it on a spec
+    saying ``monthly`` / ``full_invested_when_in_market``.
+
+    Falls back to the candidate's own universe (and the dataclass defaults for
+    the other two) when there is no validating spec — the fixture /
+    buy-and-hold path has none, and inventing a cadence for it would be the same
+    defect with the sign flipped.
+    """
+    from archimedes.models.strategy import PositionSizing, RebalanceFrequency
+    from archimedes.services.passport_spec_parity import card_fields_from_spec
+
+    derived = card_fields_from_spec(c.strategy_spec, strategy_id=c.candidate_id)
+    if derived is None:
+        return {"asset_universe": c.asset_universe or []}
+    return {
+        "asset_universe": derived["asset_universe"],
+        # Both enums are supersets of the DSL's closed vocabulary (see
+        # PositionSizing's docstring), and `card_fields_from_spec` returns only
+        # values `validate_strategy_spec` admitted — so these constructions
+        # cannot raise on a spec that reached here.
+        "rebalance_frequency": RebalanceFrequency(derived["rebalance_frequency"]),
+        "position_sizing": PositionSizing(derived["position_sizing"]),
+    }
+
+
 def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     """The candidate's transcript plus one trailing paper-attribution entry (#1739).
 
@@ -1081,26 +1086,8 @@ def _transcript_with_paper_record(c: _CandidateResult) -> list[dict[str, Any]]:
     safe, whoever wrote the row.
     """
     transcript = list(c.debate_transcript or [])
-    verdicts = c.debate_paper_verdicts or []
-    reasoning = (c.fusion_reasoning or "").strip()
-    if not verdicts and not reasoning:
-        return transcript
-    engaged = sum(1 for v in verdicts if isinstance(v, dict) and v.get("verdict") != "unused")
-    summary = (
-        f"Paper attribution: {engaged} of {len(verdicts)} retrieved paper(s) were cited or "
-        f"discarded by name in this debate; {c.distinct_mechanism_papers} of "
-        f"{len(c.source_arxiv_ids)} cited paper(s) name a mechanism this strategy trades."
-    )
-    return [
-        *transcript,
-        {
-            "role": "attribution",
-            "round": None,
-            "verdict": summary,
-            "paper_verdicts": verdicts,
-            "fusion_reasoning": reasoning,
-        },
-    ]
+    entry = _paper_attribution_entry(c)
+    return transcript if entry is None else [*transcript, entry]
 
 
 async def _persist_debate_transcripts(
@@ -1247,18 +1234,40 @@ async def run_generation(
                 }
 
         if not validated.get("is_valid", True):
-            # Brief failed validation — emit a recoverable error and stop.
-            # Frontend already handles `error` with recoverable=true by
-            # offering a "regenerate" CTA with the reason inline.
+            # Brief refused — emit a recoverable error and stop. Frontend
+            # already handles `error` with recoverable=true by offering a
+            # "regenerate" CTA with the reason inline.
+            #
+            # Two distinct outcomes ride this branch and they must not be
+            # conflated (#1801). A REJECTED brief is a statement about the
+            # brief, so it gets `_invalid_brief_message`'s "we couldn't turn
+            # that into an investment brief (…)" framing. An UNVALIDATED
+            # brief is a statement about US — the validator could not reach a
+            # verdict — and telling that user their brief was invalid would
+            # be a false claim about text we never actually judged.
+            unavailable = bool(validated.get("validator_unavailable"))
+            if unavailable:
+                message = (
+                    "We could not validate this brief right now — try again, or shorten it. "
+                    "Nothing was generated and no work was spent."
+                )
+            else:
+                message = _invalid_brief_message(validated.get("reason"))
             await emit.emit(
                 "error",
-                message=_invalid_brief_message(validated.get("reason")),
+                message=message,
                 hint=validated.get("hint") or "Mention an asset class, a goal, or a risk appetite.",
                 recoverable=True,
-                code="BRIEF_INVALID",
+                code="BRIEF_UNVALIDATED" if unavailable else "BRIEF_INVALID",
+                # Machine-readable reason code from services.brief_screen's
+                # versioned vocabulary (or "validator_unavailable"). Additive:
+                # every pre-#1801 field on this event is unchanged.
+                reason_code=validated.get("code") or "",
             )
-            meter.set_meta("outcome", "brief_invalid")
-            await store.update_status(job_id, "error", error="brief invalid")
+            meter.set_meta("outcome", "validator_unavailable" if unavailable else "brief_invalid")
+            await store.update_status(
+                job_id, "error", error="brief could not be validated" if unavailable else "brief invalid"
+            )
             return
 
         # Honor any risk_appetite_adjusted from the validator (e.g. the user
@@ -1310,6 +1319,7 @@ async def run_generation(
         # No silent fallback to the retired single-agent paths: if the society
         # cannot run, the job errors HONESTLY. The deterministic fixture runner
         # survives strictly for hermetic tests (TESTING / explicit fixture env).
+        from archimedes.agents.corpus_viability import REASON_CORPUS_UNAVAILABLE, assess_corpus_viability
         from archimedes.agents.debate_engine import _debate_can_run, _run_debate_leaderboard
 
         use_live = _llm_available()
@@ -1326,19 +1336,66 @@ async def run_generation(
             pipeline_reason = "deterministic fixture runner (tests only — no LLM in the environment)"
             runner = _run_fixture_candidate
         else:
-            reason = (
-                "no LLM backend reachable"
-                if not use_live
-                else "the corpus yielded <2 papers for this steer — the society cannot fuse"
-            )
+            # FAILED BEFORE SYNTHESIS. Nothing has been drafted, backtested or
+            # persisted at this point in the pipeline, so there is no partial
+            # strategy for Library/leaderboard to pick up — but the job record
+            # has to SAY so, with the reason, rather than carrying a bare
+            # "error" string. (The owner's screenshot of this failure: one red
+            # line in the event log, and no way forward.)
+            #
+            # Two distinct failures share the GENERATION_UNAVAILABLE code:
+            # no LLM backend (nothing about the brief can fix it), and a corpus
+            # that yielded < MIN_PAPERS candidates for this steer (which the
+            # user CAN act on). Only the second one pays for a corpus
+            # assessment — it re-runs the same retrieval the precheck just ran,
+            # this time keeping the count and deriving broadening suggestions
+            # from the corpus itself. No LLM call.
+            if not use_live:
+                reason = "no LLM backend reachable"
+                failure: dict[str, Any] = {"reason_code": "NO_LLM_BACKEND", "steer": brief.intent or ""}
+                message = (
+                    "Generation stopped before synthesis: no LLM backend is reachable right now, "
+                    "so no strategy was drafted or saved. Nothing in your brief caused this."
+                )
+            else:
+                viability = await asyncio.to_thread(assess_corpus_viability, brief)
+                # The machine reason, preserved verbatim from the previous
+                # wording so log greps and the job record read the same string
+                # they always did. `reason_code` carries the finer distinction
+                # (too few candidates vs. no corpus loaded at all).
+                reason = "the corpus yielded <2 papers for this steer — the society cannot fuse"
+                if viability.can_run:
+                    # The gate already said no; this second retrieval says yes
+                    # (transient DB failure into the file fallback, a concurrent
+                    # intake, …). We are committed to the failure branch, so its
+                    # counts would contradict it: "matched 3 papers … needs at
+                    # least 2" under a run that did not happen. Report the
+                    # disagreement with no numbers attached — CORPUS_UNAVAILABLE
+                    # renders the one-line message and no ways forward, which is
+                    # the honest reading when we cannot say what retrieval found.
+                    failure = {"reason_code": REASON_CORPUS_UNAVAILABLE, "steer": brief.intent or ""}
+                    message = (
+                        "Generation stopped before synthesis: the corpus check that gates the society "
+                        "and the one that explains it disagreed, so no strategy was drafted or saved."
+                    )
+                else:
+                    failure = viability.as_event_fields()
+                    message = viability.message()
             await emit.emit(
                 "error",
-                message=f"Generation is unavailable right now: {reason}.",
+                message=message,
                 recoverable=True,
                 code="GENERATION_UNAVAILABLE",
+                reason=reason,
+                **failure,
             )
             meter.set_meta("outcome", "generation_unavailable")
-            await store.update_status(job_id, "error", error=f"generation unavailable: {reason}")
+            await store.update_status(
+                job_id,
+                "error",
+                error=f"generation unavailable: {reason}",
+                result={"failed_before_synthesis": True, "failure": {"code": "GENERATION_UNAVAILABLE", **failure}},
+            )
             return
 
         # Regime plan AFTER the runner is final: the society owns its own
@@ -1843,19 +1900,36 @@ async def _persist_candidate(
                     id=record.id,
                     papers=papers,
                     methodology_summary=c.thesis or "",
-                    asset_universe=c.asset_universe or [],
+                    # asset_universe / rebalance_frequency / position_sizing —
+                    # the three executable card fields, from the validated spec
+                    # (#1769). See `_passport_spec_fields`.
+                    **_passport_spec_fields(c),
                     universe_source=c.universe_source,
                     status=StrategyStatus(record.status) if record.status else StrategyStatus.CANDIDATE,
                     regime_tag=_regime_tag,
-                    passes_rigor_gate=bool(c.rigor_verdict.get("passing", False)) if c.rigor_verdict else False,
-                    deflated_sharpe_ratio=c.rigor_verdict.get("dsr") if c.rigor_verdict else None,
-                    # dsr_p_value was missing from the initial passport persist (#passport-honesty):
-                    # the rigor verdict carries it under "dsr_p_value" but earlier code only wrote
-                    # "dsr", "pbo", and "oos_sharpe" — leaving the passport column NULL even when
-                    # the generation leaderboard had the correct value.
-                    dsr_p_value=c.rigor_verdict.get("dsr_p_value") if c.rigor_verdict else None,
-                    pbo_score=c.rigor_verdict.get("pbo") if c.rigor_verdict else None,
-                    out_of_sample_sharpe=c.rigor_verdict.get("oos_sharpe") if c.rigor_verdict else None,
+                    # NO RIGOR VERDICT, AND NO RIGOR NUMBERS, FROM HERE.
+                    #
+                    # This call used to write the generation-time FUSION verdict
+                    # onto the passport — `passes_rigor_gate` from
+                    # c.rigor_verdict["passing"], plus its dsr / dsr_p_value /
+                    # pbo / oos_sharpe. That made the passport's verdict column
+                    # mixed-vintage: it held the fusion gate's answer until (and
+                    # only if) the post-backtest re-grade below happened to run,
+                    # and every read surface presented it as the strategy's
+                    # grade. #1747 is what that looks like from the outside.
+                    #
+                    # Generation, backtesting and grading are one-time events
+                    # (docs/adr/rigor-verdict-of-record.md). At THIS point the
+                    # strategy has been generated and not yet graded, so the row
+                    # is written ungraded — ingest_passport with no
+                    # ``rigor_verdict=`` stores rigor_gate_status="pending",
+                    # passes_rigor_gate=False, no graded_at, no gate_version.
+                    #
+                    # The fusion verdict is not lost and is not demoted: it stays
+                    # on StrategyRecord.rigor_verdict (written by upsert_strategy
+                    # above) as the DEBATE RECORD — what the synthesis gate
+                    # thought, which is worth keeping precisely because the real
+                    # gate can disagree with it. It is simply not a rigor grade.
                 )
                 with get_session() as sess2:
                     ingest_passport(
@@ -1933,25 +2007,32 @@ def _portfolio_daily_returns(artifact: dict) -> list[float]:
 
 
 def _refresh_passport_real_metrics(
-    session: Any, c: _CandidateResult, strategy_id: str, result: Any, *, passes_rigor_gate: bool, n_obs: int
+    session: Any, c: _CandidateResult, strategy_id: str, result: Any, *, verdict: Any, n_obs: int
 ) -> None:
-    """Refresh the strategy_passports ``real_*`` columns + ``passes_rigor_gate`` for a
-    fusion/debate candidate whose real returns were just persisted.
+    """Refresh the strategy_passports ``real_*`` columns AND write the rigor verdict
+    of record for a fusion/debate candidate whose real returns were just persisted.
 
-    The single-strategy read path (``_passport_to_strategy_response``) derives
-    ``rigor_gate_status`` from the STORED passport columns (``pending`` while
-    ``sharpe_ratio is None``) and the deploy gate (``_strategy_rigor_status``) reads
-    ``record.passes_rigor_gate`` — neither re-grades the ``backtest_results`` row. So
-    persisting the row alone leaves both at ``pending``; this in-place passport update
-    is what makes the endpoint + deploy gate see the real verdict. Mirrors the passport
-    refresh in ``_backtest_and_persist``. ``passes_rigor_gate`` is the live-gate re-grade
-    of the real returns (single source of truth).
+    **This call is the grading event.** ``verdict`` is the
+    :class:`~archimedes.services.live_rigor_gate.RigorGateVerdict` that
+    ``verdict_from_returns`` produced by running the real gate over the real
+    persisted return series — the one moment in a strategy's life when a gate
+    actually looks at it. Every read surface serves what this writes; nothing
+    recomputes a verdict on read (docs/adr/rigor-verdict-of-record.md).
+
+    The four-state ``verdict.status`` is stored as-is, so ``degenerate`` (a
+    zero-variance persisted series, #1184) survives to the badge as itself
+    rather than being re-derived — or, worse, collapsing into ``fail``.
+    ``cohort_n=1`` because this grade is self-contained: the strategy was graded
+    against its own returns alone, not against a cohort
+    (docs/adr/num-trials-self-containment.md).
+
+    Mirrors the passport refresh in ``_backtest_and_persist``.
     """
     from datetime import date as _date
 
     from archimedes.models.strategy import StrategyPassport, StrategyStatus
     from archimedes.models.strategy_store import StrategyRecord
-    from archimedes.services.passport_loader import ingest_passport
+    from archimedes.services.passport_loader import RigorVerdictWrite, ingest_passport
 
     record = session.query(StrategyRecord).filter_by(id=strategy_id).first()
     status_val = StrategyStatus(record.status) if record and record.status else StrategyStatus.CANDIDATE
@@ -1961,7 +2042,11 @@ def _refresh_passport_real_metrics(
         id=strategy_id,
         papers=papers,
         methodology_summary=c.thesis or "",
-        asset_universe=c.asset_universe or [],
+        # Same three spec-derived card fields the initial persist writes
+        # (#1769) — this rebuild replaces the row in place, so omitting them
+        # here would revert the card to the ``weekly``/``equal_weight`` column
+        # defaults the moment real metrics land.
+        **_passport_spec_fields(c),
         universe_source=c.universe_source,
         status=status_val,
         regime_tag=regime_tag,
@@ -1971,6 +2056,10 @@ def _refresh_passport_real_metrics(
         real_max_dd=result.max_drawdown,
         real_calmar=result.calmar_ratio,
         real_corr_spy=result.correlation_to_spy,
+        # The run measured a win rate; it was the one metric of the block this
+        # refresh never handed on, so the column stayed NULL beside a fresh
+        # Sharpe from the same run.
+        real_win_rate=result.win_rate,
         real_total_trades=result.total_trades,
         real_backtest_start=(result.backtest_start.isoformat() if isinstance(result.backtest_start, _date) else None),
         real_backtest_end=(result.backtest_end.isoformat() if isinstance(result.backtest_end, _date) else None),
@@ -1979,10 +2068,15 @@ def _refresh_passport_real_metrics(
         num_trials_in_selection=result.num_trials_in_selection,
         pbo_score=result.pbo_score,
         out_of_sample_sharpe=result.out_of_sample_sharpe,
-        passes_rigor_gate=passes_rigor_gate,
         n_obs_daily=n_obs,
     )
-    ingest_passport(session, passport, generation_method=c.generation_method, force_update=True)
+    ingest_passport(
+        session,
+        passport,
+        generation_method=c.generation_method,
+        force_update=True,
+        rigor_verdict=RigorVerdictWrite.from_verdict(verdict, cohort_n=1),
+    )
 
 
 async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Emitter, num_trials: int) -> None:
@@ -2135,9 +2229,7 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
                 artifact_json=artifact_json,
                 source_pipeline=SOURCE_PIPELINE_DSL_FUSION,
             )
-            _refresh_passport_real_metrics(
-                session, c, strategy_id, result, passes_rigor_gate=live.passes, n_obs=len(returns)
-            )
+            _refresh_passport_real_metrics(session, c, strategy_id, result, verdict=live, n_obs=len(returns))
             # WITHOUT this commit the flushed rows roll back on close → gate stays "pending"
             # (the sibling _backtest_and_persist commits too). Empirically: flush-only = 0 rows.
             session.commit()
@@ -2150,7 +2242,19 @@ async def _persist_real_returns(c: _CandidateResult, strategy_id: str, emit: _Em
             "backtest_done", candidate_id=c.candidate_id, strategy_id=strategy_id, source=c.generation_method
         )
     except Exception as exc:
-        logger.warning("persist_real_returns failed for %s: %s", strategy_id, exc)
+        # LOUD, not a warning. This is the swallow that decides whether a
+        # strategy ever gets graded at all: if it fires, no RigorVerdictWrite
+        # reaches the passport and the row stays honestly "pending" forever —
+        # invisible in prod unless someone goes looking for a strategy that
+        # never got a badge. error + exc_info so the traceback and the strategy
+        # id are both in the log line that matters
+        # (docs/adr/rigor-verdict-of-record.md).
+        logger.error(
+            "persist_real_returns FAILED for strategy %s — the passport stays UNGRADED (rigor_gate_status='pending'): %s",
+            strategy_id,
+            exc,
+            exc_info=True,
+        )
         await emit.emit("backtest_failed", candidate_id=c.candidate_id, strategy_id=strategy_id, error=str(exc))
 
 
@@ -2221,7 +2325,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
             insert_backtest_if_missing,
         )
         from archimedes.services.live_rigor_gate import verdict_from_returns
-        from archimedes.services.passport_loader import ingest_passport
+        from archimedes.services.passport_loader import RigorVerdictWrite, ingest_passport
         from archimedes.services.portfolio_backtester import backtest_portfolio
 
         # Run the actual backtest. Raises on insufficient data / fetch failure.
@@ -2258,8 +2362,8 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         # curated on one scale.
         #
         # It previously read BacktestResult.passes_rigor_gate, a second gate
-        # carrying its own thresholds (sharpe>0.5, dsr_p>0.95, pbo<0.5,
-        # oos/is>=0.5, max_dd<0.5) while the curated read path used
+        # carrying its own thresholds (a raw-Sharpe floor, its own DSR bar,
+        # pbo<0.5, oos/is>=0.5, max_dd<0.5) while the curated read path used
         # verdict.passes from live_rigor_gate. The comment here claimed the two
         # matched. They did not, and the mismatch ran in the fail-closed
         # direction for every generated portfolio strategy ever produced:
@@ -2305,7 +2409,9 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 id=strategy_id,
                 papers=papers,
                 methodology_summary=c.thesis or "",
-                asset_universe=c.asset_universe or [],
+                # Same three spec-derived card fields as the other two writers
+                # (#1769) — this is an in-place `force_update` rebuild.
+                **_passport_spec_fields(c),
                 status=status_val,
                 regime_tag=_regime_tag,
                 # Real backtest fields — the whole point of this function
@@ -2315,6 +2421,7 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 real_max_dd=result.max_drawdown,
                 real_calmar=result.calmar_ratio,
                 real_corr_spy=result.correlation_to_spy,
+                real_win_rate=result.win_rate,  # same gap as the DSL sibling above
                 real_total_trades=result.total_trades,
                 real_backtest_start=(
                     result.backtest_start.isoformat() if isinstance(result.backtest_start, _date) else None
@@ -2325,10 +2432,20 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
                 num_trials_in_selection=result.num_trials_in_selection,
                 pbo_score=result.pbo_score,
                 out_of_sample_sharpe=result.out_of_sample_sharpe,
-                passes_rigor_gate=passes,
                 n_obs_daily=len(artifact["results"][0]["metrics"].get("daily_returns", [])),
             )
-            ingest_passport(session, passport, generation_method="fusion", force_update=True)
+            # THE grading event for this path — the same one-time write the DSL
+            # sibling makes (see _refresh_passport_real_metrics). `live` is the
+            # real gate's four-state answer over the real returns; storing its
+            # status verbatim is what keeps `degenerate` from collapsing into
+            # `fail`. cohort_n=1: graded against itself alone.
+            ingest_passport(
+                session,
+                passport,
+                generation_method="fusion",
+                force_update=True,
+                rigor_verdict=RigorVerdictWrite.from_verdict(live, cohort_n=1),
+            )
             session.commit()
 
         return {
@@ -2356,7 +2473,16 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
     except Exception as exc:
         # Non-fatal — the strategy stays in the Library with the placeholder,
         # which is honest. The generation succeeded; the backtest didn't.
-        logger.warning("backtest_and_persist failed for %s: %s", strategy_id, exc)
+        # LOUD anyway: this is the other swallow that decides whether the
+        # grading event happens at all, and a silently ungraded strategy looks
+        # exactly like one whose backtest is merely still running
+        # (docs/adr/rigor-verdict-of-record.md).
+        logger.error(
+            "backtest_and_persist FAILED for strategy %s — the passport stays UNGRADED (rigor_gate_status='pending'): %s",
+            strategy_id,
+            exc,
+            exc_info=True,
+        )
         await emit.emit(
             "backtest_failed",
             strategy_id=strategy_id,
