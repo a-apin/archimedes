@@ -133,10 +133,10 @@ For every strategy admitted to the Tier-1 library, the
 [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md)
 contract requires:
 
-- **Deflated Sharpe Ratio (DSR)** — excess Sharpe positive at 90% one-sided confidence
+- **Deflated Sharpe Ratio (DSR)** — excess Sharpe positive at 95% one-sided confidence
   under standard errors robust to non-normality and autocorrelation; on the generated path
   additionally deflated against that strategy's own candidate pool (Bailey & López de Prado
-  2014). `dsr_p_value >= 0.90`. On the curated library `num_trials = 1`, so DSR runs
+  2014). `dsr_p_value >= DSR_P_BADGE_MIN` (0.95, defined once in `rigor_profiles.py`). On the curated library `num_trials = 1`, so DSR runs
   **undeflated** — no multiple-testing correction on that path
   ([`adr/num-trials-self-containment.md`](adr/num-trials-self-containment.md)).
 - **Probability of Backtest Overfitting (PBO)** — CSCV-framework probability that the

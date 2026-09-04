@@ -50,6 +50,7 @@ from archimedes.api.generate_schemas import GenerateBrief
 from archimedes.services import cost_meter
 from archimedes.services.identity_events import emit_identity_event
 from archimedes.services.job_queue import JobStore, get_job_store
+from archimedes.services.rigor_profiles import DSR_P_BADGE_MIN
 
 logger = logging.getLogger(__name__)
 
@@ -568,7 +569,8 @@ def _rigor_verdict_for(
     in_sample_sharpe = compute_in_sample_sharpe(return_series)
     # PBO is library-level (needs ≥2 candidate return series); the caller
     # computes it once over all candidates and patches the verdict below.
-    # All four admission primitives gate `passing`: DSR (p ≥ 0.95), OOS Sharpe
+    # All four admission primitives gate `passing`: DSR (p ≥ DSR_P_BADGE_MIN —
+    # the ONE bar, shared with the badge/curated path, #1794), OOS Sharpe
     # (> 0, with no IS/OOS cliff), look-ahead audit (clean), and PBO (< 0.5,
     # patched in _patch_pbo).
     oos_pass = oos is not None and oos > 0.0
@@ -580,7 +582,7 @@ def _rigor_verdict_for(
         and oos / in_sample_sharpe < 0.5
     ):
         oos_pass = False
-    passing = bool(dsr_p is not None and dsr_p >= 0.95 and oos_pass and lookahead_passed)
+    passing = bool(dsr_p is not None and dsr_p >= DSR_P_BADGE_MIN and oos_pass and lookahead_passed)
     return {
         "dsr": round(float(dsr), 4) if dsr is not None else None,
         "dsr_p_value": round(float(dsr_p), 4) if dsr_p is not None else None,
@@ -730,7 +732,9 @@ def _patch_dsr_with_pool_correlation(candidates: list[_CandidateResult]) -> None
         # here (pbo < 0.5, undefined-PBO / N<2 patched to 0.0 which always passes).
         pbo = v.get("pbo")
         pbo_pass = pbo is None or pbo < 0.5
-        v["passing"] = bool(dsr_p >= 0.95 and oos_pass and v.get("lookahead_audit_passed", False) and pbo_pass)
+        v["passing"] = bool(
+            dsr_p >= DSR_P_BADGE_MIN and oos_pass and v.get("lookahead_audit_passed", False) and pbo_pass
+        )
 
 
 # ── Event emitter ─────────────────────────────────────────────────────────
@@ -2413,8 +2417,8 @@ async def _backtest_and_persist(c: _CandidateResult, strategy_id: str, emit: _Em
         # curated on one scale.
         #
         # It previously read BacktestResult.passes_rigor_gate, a second gate
-        # carrying its own thresholds (sharpe>0.5, dsr_p>0.95, pbo<0.5,
-        # oos/is>=0.5, max_dd<0.5) while the curated read path used
+        # carrying its own thresholds (a raw-Sharpe floor, its own DSR bar,
+        # pbo<0.5, oos/is>=0.5, max_dd<0.5) while the curated read path used
         # verdict.passes from live_rigor_gate. The comment here claimed the two
         # matched. They did not, and the mismatch ran in the fail-closed
         # direction for every generated portfolio strategy ever produced:

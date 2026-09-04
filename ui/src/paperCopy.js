@@ -224,7 +224,7 @@ export function marksStalenessNote(mark, now = Date.now(), intervalMinutes = 15)
  */
 export function noMarksNote(status) {
   return status === 'active'
-    ? 'No live value yet — the first intraday mark lands at the next 15-minute tick.'
+    ? 'No live value yet — none has been marked for this deployment. The daily settle is the graded number.'
     : 'No live value — marks stop when a deployment is stopped.'
 }
 
@@ -508,4 +508,106 @@ export function paperReturnAnnouncement(dep) {
       ? 'No settled paper return yet'
       : `Paper total return ${figure} over ${days} trading day${days === 1 ? '' : 's'}`
   return `${perf}. ${gateVerdictText(dep)}.`
+}
+
+// ── Page-intro cadence copy (#1802) ──────────────────────────────────────────
+//
+// The intro used to tell EVERY reader, unconditionally, that the live value
+// "re-prices the strategy's asset basket every 15 minutes". That sentence is a
+// claim about a job that runs: `backend/archimedes/services/paper_marks.py` and
+// `backend/archimedes/scripts/run_paper_marks.py` exist, but nothing under `infra/` schedules
+// them (grep -rn paper_marks infra/ -> no hits), so in production no marks are
+// written and the 15-minute cadence is a promise the deployment does not keep.
+//
+// The graded truth is the DAILY settle: `paper_trading.py`'s advance loop runs
+// on PAPER_ADVANCE_INTERVAL_HOURS (default 24) and appends one real-data return
+// per trading day. That sentence is true today and is therefore unconditional.
+// The intraday sentence is now earned per-render: it appears only when the
+// payload actually carries a mark fresh enough to back it, and a mark that has
+// stopped moving gets the existing staleness note instead of a cadence claim.
+//
+// The freshness rule is NOT a new number: it is exactly marksStalenessNote's —
+// two cadence intervals — so the page and the per-card line can never disagree
+// about whether the same mark is live.
+
+/**
+ * The unconditional sentence: what the ledger does today, in production,
+ * without any job that is not deployed. `advance_all` settles one graded
+ * trading day at a time; a mark, when one exists, is decoration on top of it
+ * and is labelled unsettled.
+ *
+ * It says what the settled series IS — a paper track record on Arc testnet,
+ * with no real funds — never what it may one day become. An earlier draft of
+ * this constant promised the series would carry over at a cutover that #1240
+ * cancelled by owner call, with no date scheduled; #1822 retracted that promise
+ * from every paper-trading copy surface, and this wording is what it pins. The
+ * sentence is written across a `' + '` concatenation on purpose: #1822's guard
+ * flattens that before reading it, so where this line happens to wrap can never
+ * decide the verdict.
+ */
+export const PAPER_SETTLE_CADENCE =
+  'The ledger settles once per trading day from the graded replay — that settled series is a paper ' +
+  'track record on Arc testnet, with no real funds. A live value is shown beneath it only when one ' +
+  'has been marked, and it is always unsettled.'
+
+/**
+ * The conditional sentence. Only rendered when `paperCadenceCopy` is handed a
+ * mark that is actually fresh — never as a standing promise about a job.
+ */
+export const PAPER_INTRADAY_CADENCE =
+  "The live value re-prices the strategy's asset basket every 15 minutes — it is unsettled, carries the " +
+  'time it was observed, and never changes what the strategy does.'
+
+/**
+ * The intro's cadence copy for the marks actually in the payload.
+ *
+ * - no usable mark  -> the daily-settle sentence ALONE. No cadence is claimed,
+ *   because with no marks job deployed there is no cadence to claim.
+ * - fresh mark      -> the settle sentence plus the 15-minute sentence, which
+ *   the observed mark has now earned.
+ * - stale mark      -> the settle sentence plus `marksStalenessNote`'s existing
+ *   observation-age wording. Never the cadence sentence: a mark that stopped
+ *   arriving is the exact case where "every 15 minutes" is false.
+ *
+ * `intervalMinutes` is threaded straight through to marksStalenessNote so the
+ * two surfaces share one definition of "fresh".
+ */
+export function paperCadenceCopy(mark, now = Date.now(), intervalMinutes = 15) {
+  const sentences = [PAPER_SETTLE_CADENCE]
+  if (!mark || markLabel(mark) === '—') return { sentences, intraday: false, staleness: null }
+  const staleness = marksStalenessNote(mark, now, intervalMinutes)
+  if (staleness) return { sentences, intraday: false, staleness }
+  sentences.push(PAPER_INTRADAY_CADENCE)
+  return { sentences, intraday: true, staleness: null }
+}
+
+/**
+ * The newest mark across every deployment on the page, or null when there is
+ * none — the input `paperCadenceCopy` is gated on.
+ *
+ * Prefers the polled list for a deployment and falls back to the summary's
+ * `latest_mark` (paper_trading.py:1088), matching LiveValue's own precedence so
+ * the intro can never claim a cadence the cards below it are not showing. A
+ * mark with an unusable timestamp is skipped rather than ordered arbitrarily.
+ */
+export function newestMark(deployments, marksById = {}, errorsById = {}) {
+  let best = null
+  let bestTs = -Infinity
+  for (const dep of deployments || []) {
+    const id = dep?.deployment_id
+    // Same precedence as LiveValue, error branch included: a deployment whose
+    // marks fetch failed shows NO number on its card, so it must not supply
+    // the intro's cadence claim either.
+    if (errorsById[id]) continue
+    const polled = marksById[id]
+    const latest = polled && polled.length > 0 ? polled[polled.length - 1] : dep?.latest_mark
+    if (!latest) continue
+    const t = new Date(latest.ts).getTime()
+    if (Number.isNaN(t)) continue
+    if (t > bestTs) {
+      best = latest
+      bestTs = t
+    }
+  }
+  return best
 }

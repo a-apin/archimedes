@@ -12,7 +12,9 @@ import {
   markLabel,
   marksStalenessNote,
   marksUnavailableNote,
+  newestMark,
   noMarksNote,
+  paperCadenceCopy,
   paperErrorMessage,
   paperReturnAnnouncement,
 } from '../paperCopy'
@@ -310,6 +312,11 @@ export default function PaperTrading({ onNavigate }) {
     }
   }
 
+  // The intro's cadence copy is derived from the marks actually in the payload,
+  // never asserted as a standing fact: no marks job is scheduled in infra/, so
+  // a quarter-hourly cadence is only true where a fresh mark proves it (#1802).
+  const cadence = paperCadenceCopy(newestMark(deployments, marks, marksErrors))
+
   return (
     <div style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 18 }}>
@@ -319,11 +326,16 @@ export default function PaperTrading({ onNavigate }) {
         <p className="body" style={{ maxWidth: 760 }}>
           Simulated deployments of your strategies — <strong>no funds move</strong>. Each one
           snapshots the strategy spec at deploy time and appends one real-data return per trading
-          day; later regeneration of the strategy never rewrites a running ledger. This is a
-          paper track record on Arc testnet — no real funds. The <strong>live value</strong> beneath each total
-          return re-prices the strategy&apos;s asset basket every 15 minutes — it is unsettled,
-          carries the time it was observed, and never changes what the strategy does.
+          day; later regeneration of the strategy never rewrites a running ledger.
+          {cadence.sentences.map((sentence) => (
+            <span key={sentence}> {sentence}</span>
+          ))}
         </p>
+        {cadence.staleness && (
+          <p className="caption" style={{ marginTop: 4 }}>
+            {cadence.staleness}
+          </p>
+        )}
         <p className="caption" style={{ marginTop: 4 }}>
           {MARK_BASIS_DISCLOSURE}
         </p>
