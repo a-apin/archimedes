@@ -43,10 +43,11 @@
 #    and `/archimedes/prod/REDIS_URL` — both now exist, seeded the same way
 #    AURORA_MASTER_PASSWORD / EMAIL_ENCRYPTION_KEY already were (via
 #    `infra/scripts/seed-ssm-secrets.sh` — operator step, see
-#    infra/runbooks/ecs-fargate-cutover.md). All seven secrets in the
+#    infra/runbooks/ecs-fargate-cutover.md). All eight secrets in the
 #    `secrets` block below — DATABASE_URL, REDIS_URL,
-#    AURORA_MASTER_PASSWORD, EMAIL_ENCRYPTION_KEY, and the CIRCLE_API_KEY /
-#    CIRCLE_ENTITY_SECRET / WALLET_ID trio added by #1463 — are live in SSM
+#    AURORA_MASTER_PASSWORD, EMAIL_ENCRYPTION_KEY, the CIRCLE_API_KEY /
+#    CIRCLE_ENTITY_SECRET / WALLET_ID trio added by #1463, and
+#    TIINGO_API_TOKEN added by #1798 — are live in SSM
 #    under /archimedes/prod/ and resolve without further action. Keep this
 #    count and list in step with the block; the guard in
 #    backend/tests/test_ecs_backend_secrets.py pins the membership.
@@ -198,7 +199,8 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_managed" {
 # WILDCARD, not an enumeration: adding a parameter under
 # /archimedes/prod/ to the task definition's `secrets` needs no change here
 # (that is why #1463's three additions below — CIRCLE_API_KEY,
-# CIRCLE_ENTITY_SECRET, WALLET_ID — carry no IAM diff).
+# CIRCLE_ENTITY_SECRET, WALLET_ID — carry no IAM diff, and neither does
+# #1798's TIINGO_API_TOKEN).
 resource "aws_iam_role_policy" "ecs_task_execution_ssm_secrets" {
   name = "archimedes-ecs-execution-ssm-read"
   role = aws_iam_role.ecs_task_execution.id
@@ -813,9 +815,11 @@ resource "aws_ecs_task_definition" "backend" {
       # DATABASE_URL / REDIS_URL were seeded the same way via
       # infra/scripts/seed-ssm-secrets.sh (operator step, documented in
       # infra/runbooks/ecs-fargate-cutover.md) and now also exist live in SSM.
-      # Seven entries follow — DATABASE_URL, REDIS_URL, AURORA_MASTER_PASSWORD,
-      # EMAIL_ENCRYPTION_KEY, CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID
-      # — and each resolves at task launch with no outstanding gap.
+      # TIINGO_API_TOKEN was seeded by the owner on 2026-08-31 (SecureString,
+      # same path convention) and is wired here by #1798.
+      # Eight entries follow — DATABASE_URL, REDIS_URL, AURORA_MASTER_PASSWORD,
+      # EMAIL_ENCRYPTION_KEY, CIRCLE_API_KEY, CIRCLE_ENTITY_SECRET, WALLET_ID,
+      # TIINGO_API_TOKEN — and each resolves at task launch with no outstanding gap.
       secrets = [
         { name = "DATABASE_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/DATABASE_URL" },
         { name = "REDIS_URL", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/REDIS_URL" },
@@ -853,7 +857,45 @@ resource "aws_ecs_task_definition" "backend" {
         # already authorizes all three reads.
         { name = "CIRCLE_API_KEY", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_API_KEY" },
         { name = "CIRCLE_ENTITY_SECRET", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/CIRCLE_ENTITY_SECRET" },
-        { name = "WALLET_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/WALLET_ID" }
+        { name = "WALLET_ID", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/WALLET_ID" },
+        # Tiingo market-data credential (#1798). The parameter has existed as a
+        # SecureString since 2026-08-31. It already reaches the web-tier app
+        # process, but only by accident of the boot-time bulk load:
+        # `main.py:47-48` calls `secrets_service.load_ssm_secrets()` when
+        # PUBLIC_DOMAIN is set, which GetParametersByPath's the whole
+        # /archimedes/prod/ prefix (AWS_SSM_PATH_PREFIX, in the `environment`
+        # block above) into os.environ. That loader catches every error and
+        # boots degraded — a credential that arrives only through it is a
+        # SOFT dependency nothing verifies. This entry makes it a task-launch
+        # dependency instead, which is what the runbook's execute-command
+        # check can actually observe.
+        # `services/market_data_provider._tiingo_api_key()` reads
+        # TIINGO_API_TOKEN off the process environment (legacy alias
+        # TIINGO_API_KEY second) and raises TiingoAPIKeyMissingError at provider
+        # construction when both are blank — it does NOT fall back to yfinance,
+        # by design (docs/adr/market-data-sourcing.md § "Never mix vendors
+        # inside one run"). The flip itself is deliberately NOT in this change — it
+        # is the owner's proof step, and it is guarded (MARKET_DATA_PROVIDER is
+        # absent from the `environment` block above on purpose, pinned by
+        # backend/tests/test_ecs_backend_secrets.py's FORBIDDEN_WHY).
+        #
+        # No IAM diff, same reason #1463's trio carried none: the execution
+        # role's SSM statement above is a PREFIX WILDCARD over
+        # parameter/archimedes/prod/*, which already authorises this read, and
+        # its kms:Decrypt statement already covers every SecureString fetched
+        # via ssm.<region>.amazonaws.com. That property is itself pinned by
+        # test_execution_role_policy_is_a_prefix_wildcard — if someone narrows
+        # the policy to an enumeration, that guard fails (its message enumerates
+        # REQUIRED_CIRCLE_SECRETS, not this entry). The guard that names THIS
+        # secret is test_every_secret_sits_under_the_execution_roles_prefix,
+        # which fires if this ARN ever moves outside parameter/archimedes/prod/.
+        #
+        # This entry is only half the wiring. deploy.yml does not terraform
+        # apply: it CLONES the live revision and retags images (#1799 — the two
+        # sources of truth). The clone path pins the same secret in
+        # .github/scripts/ecs_rewrite_task_def.py, so a deploy that lands
+        # before an apply still carries the token.
+        { name = "TIINGO_API_TOKEN", valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/archimedes/prod/TIINGO_API_TOKEN" }
       ]
 
       logConfiguration = {
