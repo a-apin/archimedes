@@ -24,12 +24,22 @@ and this module reuses its prose-skipping scanner rather than restating it:
   (``agents/debate_engine.py`` keeps two on purpose, and the flip-list row says
   so). An ``os.getenv`` call, or a bare ``_FLAG = "…"`` constant read through,
   is a flag coming back.
-* **Deploy-config surfaces** (``infra/``, ``.github/scripts``, the
-  ``.env.example`` templates) — **no exemption at all**, comments included. A
+* **Deploy-config surfaces** — **no exemption at all**, comments included:
+  ``infra/``, ``.github/scripts``, ``.github/workflows``, ``docker-compose*.yml``
+  and all three ``.env.example`` templates (root, ``ui/``, ``backend/``). A
   commented-out ``.env.example`` entry reads as "a secret you still need to
   generate", which is how ``X402_WEBHOOK_SECRET`` outlived its own removal by
   months. An injected name with no reader is the ``BACKTEST_REFRESH_ENABLED``
   failure: it rides forward on every task-def clone with nothing on the far end.
+  ``.github/workflows`` earns its place because it is the *only* surface
+  ``DOCS_SITE_ENABLED`` ever lived on (#1824's scan table: ``vars.*``, 2 flags);
+  ``backend/.env.example`` because it is a live 55-line template the runbooks
+  hand to operators, so a name reappearing there is a name someone goes and
+  sets; and ``docker-compose*.yml`` because #1811 had to delete two compose
+  defaults to retire one flag, and ``test_fusion_flag_retired.py`` has covered
+  that surface for its own name since. The first cut of this guard omitted all
+  three, and appending ``# X402_WEBHOOK_SECRET=`` to ``backend/.env.example``
+  — the exact commented-template shape cited above — left it green.
 * **The flip-list itself** — a dead name may be named only in a *record*
   section (§ DEAD / RETIRED, § Audit findings). On an actionable table it is a
   row telling someone under pressure to flip a name nothing reads.
@@ -92,9 +102,17 @@ _SOURCE_SUFFIXES = (".py", ".js", ".jsx")
 
 # Deploy config. NO exemption — a commented-out injection is still an injection
 # site. ``infra`` is 50-odd text files; walking all of them beats a suffix list
-# that a new ``.hcl`` or ``.env`` quietly falls out of.
-_CONFIG_ROOTS = ("infra", ".github/scripts")
-_CONFIG_FILES = (".env.example", "ui/.env.example")
+# that a new ``.hcl`` or ``.env`` quietly falls out of. ``.github/workflows``
+# gets the same whole-directory treatment: a workflow injects a name through
+# ``env:``, ``vars.*``, a ``--build-arg`` or a heredoc, and no suffix or key
+# list survives all four.
+_CONFIG_ROOTS = ("infra", ".github/scripts", ".github/workflows")
+_CONFIG_FILES = (".env.example", "ui/.env.example", "backend/.env.example")
+#: Injection sites that sit at the repo root rather than under a scanned root.
+#: Kept in step with ``test_fusion_flag_retired._CONFIG_GLOBS`` by
+#: :func:`test_the_config_scan_is_a_superset_of_the_sibling_guards_surface`,
+#: which fails loudly if that guard ever widens past this one.
+_CONFIG_GLOBS = ("docker-compose*.yml",)
 _SKIP_DIRS = frozenset({".terraform", "node_modules", "__pycache__", ".git"})
 
 # Flip-list sections where naming a dead flag is the point. Everything else on
@@ -123,23 +141,37 @@ def _iter_source(root: Path):
             yield path, rel
 
 
+def _keep(root: Path, path: Path, found: dict[str, Path]) -> None:
+    """Record ``path`` under its repo-relative key unless it is skipped."""
+    if not path.is_file():
+        return
+    rel = path.relative_to(root).as_posix()
+    if _SKIP_DIRS & set(rel.split("/")):
+        return
+    found.setdefault(rel, path)
+
+
 def _iter_config(root: Path):
-    """Yield (path, repo-relative posix path) for every deploy-config file."""
+    """Yield (path, repo-relative posix path) for every deploy-config file.
+
+    Three passes, because the injection surface is not one shape: whole
+    directories, named files, and repo-root globs. De-duplicated by relative
+    path so a file reachable two ways is scanned once and residue line lists
+    stay honest, and yielded in sorted order so failures read the same twice.
+    """
+    found: dict[str, Path] = {}
     for directory in _CONFIG_ROOTS:
         base = root / directory
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*")):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root).as_posix()
-            if _SKIP_DIRS & set(rel.split("/")):
-                continue
-            yield path, rel
+        if base.is_dir():
+            for path in base.rglob("*"):
+                _keep(root, path, found)
     for name in _CONFIG_FILES:
-        path = root / name
-        if path.is_file():
-            yield path, name
+        _keep(root, root / name, found)
+    for glob in _CONFIG_GLOBS:
+        for path in root.glob(glob):
+            _keep(root, path, found)
+    for rel in sorted(found):
+        yield found[rel], rel
 
 
 def source_residue(root: Path) -> dict[str, list[str]]:
@@ -226,10 +258,42 @@ def test_the_config_scan_covers_the_injection_sites() -> None:
         "infra/ecs.tf",
         "infra/cost_kill_switch.tf",
         ".github/scripts/ecs_rewrite_task_def.py",
+        ".github/workflows/deploy.yml",
+        ".github/workflows/docs-site.yml",
+        "docker-compose.yml",
         ".env.example",
         "ui/.env.example",
+        "backend/.env.example",
     ):
         assert anchor in scanned, f"the dead-flag config scan stopped covering {anchor}"
+
+
+def test_the_config_scan_is_a_superset_of_the_sibling_guards_surface() -> None:
+    """This guard must never cover *less* config than the one it inherits from.
+
+    ``test_fusion_flag_retired.py`` bans one name across its own
+    ``_CONFIG_GLOBS``. Eight names deserve at least the same reach, and the
+    first cut of this module did not have it — it omitted ``docker-compose*``
+    entirely. Comparing the resolved file sets (not the glob strings) means a
+    glob added *there* fails *here* until it is covered, rather than silently
+    leaving these eight with a narrower net than the one flag next door.
+    """
+    from tests.test_fusion_flag_retired import _CONFIG_GLOBS as _SIBLING_GLOBS
+
+    sibling = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for glob in _SIBLING_GLOBS
+        for path in REPO_ROOT.glob(glob)
+        if path.is_file() and not _SKIP_DIRS & set(path.relative_to(REPO_ROOT).parts)
+    }
+    assert sibling, "the sibling guard's config globs resolved to nothing — it moved or was renamed"
+    uncovered = sorted(sibling - {rel for _, rel in _iter_config(REPO_ROOT)})
+    assert not uncovered, (
+        "test_fusion_flag_retired.py scans deploy-config files this guard does "
+        f"not: {uncovered}. One retired flag is watched on those surfaces and "
+        "the eight DEAD names are not. Add the surface to _CONFIG_ROOTS / "
+        "_CONFIG_FILES / _CONFIG_GLOBS above."
+    )
 
 
 def test_the_fliplist_scan_reads_a_page_with_sections() -> None:
@@ -321,6 +385,16 @@ def synthetic_tree(tmp_path: Path) -> Path:
         'RETIRED_BACKEND_ENV = ("BACKTEST_REFRESH_ENABLED",)\n', encoding="utf-8"
     )
     (tmp_path / ".env.example").write_text("APP_ENV=development\n", encoding="utf-8")
+    backend = tmp_path / "backend"
+    (backend / ".env.example").write_text(
+        "# Archimedes Backend — Environment Variables\nARC_CHAIN_ID=13068200\n", encoding="utf-8"
+    )
+    (tmp_path / "docker-compose.yml").write_text(
+        'services:\n  backend:\n    environment:\n      APP_ENV: "development"\n', encoding="utf-8"
+    )
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "deploy.yml").write_text('name: Deploy\nenv:\n  APP_ENV: "production"\n', encoding="utf-8")
     return tmp_path
 
 
@@ -389,6 +463,62 @@ def test_guard_rejects_a_commented_out_env_example_entry(synthetic_tree: Path) -
     """A commented template line reads as "a secret you still need to generate"."""
     (synthetic_tree / ".env.example").write_text("APP_ENV=development\n# X402_WEBHOOK_SECRET=\n", encoding="utf-8")
     assert config_residue(synthetic_tree) == {"X402_WEBHOOK_SECRET": [".env.example:2"]}
+
+
+def test_guard_rejects_a_backend_env_example_entry(synthetic_tree: Path) -> None:
+    """The flagship scenario, on the template the guard first forgot.
+
+    ``backend/.env.example`` is a live 55-line template that
+    ``docs/runbooks/t3.2-contract-redeploy.md`` hands to whoever redeploys. A
+    commented ``# X402_WEBHOOK_SECRET=`` there is *the* shape this module's
+    docstring cites — "a secret you still need to generate" — and until this
+    surface was added the guard read straight past it.
+    """
+    (synthetic_tree / "backend" / ".env.example").write_text(
+        "ARC_CHAIN_ID=13068200\n# X402_WEBHOOK_SECRET=\nMAX_USDC_PER_DAY=500\n", encoding="utf-8"
+    )
+    assert config_residue(synthetic_tree) == {
+        "MAX_USDC_PER_DAY": ["backend/.env.example:3"],
+        "X402_WEBHOOK_SECRET": ["backend/.env.example:2"],
+    }
+
+
+def test_guard_rejects_a_compose_default(synthetic_tree: Path) -> None:
+    """#1811 had to delete two compose defaults to retire one flag.
+
+    A compose ``environment:`` entry is an injection site with no reader on the
+    far end — the same shape as an ``ecs.tf`` pin, on the surface developers
+    actually run locally. ``test_fusion_flag_retired.py`` has covered it for
+    ``ARCHIMEDES_FUSION_ENABLED`` since 2026-09-02; the eight get it now too.
+    """
+    (synthetic_tree / "docker-compose.yml").write_text(
+        'services:\n  backend:\n    environment:\n      X402_WEBHOOK_SECRET: "abc"\n', encoding="utf-8"
+    )
+    assert config_residue(synthetic_tree) == {"X402_WEBHOOK_SECRET": ["docker-compose.yml:4"]}
+
+
+def test_guard_rejects_a_workflow_env_entry(synthetic_tree: Path) -> None:
+    """The only surface ``DOCS_SITE_ENABLED`` ever lived on.
+
+    #1824's scan table lists ``vars.*`` in ``.github/workflows`` as a flag
+    surface in its own right, and ``DOCS_SITE_ENABLED`` never appeared anywhere
+    else — so a guard that skipped workflows could not have caught that one of
+    the eight coming back at all. Both spellings count: a ``vars.`` reference
+    and a plain ``env:`` pin are the same injection.
+    """
+    (synthetic_tree / ".github" / "workflows" / "deploy.yml").write_text(
+        "name: Deploy\n"
+        "env:\n"
+        '  MAX_USDC_PER_DAY: "500"\n'
+        "jobs:\n"
+        "  publish:\n"
+        "    if: vars.DOCS_SITE_ENABLED == 'true'\n",
+        encoding="utf-8",
+    )
+    assert config_residue(synthetic_tree) == {
+        "DOCS_SITE_ENABLED": [".github/workflows/deploy.yml:6"],
+        "MAX_USDC_PER_DAY": [".github/workflows/deploy.yml:3"],
+    }
 
 
 def test_guard_rejects_a_dead_name_on_the_deploy_rewrite(synthetic_tree: Path) -> None:

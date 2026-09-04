@@ -153,10 +153,14 @@ closes them for the eight names #1824 classified DEAD (`DOCS_SITE_ENABLED`,
 - an env read or an env-name constant under the runtime source roots — **prose
   is exempt**, so `debate_engine.py`'s two doc-comments are the record they were
   always meant to be, and only a line that can *act* trips it;
-- **any** mention under `infra/`, `.github/scripts` or the `.env.example`
-  templates, commented-out lines included — a commented template entry reads as
-  "a secret you still need to generate", which is how `X402_WEBHOOK_SECRET`
-  outlived its own removal;
+- **any** mention on a deploy-config surface — `infra/`, `.github/scripts`,
+  `.github/workflows`, `docker-compose*.yml` and all three `.env.example`
+  templates (root, `ui/`, `backend/`) — commented-out lines included, because a
+  commented template entry reads as "a secret you still need to generate",
+  which is how `X402_WEBHOOK_SECRET` outlived its own removal. `.github/workflows`
+  is on that list because it is the only surface `DOCS_SITE_ENABLED` ever lived
+  on, and a companion assertion keeps the set a superset of the one
+  `test_fusion_flag_retired.py` watches for its own name;
 - a mention anywhere on this page outside § DEAD / RETIRED and § Audit
   findings — a section nobody has classified counts as actionable;
 - **an emptied row.** The positive half: deleting a name from the table below is
