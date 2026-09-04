@@ -132,12 +132,54 @@ more than the aggregate budget across the call. Tests are hermetic —
 fake engine for the Postgres cases (transaction boundaries are not observable through a real
 connection) and a real tmp-file SQLite engine for the unchanged-behaviour case.
 
-## What it does not change (P2–P6, tracked on #1818)
+## What the P2 PR changes
 
-- **P2** — the second session opened while the cycle transaction is still open
-  (`resolve_paper_hashes` in `services/paper_trace.py`). That is the other half of mechanism
-  item 3: with P1 in, no DDL queues between the two sessions, but the two-open-sessions pattern
-  is still there.
+Mechanism item 3's other half — the SECOND connection — and nothing else. P1 took the DDL off
+the cycle path; P2 takes the second session off it, so the shape cannot re-form the next time
+anything takes an exclusive lock on `papers` (a migration, a `VACUUM FULL`, a hand-run ALTER).
+
+1. **`resolve_paper_hashes` reads on the caller's session.** Its signature is now
+   `resolve_paper_hashes(session, arxiv_ids)` — `session` REQUIRED, no `= None` default, because
+   an optional one would leave the second-connection route open. Its single production caller,
+   `_publish_decision_traces` in `services/paper_trading.py`, already holds the cycle session
+   and passes it down; `advance_all` and `advance_deployment` therefore did not have to change,
+   and the `POST /api/paper/deployments` path inherits the fix for free.
+2. **The corpus query runs inside a SAVEPOINT.** Sharing the session is what makes this
+   necessary: on PostgreSQL a failed statement aborts the whole transaction, so a missing
+   `papers` table would stop costing this lookup and start costing the cycle — every remaining
+   deployment failing on `PendingRollbackError` and `session.commit()` raising. That would make
+   the function's documented fail-soft return a lie about a wedged cycle.
+   `session.begin_nested()` scopes the failure to the query, so the caller's earlier work
+   survives and its later work still commits. A connection-level failure is still fatal, as it
+   must be — the cycle's writes were never going to commit either way.
+
+Guards (all hermetic, tmp-file SQLite):
+
+- `backend/tests/test_paper_trace_pipeline.py::test_the_advance_cycle_opens_no_second_session`
+  instruments `archimedes.db.get_session` for the whole of `advance_all` and allows exactly one
+  call — the cycle's own — naming the file and line of any extra opener. Shown red by
+  reinstating the old `with get_session() as session:` inside `resolve_paper_hashes`: *"the
+  advance cycle opened 2 sessions, not 1 … Openers: ['…/paper_trace.py:472 in
+  resolve_paper_hashes()']"*. The guard is about the CYCLE being one connection, not about
+  `papers` or about DDL, so it also catches whatever is added to the cycle path next.
+- `test_the_outage_is_contained_by_a_savepoint_not_by_luck` drops the `papers` table for real
+  and asserts the savepoint/rollback through SQLAlchemy's own connection events. The events are
+  the guard rather than "the caller could still write afterwards", because SQLite does not abort
+  a transaction on a statement error and that weaker assertion passes with or without
+  `begin_nested`. `test_the_savepoint_is_released_not_leaked_on_the_healthy_path` is the other
+  side: a successful lookup releases its savepoint instead of leaving one open for the rest of
+  the cycle. Both shown red with `begin_nested` deleted.
+- `test_it_reads_on_the_session_it_was_given_and_opens_none` arms `get_session` to RAISE at unit
+  scale, and `test_the_signature_requires_a_session_it_can_never_open_one` pins the absence of
+  the `= None` default.
+
+Note the cycle still holds a second connection deliberately: `paper_advance_loop` keeps the
+fleet-lock session open for the whole cycle, on its own connection, which is what the advisory
+lock requires. That session issues no table reads, so it cannot join a lock queue; the guard
+counts sessions opened DURING the advance, which is the thing that wedged.
+
+## What it does not change (P3–P6, tracked on #1818)
+
 - **P3** — readiness. `/health` still answers 200 from `stale_cached` probe values, so a wedged
   task can stay in the target group indefinitely (10 hours, here). Mechanism item 6.
 - **P4** — `list_generated_strategies` and siblings still run `session.query(...)` on the event
