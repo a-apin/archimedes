@@ -107,8 +107,8 @@ export function paperErrorMessage(err, fallback = 'Something went wrong.') {
 // not a re-decision, and NOT a claim about what the strategy is holding right
 // now (see MARK_BASIS_DISCLOSURE: v1 has no position vector, so a strategy
 // sitting in cash is still marked as if invested). The settled daily ledger is
-// the track record that carries to mainnet; a mark is an unsettled decoration
-// the backend deletes past 90 days.
+// the paper track record — Arc testnet, no real funds (#1807); a mark is an
+// unsettled decoration the backend deletes past 90 days.
 // Every helper below exists so the card can never state more than that:
 //
 //   - markLabel: never a bare number. Always value + as-of time, and the word

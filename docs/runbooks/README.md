@@ -14,6 +14,8 @@ This index covers `docs/runbooks/`. Deploy- and infrastructure-level procedures 
 the Terraform that owns them, under `infra/runbooks/`, and are listed here too — a reader in
 an incident should not have to know which tree a procedure lives in.
 
+Incident write-ups are evidence rather than procedure, so they live in `docs/incidents/`; the one an operator reaching for these pages is most likely to need is [`../incidents/2026-09-03-paper-advance-ddl-wedge.md`](../incidents/2026-09-03-paper-advance-ddl-wedge.md) — the paper-advance DDL lock wedge (#1818), where a boot hung for 91 minutes while `/health` kept answering 200.
+
 ## Runbooks that exist
 
 | Runbook | Owner | What it is for |

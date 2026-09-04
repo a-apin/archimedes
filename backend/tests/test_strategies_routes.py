@@ -1713,16 +1713,25 @@ def test_strategy_spec_is_assigned_only_inside_the_detail_route():
     ``strategy_spec`` on the **list** response"), enforced structurally.
 
     Parses ``strategies_routes.py`` and asserts that EVERY assignment to a
-    ``.strategy_spec`` attribute in the module sits inside ``get_strategy`` —
-    the single-strategy detail route. AST, not grep, so a comment mentioning
-    the field or a read like ``row.strategy_spec`` cannot trip it and a real
-    assignment cannot hide behind formatting.
+    ``.strategy_spec`` attribute in the module sits inside the single-strategy
+    detail route's body. AST, not grep, so a comment mentioning the field or a
+    read like ``row.strategy_spec`` cannot trip it and a real assignment cannot
+    hide behind formatting.
 
     This is the guard a route-level list assertion could not honestly give.
     The two shared response builders below are each pinned individually, but
     "no list surface carries the spec" is a claim about the module as a whole:
     a third builder added next quarter would satisfy both of those tests and
     still leak. Here it fails.
+
+    **#1818 P4 renamed the site, and this test now checks TWO things instead of
+    one.** Every read route in this module is now a coroutine that hops to a
+    worker thread plus a module-level ``_…_sync`` twin holding the body, so the
+    detail route's two assignments live in ``_get_strategy_sync``. Allowing that
+    name on its own would be weaker than what this guard used to claim: "only
+    ``_get_strategy_sync`` assigns the spec" stops meaning "only the detail route
+    does" the moment anything else starts calling that twin. So the second
+    assertion pins the twin's callers to exactly the ``get_strategy`` route.
     """
     import ast
     import pathlib
@@ -1743,12 +1752,28 @@ def test_strategy_spec_is_assigned_only_inside_the_detail_route():
                     offenders.append((node.name, sub.lineno))
 
     assert offenders, "no `.strategy_spec = ` assignment found at all — the wiring is gone, not merely misplaced"
-    bad = [(fn, line) for fn, line in offenders if fn != "get_strategy"]
+
+    detail_body = "_get_strategy_sync"
+    bad = [(fn, line) for fn, line in offenders if fn != detail_body]
     assert not bad, (
         "`strategy_spec` may only be populated by the single-strategy detail route "
-        f"`get_strategy`; found assignments in {bad} (function, line). A shared "
-        "response builder that sets it puts an unbounded JSON blob on every row of "
-        "every list payload, and on the public leaderboard."
+        f"(`get_strategy` → `{detail_body}`); found assignments in {bad} (function, line). "
+        "A shared response builder that sets it puts an unbounded JSON blob on every row "
+        "of every list payload, and on the public leaderboard."
+    )
+
+    callers = sorted(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name != detail_body
+        and any(isinstance(sub, ast.Name) and sub.id == detail_body for sub in ast.walk(node))
+    )
+    assert callers == ["get_strategy"], (
+        f"`{detail_body}` holds the only `strategy_spec` assignments, so it must stay reachable "
+        f"from the single-strategy detail route and nothing else; it is referenced by {callers}. "
+        "A list route calling it would put the spec on a list payload without any assignment "
+        "moving, which is the anti-goal with an extra hop in front of it."
     )
 
 

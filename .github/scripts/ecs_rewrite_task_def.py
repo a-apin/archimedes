@@ -19,11 +19,15 @@ This script is the path that actually ships. It:
 2. Pins ``PAPER_ADVANCE_ENABLED`` to :data:`PAPER_ADVANCE_VALUE` on the
    backend container, whether the cloned definition had the name unset,
    ``"true"``, or ``"false"``.
-3. Ensures the backend container carries the :data:`TIINGO_SECRET_NAME`
+3. Pins ``FREE_GENERATIONS_PER_ACCOUNT`` to :data:`FREE_GENERATIONS_VALUE`
+   on the backend container, for the same reason (#1643 finding A5): prod was
+   giving away three generations per account by accident of a code default,
+   which is the only knob on the flip-list that hands out paid product.
+4. Ensures the backend container carries the :data:`TIINGO_SECRET_NAME`
    secret, resolving from ``/archimedes/prod/TIINGO_API_TOKEN``.
-4. Drops the describe-only fields ``register-task-definition`` rejects.
+5. Drops the describe-only fields ``register-task-definition`` rejects.
 
-Step 3 exists for the same reason step 2 does, one issue later (#1798, with
+Step 4 exists for the same reason step 2 does, one issue later (#1798, with
 #1799 as the reason it cannot be an ``ecs.tf``-only change). The SSM parameter
 has been seeded since 2026-08-31 and no cloned revision has ever carried it as
 a ``secrets`` entry, because the live revisions are clones of clones and
@@ -61,6 +65,13 @@ from typing import Any
 
 PAPER_ADVANCE_NAME = "PAPER_ADVANCE_ENABLED"
 PAPER_ADVANCE_VALUE = "true"
+
+#: Free generations per account, lifetime (#1643). Kept equal to
+#: ``free_generations.DEFAULT_ALLOWANCE`` so this pin is plumbing, not a policy
+#: change — the twin line in ``infra/ecs.tf`` must say the same number.
+FREE_GENERATIONS_NAME = "FREE_GENERATIONS_PER_ACCOUNT"
+FREE_GENERATIONS_VALUE = "3"
+
 BACKEND_CONTAINER = "backend"
 
 # #1798. The env var name is the canonical one the provider reads first
@@ -98,6 +109,53 @@ def pin_backend_paper_advance(environment: list[dict[str, Any]] | None) -> list[
     """
     pinned = [entry for entry in (environment or []) if entry.get("name") != PAPER_ADVANCE_NAME]
     pinned.append({"name": PAPER_ADVANCE_NAME, "value": PAPER_ADVANCE_VALUE})
+    return pinned
+
+
+def pin_backend_free_generations(environment: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Return a copy of ``environment`` with the free allowance pinned explicitly.
+
+    Idempotent and order-preserving, exactly like
+    :func:`pin_backend_paper_advance`: an entry already carrying
+    :data:`FREE_GENERATIONS_VALUE` is left where it is, a different value is
+    overwritten in place, and an absent name is appended — so the result holds
+    the name exactly once whatever the clone carried.
+
+    The overwrite is the part that earns a ``::notice``. Every other outcome is
+    the steady state and says nothing; a clone whose value *disagreed* with
+    this file means the registered revision was serving a different allowance
+    than the repo declares, and an operator reading the deploy log should see
+    the number change rather than infer it from a diff of two task-def
+    revisions after the fact. Written to stderr because stdout is the JSON
+    ``register-task-definition`` consumes.
+    """
+    entries = list(environment or [])
+    pinned: list[dict[str, Any]] = []
+    seen = False
+    for entry in entries:
+        if entry.get("name") != FREE_GENERATIONS_NAME:
+            pinned.append(entry)
+            continue
+        if seen:
+            # A duplicated name: ECS takes the last, so a second entry is a
+            # silent override. Drop it — the one kept above is the pin.
+            continue
+        seen = True
+        previous = entry.get("value")
+        if previous != FREE_GENERATIONS_VALUE:
+            print(
+                f"::notice::{FREE_GENERATIONS_NAME} pinned to {FREE_GENERATIONS_VALUE} "
+                f"(cloned revision carried {previous!r})",
+                file=sys.stderr,
+            )
+        pinned.append({"name": FREE_GENERATIONS_NAME, "value": FREE_GENERATIONS_VALUE})
+    if not seen:
+        print(
+            f"::notice::{FREE_GENERATIONS_NAME} pinned to {FREE_GENERATIONS_VALUE} "
+            "(cloned revision did not carry the name)",
+            file=sys.stderr,
+        )
+        pinned.append({"name": FREE_GENERATIONS_NAME, "value": FREE_GENERATIONS_VALUE})
     return pinned
 
 
@@ -157,8 +215,8 @@ def rewrite_registered_task_definition(
     nginx_image: str,
     auth_image: str,
 ) -> dict[str, Any]:
-    """Clone ``task_def``, retag application images, pin the tick flag and the
-    Tiingo secret.
+    """Clone ``task_def``, retag application images, pin the tick + allowance
+    flags and the Tiingo secret.
 
     Raises :class:`RewriteError` if there is no backend container — a silent
     skip would register a revision whose ``PAPER_ADVANCE_ENABLED`` is whatever
@@ -178,7 +236,9 @@ def rewrite_registered_task_definition(
         if name == BACKEND_CONTAINER:
             saw_backend = True
             next_container["image"] = backend_image
-            next_container["environment"] = pin_backend_paper_advance(container.get("environment"))
+            next_container["environment"] = pin_backend_free_generations(
+                pin_backend_paper_advance(container.get("environment"))
+            )
             next_container["secrets"] = ensure_backend_tiingo_secret(container.get("secrets"), secret_arn)
         elif name == "nginx":
             next_container["image"] = nginx_image
