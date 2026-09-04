@@ -33,7 +33,7 @@ from tests.test_agent_discovery import _EXTERNALLY_SERVED_PREFIXES, _openapi_ind
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 QUICKSTART = REPO_ROOT / "docs" / "agent-quickstart.md"
-DOCS_INDEX = REPO_ROOT / "docs" / "README.md"
+DOCS_INDEX = REPO_ROOT / "docs" / "doc-index.md"
 
 # "GET /api/thing" inside a backtick span — the step table's cells and the prose both use
 # that form, so one pattern covers the whole page.
@@ -172,5 +172,5 @@ def test_every_curl_target_also_resolves_against_the_live_openapi():
 def test_the_quickstart_is_listed_in_the_docs_index():
     """CLAUDE.md's rule, asserted: "a doc not listed there does not exist"."""
     assert "agent-quickstart.md" in DOCS_INDEX.read_text(encoding="utf-8"), (
-        "docs/agent-quickstart.md has no row in docs/README.md — add one in the same commit."
+        "docs/agent-quickstart.md has no row in docs/doc-index.md — add one in the same commit."
     )

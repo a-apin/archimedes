@@ -42,7 +42,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MKDOCS_YML = REPO_ROOT / "mkdocs.yml"
-DOCS_INDEX = REPO_ROOT / "docs" / "README.md"
+DOCS_INDEX = REPO_ROOT / "docs" / "doc-index.md"
 DOCS_SITE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docs-site.yml"
 INFRA_GATE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "infra-gate.yml"
 DOCS_SITE_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "docs-site-setup.md"
@@ -72,8 +72,24 @@ def _load_hooks():
 hooks = _load_hooks()
 
 
+class _MkdocsLoader(yaml.SafeLoader):
+    """`yaml.SafeLoader` that tolerates mkdocs' `!!python/name:` tags.
+
+    `mkdocs.yml` names the mermaid fence formatter the way mkdocs-material
+    documents it — `format: !!python/name:pymdownx.superfences.fence_code_format`
+    — and `yaml.safe_load` refuses to construct that tag (`ConstructorError`),
+    which would make every test in this module fail on a config mkdocs itself
+    reads fine. Resolving the tag to its *name* is enough here: nothing in this
+    suite calls the formatter, and a SafeLoader that imports arbitrary dotted
+    paths would be the unsafe loader wearing a different hat.
+    """
+
+
+_MkdocsLoader.add_multi_constructor("tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix)
+
+
 def _mkdocs_config() -> dict:
-    return yaml.safe_load(MKDOCS_YML.read_text(encoding="utf-8"))
+    return yaml.load(MKDOCS_YML.read_text(encoding="utf-8"), Loader=_MkdocsLoader)
 
 
 def _nav_targets(node) -> list[str]:
@@ -235,9 +251,9 @@ def test_every_wiki_page_gets_the_provenance_banner() -> None:
 
 
 def test_section_index_is_in_the_docs_index() -> None:
-    """docs/README.md opens 'A doc not listed here does not exist.'"""
+    """docs/doc-index.md opens 'A doc not listed here does not exist.'"""
     assert f"({PROVENANCE_DOC})" in DOCS_INDEX.read_text(encoding="utf-8"), (
-        f"docs/{PROVENANCE_DOC} has no row in docs/README.md"
+        f"docs/{PROVENANCE_DOC} has no row in docs/doc-index.md"
     )
 
 
@@ -415,6 +431,25 @@ def test_links_inside_code_blocks_are_not_rewritten() -> None:
     markdown = "See [main](../backend/archimedes/main.py).\n\n```\n[main](../backend/archimedes/main.py)\n```\n"
     out = hooks.rewrite_links(markdown, "docs/architecture.md", "architecture.md", KNOWN)
     assert out.count("https://github.com/") == 1, "a path shown inside a fenced block is an illustration, not a link"
+
+
+def test_the_wiki_edit_pencil_points_at_the_real_repo_path() -> None:
+    """`edit_uri` is `edit/main/docs/`; the wiki is mounted from the repo ROOT.
+
+    So mkdocs built every openwiki pencil as `…/edit/main/docs/openwiki/…`, which
+    is a path that has never existed — all 14 returned GitHub's 404. The hook's
+    `on_page_context` replaces the URL for those pages and leaves every other
+    page's alone.
+    """
+    url = hooks.wiki_edit_url("openwiki/rigor/admission-gate.md")
+    assert url == "https://github.com/aprin-labs/archimedes/edit/main/openwiki/rigor/admission-gate.md"
+    assert "/docs/openwiki/" not in url, "the docs/ prefix is exactly the bug this fixes"
+    assert hooks.wiki_edit_url("architecture.md") is None, (
+        "a page that really is under docs/ must keep the edit URL mkdocs computed for it"
+    )
+    assert hooks.wiki_edit_url("openwikinotreally/page.md") is None, (
+        "prefix match on the directory name, not on the string"
+    )
 
 
 def test_wiki_pages_excludes_the_claim_sidecars() -> None:
