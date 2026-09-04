@@ -208,10 +208,9 @@ def _addresses(entries: Any, key: str) -> tuple[str, ...]:
         return ()
     found = []
     for entry in entries:
-        if isinstance(entry, dict):
-            address = entry.get(key)
-        else:
-            address = entry
+        # A recipient list is normally [{"emailAddress": "..."}], but the
+        # non-bounce envelopes carry bare strings; accept both.
+        address = entry.get(key) if isinstance(entry, dict) else entry
         if isinstance(address, str) and address.strip():
             found.append(address.strip())
     return tuple(found)
@@ -261,7 +260,7 @@ def parse_message(body: str) -> SesEvent:
 
     mail = payload.get("mail") if isinstance(payload.get("mail"), dict) else {}
     message_id = mail.get("messageId") if isinstance(mail.get("messageId"), str) else None
-    kind = _KIND_BY_EVENT_TYPE.get(event_type, None)
+    kind = _KIND_BY_EVENT_TYPE.get(event_type)
 
     if event_type == "Bounce":
         bounce = payload.get("bounce") if isinstance(payload.get("bounce"), dict) else {}

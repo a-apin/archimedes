@@ -93,7 +93,7 @@ class StubSqs:
             return {}
         return {"Messages": self.batches.pop(0)}
 
-    def delete_message(self, *, QueueUrl, ReceiptHandle):  # noqa: N803 - boto3's own kwarg names
+    def delete_message(self, *, QueueUrl, ReceiptHandle):  # boto3's own kwarg names
         assert QueueUrl == QUEUE_URL
         if self.delete_error is not None:
             raise self.delete_error
