@@ -378,6 +378,34 @@ def test_many_small_members_are_refused_on_declared_total(monkeypatch):
     assert "zip expands past" in summary.unreadable[0]
 
 
+def test_an_oversized_cell_cannot_inflate_the_rendered_table():
+    """The decompression bounds do not bound the RENDER.
+
+    `render_table` pads every row to the widest cell in its column, so a single
+    oversized cell is multiplied by the row count — measured before the bound,
+    a 219 KB report carrying one 200 KB `<source_ip>` plus 30 ordinary records
+    rendered a 6.6 MB table, and the factor grows with the number of sources.
+    Every cell arrives from the public internet at a DNS-published address, and
+    `archimedes.scripts.dmarc_weekly_summary` puts this table into an email, so
+    an unbounded render is a message SES refuses to send.
+    """
+    huge = "192.0.2.99" + "A" * 200_000
+    xml = _report(
+        records="".join(_record(source_ip=f"198.51.100.{i}", count=1) for i in range(30))
+        + _record(source_ip=huge, count=1)
+    )
+    summary = drs.build_summary([("hostile.xml", xml)])
+    rendered = drs.render_table(summary)
+
+    assert summary.reports_parsed == 1, "the report itself is well-formed; only one cell is hostile"
+    assert len(rendered) < 16_000, f"31 bounded rows must not render {len(rendered)} characters"
+    assert huge not in rendered
+    # Clipped, never dropped — a source missing from the table is the quiet
+    # undercount every guard in this file is built against.
+    assert "192.0.2.99" in rendered
+    assert "198.51.100.7  " in rendered, "ordinary rows keep their exact value and padding"
+
+
 def test_member_count_limit_refuses_rather_than_truncating(monkeypatch):
     """An over-full archive is refused, never silently read down to the limit.
 

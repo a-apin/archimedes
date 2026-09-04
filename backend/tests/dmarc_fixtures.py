@@ -131,6 +131,25 @@ def gzipped(xml: bytes) -> bytes:
     return gzip.compress(xml)
 
 
+def zipped_over_member_limit(xml: bytes, members: int = 65) -> bytes:
+    """A ``.zip`` the parser REFUSES: more members than ``MAX_ARCHIVE_MEMBERS``.
+
+    A real aggregate-report zip holds exactly one XML, so an archive with
+    dozens is either broken or hostile and the parser refuses it outright
+    rather than reading the first N (see ``iter_report_xml``). The point of
+    having this shape named is what it does to a SUMMARY: the object arrived,
+    it counts as an object in the window, and it contributes nothing to the
+    table. A window made only of these is neither empty nor clean, and the
+    default of 65 is one past the shipped limit so the refusal is real rather
+    than monkeypatched.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for index in range(members):
+            zf.writestr(f"report{index}.xml", xml)
+    return buf.getvalue()
+
+
 def as_ses_object(attachment: bytes, filename: str) -> bytes:
     """The bytes an SES receipt rule actually puts in S3: the whole MIME message."""
     msg = EmailMessage()

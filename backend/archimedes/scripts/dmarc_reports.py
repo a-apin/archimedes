@@ -71,6 +71,31 @@ MAX_DEPTH = 4  # mime → attachment → zip → xml is 3; 4 leaves one level of
 MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 64
 
+# ── Rendering bounds ─────────────────────────────────────────────────────────
+#
+# The bounds above stop a hostile object from being DECOMPRESSED into memory.
+# These stop a hostile object that is entirely within them from being RENDERED
+# into a message nobody can send.
+#
+# :func:`render_table` pads every row to the widest cell in its column, so one
+# oversized cell is multiplied by the row count. Measured: a 219 KB report
+# carrying a single 200 KB `<source_ip>` plus 30 ordinary records rendered a
+# 6.6 MB table — 30x, and the factor grows with the number of sources. Every
+# cell here is attacker-supplied (`dmarc-reports@` is published in DNS and the
+# receipt rule stores whatever anyone mails it), and the weekly summary puts
+# this table straight into an email: past SES's per-message limit the send is
+# refused, no summary arrives, and by that job's deliberate no-alarm design
+# the only symptom is a Monday morning with no mail.
+#
+# 64 characters is longer than any real IPv6 address, org_name or disposition,
+# so this truncates hostile input and nothing else.
+MAX_CELL_CHARS = 64
+
+#: An `unreadable` entry is longer by nature — it carries the object name, an
+#: archive member name chosen by whoever sent the archive, and the parser's own
+#: message — so it gets its own, larger bound rather than being cut to a cell.
+MAX_NOTE_CHARS = 200
+
 _MAGIC_ZIP = b"PK\x03\x04"
 _MAGIC_GZIP = b"\x1f\x8b"
 
@@ -350,6 +375,21 @@ def format_utc(epoch: int | None) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def clip_cell(value: object, limit: int = MAX_CELL_CHARS) -> str:
+    """One rendered cell, bounded. Public because both renderers need it.
+
+    Truncates rather than drops: an oversized source IP is still evidence that
+    something is mailing our report address, and a cell that vanished would be
+    a source missing from the table — the quiet undercount everything here is
+    built against. What is lost is only the tail of one string, and the whole
+    object is still on disk under `scripts/dmarc_report_summary.py --path`.
+    """
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
 def render_table(summary: Summary) -> str:
     lines: list[str] = []
     lines.append(f"DMARC aggregate reports: {summary.reports_parsed} parsed")
@@ -359,16 +399,22 @@ def render_table(summary: Summary) -> str:
     lines.append("")
 
     headers = ("SOURCE IP", "MSGS", "PASS", "FAIL", "DKIM-A", "SPF-A", "DISPOSITION", "REPORTERS")
+    # Every cell is clipped, including the counts: `<count>` is an integer out
+    # of untrusted XML and a four-thousand-digit one renders as a
+    # four-thousand-column table.
     body = [
-        (
-            row.source_ip,
-            str(row.messages),
-            str(row.passing),
-            str(row.failing),
-            str(row.dkim_aligned_pass),
-            str(row.spf_aligned_pass),
-            ",".join(f"{k}:{v}" for k, v in sorted(row.dispositions.items())),
-            ",".join(sorted(row.reporters)),
+        tuple(
+            clip_cell(cell)
+            for cell in (
+                row.source_ip,
+                row.messages,
+                row.passing,
+                row.failing,
+                row.dkim_aligned_pass,
+                row.spf_aligned_pass,
+                ",".join(f"{k}:{v}" for k, v in sorted(row.dispositions.items())),
+                ",".join(sorted(row.reporters)),
+            )
         )
         for row in summary.rows
     ]
@@ -385,7 +431,7 @@ def render_table(summary: Summary) -> str:
         failing = summary.failing_sources
         lines.append(
             f"VERDICT: {summary.total_failing} of {summary.total_messages} messages FAILED DMARC "
-            f"alignment, from {len(failing)} source(s): {', '.join(r.source_ip for r in failing)}."
+            f"alignment, from {len(failing)} source(s): {', '.join(clip_cell(r.source_ip) for r in failing)}."
         )
         lines.append("Every one is either a sending path of ours that is misconfigured, or a forgery.")
         lines.append("Do NOT move the policy past p=none until each is explained. See")
@@ -398,7 +444,7 @@ def render_table(summary: Summary) -> str:
     if summary.unreadable:
         lines.append("")
         lines.append(f"UNREADABLE ({len(summary.unreadable)}) — these were NOT counted above:")
-        lines.extend(f"  {item}" for item in summary.unreadable)
+        lines.extend(f"  {clip_cell(item, MAX_NOTE_CHARS)}" for item in summary.unreadable)
     return "\n".join(lines)
 
 

@@ -233,6 +233,28 @@ def test_the_task_carries_no_database_secrets():
 # ──────────────────────────── the two grants ───────────────────────────
 
 
+def _statements(policy_body: str) -> dict[str, str]:
+    """Split a `jsonencode` policy into `{Sid: statement text}`.
+
+    PER STATEMENT, not over the blob. A substring check across a two-statement
+    policy is satisfied by EITHER statement, so it cannot see one of them being
+    widened: with `Resource = "*"` on the `ListBucket` statement (list every
+    bucket in the account) or on the `GetObject` statement (read every object
+    in every bucket), a whole-body `"aws_s3_bucket.dmarc_reports.arn" in grant`
+    still passes on the strength of the other one.
+    """
+    chunks = re.split(r'\bSid\s*=\s*"([^"]+)"', policy_body)
+    # re.split with one group yields [prefix, sid, body, sid, body, ...].
+    return dict(zip(chunks[1::2], chunks[2::2], strict=True))
+
+
+def _resource_expr(statement: str) -> str:
+    """The `Resource = …` right-hand side of one statement, verbatim."""
+    found = re.search(r"^\s*Resource\s*=\s*(.+?)\s*$", statement, re.MULTILINE)
+    assert found, f"a statement with no Resource grants nothing legible:\n{statement}"
+    return found.group(1)
+
+
 def test_the_task_role_can_read_the_reports_bucket_and_nothing_more():
     tf = _strip_comments(_read(DMARC_TF))
     grant = _resource(tf, "aws_iam_role_policy", "ecs_task_dmarc_reports_read")
@@ -247,7 +269,31 @@ def test_the_task_role_can_read_the_reports_bucket_and_nothing_more():
             f"{forbidden} is granted to a job that only reads; the 180-day lifecycle rule must stay the "
             "only thing that removes a report"
         )
-    assert "aws_s3_bucket.dmarc_reports.arn" in grant, "the grant must name this bucket, not a wildcard"
+
+    statements = _statements(grant)
+    assert set(statements) == {"ListDmarcReportsBucket", "ReadDmarcReports"}, (
+        f"unexpected statements in the read grant: {sorted(statements)}. Each one widens what a job "
+        "that only reads two weeks of aggregate reports can reach, so each one has to be named here."
+    )
+
+    listing = statements["ListDmarcReportsBucket"]
+    assert _resource_expr(listing) == "aws_s3_bucket.dmarc_reports.arn", (
+        "the listing must name THIS bucket's arn. A widened Resource here lists every bucket in the "
+        "account, and nothing about the rest of the policy would show it"
+    )
+    assert 'StringLike = { "s3:prefix" = ["${local.dmarc_object_key_prefix}*"] }' in listing, (
+        "s3:prefix is the only thing that scopes a listing — an object-arn Resource does not — so the "
+        "condition is load-bearing, and it must read the same local the receipt rule writes under"
+    )
+
+    read = statements["ReadDmarcReports"]
+    assert _resource_expr(read) == '"${aws_s3_bucket.dmarc_reports.arn}/${local.dmarc_object_key_prefix}*"', (
+        "the object grant must name this bucket AND this prefix. A widened Resource here reads every "
+        "object in every bucket in the account"
+    )
+
+    for sid, statement in statements.items():
+        assert _resource_expr(statement) != '"*"', f"{sid} grants s3 on every resource in the account"
 
 
 def test_the_send_grant_still_exists_where_it_is_reused_from():
@@ -294,6 +340,29 @@ def test_the_scheduler_role_only_trusts_this_account():
     assert '"aws:SourceAccount" = data.aws_caller_identity.current.account_id' in body, (
         "the assume-role policy must be scoped to this account, the same way aws_iam_role.ses_events_scheduler is"
     )
+
+
+def test_the_runbook_sections_the_summary_mails_people_to_actually_exist():
+    """The mail's only next step is a runbook section name.
+
+    Both bodies end by naming a section — the arrival ladder on an empty
+    window, the parse-failure section when objects landed and none parsed, the
+    weekly-summary section everywhere else. A renamed or deleted heading turns
+    the one actionable line in the message into a dead reference, and the
+    person reading it is by definition already looking at something they do not
+    understand.
+    """
+    runbook = _read(REPO_ROOT / "docs" / "runbooks" / "dmarc-reports.md")
+    headings = {line.lstrip("# ").strip() for line in runbook.splitlines() if line.startswith("#")}
+    for pointed_at in (
+        "No reports are arriving",
+        "Reports arrive but cannot be parsed",
+        "The weekly summary",
+    ):
+        assert any(heading.endswith(pointed_at) for heading in headings), (
+            f"docs/runbooks/dmarc-reports.md has no section ending '{pointed_at}', but "
+            "archimedes/scripts/dmarc_weekly_summary.py mails the owner there"
+        )
 
 
 def test_the_task_family_is_exported_for_the_operator():

@@ -272,7 +272,16 @@ resource "aws_ecs_task_definition" "dmarc_weekly_summary" {
 
   container_definitions = jsonencode([
     {
-      name      = "dmarc-weekly-summary"
+      name = "dmarc-weekly-summary"
+      # APPLY ORDERING. This is `archimedes-backend:latest`, which is whatever
+      # CI last pushed from main — NOT this branch. The module named below
+      # ships with the same PR as this resource, so applying before the branch
+      # is merged and `deploy.yml` has pushed a new `:latest` gives the first
+      # scheduled task a `ModuleNotFoundError`, no mail, and — by the no-alarm
+      # design above — nothing but a task exit code to say so. Merge, let CI
+      # push, apply, then prove it with `--dry-run` or a manual `aws ecs
+      # run-task` rather than waiting for a Monday. Written down in
+      # docs/runbooks/dmarc-reports.md § 'The weekly summary'.
       image     = "${aws_ecr_repository.backend.repository_url}:${var.backend_image_tag}"
       essential = true
 

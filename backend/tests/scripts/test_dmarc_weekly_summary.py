@@ -17,6 +17,22 @@ at all and assuming a quiet week:
   2. **Zero reports still sends, and says so in words.** Not "0 failures".
      ``test_zero_reports_still_sends_a_message_that_says_so``.
 
+  2b. **A window of unreadable objects is not an empty window.** Objects that
+     arrive and cannot be parsed are a third fact — the collection path works,
+     the contents do not — and reporting them as ``NO REPORTS RECEIVED`` is a
+     false all-clear in the inbox list that points at an arrival ladder which
+     is not the fault. The HTML part must carry the same list the text part
+     does, because that is the part a mail client shows.
+     ``test_reports_that_all_fail_to_parse_are_not_reported_as_no_reports_received``,
+     ``test_the_html_body_carries_the_unreadable_list_whenever_the_text_body_does``.
+
+  2c. **A hostile report cannot make the message unsendable.** Every cell comes
+     from a DNS-published address, and ``render_table`` pads each row to its
+     column's widest cell — so one oversized cell is multiplied by the row
+     count. A body past SES's limit is a refused send, and a refused send is
+     the silence this job exists to break.
+     ``test_an_oversized_cell_cannot_inflate_the_message_past_the_send_limit``.
+
   3. **A send failure exits non-zero.** Exit 0 from this job is the only thing
      that claims the owner was told.
      ``test_a_refused_send_exits_four_and_says_nothing_was_sent``.
@@ -105,6 +121,16 @@ class StubSES:
 def _stored(xml: bytes, *, days_ago: float, filename: str = "r.zip") -> tuple[bytes, datetime]:
     """One S3 object: the whole MIME message, as the receipt rule stores it."""
     payload = fx.zipped(xml) if filename.endswith(".zip") else fx.gzipped(xml)
+    return (fx.as_ses_object(payload, filename), NOW - timedelta(days=days_ago))
+
+
+def _stored_unreadable(*, days_ago: float, filename: str = "r.zip") -> tuple[bytes, datetime]:
+    """An object that ARRIVES and cannot be parsed — a zip past the member limit.
+
+    Same delivery path as `_stored`: SES matched the recipient and wrote the
+    message to the bucket. Only the contents are refused.
+    """
+    payload = fx.zipped_over_member_limit(fx.SAMPLE_XML)
     return (fx.as_ses_object(payload, filename), NOW - timedelta(days=days_ago))
 
 
@@ -216,13 +242,132 @@ def test_zero_reports_still_sends_a_message_that_says_so():
     assert "no reports" in html_body.lower()
 
 
-def test_objects_that_contain_no_report_are_still_a_quiet_week_not_a_clean_one():
-    """An object that is not a report must not be counted as reports parsed."""
+def test_objects_that_contain_no_report_are_named_not_reported_as_an_empty_window():
+    """An object that is not a report must not be counted as reports parsed —
+    and must not be counted as nothing having arrived either."""
     code, ses, _ = _run({"reports/junk": (b"this is not a dmarc report", NOW - timedelta(days=1))})
     assert code == 0
-    subject, text, _ = _bodies(ses)
-    assert "NO REPORTS RECEIVED" in subject
-    assert "1 object(s) in the window" in text
+    subject, text, html_body = _bodies(ses)
+    assert "NO REPORTS RECEIVED" not in subject, (
+        f"one object DID arrive; only its contents were unreadable: {subject!r}"
+    )
+    assert "NO READABLE REPORTS (1 unreadable)" in subject, subject
+    assert "1 object(s) landed in the window" in text
+    assert "no DMARC aggregate report found inside" in text
+    assert "no DMARC aggregate report found inside" in html_body
+
+
+# ── Guard 2b: "found nothing" and "could read nothing" are different ────────
+
+
+def test_reports_that_all_fail_to_parse_are_not_reported_as_no_reports_received():
+    """THE conflation this guard exists for, reproduced from the live shape.
+
+    Seven objects landed in the window and every one of them was a zip past
+    `MAX_ARCHIVE_MEMBERS`, so the parser refused all seven and `reports_parsed`
+    was 0. Branching on that alone mailed `NO REPORTS RECEIVED`, whose body
+    says "the absence of evidence … either no receiver had mail from us to
+    report on, or the collection path is broken" and points at the arrival
+    ladder — MX, receipt rule, active rule set, prefix. None of those is the
+    fault when seven objects demonstrably arrived, and the seven parse errors
+    the job had already computed were dropped on the floor.
+    """
+    objects = {f"reports/bad-{i}": _stored_unreadable(days_ago=2) for i in range(7)}
+    code, ses, _ = _run(objects)
+    assert code == 0, "the window was read successfully; the objects in it were not"
+    subject, text, html_body = _bodies(ses)
+
+    assert "NO REPORTS RECEIVED" not in subject, f"a false all-clear in the inbox list: {subject!r}"
+    assert "NO READABLE REPORTS (7 unreadable)" in subject, subject
+    assert "7 object(s) landed in the window" in text
+    assert "NOT ONE of them held a report this parser could read" in text
+    # The parse errors themselves, not just a count — this is the whole
+    # diagnosis, and it was being computed and thrown away.
+    assert "zip holds 65 members" in text
+    assert "zip holds 65 members" in html_body
+    # And it must NOT send the reader down the arrival ladder.
+    assert "No reports are arriving" not in text
+    assert "Reports arrive but cannot be parsed" in text
+
+
+def test_the_html_body_carries_the_unreadable_list_whenever_the_text_body_does():
+    """The HTML part is what nearly every mail client actually displays.
+
+    A mixed window — one readable report, one refused object — renders a table,
+    so the text body gets `render_table`'s UNREADABLE block. If the HTML body
+    omits it, the owner reads a clean table and never learns that something in
+    the window was not counted.
+    """
+    code, ses, _ = _run(
+        {
+            "reports/good": _stored(fx.SAMPLE_XML, days_ago=1),
+            "reports/bad": _stored_unreadable(days_ago=1),
+        }
+    )
+    assert code == 0
+    _, text, html_body = _bodies(ses)
+
+    assert "UNREADABLE (1) — these were NOT counted above" in text
+    assert "UNREADABLE" in html_body, "the HTML part must not drop what the text part reports"
+    assert "were NOT counted above" in html_body
+    assert "zip holds 65 members" in html_body
+    # The table itself still rendered: one unreadable object does not suppress
+    # the reports that DID parse.
+    assert "VERDICT: 3 of 45 messages FAILED DMARC alignment" in text
+
+
+# ── Guard 2c: a hostile report cannot make the message unsendable ───────────
+
+
+def test_an_oversized_cell_cannot_inflate_the_message_past_the_send_limit():
+    """`render_table` pads every row to its column's widest cell.
+
+    So ONE oversized attacker-supplied cell is multiplied by the row count:
+    measured before the bound, a 219 KB report with a 200 KB `<source_ip>` and
+    30 ordinary records rendered a 6.6 MB table. `dmarc-reports@` is published
+    in DNS and the receipt rule stores whatever anyone mails it, so that is a
+    body SES refuses — exit 4, no summary — and by this job's deliberate
+    no-alarm design the only symptom would be a Monday with no mail.
+    """
+    huge = "192.0.2.99" + "A" * 200_000
+    xml = fx.aggregate_report(
+        records="".join(fx.record(source_ip=f"198.51.100.{i}", count=1) for i in range(30))
+        + fx.record(source_ip=huge, count=1)
+    )
+    code, ses, _ = _run({"reports/hostile": _stored(xml, days_ago=1)})
+    assert code == 0
+    _, text, html_body = _bodies(ses)
+
+    assert len(text.encode("utf-8")) <= job.MAX_BODY_BYTES, f"text body is {len(text)} chars"
+    assert len(html_body.encode("utf-8")) <= job.MAX_BODY_BYTES, f"html body is {len(html_body)} chars"
+    assert huge not in text, "the oversized cell must be clipped, not carried whole"
+    assert huge not in html_body
+    # Clipped, not dropped: the source is still a row in the table.
+    assert "192.0.2.99" in text
+    assert "198.51.100.7" in text, "ordinary rows are untouched"
+
+
+def test_a_body_past_the_size_limit_is_truncated_rather_than_left_unsendable(monkeypatch):
+    """Per-cell clipping bounds the width; this bounds the height.
+
+    Row COUNT is unbounded on its own — one hand-written report may declare
+    thousands of distinct source IPs and each is a legitimate row. A body past
+    what SES accepts is a refused send, which is exit 4 and no Monday mail at
+    all, and the absence of the Monday mail is this job's only alarm. A clipped
+    summary that arrives beats a complete one that does not.
+    """
+    # 600 bytes: under both rendered bodies for this fixture (1.1 KB of text,
+    # 3.3 KB of HTML), so the bound bites without needing a report with
+    # thousands of rows in it.
+    monkeypatch.setattr(job, "MAX_BODY_BYTES", 600)
+    code, ses, _ = _run({"reports/one": _stored(fx.SAMPLE_XML, days_ago=1)})
+    assert code == 0, "an over-long body must still be sent, not abandoned"
+    _, text, html_body = _bodies(ses)
+
+    for label, body in (("text", text), ("html", html_body)):
+        assert len(body.encode("utf-8")) < 1_000, f"{label} body is {len(body.encode('utf-8'))} bytes"
+        assert "TRUNCATED" in body, f"the {label} body must say it was cut, not cut silently"
+        assert "dmarc-reports.md" in body, f"the {label} body must name where the whole table is"
 
 
 # ── Guard 3: a refused send is never a success ──────────────────────────────
