@@ -19,6 +19,22 @@ edit_uri: edit/main/docs/
 
 docs_dir: docs
 
+# Pages that live in the repo but must NOT be published (#1751 — publication is
+# default-deny; this list is the deny half that exists on `main` today). An
+# excluded file is not rendered, not copied, and never reaches the search index.
+#
+# `docs/README.md` still carries a row for each one, because the docs gate's
+# index check ("a doc not listed here does not exist") is about the REPOSITORY
+# index, not the site — and the row keeps its ordinary relative link, which
+# mkdocs reports at INFO ("contains a link to X which is excluded from the
+# built site"), not WARNING, so `--strict` stays green.
+#
+# An excluded page must also stay OUT of the `nav:` below: a nav entry naming
+# an excluded file is a build error, not a silent no-op.
+# Guarded by backend/tests/test_docs_site.py::test_internal_specs_are_excluded_from_the_site.
+exclude_docs: |
+  specs/assoc-v1-spec.md
+
 theme:
   name: material
   palette:

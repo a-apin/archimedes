@@ -58,6 +58,95 @@ export function verificationTone(mode) {
   return 'failed'
 }
 
+// ── Source-paper check copy ──────────────────────────────────────────────
+//
+// `GET /api/traces/{id}/verify` now runs a SECOND, independent check
+// (#1637): the on-chain half asks "were these bytes anchored", this half asks
+// "does the corpus have the papers this decision cites". They are reported
+// separately and must be rendered separately — a trace can be correctly
+// anchored while citing a paper that has since left the corpus, and averaging
+// the two into one badge hides exactly the fact a reader came for.
+//
+// The word "verified" is deliberately NOT used here, and that is an owner
+// decision, not a style preference (Q8 on #1688): corpus `content_hash` /
+// `pdf_sha256` are NULL in production until #1091, so the backend compares
+// nothing — it checks EXISTENCE. "Papers verified" would promise a hash
+// comparison that did not happen, on a product whose whole claim is that it
+// does not overstate what it checked. The copy says "exists in the corpus".
+//
+// Tri-state, mirroring `papers_verified` / `source_paper_verification.mode`:
+//
+//   checked + true   → every cited paper was found
+//   checked + false  → at least one is missing, or a claimed hash disagreed
+//   no_papers_claimed → the trace cites no papers; nothing was attempted
+//   corpus_unavailable → the corpus was unreachable; nothing was attempted
+//
+// The two `null` modes are NOT collapsed into a failure or a pass. An outage
+// that reads as "these papers do not exist" reports fabricated provenance;
+// one that reads as a pass is #1359's bug with a different name. And the mode
+// is SURFACED, not merely returned — the owner's Q8 wording is "the tri-state
+// mode must be surfaced, not just returned", so the mode string itself rides
+// in `detail` where a reader can see which check actually ran.
+export function sourcePapersCopy(result) {
+  const r = result || {}
+  const mode = r.source_paper_verification?.mode
+  const d = r.source_paper_verification || {}
+
+  if (mode === 'corpus_unavailable') {
+    return {
+      mode,
+      tone: 'unproven',
+      label: 'source papers not checked',
+      detail:
+        'The paper corpus was unreachable, so the cited papers were not checked (mode: corpus_unavailable). This is not a failure and not a pass — nothing was attempted.',
+    }
+  }
+  if (mode === 'no_papers_claimed') {
+    return {
+      mode,
+      tone: 'absent',
+      label: 'no papers cited',
+      detail:
+        'This trace cites no source papers, so there was nothing to look up (mode: no_papers_claimed). Not a failure — an absence.',
+    }
+  }
+  if (mode === 'checked' && r.papers_verified === true) {
+    const n = d.checked ?? 0
+    return {
+      mode,
+      tone: 'verified',
+      label: n === 1 ? '1 cited paper exists in the corpus' : `${n} cited papers exist in the corpus`,
+      // The limit is stated in the same breath as the result. Corpus
+      // content_hash / pdf_sha256 are NULL until #1091, so this is an
+      // existence check, not a hash comparison, and saying "verified" here
+      // would claim the comparison that did not run.
+      detail:
+        'Every arXiv id this decision cites was found in the corpus. This checks that the papers EXIST — the corpus stores no per-paper content hash yet (#1091), so no hash was compared.',
+    }
+  }
+  if (mode === 'checked') {
+    const missing = d.missing || []
+    const mismatch = d.hash_mismatch || []
+    const parts = []
+    if (missing.length) parts.push(`not in the corpus: ${missing.join(', ')}`)
+    if (mismatch.length) parts.push(`content hash disagrees: ${mismatch.join(', ')}`)
+    return {
+      mode,
+      tone: 'failed',
+      label: 'cited paper not found',
+      detail: `This decision cites papers the corpus cannot account for — ${parts.join('; ')}.`,
+    }
+  }
+  // No result yet, or a response that predates this field. Say so; never
+  // default to either verdict.
+  return {
+    mode: mode || null,
+    tone: 'absent',
+    label: 'source papers not checked',
+    detail: 'Run Verify to check the cited papers against the corpus.',
+  }
+}
+
 // ── Per-row anchoring state ──────────────────────────────────────────────
 //
 // Every surface that lists traces — Reasoning, the Portfolio activity feed,

@@ -116,6 +116,60 @@ def test_every_nav_target_exists() -> None:
     )
 
 
+#: Repo docs that are engineering reference and must NOT be published (#1751 —
+#: publication is default-deny; on `main` the deny half is mkdocs' own
+#: `exclude_docs`). Each one still carries a row in docs/README.md, because the
+#: docs gate's index check is about the REPOSITORY index, not the site.
+INTERNAL_ONLY_DOCS = ("specs/assoc-v1-spec.md",)
+
+
+def _exclude_patterns() -> list[str]:
+    """`exclude_docs` as a list of patterns. mkdocs accepts a block string."""
+    raw = _mkdocs_config().get("exclude_docs") or ""
+    if isinstance(raw, str):
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+    return [str(x).strip() for x in raw]
+
+
+def _publication_violations(excluded: set[str], navigated: set[str]) -> list[str]:
+    """Which internal docs would reach the public site under this config.
+
+    Two ways, and either one alone fails open in a different direction: mkdocs
+    walks `docs_dir` and builds every file it finds regardless of the nav, so a
+    nav-less page is still published at its URL; and a nav entry naming an
+    excluded file is a hard build error rather than a silent no-op.
+    """
+    problems = []
+    for rel in INTERNAL_ONLY_DOCS:
+        if rel not in excluded:
+            problems.append(f"{rel}: not in exclude_docs — mkdocs builds it and publishes it at its URL")
+        if rel in navigated:
+            problems.append(f"{rel}: named in the nav while excluded from the build — mkdocs fails the build")
+    return problems
+
+
+def test_internal_specs_are_excluded_from_the_site() -> None:
+    for rel in INTERNAL_ONLY_DOCS:
+        assert (REPO_ROOT / "docs" / rel).is_file(), f"{rel} is listed as internal but does not exist"
+
+    problems = _publication_violations(set(_exclude_patterns()), set(_nav_targets(_mkdocs_config()["nav"])))
+    assert not problems, "internal docs would be published:\n  " + "\n  ".join(problems)
+
+
+def test_the_publication_guard_fires_on_both_failure_modes() -> None:
+    """GUARD's adversarial companion: the predicate above must be able to fail.
+
+    The same function, given a config that drops the exclusion, and one that
+    also names the doc in the nav.
+    """
+    rel = INTERNAL_ONLY_DOCS[0]
+    dropped = _publication_violations(excluded={"something/else.md"}, navigated=set())
+    assert any("not in exclude_docs" in p for p in dropped), dropped
+
+    both = _publication_violations(excluded={"something/else.md"}, navigated={rel})
+    assert len(both) == 2, both
+
+
 def test_every_openwiki_page_is_in_the_nav() -> None:
     navigated = set(_nav_targets(_mkdocs_config()["nav"]))
     on_disk = {p.relative_to(REPO_ROOT).as_posix() for p in hooks.wiki_pages(REPO_ROOT)}

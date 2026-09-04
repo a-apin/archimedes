@@ -94,6 +94,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`specs/prompt-inventory.md`](specs/prompt-inventory.md) | current | Dan Browne | 2026-09-03 | Every prompt this tree sends a model, rendered from the `agents/prompts.py` registry by `scripts/gen_prompt_inventory.py`. Edit the registry, not this file. |
 | [`specs/strategy-fusion-spec.md`](specs/strategy-fusion-spec.md) | shipped | Dan Browne | 2026-09-01 | Multi-paper synthesis feeding the debate proposals. Future public-storage pin is owner-gated ([ADR](adr/ipfs-pinning-not-live.md)). |
 | [`specs/strategy-passport-spec.md`](specs/strategy-passport-spec.md) | shipped | Dan Browne | — | Paper-grounding contract carried by every strategy. |
+| [`specs/assoc-v1-spec.md`](specs/assoc-v1-spec.md) | current | Dan Browne | 2026-09-03 | `assoc/v1` — the one shape a paper→strategy association takes, the identity-only projection the content hash may see, the merge-not-delete rule for passport refs, and what a `papers_verified` green check does and does not mean. **Internal: excluded from the published docs site** (`mkdocs.yml` `exclude_docs`). |
 | [`specs/strategy-dsl-spec.md`](specs/strategy-dsl-spec.md) | spec | Dan Browne | — | Strategy DSL. |
 | [`specs/strategy-lifecycle-spec.md`](specs/strategy-lifecycle-spec.md) | spec | Dan Browne | — | Draft → generated → published lifecycle. |
 | [`specs/generation-streaming-spec.md`](specs/generation-streaming-spec.md) | spec | Dan Browne | — | SSE contract for the Generate page. |

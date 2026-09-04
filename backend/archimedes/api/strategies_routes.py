@@ -168,13 +168,20 @@ def _to_strategy_response(
     papers_list = [
         PaperRefResponse(
             arxiv_id=p.arxiv_id,
-            title=p.title,
+            # `or None` (#1637): a blank title is not a title. `""` renders as
+            # an empty pair of quotes on the passport; `null` renders as the
+            # absence it is.
+            title=p.title or None,
             authors=p.authors,
             doi=p.doi,
             venue=p.venue,
             year=p.year,
             citation_count=p.citation_count,
             contribution=p.contribution,
+            role=getattr(p, "role", None) or "cited",
+            selection_rank=getattr(p, "selection_rank", None),
+            semantic_score=getattr(p, "semantic_score", None),
+            content_hash=getattr(p, "content_hash", None),
         )
         for p in s.papers
     ]
@@ -183,8 +190,10 @@ def _to_strategy_response(
         id=s.id,
         papers=papers_list,
         # Legacy scalar fields from papers[0]
-        paper_arxiv_id=s.paper_arxiv_id,
-        paper_title=s.paper_title,
+        paper_arxiv_id=s.paper_arxiv_id or None,
+        # `or None` (#1637, acceptance 12): a zero-paper passport has no paper
+        # title, and `""` printed as `""` on the card.
+        paper_title=s.paper_title or None,
         paper_authors=s.paper_authors,
         methodology_summary=s.methodology_summary,
         asset_universe=s.asset_universe,
@@ -1565,13 +1574,21 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     # Enrich missing titles from the corpus when a session is available.
     corpus_titles: dict[str, str] = _enrich_paper_titles_from_corpus(refs, session) if session is not None else {}
 
-    def _resolved_title(r) -> str:
-        """Stored title wins; fall back to corpus; fall back to bare arxiv_id."""
+    def _resolved_title(r) -> str | None:
+        """Stored title wins; fall back to corpus; otherwise **None** (#1637).
+
+        The last fallback used to be the bare ``arxiv_id``, which put an id in
+        a column labelled "title" — the same class of defect as printing the
+        strategy name there, just less obviously wrong. ``None`` is the honest
+        answer and matches ``_resolve_source_papers``'s ``resolved_title``
+        rule; the id is already carried in ``arxiv_id`` for the renderer to
+        compose "title unavailable — arXiv:<id>" from.
+        """
         if (r.title or "").strip():
             return r.title
         if r.arxiv_id and corpus_titles.get(r.arxiv_id):
             return corpus_titles[r.arxiv_id]
-        return r.arxiv_id or ""
+        return None
 
     papers_list = [
         PaperRefResponse(
@@ -1583,6 +1600,10 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
             year=r.year,
             citation_count=r.citation_count,
             contribution=r.contribution,
+            role=r.role or "cited",
+            selection_rank=r.selection_rank,
+            semantic_score=r.semantic_score,
+            content_hash=r.content_hash,
         )
         for r in refs
     ]
@@ -1606,7 +1627,7 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
     asset_universe = _card["asset_universe"]
 
     # The enriched first-paper title (may have been filled from corpus above).
-    first_title = papers_list[0].title if papers_list else (first.title if first else "")
+    first_title = papers_list[0].title if papers_list else (first.title if first else None)
 
     return_source_enum, return_source_note = classify_return_source(
         StrategyView(
