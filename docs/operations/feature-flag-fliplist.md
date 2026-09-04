@@ -127,7 +127,7 @@ the part an operator reaches for under pressure.
 | `GENERATION_TIMEOUT_SECONDS` | `_generation_timeout_seconds()` — [`api/generate_routes.py`](../../backend/archimedes/api/generate_routes.py) | `"300"` literal in `infra/ecs.tf` (#1692); code default 600 | **Fail-soft, so mistypes are silent:** `"300s"`, `"5m"`, `"0"` and `"-1"` all fall back to 600 without complaint. `inf` is the one intended escape hatch. Keep it a bare positive number; pinned by [`test_ecs_generation_timeout.py`](../../backend/tests/test_ecs_generation_timeout.py). |
 | `GENERATION_DAILY_CAP_PER_USER` / `_PER_IP` | `user_daily_cap()` / `ip_daily_cap()` — [`services/generation_quota.py`](../../backend/archimedes/services/generation_quota.py) | `"100"` / `"200"` in `infra/ecs.tf` | `<= 0` disables that layer. Both layers must pass. |
 | `PUBLIC_TRACE_VAULTS` | `trace_visibility.py`'s `_PUBLIC_VAULTS_ENV`, falling back to `AGENT_VAULT_ADDRESSES` — [`services/trace_visibility.py`](../../backend/archimedes/services/trace_visibility.py) | `var.public_trace_vaults` in `infra/ecs.tf`; empty default → **unarmed** | Unarmed is the *wider* setting: every unowned trace is house-public. Arming it narrows visibility to the listed vaults. Counter-intuitive direction — check it before assuming an empty value is the safe one. |
-| `FREE_GENERATIONS_PER_ACCOUNT` | `allowance()` — [`services/free_generations.py`](../../backend/archimedes/services/free_generations.py) | **not in `infra/ecs.tf`** → code default `3`; `.env.example` also says `3`. See finding A5. | `<= 0` disables the free path entirely, and does so *without dangling a carrot* — `locked_reason()` returns `None` rather than a lock reason. Sits above `GENERATION_PAYMENT_REQUIRED`: the allowance is spendable only on a **verified** account (`LOCK_EMAIL_UNVERIFIED`). #1643/#1658. |
+| `FREE_GENERATIONS_PER_ACCOUNT` | `allowance()` — [`services/free_generations.py`](../../backend/archimedes/services/free_generations.py) | `"3"` pinned on **both** task-definition paths (owner, 2026-09-02, deck Q3): the literal in `infra/ecs.tf` and `FREE_GENERATIONS_VALUE` in [`.github/scripts/ecs_rewrite_task_def.py`](../../.github/scripts/ecs_rewrite_task_def.py), which is the one that actually ships (`deploy.yml` clones the live task-def and never applies terraform). Equal to the code default, so the pin was plumbing-only. Change **both** or the next CI deploy overwrites you. Guards: [`test_ecs_free_generations_pin.py`](../../backend/tests/test_ecs_free_generations_pin.py), [`test_ecs_backend_secrets.py`](../../backend/tests/test_ecs_backend_secrets.py). Closes A5. | `<= 0` disables the free path entirely, and does so *without dangling a carrot* — `locked_reason()` returns `None` rather than a lock reason. Sits above `GENERATION_PAYMENT_REQUIRED`: the allowance is spendable only on a **verified** account (`LOCK_EMAIL_UNVERIFIED`). #1643/#1658. |
 | `DEBATE_BACKTEST_WORKERS` | `_backtest_max_workers()` — [`agents/debate_engine.py`](../../backend/archimedes/agents/debate_engine.py) | not deployed → code default `2` | Clamped `[1, 2]`. **The clamp is the point:** the knob can make the dedicated backtest pool narrower, never wider, so an operator typo cannot reintroduce the GIL-contention fan-out #1689 removed. |
 | `SERVER_THREAD_POOL_WORKERS` | `_default_executor_workers()` — [`main.py`](../../backend/archimedes/main.py) | not deployed → `0` = auto | `0`/unset picks `min(32, max(16, cpu_count*4))`; a positive value overrides, capped at 64. Floor of 16 exists because one generation parks up to `DEBATE_POOL_MAX` IO-bound proposer threads on this pool (#1689). |
 | `TIINGO_MIN_REQUEST_INTERVAL_S` | `_tiingo_min_request_interval_s()` — [`services/market_data_provider.py`](../../backend/archimedes/services/market_data_provider.py) | commented out in `.env.example` → code default `1.1` s | `0` disables client-side pacing entirely, leaving only Tiingo's own HTTP 429. Negative or unparseable values log a warning and fall back to 1.1 (#1627). |
@@ -233,6 +233,17 @@ in the same PR as this revision. The remaining zero-reader `.env.example`
 entries are contract addresses and credentials, not flags — out of scope for
 #834, and each is a legitimate template line rather than dead config.
 
+**A5 — RESOLVED (2026-09-02): `FREE_GENERATIONS_PER_ACCOUNT` is now pinned on
+both task-definition paths.** The finding as written stands below; the fix
+landed as the literal `{ name = "FREE_GENERATIONS_PER_ACCOUNT", value = "3" }`
+in `infra/ecs.tf` **and** `FREE_GENERATIONS_VALUE = "3"` in
+`.github/scripts/ecs_rewrite_task_def.py`. Both, not either: ecs.tf is the
+declared baseline but is drifted and is not applied by `deploy.yml`, while the
+rewrite script is the path that registers every revision. That is the same
+two-path treatment `PAPER_ADVANCE_ENABLED` already has, for the same reason
+(task-def :211). The value equals the code default, so nothing about what prod
+serves changed — only whether it was decided. Original finding:
+
 **A5 — `FREE_GENERATIONS_PER_ACCOUNT` is not in the task definition.**
 It is read by `free_generations.allowance()` with a code default of 3 and is set
 in `.env.example` — but **nowhere in `infra/ecs.tf`**, so prod grants three free
@@ -244,6 +255,7 @@ one knob on this page that gives away paid product. Fix: add
 `{ name = "FREE_GENERATIONS_PER_ACCOUNT", value = "3" }` to ecs.tf, matching the
 code default so the apply is plumbing-only. **Not done here** — this page is not
 the place to edit terraform, and a value change wants its own review.
+*(Done separately, 2026-09-02 — see the resolution note above.)*
 
 **A6 — five rows' reader citations had drifted in one night.**
 `ARCHIMEDES_FUSION_ENABLED`, `GENERATION_PAYMENT_REQUIRED`,

@@ -680,6 +680,27 @@ resource "aws_ecs_task_definition" "backend" {
         # below): supplied at apply time once the platform DCW exists, so the
         # flip needs no code change.
         { name = "GENERATION_PAYMENT_REQUIRED", value = "true" },
+        # Free allowance ABOVE the paywall (#1643): the first N generations on
+        # a VERIFIED account never reach GENERATION_PAYMENT_REQUIRED. Pinned
+        # here at the code default (free_generations.DEFAULT_ALLOWANCE = 3) so
+        # the number prod gives away is a decision someone applied rather than
+        # an accident of a code default — finding A5 on the flip-list, and the
+        # same drift GENERATION_DAILY_CAP_* and GENERATION_TIMEOUT_SECONDS
+        # above were plumbed to remove. This is the one knob on that page that
+        # gives away paid product, so it does not get to be implicit.
+        #
+        # TWIN, and the one that actually ships: FREE_GENERATIONS_VALUE in
+        # .github/scripts/ecs_rewrite_task_def.py. deploy.yml clones the live
+        # task definition and does not apply terraform, so this line alone is
+        # not live. Change BOTH or the next CI deploy overwrites you.
+        #
+        # `<= 0` disables the free path entirely and restores the pre-#1643
+        # wallet-gate-on-first-call behaviour; a non-integer falls back to 3
+        # with a warning, so keep it a bare integer.
+        # Reader: allowance() in services/free_generations.py. Guards:
+        # backend/tests/test_ecs_backend_secrets.py (this line) and
+        # backend/tests/test_ecs_free_generations_pin.py (both paths).
+        { name = "FREE_GENERATIONS_PER_ACCOUNT", value = "3" },
         # $2.00/generation (Dan, 2026-08-20): the testnet faucet drips $20
         # per 2h cooldown, so one drip = a clean 10 generations — and $2 sits
         # inside the 10x-margin-over-measured-cost pricing direction (private
