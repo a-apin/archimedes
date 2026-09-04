@@ -22,8 +22,8 @@ strategy, under scrutiny"): a single-user agent that turns q-fin research litera
 rigor-gated strategies behind an honest validation layer, then runs the survivors as
 paper deployments. **No product analogies on public surfaces** — "X-for-quant-finance"
 comparison branding (the retired Linus analogy and anything shaped like it) is banned
-(Dan, 2026-09-01) in the README, docs, UI, and manifests; competitive comps live in the
-private docs repo only. Guarded by
+(Dan, 2026-09-01) in the README, docs, UI, manifests, and the published CLI/MCP package
+pages; competitive comps live in the private docs repo only. Guarded by
 [`backend/tests/test_public_branding_guard.py`](backend/tests/test_public_branding_guard.py). **Executing and monitoring
 them in non-custodial vaults on Arc with USDC settlement is roadmap, not shipped product —
 write it in the future tense.** The `Vault`/`VaultFactory` contracts are real and deployed

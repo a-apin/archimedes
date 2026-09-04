@@ -15,7 +15,18 @@ Scope
 -----
 Public identity surfaces: the root markdown files, docs/ (excluding archive/,
 handovers/, and runbooks/ — those record history and may quote the old brand),
-openwiki/, the UI source and public assets, and the CLI/MCP surfaces.
+openwiki/, the UI source and public assets, the distributed CLI/MCP packages, and
+the company one-pager.
+
+Two classes of surface are easy to miss and are pinned by
+``test_scan_covers_the_syndicated_surfaces`` below, because branding leaves the
+repo through them without ever appearing in ui/src:
+
+* ``ui/index.html`` and ``ui/public/site.webmanifest`` — the ``<title>``,
+  ``description``, ``og:*`` and ``twitter:*`` copy is what search results, link
+  unfurls and installed-PWA chrome actually show.
+* ``cli/`` and ``mcp-server/`` in full — their ``README.md`` and pyproject
+  ``description`` are the package pages on PyPI, not just repo files.
 
 The banned list is small on purpose: patterns land here when the owner retires
 them, not speculatively.
@@ -44,17 +55,59 @@ BANNED = [
     ),
 ]
 
-PUBLIC_ROOTS = ["docs", "openwiki", "ui/src", "ui/public", "cli/src", "mcp-server/src"]
-ROOT_FILES = ["README.md", "CLAUDE.md", "AGENTS.md", "SETUP.md"]
+# Whole package dirs, not just src/ — a package's README and pyproject description
+# are its public page on PyPI.
+PUBLIC_ROOTS = [
+    "docs",
+    "openwiki",
+    "ui/src",
+    "ui/public",
+    "cli",
+    "mcp-server",
+    "company-site",
+]
+# ui/ itself is not a root (package-lock.json is megabytes of noise), so the two
+# syndicated files in it are named directly.
+PUBLIC_FILES = [
+    "README.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "SETUP.md",
+    "ui/index.html",
+    "ui/README.md",
+]
 
 # History is allowed to quote the old brand; identity surfaces are not.
-EXCLUDED_PARTS = {"archive", "handovers", "runbooks", "node_modules", "__pycache__"}
+EXCLUDED_PARTS = {
+    "archive",
+    "handovers",
+    "runbooks",
+    "node_modules",
+    "__pycache__",
+    "dist",
+    "build",
+    ".venv",
+}
 
-TEXT_SUFFIXES = {".md", ".txt", ".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".html", ".yml", ".yaml"}
+TEXT_SUFFIXES = {
+    ".md",
+    ".txt",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".json",
+    ".html",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".webmanifest",
+}
 
 
 def _public_files():
-    for name in ROOT_FILES:
+    for name in PUBLIC_FILES:
         p = REPO / name
         if p.is_file():
             yield p
@@ -65,7 +118,10 @@ def _public_files():
         for p in base.rglob("*"):
             if not p.is_file() or p.suffix not in TEXT_SUFFIXES:
                 continue
-            if EXCLUDED_PARTS.intersection(p.relative_to(REPO).parts):
+            parts = p.relative_to(REPO).parts
+            if EXCLUDED_PARTS.intersection(parts):
+                continue
+            if any(part.endswith(".egg-info") for part in parts):
                 continue
             # This guard quotes the banned phrases in its own docstring.
             if p.name == "test_public_branding_guard.py":
@@ -97,3 +153,30 @@ def test_the_guard_actually_rejects_the_banned_phrase(tmp_path):
     assert any(p.search(incident_line) for p, _ in BANNED)
     tagline = "The world is your portfolio."
     assert any(p.search(tagline) for p, _ in BANNED)
+
+
+def test_scan_covers_the_syndicated_surfaces():
+    """Roots must keep covering the files branding actually escapes through.
+
+    The scan started at ui/src + cli/src + mcp-server/src, which missed every
+    surface below: the ``<title>``/``og:``/``twitter:`` copy that search results
+    and link unfurls render, the PWA manifest, and the two package pages
+    published to PyPI. Narrowing a root back down is a silent regression, so the
+    coverage is asserted rather than assumed.
+    """
+    scanned = {str(p.relative_to(REPO)) for p in _public_files()}
+    required = {
+        "README.md",
+        "CLAUDE.md",
+        "ui/index.html",
+        "ui/public/site.webmanifest",
+        "ui/src/components/Architecture.jsx",
+        "ui/src/paperCopy.js",
+        "cli/README.md",
+        "cli/pyproject.toml",
+        "mcp-server/README.md",
+        "mcp-server/pyproject.toml",
+        "company-site/index.html",
+    }
+    missing = sorted(required - scanned)
+    assert not missing, f"public surfaces dropped out of the branding scan: {missing}"
