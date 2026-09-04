@@ -42,8 +42,10 @@ This script is the path that actually ships. It:
    ``services/backtest_scheduler.py``; nothing on main reads
    ``BACKTEST_REFRESH_*``/``BACKTEST_MAX_AGE_HOURS`` any more, but the owner's
    hand-pinned ``BACKTEST_REFRESH_ENABLED=false`` (task-def 216, the #1760
-   mitigation) rides forward on every clone. Cleanups ship with the deploy
-   rather than as an operator ritual, so the clone drops them here.
+   mitigation) rides forward on every clone. #1811 retired
+   ``ARCHIMEDES_FUSION_ENABLED`` on 2026-09-02 and left the same residue for
+   the same reason. Cleanups ship with the deploy rather than as an operator
+   ritual, so the clone drops them here.
 7. Drops the describe-only fields ``register-task-definition`` rejects.
 
 The pinned value is ``"true"`` as of 2026-09-01 (#1778, the #1632 lift): the
@@ -138,11 +140,24 @@ TIINGO_SSM_PATH = "parameter/archimedes/prod/TIINGO_API_TOKEN"
 # ``BACKTEST_REFRESH_ENABLED`` is the live pin: the owner set it by hand as
 # task-def revision 216 during the 2026-09-01 #1760 storm, #1766 deleted the
 # loop it switched, and the deploy has cloned it forward ever since.
+#
+# ``ARCHIMEDES_FUSION_ENABLED`` is the same shape one retirement later — the
+# INERT class of #1824's flag inventory. #1811 retired the flag on 2026-09-02 and
+# took the reader, the OFF branch, the ``infra/ecs.tf`` pin, both compose
+# defaults and ``infra/spike-1411/function-env.txt`` with it — but the LIVE
+# task definition still carries ``ARCHIMEDES_FUSION_ENABLED=true`` on the
+# backend container, and this job clones the live revision rather than applying
+# terraform, so the name rides forward on every deploy with nothing on the far
+# end. The flip-list row named that as the outstanding operator action and
+# named this tuple as the fix; taking it here means no ``terraform apply`` and
+# no operator ritual. Stripping it is a no-op on behaviour by construction:
+# ``backend/tests/test_fusion_flag_retired.py`` fails if any reader comes back.
 RETIRED_BACKEND_ENV = (
     "BACKTEST_REFRESH_ENABLED",
     "BACKTEST_REFRESH_INTERVAL_HOURS",
     "BACKTEST_MAX_AGE_HOURS",
     "BACKTEST_REFRESH_STARTUP_DELAY_S",
+    "ARCHIMEDES_FUSION_ENABLED",
 )
 
 # Same drop-list the previous inline jq used. These fields come back from
