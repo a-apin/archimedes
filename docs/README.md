@@ -118,6 +118,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md) | spec | Dan Browne | 2026-07-28 | Vault lifecycle and trade-window semantics. |
 | [`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md) | spec | Dan Browne | 2026-09-01 | Commit-before-trade reasoning-trace anchoring. Live `storagePointer` is empty (hash-only); IPFS pinning is not live ([ADR](adr/ipfs-pinning-not-live.md)). Contract review: Bogdan Sivochkin. |
 | [`specs/ipfs-reasoning-traces-design-note.md`](specs/ipfs-reasoning-traces-design-note.md) | archived (superseded) | Dan Browne | 2026-09-01 | Proposed IPFS pinning via Pinata. Superseded by [`adr/ipfs-pinning-not-live.md`](adr/ipfs-pinning-not-live.md): the pin client was never wired into prod and is now removed. |
+| [`specs/mnemonik-integration-scoping.md`](specs/mnemonik-integration-scoping.md) | current (internal — not on the docs site) | Dan Browne | 2026-09-03 | #714 sub-task C verdict: adopt the protocol math, reimplement natively on Arc, take no Mnemonik dependency. Internal: excluded from the site build (`mkdocs.yml` `exclude_docs`). |
 | [`specs/execution-trading-agent-society-spec.md`](specs/execution-trading-agent-society-spec.md) | draft | Dan Browne | 2026-06-28 | Execution/trading agent society. Seed-and-refine draft. |
 
 ## Security
