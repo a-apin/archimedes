@@ -548,13 +548,16 @@ resource "aws_ecs_task_definition" "backend" {
       # in main.py's chain block) and only the container check acts on
       # staleness. 3 retries x 30s => ~90s of continuous 503 before ECS acts.
       #
-      # THIS FILE IS NOT WHAT SHIPS IT (#1799). deploy.yml clones the LIVE
-      # revision and .github/scripts/ecs_rewrite_task_def.py rewrites the clone;
-      # it does not apply terraform. On top of that, #1799 puts
-      # `lifecycle { ignore_changes = [container_definitions] }` on this
-      # resource, so terraform stops writing container settings altogether — a
-      # targeted apply of this block is neither needed nor safe (it would carry
-      # the whole accumulated container drift with it). The effective writer is
+      # THIS FILE IS NOT WHAT SHIPS IT. deploy.yml clones the LIVE revision and
+      # .github/scripts/ecs_rewrite_task_def.py rewrites the clone; it does not
+      # apply terraform. That is true TODAY, on its own: a healthCheck that
+      # exists only here is not live until somebody applies, and a targeted
+      # apply of this block is neither needed nor safe (it would carry the whole
+      # accumulated container drift with it). #1799 (PR #1833, still OPEN as of
+      # 2026-09-03) would add `lifecycle { ignore_changes =
+      # [container_definitions] }` to this resource and make terraform stop
+      # writing container settings altogether — that STRENGTHENS the argument
+      # below but nothing here depends on it landing. The effective writer is
       # ecs_rewrite_task_def.READINESS_HEALTH_CHECK_COMMAND; the lines below are
       # the documented twin, kept in step by
       # backend/tests/test_ecs_readiness_deploy_pin.py.

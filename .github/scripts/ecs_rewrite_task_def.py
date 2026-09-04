@@ -24,12 +24,14 @@ This script is the path that actually ships. It:
    giving away three generations per account by accident of a code default,
    which is the only knob on the flip-list that hands out paid product.
 4. Points the backend container's ``healthCheck`` at ``/health/ready`` and
-   pins ``HEALTH_STALE_UNREADY_S`` beside it (#1818 P3), for the same reason
-   and now with a second one on top of it: since #1799,
-   ``aws_ecs_task_definition.backend`` carries ``lifecycle { ignore_changes =
-   [container_definitions] }``, so terraform does not write container settings
-   at ALL. This script is not merely the path that ships first — for anything
-   inside ``containerDefinitions`` it is the only writer there is.
+   pins ``HEALTH_STALE_UNREADY_S`` beside it (#1818 P3), for the same reason:
+   this job never terraform-applies, so a ``healthCheck`` that exists only in
+   ``infra/ecs.tf`` is not live until somebody does, and a clone registered
+   before #1818 P3 goes on shipping the old ``/health`` command forever. If
+   #1799 (PR #1833, OPEN as of 2026-09-03) lands, ``ignore_changes =
+   [container_definitions]`` makes terraform stop writing container settings at
+   ALL and this script becomes not merely the first writer but the only one —
+   a strengthening, not a premise.
 5. Drops the describe-only fields ``register-task-definition`` rejects.
 
 The pinned value is ``"true"`` as of 2026-09-01 (#1778, the #1632 lift): the
