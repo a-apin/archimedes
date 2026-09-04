@@ -345,6 +345,7 @@ nav:
           - GitHub security toggles: runbooks/github-security-toggles.md
           - SES suppression list: runbooks/ses-suppression.md
           - DMARC aggregate reports, and the p=none ramp: runbooks/dmarc-reports.md
+          - SES bounce and complaint feedback: runbooks/ses-bounce-signal.md
           - Re-running the curated backtests: runbooks/curated-backtests.md
           # Incidents are evidence rather than procedure (docs/CONVENTIONS.md § 1),
           # but an operator looking for "what went wrong last time" looks here.
