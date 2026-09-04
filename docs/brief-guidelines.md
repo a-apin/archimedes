@@ -71,7 +71,7 @@ the 422 and on the SSE `error` event), and what actually trips it.
 | `inject.url` | links — a scheme, a `www.` host, or a host with a path or a query | `https://example.com/spec`, `evil-site.xyz/payload.txt`, `example.com?q=…` |
 | `inject.base64_blob` | long encoded runs, base64 or hex | a 40+ character base64 string, a 32+ character hex string |
 | `pii.email` | an email address | `dan.browne@example.com`, `quant+alerts@mail.example.co.uk` |
-| `pii.credential` | a key, token or password | `sk-…`, `sk-ant-…`, `AKIA…`, `ghp_…`, `xoxb-…`, `AIza…`, a PEM `PRIVATE KEY` header, `Bearer …`, or `api_key=<long value with a digit>` |
+| `pii.credential` | a key, token or password | `sk-…`, `sk-ant-…`, `sk_live_…`/`sk_test_…`/`rk_live_…` (Stripe), `AKIA…`, `ghp_…`, `xoxb-…`, `AIza…`, a PEM `PRIVATE KEY` header, `Bearer …`, or `api_key=<long value with a digit>` |
 | `pii.national_id` | a US Social Security number | `123-45-6789`, `078 05 1120` |
 | `pii.payment_card` | a payment card number | `4111 1111 1111 1111`, `3782-822463-10005` |
 | `screen.internal_error` | the screen itself failed | refused, never admitted — see § 7 |
@@ -94,17 +94,30 @@ Each rule needs a shape that is unambiguous on its own, because a portfolio brie
 of numbers:
 
 - **Email** needs a real `local@host.tld`. `"buy SPY @ 450"` is a price.
-- **Credentials** need a vendor prefix (`sk-`, `AKIA`, `ghp_`, `xox…`, `AIza`, a PEM
-  header) *or* an explicit credential noun immediately followed by `:`/`=` and a long
-  unbroken value **containing a digit**. `"my secret sauce: a momentum-and-carry blend"`
-  is not a key; `"no password protection needed"` is not a key.
+- **Credentials** need a vendor prefix (`sk-`, `sk_live_`/`rk_live_`, `AKIA`, `ghp_`,
+  `xox…`, `AIza`, a PEM header) *or* an explicit credential noun immediately followed by
+  `:`/`=` and a long unbroken value **containing a digit**. `"my secret sauce: a
+  momentum-and-carry blend"` is not a key; `"no password protection needed"` is not a key.
+  The prefix list is an **enumeration of the ones we know, not a promise of
+  completeness** — a key whose vendor is not on it and which is not written as an
+  assignment will pass. Do not paste keys.
 - **The identity number** uses the Social Security Administration's own validity ranges —
   area is never `000`, `666` or `9xx`, group is never `00`, serial is never `0000` — and
   the separator must be the same on both sides. `"999-45-6789"` passes.
-- **The card number** needs a consumer network prefix (3, 4, 5 or 6) **and** a valid Luhn
-  checksum. `"the 2020 2021 2022 2023 vintages"` is a 16-digit run and passes;
+- **The card number** needs three things: to be **written the way a card is written**
+  (unbroken, or grouped by one separator used throughout — `4-4-4-4`, or Amex's `4-6-5`),
+  a consumer network prefix (3, 4, 5 or 6), **and** a valid Luhn checksum.
+  `"the 2020 2021 2022 2023 vintages"` is a 16-digit run and passes on the prefix;
   `"4111111111111112"` has the right prefix and length and passes, because the checksum
-  fails.
+  fails; and `"a 3 5 10 20 30 60 90 120 day lookback grid"` passes on the grouping, which
+  is the one that matters most here — a parameter grid is fifteen digits, starts with 3,
+  and does pass Luhn, so without the grouping test an ordinary brief is refused before the
+  payment gate.
+
+  **Where that stops:** four 4-digit numbers separated uniformly — `"over 3661 3662 3663
+  3664 trading days"` — *is* a 16-digit uniform grouping, and if the prefix and the
+  checksum also land there is nothing in the shape left to tell it from a card number.
+  Briefs like that are refused. Write the count in prose, or break the run up.
 
 **Deliberately not refused:** phone numbers, postal addresses and IBANs. `"+1 415 555
 0132"` and `"allocate 1 415 555 0132 across the sleeve"` are the same digits, and this

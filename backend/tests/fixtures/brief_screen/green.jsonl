@@ -47,6 +47,8 @@
 {"id": "green-luhn-fails", "surface": "brief", "text": "reference number 4111111111111112 on the custody account", "note": "Visa prefix and 16 digits, but the Luhn checksum fails"}
 {"id": "green-ssn-invalid-area", "surface": "brief", "text": "split the ladder 999-45-6789 across the three maturities", "note": "area 9xx is never issued; the rule uses the SSA's own ranges"}
 {"id": "green-ratio-decimal", "surface": "brief", "text": "target a 1.4111111111111111 information ratio on the overlay", "note": "a decimal is not an account number; the card rule excludes a leading dot"}
+{"id": "green-lookback-grid-spaced", "surface": "brief", "text": "run a 3 5 10 20 30 60 90 120 day lookback grid on trend following", "note": "a parameter grid is fifteen digits starting with 3 and it passes Luhn; the card candidate needs UNIFORM card grouping, not a separator between any two digits, or this ordinary brief is refused before the payment gate"}
+{"id": "green-lookback-grid-hyphen", "surface": "brief", "text": "sweep lookback windows 5-120-250-252-500 trading days on the trend sleeve", "note": "the same class written with hyphens: ragged groups are not a card, however the checksum falls"}
 {"id": "green-title-plain", "surface": "paper_title", "text": "Momentum Everywhere", "note": "the ordinary case: a title is admitted and quoted"}
 {"id": "green-title-colon", "surface": "paper_title", "text": "Confidence: A Bayesian Treatment of Factor Timing", "note": "Noun: subtitle is ordinary title punctuation, which is why PAPER_TITLE skips inject.schema_forgery"}
 {"id": "green-title-verdict-colon", "surface": "paper_title", "text": "Verdict: Do Hedge Funds Deliver Alpha After Fees?", "note": "a second schema key that is also an English word at the head of a title"}

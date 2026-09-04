@@ -507,15 +507,26 @@ _PII_HINT = (
 #: exactly the addresses most likely to be a real one.
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9](?:[A-Za-z0-9.\-]*[A-Za-z0-9])?\.[A-Za-z]{2,}")
 
-#: Credential shapes. The first eight are vendor prefixes — a token that can
-#: only be a token. The ninth is the generic form, and it is the one that
+#: Credential shapes. The first nine are vendor prefixes — a token that can
+#: only be a token. The last is the generic form, and it is the one that
 #: needs care: the noun must be an explicit credential noun (never a bare
 #: "secret" or "token", which appear in ordinary prose), it must be followed
 #: immediately by ``:`` or ``=``, and the value must be a long unbroken run
 #: CONTAINING A DIGIT — so "my secret: momentum-and-carry" is not a key and
 #: "api_key: sk_live_9f2a…" is.
+#:
+#: This is an enumeration of the prefixes we know, not a claim of
+#: completeness; ``docs/brief-guidelines.md`` § 3.1 says so. Adding one is
+#: cheap and needs no ``RULESET_VERSION`` bump, because the digest tracks the
+#: reason-code SET and every prefix here reports the same ``pii.credential``.
 _CREDENTIAL = (
     re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_\-]{16,}"),  # OpenAI / Anthropic secret keys
+    # Stripe secret and restricted keys. One character away from the OpenAI
+    # prefix above (``sk_`` vs ``sk-``) and the single most damaging thing a
+    # user of a payments-adjacent product can paste into a text box. The
+    # generic branch below does NOT catch it: "my api key is sk_live_…" has no
+    # ``:`` or ``=`` after the noun.
+    re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"),  # GitHub tokens
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b"),  # AWS access key ids
@@ -539,11 +550,34 @@ _CREDENTIAL = (
 #: number anyone writes, but "10-20 3040" is a range someone might.
 _NATIONAL_ID = re.compile(r"(?<![\d\-])(?!000|666|9\d\d)\d{3}([\- ])(?!00)\d{2}\1(?!0000)\d{4}(?![\d\-])")
 
-#: A run of 12–19 digits, optionally grouped by single spaces or hyphens. This
-#: only PROPOSES a candidate; ``_looks_like_card`` decides. The lookarounds
-#: exclude a decimal point on either side so "1.4111111111111111" — a ratio a
-#: brief could plausibly carry — is never read as an account number.
-_CARD_CANDIDATE = re.compile(r"(?<![\d.])\d(?:[ \-]?\d){11,18}(?![\d.])")
+#: A digit run written the way a card number is written: either UNBROKEN
+#: (13–19 digits, the shape of a paste) or grouped into fours — or Amex's
+#: 4-6-5 — by a separator that is the SAME every time. This only PROPOSES a
+#: candidate; ``_looks_like_card`` decides. The lookarounds exclude a decimal
+#: point on either side so "1.4111111111111111" — a ratio a brief could
+#: plausibly carry — is never read as an account number.
+#:
+#: The grouping constraint is not cosmetic, it is the false-positive fix. The
+#: first version of this pattern allowed a separator between ANY two digits
+#: (``\d(?:[ \-]?\d){11,18}``), which makes a parameter grid a card candidate:
+#: "a 3 5 10 20 30 60 90 120 day lookback grid" is fifteen digits starting
+#: with 3, and one such grid in ~25 also passes Luhn. That refused a real
+#: brief BEFORE the payment gate and told the user it looked like a card
+#: number. Measured over 5,000 generated briefs each: a six-number lookback
+#: grid went 3.90% → 0.00%, an eight-number parameter sweep 1.42% → 0.00%.
+#:
+#: What survives, honestly: four 4-digit numbers separated uniformly — "over
+#: 3661 3662 3663 3664 trading days" — is a 16-digit uniform grouping that
+#: passes prefix and Luhn, and nothing about its SHAPE distinguishes it from a
+#: PAN. That class is unchanged at ~4%, and it is stated as a boundary in
+#: ``docs/brief-guidelines.md`` § 3.1 rather than papered over.
+_CARD_CANDIDATE = re.compile(
+    r"(?<![\d.])(?:"
+    r"\d{13,19}"  # unbroken: a paste
+    r"|\d{4}([ \-])(?:\d{4}\1){1,3}\d{1,4}"  # 4-4-4-N … 4-4-4-4-3, one separator throughout
+    r"|\d{4}([ \-])\d{6}\2\d{5}"  # Amex's 4-6-5
+    r")(?![\d.])"
+)
 
 #: Visa (4), Mastercard/Diners/JCB (3, 5), Discover/UnionPay (6). Every
 #: consumer network begins with one of these; requiring it discards ~60% of
@@ -594,8 +628,11 @@ def _pii_rules(text: str, canon: str) -> Verdict:
         return _reject("pii.credential", "it contained something shaped like a key, token or password", _PII_HINT)
     if _hits(_NATIONAL_ID, text, canon):
         return _reject("pii.national_id", "it contained something shaped like a government id number", _PII_HINT)
-    for run in (*_CARD_CANDIDATE.findall(text), *_CARD_CANDIDATE.findall(canon)):
-        if _looks_like_card(run):
+    # ``finditer``, not ``findall``: the grouped branches back-reference their
+    # separator, so the pattern has capture groups and ``findall`` would hand
+    # back the separators instead of the runs.
+    for match in (*_CARD_CANDIDATE.finditer(text), *_CARD_CANDIDATE.finditer(canon)):
+        if _looks_like_card(match.group(0)):
             return _reject("pii.payment_card", "it contained something shaped like a payment card number", _PII_HINT)
     return _ALLOW
 

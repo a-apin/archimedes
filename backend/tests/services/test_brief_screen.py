@@ -433,6 +433,58 @@ def test_the_card_rule_needs_both_a_network_prefix_and_a_checksum():
     assert screen("size the sleeve at 1234567890123452 bps", Surface.BRIEF).allow  # Luhn ok, no network prefix
 
 
+def test_the_card_rule_needs_card_SHAPED_grouping_not_any_separator():
+    """A parameter grid is not an account number.
+
+    The first version of ``_CARD_CANDIDATE`` allowed a separator between any
+    two digits, which made every ragged list of numbers a candidate — and a
+    finance brief is a ragged list of numbers. "a 3 5 10 20 30 60 90 120 day
+    lookback grid" is fifteen digits beginning with 3 and it passes Luhn, so
+    prefix + checksum did NOT save it: it was refused, before the payment
+    gate, and told the user it looked like a card number. A candidate now has
+    to be written the way a card is written — unbroken, or grouped by ONE
+    separator used throughout.
+
+    The boundary this leaves, stated rather than hidden: four 4-digit numbers
+    separated uniformly ARE a 16-digit uniform grouping, and if the prefix and
+    the checksum also land there is nothing in the shape left to tell them
+    apart from a PAN. That class still refuses.
+    """
+    # Ragged grids: admitted, and they were not before.
+    assert screen("run a 3 5 10 20 30 60 90 120 day lookback grid on trend following", Surface.BRIEF).allow
+    assert screen("sweep lookback windows 5-120-250-252-500 trading days", Surface.BRIEF).allow
+    # Card groupings: still refused, in each shape a card is actually written.
+    for pan in ("4111 1111 1111 1111", "4111-1111-1111-1111", "4012888888881881", "3782-822463-10005"):
+        assert screen(f"bill card {pan} monthly", Surface.BRIEF).code == "pii.payment_card", pan
+    # A mixed separator is not how anyone writes a card, and is not a candidate.
+    assert screen("bill card 4111 1111-1111 1111 monthly", Surface.BRIEF).allow
+    # The documented residual, asserted so it can never be claimed as fixed.
+    assert screen("test over 3661 3662 3663 3664 trading days", Surface.BRIEF).code == "pii.payment_card"
+
+
+def test_the_credential_rule_covers_the_underscore_vendor_family():
+    """``sk_live_`` is one character from ``sk-`` and is not the same rule.
+
+    Stripe secret and restricted keys are the most damaging thing a user of a
+    payments-adjacent product pastes into a text box, and the generic
+    ``noun[:=]value`` branch does not reach them: "my api key is sk_live_…"
+    has no ``:`` or ``=`` after the noun, so without an explicit prefix this
+    admits, bills, and forwards the key to a third-party provider.
+    """
+    # The prefix and the body are joined at runtime rather than written out as
+    # one literal. A literal `sk_live_<32 chars>` here is a real Stripe key by
+    # every scanner's reckoning, and GitHub push protection blocks the push —
+    # #1840's `paths-ignore` covers `tests/fixtures/brief_screen/**`, where the
+    # corpus lines for this rule live, but not this file. The screen is handed
+    # the joined string, which is the only thing that matters to the assertion.
+    body = "51H8xQ2eZvKYlo2C0abcdefghijklmnop"
+    for prefix in ("sk_live_", "sk_test_", "rk_live_", "rk_test_"):
+        key = prefix + body
+        assert screen(f"60/40 core, my api key is {key}", Surface.BRIEF).code == "pii.credential", key
+    # The prefix has to be the real one, not a word that starts the same way.
+    assert screen("size the risk_live_book at 10% of the sleeve", Surface.BRIEF).allow
+
+
 def test_the_credential_assignment_branch_needs_all_three_of_its_guards():
     """Boundary pins, not realistic briefs.
 
