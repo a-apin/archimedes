@@ -50,7 +50,7 @@ never moves), and #1792's stored rigor verdict keys off ``id`` too — so this
 is the pre-existing per-writer split-brain moved, not widened. PR-2 closes it.
 
 Revision ID: c8a4d1f70b93
-Revises: d3a71f5c9e28
+Revises: e6b2a19c4d70
 Create Date: 2026-09-03 12:00:00.000000
 """
 
@@ -62,7 +62,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c8a4d1f70b93"
-down_revision: str | Sequence[str] | None = "d3a71f5c9e28"
+down_revision: str | Sequence[str] | None = "e6b2a19c4d70"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

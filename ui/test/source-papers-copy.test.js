@@ -147,3 +147,24 @@ test("Reasoning.jsx renders the shared helper, not its own ternary", () => {
 	);
 	assert.ok(inlineClaim.test("{t.papers_verified ? 'Papers verified' : 'no'}"), "the guard cannot fire");
 });
+
+// ── 6. The card that printed empty quotes ───────────────────────────────
+//
+// `paper_title` is now null, not "", when no title resolves (#1637, owner Q3).
+// The single-paper card printed it inside literal quotation marks, so a null
+// rendered as `""` — the exact defect the issue names. This pins the guard
+// around it, and shows the guard can fail.
+
+test("the single-paper card never prints an empty pair of quotes", () => {
+	const jsx = src("components/Strategies.jsx");
+	assert.match(
+		jsx,
+		/\{s\.paper_title \? \(/,
+		"Strategies.jsx renders paper_title unguarded — a null title prints as empty quotes",
+	);
+	assert.match(jsx, /title unavailable — arXiv:\$\{s\.paper_arxiv_id\}/);
+
+	// Adversarial companion: the predicate does NOT match the unguarded form.
+	const unguarded = '<div className="body">"{s.paper_title}"</div>';
+	assert.ok(!/\{s\.paper_title \? \(/.test(unguarded), "the guard cannot fail");
+});

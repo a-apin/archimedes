@@ -533,7 +533,20 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
           ) : (
             <>
               <div className="label mb-2">Source paper</div>
-              <div className="body">"{s.paper_title}"</div>
+              {/* `paper_title` is now null, not "", when no title resolves
+                  (#1637 — an arXiv id printed in a title slot is a small
+                  fabrication, so the server stopped substituting one). This
+                  card printed the value inside literal quotation marks, so a
+                  null rendered as an empty pair of quotes. Same phrasing the
+                  Library card already uses when resolution genuinely fails:
+                  say so, and name the id a reader can look up. */}
+              {s.paper_title ? (
+                <div className="body">"{s.paper_title}"</div>
+              ) : (
+                <div className="body text-[var(--text-3)]">
+                  {s.paper_arxiv_id ? `title unavailable — arXiv:${s.paper_arxiv_id}` : 'no cited paper'}
+                </div>
+              )}
               <div className="caption mt-2">
                 {s.paper_authors?.slice(0, 3).join(', ')}{s.paper_authors?.length > 3 ? ' et al.' : ''}
                 {s.paper_year ? ` (${s.paper_year})` : ''}
