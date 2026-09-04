@@ -1905,6 +1905,39 @@ def test_alembic_rigor_verdict_columns_added_and_removed(tmp_path):
     assert again.returncode == 0, again.stderr
 
 
+_DISPLAY_SOURCE_MIGRATION_REVISION = "a4d7e1b93c2f"
+_DISPLAY_SOURCE_COLUMN = "display_metrics_source"
+
+
+def test_alembic_display_metrics_source_column_added_and_removed(tmp_path):
+    """up → down → up for a4d7e1b93c2f's one column.
+
+    It records WHICH link of the curated display chain supplied a row's headline
+    numbers, so ``/api/strategies/passports/{id}`` can tell a hand-declared
+    ``stub_placeholder`` from a measured ``persisted_backtest``. Nullable with no
+    backfill on purpose — see the revision's docstring.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    db_path = tmp_path / "display_source_column.db"
+    database_url = f"sqlite:///{db_path}"
+    script = ScriptDirectory.from_config(Config(str(_BACKEND_DIR / "alembic.ini")))
+    target = script.get_revision(_DISPLAY_SOURCE_MIGRATION_REVISION).down_revision
+
+    upgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert _DISPLAY_SOURCE_COLUMN in _passport_columns(db_path)
+
+    downgrade = _run_alembic("downgrade", target, database_url=database_url)
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert _DISPLAY_SOURCE_COLUMN not in _passport_columns(db_path)
+
+    reupgrade = _run_alembic("upgrade", "head", database_url=database_url)
+    assert reupgrade.returncode == 0, reupgrade.stderr
+    assert _DISPLAY_SOURCE_COLUMN in _passport_columns(db_path)
+
+
 def test_alembic_strategy_passports_matches_a_fresh_create_all_schema(tmp_path):
     """Column parity for ``strategy_passports`` between the ORM's
     ``StrategyPassportRecord`` (create_all — every hermetic test, local dev) and

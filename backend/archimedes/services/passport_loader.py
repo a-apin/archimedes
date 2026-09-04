@@ -208,6 +208,7 @@ def ingest_passport(
     owner_wallet: str | None = None,
     owner_user_id: str | None = None,
     rigor_verdict: RigorVerdictWrite | None = None,
+    display_metrics_source: str | None = None,
 ) -> StrategyPassportRecord:
     """Ingest a StrategyPassport dataclass into the unified Postgres table.
 
@@ -251,6 +252,15 @@ def ingest_passport(
         owner_user_id: Canonical Better Auth user. Both owner fields only
             backfill missing values and are never reassigned.
         rigor_verdict: The graded verdict of record, when this call IS the grade.
+        display_metrics_source: Which LINK of the curated display chain supplied
+            the ``real_*`` numbers on ``passport`` — one of
+            ``services.curated_metrics.SOURCE_*``. The chain is resolved on the
+            write side, so the label naming the link has to be written by the
+            same call that writes the numbers; otherwise the passport payload
+            publishes a hand-declared stub that reads exactly like a measured
+            one. ``None`` (the default, and every generated caller) LEAVES THE
+            COLUMN ALONE rather than blanking it: a refresh that does not know
+            the provenance must not erase it, same rule as ``universe_source``.
 
     Returns:
         The persisted StrategyPassportRecord.
@@ -270,6 +280,8 @@ def ingest_passport(
         _update_record(existing, passport, generation_method, content_hash)
         if rigor_verdict is not None:
             _apply_rigor_verdict(existing, rigor_verdict)
+        if display_metrics_source is not None:
+            existing.display_metrics_source = display_metrics_source
         if owner_user_id and not existing.owner_user_id:
             existing.owner_user_id = owner_user_id
         if owner_wallet and not existing.owner_wallet:
@@ -330,6 +342,9 @@ def ingest_passport(
         correlation_to_spy=passport.real_corr_spy,
         backtest_start=passport.real_backtest_start,
         backtest_end=passport.real_backtest_end,
+        # Which link of the display chain produced the ten fields above. NULL
+        # for every caller that does not resolve a chain (all generated ones).
+        display_metrics_source=display_metrics_source,
         # Rigor gate numbers: a new row starts with NONE of them. They are the
         # OUTPUT of a gate run and travel with the verdict (_apply_rigor_verdict);
         # ``passport.deflated_sharpe_ratio`` & co. are not read here, for the same

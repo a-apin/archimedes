@@ -480,3 +480,490 @@ def test_a_strategy_with_no_persisted_returns_is_graded_pending(monkeypatch):
         assert row.gate_version is None
         assert row.cohort_n is None, "graded against nothing — never a guessed cohort of 1"
         assert row.deflated_sharpe_ratio is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The PUBLISHED description of these routes
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# FastAPI publishes each route function's docstring verbatim as the OpenAPI
+# `description`. That is an agent-facing surface — the MCP contract and
+# /docs both read it — so a docstring describing the deleted read-time gate is
+# not a stale comment, it is a false published claim about the exact route this
+# issue is about. `list_strategies`' docstring said the badge and the four rigor
+# numbers "come from a SINGLE live-gate run via _live_rigor_results_for_strategies"
+# and that "the served status reflects the live verdict", after this PR deleted
+# that function and made the route a pure read.
+
+#: Route functions whose docstring IS the contract for the verdict of record.
+_VERDICT_ROUTES = (
+    "/api/strategies/",
+    "/api/strategies/{strategy_id}",
+    "/api/strategies/passports",
+    "/api/strategies/passports/{strategy_id}",
+)
+
+#: Read-time gate helpers this PR deleted. No published description may name one.
+_DELETED_READ_TIME_HELPERS = (
+    "_live_rigor_results_for_strategies",
+    "_live_rigor_result_for_one",
+    "_live_verdict_and_result_for_one",
+    "_live_verdict_for_one",
+    "_library_cohort_including",
+    "_verdict_from_result",
+)
+
+
+def _published_descriptions() -> dict[str, str]:
+    from archimedes.main import app
+
+    spec = app.openapi()
+    out: dict[str, str] = {}
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            if isinstance(op, dict) and op.get("description"):
+                out[f"{method.upper()} {path}"] = op["description"]
+    return out
+
+
+def test_no_published_route_description_names_a_deleted_gate_helper():
+    """The OpenAPI spec cannot cite a function that no longer exists.
+
+    MUTATION: put ``_live_rigor_results_for_strategies`` back into the
+    ``list_strategies`` docstring. This reddens naming the route and the helper.
+    """
+    described = _published_descriptions()
+    assert len(described) > 50, f"the spec rendered almost nothing — {len(described)} described operations"
+    offenders = [
+        f"{op} names {name}" for op, text in described.items() for name in _DELETED_READ_TIME_HELPERS if name in text
+    ]
+    assert not offenders, (
+        f"these published OpenAPI descriptions cite read-time gate helpers this PR deleted: {offenders}. "
+        "The description is the API contract an agent reads — docs/adr/rigor-verdict-of-record.md."
+    )
+
+
+@pytest.mark.parametrize("path", _VERDICT_ROUTES)
+def test_the_published_description_says_the_verdict_is_read_not_computed(path):
+    """Each verdict-bearing route publishes "stored", and never claims a live run.
+
+    The word "live" is banned outright here rather than a specific phrase: these
+    routes run no gate at all now, so any published sentence about a live verdict
+    is false whatever its wording, and a tombstone about the retired behaviour
+    belongs in a code comment (which FastAPI does not publish), not in the
+    contract.
+
+    MUTATION: restore either half of the old text — "come from a SINGLE live-gate
+    run" or "the served status reflects the live verdict". Both redden.
+    """
+    from archimedes.main import app
+
+    description = app.openapi()["paths"][path]["get"]["description"]
+    # Anti-vacuity: an empty or missing description would pass every check below.
+    assert len(description) > 200, f"{path} publishes almost no description: {description!r}"
+
+    lowered = description.lower()
+    assert "live" not in lowered, (
+        f"the published description of GET {path} still says 'live'. This route reads the "
+        "stored verdict of record and runs no gate; see docs/adr/rigor-verdict-of-record.md."
+    )
+    assert "stored" in lowered, (
+        f"the published description of GET {path} does not say the verdict is STORED — the one "
+        "thing an agent comparing it with another endpoint needs to know."
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# served_status — the GENERATED half of the same claim
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The ADR and the PR both claim it for every id: "detail.status ==
+# passport.served_status, curated or generated". The curated half is asserted
+# above. The generated half rests on `_passport_payload` passing
+# `promote=(generation_method == "curated")`, an ASYMMETRIC flag — a generated
+# strategy's status is written by the pipeline that produced it and
+# `_passport_to_strategy_response` serves `record.status` verbatim, so promoting
+# it would invent a "validated" the detail route never says. Nothing pinned that
+# direction: mutating the flag to `promote=True` left 94 tests green.
+
+_GENERATED_ID = "gen-candidate-with-a-stored-pass"
+
+
+def _seed_a_published_generated_pass(session, sid: str = _GENERATED_ID) -> None:
+    """A PUBLISHED generated row: ``status='candidate'``, stored verdict ``pass``.
+
+    The state that separates the two possible ``promote`` answers. Written
+    through the single writer (``ingest_passport(rigor_verdict=…)``) rather than
+    by setting columns, so the row is one the production path can actually
+    produce.
+    """
+    from archimedes.models.strategy_passport_record import StrategyPassportRecord
+    from archimedes.models.strategy_store import StrategyRecord
+    from archimedes.services.passport_loader import RigorVerdictWrite, ingest_passport
+
+    session.add(
+        StrategyRecord(
+            id=sid,
+            content_hash=("0x" + sid.replace("-", "")).ljust(66, "0"),
+            generation_method="fusion",
+            source_papers="[]",
+            strategy_name="Generated candidate",
+            thesis="test thesis",
+            asset_universe='["SPY"]',
+            risk_profile="moderate",
+            status="candidate",
+            is_example=False,
+            is_published=True,
+        )
+    )
+    record = StrategyPassportRecord(
+        id=sid,
+        generation_method="fusion",
+        methodology_summary="generated methodology",
+        asset_universe='["SPY"]',
+        status="candidate",
+    )
+    session.add(record)
+    session.flush()
+    ingest_passport(
+        session,
+        record.to_strategy_passport(),
+        generation_method="fusion",
+        force_update=True,
+        rigor_verdict=RigorVerdictWrite(
+            status="pass",
+            cohort_n=1,
+            deflated_sharpe_ratio=1.1,
+            dsr_p_value=0.01,
+            pbo_score=0.2,
+            out_of_sample_sharpe=0.9,
+        ),
+    )
+    session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_generated_candidate_that_passed_is_not_promoted_on_either_endpoint():
+    """``detail.status == passport.served_status`` for a GENERATED id too — and
+    for a generated row that value is the persisted ``candidate``, not a
+    promotion.
+
+    MUTATION: in ``_passport_payload``, replace
+    ``promote=(record.generation_method or "").lower() == "curated"`` with
+    ``promote=True``. The passport then publishes ``served_status: 'validated'``
+    while the detail route still serves ``status: 'candidate'`` — the same
+    two-answers-for-one-id shape #1746 reported, on the other half of the
+    library.
+    """
+    from archimedes.db import get_session
+    from archimedes.main import app
+
+    with get_session() as session:
+        _seed_a_published_generated_pass(session)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        detail = await client.get(f"/api/strategies/{_GENERATED_ID}")
+        passport = await client.get(f"/api/strategies/passports/{_GENERATED_ID}")
+
+    assert detail.status_code == 200, detail.text
+    assert passport.status_code == 200, passport.text
+    body, stored = detail.json(), passport.json()
+
+    # Fixture guard: only a `candidate` + `pass` row can tell the two `promote`
+    # answers apart. Anything else and this test asserts nothing.
+    assert stored["status"] == "candidate"
+    assert stored["rigor_gate_status"] == "pass", "the promotion input must be a PASS or this is vacuous"
+
+    assert body["status"] == stored["served_status"], (
+        "the detail route and the passport disagree on the served status of a generated id"
+    )
+    assert stored["served_status"] == "candidate", (
+        "a generated strategy's status is written by the pipeline that produced it — "
+        "promoting it here would invent a 'validated' the detail route never serves"
+    )
+    # …and the verdict itself still travels, so this is not a row with nothing on it.
+    assert body["rigor_gate_status"] == stored["rigor_gate_status"] == "pass"
+    assert body["passes_rigor_gate"] is stored["passes_rigor_gate"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A run that cannot read its data must not DESTROY the verdicts of record
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `grade_cohort` swallows a failed returns read and a failed cohort-context
+# compute. When both degraded to an empty result, `grade_curated_library` looped
+# every strategy, got `result=None`, and wrote `RigorVerdictWrite(status=
+# "pending")` — which forces `graded_at`, `gate_version`, `cohort_n` and the
+# four gate numbers to NULL. One unreachable DB therefore turned every stored
+# `pass` into "never graded", on all 34 curated rows, and reported
+# `{'graded': 0, 'pending': 34, 'errors': {}}` — a success. Nothing exited
+# non-zero, and the runbook told the operator that `graded_at: null` was not a
+# reason to re-run.
+
+
+def _break_the_returns_read(monkeypatch) -> None:
+    """Make the one read `grade_cohort` depends on fail, as an outage would."""
+    from archimedes.services import backtest_repository
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(backtest_repository, "get_all_daily_returns", _boom)
+
+
+def test_a_grading_run_that_cannot_read_the_returns_writes_nothing(monkeypatch):
+    """The stored verdicts survive an outage, and the run says it failed.
+
+    MUTATION: drop the ``if not cohort.ok`` abort from ``grade_curated_library``
+    (or return a plain ``CohortGrade()`` from either ``except`` branch in
+    ``grade_cohort``). The reproduction's stored ``pass`` becomes ``pending``
+    with ``graded_at`` NULL, and the summary reports it as a clean run.
+    """
+    from archimedes.db import get_session
+    from archimedes.services import curated_grading
+    from archimedes.services.passport_loader import get_passport
+
+    provider = _seed_the_reproduction(monkeypatch, grade=True)
+
+    with get_session() as session:
+        before = get_passport(session, REPRO_ID)
+        assert before.rigor_gate_status == "pass", "fixture guard: there must be a real verdict to destroy"
+        graded_at_before = before.graded_at
+        dsr_before = before.deflated_sharpe_ratio
+        assert graded_at_before is not None and dsr_before is not None
+
+    _break_the_returns_read(monkeypatch)
+    with get_session() as session:
+        summary = curated_grading.grade_curated_library(session, provider=provider)
+        session.commit()
+
+    # The stored verdict is untouched. Asserted FIRST, because it is the claim
+    # that matters: the summary being empty is a symptom, the destroyed verdict
+    # of record is the defect.
+    with get_session() as session:
+        after = get_passport(session, REPRO_ID)
+    assert after.rigor_gate_status == "pass", (
+        f"a grading run that could not read the returns overwrote a real stored verdict: "
+        f"'pass' -> {after.rigor_gate_status!r}, graded_at {graded_at_before} -> {after.graded_at}"
+    )
+    assert after.graded_at == graded_at_before, "the run wiped graded_at on a verdict it never recomputed"
+    assert after.deflated_sharpe_ratio == pytest.approx(dsr_before)
+    assert summary.graded == 0 and summary.pending == 0, f"the aborted run wrote rows: {summary.as_dict()}"
+
+    # …and the run reported the failure loudly enough for both operator scripts.
+    assert summary.errors, "an aborted run must carry an error; an empty `errors` reads as success"
+    assert "error" in summary.as_dict(), (
+        "a run that wrote nothing must publish the `error` key run_backtests surfaces "
+        "in its `graded` field and grade_curated exits non-zero on"
+    )
+    assert "connection refused" in summary.as_dict()["error"]
+
+
+def test_the_standalone_job_exits_non_zero_when_it_wrote_nothing(monkeypatch):
+    """``scripts/grade_curated`` must fail the ECS task / the operator's ``&&``.
+
+    MUTATION: delete the ``sys.exit(1)`` branch from ``grade_curated.main``.
+    The deploy step then reports success over a run that graded nothing —
+    which, before this PR, is what a run that could not read the DB produced.
+    """
+    from archimedes.scripts import grade_curated as script
+    from archimedes.services.curated_grading import CuratedGradeSummary
+
+    aborted = CuratedGradeSummary(errors={"cohort_unavailable": "persisted returns unreadable"})
+    monkeypatch.setattr(script, "grade_curated", lambda: aborted.as_dict())
+
+    with pytest.raises(SystemExit) as exc:
+        script.main()
+    assert exc.value.code == 1
+
+
+def test_a_run_that_reached_the_data_and_found_nothing_still_grades_pending(monkeypatch):
+    """The other side of the distinction: an EMPTY read is not a FAILED read.
+
+    A library whose strategies simply have no persisted returns must still be
+    written as ``pending`` — that is the honest state, and it is what makes the
+    pairs family's permanent ``pending`` a real stored verdict rather than an
+    absence. The abort above must not swallow it.
+    """
+    from archimedes.db import get_session
+    from archimedes.services import backtest_repository, curated_grading
+    from archimedes.services.passport_loader import get_passport
+
+    provider = _seed_the_reproduction(monkeypatch, grade=False)
+    monkeypatch.setattr(backtest_repository, "get_all_daily_returns", lambda *_a, **_k: {})
+
+    with get_session() as session:
+        summary = curated_grading.grade_curated_library(session, provider=provider)
+        session.commit()
+
+    assert summary.pending > 0 and summary.graded == 0
+    assert not summary.errors, f"a successful read with nothing gradeable is not an error: {summary.as_dict()}"
+    assert "error" not in summary.as_dict()
+    with get_session() as session:
+        assert get_passport(session, REPRO_ID).rigor_gate_status == "pending"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The display-metric PROVENANCE travels with the number it describes
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Storing the resolved chain on the row is what fixed the Sharpe half of #1746 —
+# and it also pushed the last link, `stub_placeholder` (a constant hand-declared
+# in a strategy file), onto `/passports/{id}`, which before PR-B carried link 1
+# only. `to_dict()` published the numbers and no label, so on that agent-facing
+# payload a hand-declared stub read exactly like a measured backtest, while the
+# detail route labelled the very same number. The label is now written by the
+# same call that writes the numbers and READ by both surfaces, which also
+# removes the second half: it used to be derived per process from the provider's
+# boot-time backtest memo, so a task whose memo predated a grading run could
+# label a real persisted-backtest number "stub_placeholder".
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("graded", [True, False], ids=["after-the-grading-job", "sync-only"])
+async def test_both_endpoints_name_the_same_link_for_the_same_number(monkeypatch, graded):
+    """``display_metrics_source`` agrees, is stored, and is not a constant.
+
+    Run on BOTH writers, because both resolve the chain and either one alone
+    would satisfy a single-case guard. ``sync-only`` is the production state
+    between a deploy and the first ``grade_curated`` run — the passport sync has
+    written the numbers, nothing has graded — so the label has to be there
+    already or that whole window publishes unlabelled numbers.
+
+    MUTATION: drop ``display_metrics_source=display_metrics_source(strategy, bt)``
+    from ``strategy_provider._sync_to_unified_table``. The column stays NULL, the
+    passport publishes ``null`` while the detail route derives
+    ``"persisted_backtest"``, and both cases redden — the grading job's own
+    write cannot rescue them, because ``ingest_passport`` leaves the column alone
+    when the label is ``None``. (The grading job's write has its own guard
+    below: the sync runs first with the same inputs, so removing it alone leaves
+    a correct row unless the stored label is already out of date.)
+    """
+    from archimedes.db import get_session
+    from archimedes.main import app
+    from archimedes.services.passport_loader import get_passport
+
+    provider = _seed_the_reproduction(monkeypatch, grade=graded)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        detail = await client.get(f"/api/strategies/{REPRO_ID}")
+        passport = await client.get(f"/api/strategies/passports/{REPRO_ID}")
+
+    body, stored = detail.json(), passport.json()
+    assert body["display_metrics_source"] == stored["display_metrics_source"] == "persisted_backtest", (
+        "the two endpoints must name the same link of the display chain for the same "
+        f"stored number; got {body['display_metrics_source']!r} vs {stored['display_metrics_source']!r}"
+    )
+    assert body["sharpe_ratio"] == stored["sharpe_ratio"] == pytest.approx(REPRO_SHARPE)
+
+    # It is READ from the row, not re-derived — the whole point.
+    with get_session() as session:
+        assert get_passport(session, REPRO_ID).display_metrics_source == "persisted_backtest"
+
+    # Anti-vacuity: not a constant. `_seed_the_reproduction` gives exactly two
+    # strategies a persisted backtest; every other library row has nothing behind
+    # its numbers and says so, so the stored labels must differ across the table.
+    with get_session() as session:
+        labels = {s.id: get_passport(session, s.id).display_metrics_source for s in provider.list_strategies()}
+    assert set(labels.values()) == {"persisted_backtest", "unavailable"}, (
+        f"the stored label is not varying with the row it describes: {sorted(set(labels.values()))}"
+    )
+    assert sum(v == "persisted_backtest" for v in labels.values()) == 2, (
+        f"only the two seeded backtests may be labelled persisted_backtest: {labels}"
+    )
+
+
+def test_a_hardcoded_stub_is_labelled_on_the_passport_payload():
+    """THE defect in one assertion: a ``stub_*`` number reaches
+    ``/passports/{id}`` and does NOT read as a measurement.
+
+    ``stub_placeholder`` is the last link of the display chain — a ``BACKTEST_*``
+    constant declared in the strategy module. Before this PR the passport payload
+    could not carry one; now it can, so it has to say so.
+
+    MUTATION: drop ``"display_metrics_source": self.display_metrics_source`` from
+    ``StrategyPassportRecord.to_dict()``. The stub is published as a bare number
+    again and this reddens.
+    """
+    from dataclasses import replace
+
+    from archimedes.db import get_session
+    from archimedes.services.curated_metrics import display_metrics_source, with_display_metrics
+    from archimedes.services.passport_loader import get_passport, ingest_passport
+    from archimedes.services.strategy_provider import default_provider
+
+    base = next(iter(default_provider().list_strategies()))
+    # A strategy whose ONLY number is a hand-declared constant: no fixture
+    # snapshot (`real_*` all None) and no persisted backtest row (`bt=None`).
+    stubbed = replace(
+        base,
+        id="stub-only-strategy",
+        # The content hash is derived from the passport's content, and the row's
+        # is UNIQUE — a bare id change would collide with `base`'s own row.
+        methodology_summary="a stub-only strategy, for the provenance guard",
+        real_sharpe=None,
+        stub_sharpe=1.87,
+    )
+    assert display_metrics_source(stubbed, None) == "stub_placeholder", "fixture guard: this must BE the stub case"
+
+    with get_session() as session:
+        ingest_passport(
+            session,
+            with_display_metrics(stubbed, None),
+            generation_method="curated",
+            force_update=True,
+            display_metrics_source=display_metrics_source(stubbed, None),
+        )
+        session.commit()
+        payload = get_passport(session, "stub-only-strategy").to_dict()
+
+    assert payload["sharpe_ratio"] == pytest.approx(1.87), "fixture guard: the stub must reach the payload"
+    assert payload.get("display_metrics_source") == "stub_placeholder", (
+        "the passport payload publishes a hand-declared BACKTEST_* constant with no "
+        "provenance — indistinguishable from a measured Sharpe on an agent-facing route"
+    )
+
+
+def test_the_grading_job_rewrites_the_label_with_the_numbers(monkeypatch):
+    """The label and the numbers move in ONE call, inside the grading job too.
+
+    ``grade_curated_library`` re-resolves the display chain and rewrites the
+    number columns through ``with_display_metrics``. If it wrote the numbers
+    without the label, a row whose stored label is out of date keeps it beside
+    numbers it no longer describes — e.g. ``"unavailable"`` next to a real
+    persisted-backtest Sharpe.
+
+    The passport sync normally runs first with the same inputs, so the job's
+    write is invisible on a fresh row; this starts from a STALE label to make it
+    observable, which is also the case that matters.
+
+    MUTATION: drop ``display_metrics_source=display_metrics_source(s, bt)`` from
+    the ``ingest_passport`` call in ``grade_curated_library``.
+    """
+    from archimedes.db import get_session
+    from archimedes.services import curated_grading
+    from archimedes.services.passport_loader import get_passport
+    from sqlalchemy import text
+
+    provider = _seed_the_reproduction(monkeypatch, grade=False)
+
+    with get_session() as session:
+        assert get_passport(session, REPRO_ID).display_metrics_source == "persisted_backtest", (
+            "fixture guard: the sync must have labelled this row before we stale it"
+        )
+        session.execute(
+            text("UPDATE strategy_passports SET display_metrics_source = 'unavailable' WHERE id = :i"),
+            {"i": REPRO_ID},
+        )
+        session.commit()
+
+    with get_session() as session:
+        curated_grading.grade_curated_library(session, provider=provider)
+        session.commit()
+        row = get_passport(session, REPRO_ID)
+
+    assert row.sharpe_ratio == pytest.approx(REPRO_SHARPE), "fixture guard: the job rewrote the number"
+    assert row.display_metrics_source == "persisted_backtest", (
+        "the grading job rewrote the display numbers and left a stale provenance label "
+        "beside them — the label has to travel with the number it describes"
+    )

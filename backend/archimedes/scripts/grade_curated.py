@@ -14,7 +14,7 @@ WHEN YOU RUN THIS
    before #1746's PR-B nothing wrote a curated verdict at all, so every one of
    them reads ``rigor_gate_status: "pending"``. This run is what gives them a
    real verdict. It is the deploy step for that PR; see
-   ``docs/runbooks/curated-backtests.md`` § 5.
+   ``docs/runbooks/curated-backtests.md`` § "Grading on its own".
 2. **After a gate change.** New thresholds, a new criterion, a bumped
    ``GATE_CODE_REVISION`` — the stored verdicts now name a gate that no longer
    exists. Re-grading is an explicit, versioned event, which is exactly what
@@ -30,7 +30,8 @@ WHAT IT DOES NOT DO
 It never runs a backtest. It grades the returns that are already persisted, so a
 strategy with no persisted series grades ``pending`` and stays there until a
 backtest produces one. That is the honest surface, and re-running this does not
-change it — see ``curated-backtests.md`` § 1 on the pairs family.
+change it — see ``curated-backtests.md`` § "When to run it" on the pairs
+family.
 
 It is also never called from the serving process. ``backend/tests/
 test_curated_grading_is_write_side_only.py`` enforces that at the choke point.

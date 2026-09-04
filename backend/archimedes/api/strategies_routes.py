@@ -207,10 +207,14 @@ def _to_strategy_response(s: Strategy, stored=None) -> StrategyResponse:
             total_trades=stored.total_trades,
             backtest_start=stored.backtest_start,
             backtest_end=stored.backtest_end,
-            # Which LINK of the chain the sync resolved these from. Derived from
-            # the same provider inputs the sync wrote from, so it names the link
-            # rather than re-deciding the number.
-            source=display_metrics_source(s, bt),
+            # Which LINK of the chain the sync resolved these from — READ off
+            # the row the sync wrote it on, beside the numbers it names.
+            # Deriving it here instead would re-decide it from the provider's
+            # boot-time backtest memo, and a task whose memo predates the write
+            # would label a real persisted-backtest number "stub_placeholder".
+            # The fallback covers a row written before the column existed; it is
+            # the old behaviour, and it degrades a label, never a number.
+            source=stored.display_metrics_source or display_metrics_source(s, bt),
         )
     else:
         metrics = resolve_display_metrics(s, bt)
@@ -498,21 +502,26 @@ async def list_strategies(
 ):
     """List strategies in the library. Backed by LocalStrategyProvider.
 
-    Both the ``passes_rigor_gate`` badge and the numeric rigor fields
-    (``dsr_p_value``, ``pbo_score``, ``out_of_sample_sharpe``,
-    ``deflated_sharpe_ratio``) come from a SINGLE live-gate run via
-    ``_live_rigor_results_for_strategies`` (#868). The badge is derived from the
-    result via ``_verdict_from_result`` — a second DB read + duplicate gate run
-    through ``verdicts_for_strategies`` is not needed, and the inconsistency that
-    arose when the two paths used different cohort filtering (degenerate-series
-    exclusion existed only in ``_live_rigor_results_for_strategies``) is
-    eliminated.
+    **This route runs no rigor gate.** The ``rigor_gate_status`` four-state, the
+    ``passes_rigor_gate`` badge derived from it, and the four numeric rigor
+    fields (``deflated_sharpe_ratio``, ``dsr_p_value``, ``pbo_score``,
+    ``out_of_sample_sharpe``) are all READ from each strategy's stored verdict
+    of record on its ``strategy_passports`` row. A strategy is graded once, by
+    the real gate, when its backtest runs; every surface serves that row
+    (``docs/adr/rigor-verdict-of-record.md``). A row no gate has produced reads
+    ``rigor_gate_status: "pending"`` with ``passes_rigor_gate: false`` and four
+    ``null`` numbers — "not graded", never "graded and failed".
 
-    NOTE on the ``status`` filter: it filters on the file-declared status BEFORE the
-    live-gate promotion overlay, so a CANDIDATE that the live gate promotes to
-    VALIDATED still appears under ``?status=candidate`` (its stored status) with a
-    served ``status: "validated"``. This is intentional — the stored status is the
-    stable filter key; the served status reflects the live verdict.
+    ``graded_at`` and ``gate_version`` on ``GET /api/strategies/passports/{id}``
+    are the proof a real gate produced the verdict, and which gate.
+
+    NOTE on the ``status`` filter: it filters on the FILE-DECLARED status, while
+    the served ``status`` is the promotion derived from the stored verdict — a
+    ``candidate`` whose stored verdict is ``pass`` is served as ``validated``.
+    So such a strategy appears under ``?status=candidate`` with a served
+    ``status: "validated"``. That is intentional: the persisted column is the
+    stable filter key, and the passport route publishes both, as ``status`` and
+    ``served_status``.
     """
     return await asyncio.to_thread(_list_strategies_sync, request, status, limit, offset)
 
@@ -951,6 +960,11 @@ async def list_strategy_passports(
 ):
     """List strategies from the unified strategy_passports table.
 
+    A pure read of the stored rows — no gate runs here. Each row carries the
+    verdict of record and the provenance that proves it
+    (``docs/adr/rigor-verdict-of-record.md``), plus ``served_status`` beside the
+    persisted ``status`` this endpoint's own ``?status=`` filter queries.
+
     Private-until-published applies here exactly as on ``/generated`` — see
     ``_visible_passports``.
     """
@@ -982,6 +996,18 @@ def _get_strategy_passport_sync(request: Request, strategy_id: str) -> dict:
 @strategies_router.get("/passports/{strategy_id}")
 async def get_strategy_passport(request: Request, strategy_id: str):
     """Get a single passport in its native dict shape from strategy_passports.
+
+    A pure read of the stored row — the verdict of record
+    (``docs/adr/rigor-verdict-of-record.md``). No gate runs here, and none runs
+    on ``GET /api/strategies/{id}`` either, so the two agree by construction on
+    ``rigor_gate_status``, ``passes_rigor_gate`` and the headline metrics. The
+    payload publishes both status names: ``status`` is the persisted lifecycle
+    column the ``?status=`` filter queries, and ``served_status`` is the card
+    status that same stored verdict derives — the one the detail route serves.
+
+    ``graded_at`` / ``gate_version`` / ``cohort_n`` say whether a gate produced
+    this verdict, which gate, and against how many return series. ``graded_at:
+    null`` means no gate has ever graded this strategy.
 
     Unpublished non-example passports 404 for non-owners (never 403 — a 403
     would confirm the id exists).
@@ -1408,6 +1434,12 @@ def _passport_to_strategy_response(record, session=None) -> StrategyResponse:
         # THE STORED VERDICT. Graded once, at backtest time, by the real gate;
         # served here without a recompute (docs/adr/rigor-verdict-of-record.md).
         rigor_gate_status=_rigor_status,
+        # Read from the row, like every other number here. NULL on a generated
+        # row by construction — the `real_* → backtest → stub` display chain is
+        # a curated-library construct and a generated strategy's numbers come
+        # from its own pipeline backtest — so this is "unavailable" in practice,
+        # which is what the field already served for this branch.
+        display_metrics_source=record.display_metrics_source or "unavailable",
         is_backtest_placeholder=_is_placeholder,
         sharpe_ci_lower=None,
         sharpe_ci_upper=None,
@@ -1828,6 +1860,14 @@ async def get_strategy(strategy_id: str, request: Request):
     """Get a single strategy by ID. Tries LocalStrategyProvider (curated)
     first; falls through to the strategy_passports table for fusion- and
     architect-generated strategies so they're clickable from Library.
+
+    **This route runs no rigor gate**, on either branch. The badge, the
+    four-state and the four rigor numbers are read from the strategy's stored
+    verdict of record, and so are the headline metrics — the same row
+    ``GET /api/strategies/passports/{strategy_id}`` publishes, which is why the
+    two cannot disagree (``docs/adr/rigor-verdict-of-record.md``). The
+    ``status`` served here is the promotion derived from that stored verdict,
+    published on the passport payload as ``served_status``.
 
     Private-until-published: non-public row is 404 unless canonical user owns it,
     with linked-wallet fallback for legacy rows. 404 prevents existence probing.

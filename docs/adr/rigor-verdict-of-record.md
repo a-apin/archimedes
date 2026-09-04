@@ -228,7 +228,7 @@ recompute on read cannot come back under a new name.
 **THE DEPLOY STEP.** Merging PR-B grades nothing. Every curated passport row is
 `pending` until the job runs against the production database, and the curated
 badge reads "Not yet graded" until then. After deploying, run the one-off Fargate
-task exactly as `docs/runbooks/curated-backtests.md` § 5 describes:
+task exactly as `docs/runbooks/curated-backtests.md` § "Grading on its own" describes:
 
 ```
 --overrides '{"containerOverrides":[{"name":"migrate",
@@ -237,6 +237,13 @@ task exactly as `docs/runbooks/curated-backtests.md` § 5 describes:
 
 It reads persisted returns and writes verdicts; it runs no backtest and fetches
 no market data, so it is minutes, not the ~15 of a library backtest run.
+
+PR-B carries one schema change, `a4d7e1b93c2f` (`strategy_passports.display_metrics_source`
+— which link of the curated display chain supplied a row's headline numbers), so
+the normal `alembic upgrade head` step has to land before the grading task. The
+column is nullable with no backfill and the read path falls back to its previous
+per-request derivation while it is NULL, so a deploy that ran the migration but
+not yet the grading job is a correct, if less informative, state.
 
 **What a curated row can and cannot get from it.** A strategy with fewer than ten
 persisted daily returns grades `pending` and stays there — the pairs family has

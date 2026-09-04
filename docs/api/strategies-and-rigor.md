@@ -149,6 +149,12 @@ columns rather than produced by a gate run), `cohort_n: int|null` (cohort size b
 exactly what `GET /api/strategies/{strategy_id}` serves in its `status` field; the `status` key here stays the PERSISTED
 lifecycle column, because that is what `?status=` filters on. Curated passports carry a real graded verdict once the
 grading job has run for them (`docs/runbooks/curated-backtests.md`); before that they read `"pending"`, which is true.
+Also `display_metrics_source: "strategy_record"|"persisted_backtest"|"stub_placeholder"|"unavailable"|null` — which link
+of the curated display chain supplied `sharpe_ratio`/`sortino_ratio`/`max_drawdown` on this row. It is stored beside
+those numbers by the same write, so this route and `GET /api/strategies/{strategy_id}` name the same link for the same
+number; `null` means the row predates the column (the next passport sync writes it) or the row is generated, where there
+is no chain to name. Read it before quoting a number: `"stub_placeholder"` is a constant hand-declared in the strategy
+file, not a measurement.
 See [`docs/adr/rigor-verdict-of-record.md`](../adr/rigor-verdict-of-record.md).
 Errors: 404 `Passport not found` (missing, or not visible to caller).
 

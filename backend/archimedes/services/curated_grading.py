@@ -37,7 +37,7 @@ WHEN IT RUNS
 backtest run: new evidence, new grade, one job. ``python -m
 archimedes.scripts.grade_curated`` runs it on its own, which is how existing
 rows get their first real verdict (the one-time backfill; see
-``docs/runbooks/curated-backtests.md`` § 5).
+``docs/runbooks/curated-backtests.md`` § "Grading on its own").
 
 WHAT A GRADE WRITES
 -------------------
@@ -102,11 +102,31 @@ class CohortGrade:
     degenerate row records that the row was graded against itself alone (its
     series was excluded from the cohort context so it could not dilute
     ``avg_correlation`` for everyone else, #868).
+
+    ``ok`` separates the two ways ``results`` can be empty, and the distinction
+    is load-bearing:
+
+    * ``ok=True`` with an empty ``results`` — the run reached the data and found
+      nothing gradeable. Every strategy is honestly ``pending``, and writing that
+      is correct.
+    * ``ok=False`` — the run could **not reach the data** (the returns read
+      failed, or the cohort context could not be computed). Nothing was graded
+      and nothing is known. Writing ``pending`` here would replace a real stored
+      verdict with "never graded" on every row and wipe its ``graded_at`` — the
+      silent overwrite of the verdict of record that
+      ``docs/adr/rigor-verdict-of-record.md`` forbids outright. The caller
+      (:func:`grade_curated_library`) therefore writes NOTHING and reports the
+      failure, so the operator scripts exit non-zero instead of printing a
+      success summary over a destroyed table.
+
+    ``unavailable_reason`` carries the exception text into that report.
     """
 
     results: dict = field(default_factory=dict)
     cohort_n: int = 0
     degenerate_ids: frozenset = frozenset()
+    ok: bool = True
+    unavailable_reason: str | None = None
 
 
 def _load_strategy_code_safe(strategy) -> str | None:
@@ -141,9 +161,11 @@ def grade_cohort(strategies: list) -> CohortGrade:
     (zero-variance) series IS graded and included; it just runs with
     self-contained cohort context.
 
-    Any DB or cohort-context failure degrades to an empty result (every strategy
-    grades ``pending``) rather than raising: a grading run that cannot reach the
-    data must not write a ``fail`` it did not compute.
+    A DB or cohort-context failure does not raise; it returns ``ok=False`` with
+    the reason. That is NOT the same as an empty grade: a run that cannot reach
+    the data knows nothing, so its caller must write nothing (see
+    :class:`CohortGrade`). A run that reached the data and found no gradeable
+    series returns ``ok=True`` and every strategy is honestly ``pending``.
     """
     if not strategies:
         return CohortGrade()
@@ -157,8 +179,8 @@ def grade_cohort(strategies: list) -> CohortGrade:
         with get_session() as session:
             returns_by_strategy = get_all_daily_returns(session, strategy_ids)
     except Exception as exc:
-        logger.warning("curated grading: DB read failed (all → pending): %s", exc)
-        return CohortGrade()
+        logger.error("curated grading: DB read failed — nothing will be written: %s", exc)
+        return CohortGrade(ok=False, unavailable_reason=f"persisted returns unreadable: {type(exc).__name__}: {exc}")
 
     from archimedes.services.rigor_evaluator import (
         assert_self_contained_cohort_correlation,
@@ -190,8 +212,8 @@ def grade_cohort(strategies: list) -> CohortGrade:
         # library's correlation structure; it raises instead.
         assert_self_contained_cohort_correlation(num_trials, avg_correlation)
     except Exception as exc:
-        logger.warning("curated grading: cohort-context compute failed (all → pending): %s", exc)
-        return CohortGrade()
+        logger.error("curated grading: cohort-context compute failed — nothing will be written: %s", exc)
+        return CohortGrade(ok=False, unavailable_reason=f"cohort context uncomputable: {type(exc).__name__}: {exc}")
 
     # Load source only for strategies that can actually run the gate. Degenerate
     # series (excluded from valid_returns) still run their own gate (#868) and
@@ -249,13 +271,31 @@ class CuratedGradeSummary:
     counts: dict = field(default_factory=dict)
     errors: dict = field(default_factory=dict)
 
+    @property
+    def wrote_nothing(self) -> bool:
+        """No verdict of any kind reached a passport row in this run."""
+        return not (self.graded or self.pending)
+
     def as_dict(self) -> dict:
-        return {
+        """The summary an operator reads, JSON-safe.
+
+        A run that wrote nothing AND recorded an error also carries an
+        ``"error"`` key. That is the shape ``docs/runbooks/curated-backtests.md``
+        tells the operator to look for in ``run_backtests``'s ``graded`` field,
+        and the shape ``scripts/grade_curated.main`` exits non-zero on — so a
+        run that could not reach its data cannot present itself as a quiet
+        success. A run with SOME failed rows and some written ones keeps only
+        ``errors``: it is a partial success, and re-running it is not urgent.
+        """
+        d = {
             "graded": self.graded,
             "pending": self.pending,
             "counts": dict(self.counts),
             "errors": dict(self.errors),
         }
+        if self.errors and self.wrote_nothing:
+            d["error"] = "; ".join(f"{k}: {v}" for k, v in sorted(self.errors.items()))
+        return d
 
 
 def grade_curated_library(session, *, provider=None, strategies: list | None = None) -> CuratedGradeSummary:
@@ -270,12 +310,18 @@ def grade_curated_library(session, *, provider=None, strategies: list | None = N
     ``session`` is the caller's SQLAlchemy session; this function flushes but
     does NOT commit, so a caller can grade and commit as one unit.
 
+    **A run that cannot reach its data writes NOTHING.** ``grade_cohort``
+    reports that as ``ok=False``, and this function returns immediately with a
+    populated ``errors`` — it does not fall through to a library-wide
+    ``pending`` write, which would erase every stored verdict and its
+    ``graded_at`` while reporting success. See :class:`CohortGrade`.
+
     The cohort is the FULL curated library, always — never a filtered subset
     (#1173). ``provider`` / ``strategies`` exist for tests and for a caller that
     already holds a provider; a ``strategies`` list narrower than the library is
     a deliberately smaller cohort and grades accordingly.
     """
-    from archimedes.services.curated_metrics import with_display_metrics
+    from archimedes.services.curated_metrics import display_metrics_source, with_display_metrics
     from archimedes.services.passport_loader import RigorVerdictWrite, ingest_passport
     from archimedes.services.strategy_provider import default_provider
 
@@ -285,6 +331,26 @@ def grade_curated_library(session, *, provider=None, strategies: list | None = N
         strategies = list(provider.list_strategies())
 
     cohort = grade_cohort(strategies)
+    if not cohort.ok:
+        # THE RUN COULD NOT READ ITS DATA. Falling through here would call
+        # `verdict_from_result(None)` for every strategy and write
+        # `RigorVerdictWrite(status="pending")` — which forces `graded_at`,
+        # `gate_version`, `cohort_n` and the four gate numbers to NULL. A real
+        # `pass` graded last week would become "never graded", on every row, and
+        # the summary would report it as `{'graded': 0, 'pending': 34}` with an
+        # empty `errors` — a success. That is the silent overwrite of the verdict
+        # of record that docs/adr/rigor-verdict-of-record.md forbids, caused by
+        # the one condition (the DB is unreachable) under which we know least.
+        #
+        # So: write nothing, and say so loudly enough that both operator entry
+        # points fail. `wrote_nothing` + a populated `errors` puts an "error" key
+        # in the summary, which is what `grade_curated.main` exits 1 on and what
+        # `run_backtests` surfaces in its `graded` field.
+        reason = cohort.unavailable_reason or "the cohort could not be computed"
+        logger.error(
+            "curated grading ABORTED — no verdict written for any of %d strategies: %s", len(strategies), reason
+        )
+        return CuratedGradeSummary(errors={"cohort_unavailable": reason})
 
     graded = 0
     pending = 0
@@ -311,6 +377,8 @@ def grade_curated_library(session, *, provider=None, strategies: list | None = N
                 with_display_metrics(s, bt),
                 generation_method="curated",
                 force_update=True,
+                # Same pair, same call — see `_sync_to_unified_table`.
+                display_metrics_source=display_metrics_source(s, bt),
                 rigor_verdict=RigorVerdictWrite(
                     status=verdict.status,
                     cohort_n=cohort_n,

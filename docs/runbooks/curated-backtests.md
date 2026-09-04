@@ -14,8 +14,8 @@ it should run.
 the real gate, at backtest time, and stored on its passport row; every surface reads that
 row and nothing recomputes a verdict on read
 ([`../adr/rigor-verdict-of-record.md`](../adr/rigor-verdict-of-record.md)). `run_backtests`
-grades the library at the end of its own run. § 5 is the standalone job — the one-time
-backfill, and the re-grade.
+grades the library at the end of its own run. § "Grading on its own" is the standalone
+job — the one-time backfill, and the re-grade.
 
 **Policy this implements:** [`../adr/backtests-are-frozen-evidence.md`](../adr/backtests-are-frozen-evidence.md)
 — a backtest is a one-time artifact of evidence with a stated data window, never revisited on
@@ -135,13 +135,17 @@ exactly the CPU contention #1760 was about. Run one at a time.
    `backtest run summary: {'inserted': N, 'skipped': M, 'failed': K, 'errors': {...},
    'graded': {...}}`.
    `inserted` is the only number that means new evidence. `skipped` is content-hash dedup
-   (nothing changed). `failed` needs reading — see § 1's `REFUSING to persist` note.
+   (nothing changed). `failed` needs reading — see § "When to run it"'s `REFUSING to
+   persist` note.
    `graded` is the grading pass that ran after them: `{'graded': N, 'pending': M, 'counts':
    {'pass': …, 'fail': …, 'pending': …, 'degenerate': …}, 'errors': {…}}`. `pending` counts
    the strategies with no gradeable persisted series — that number is expected to be
-   non-zero (the pairs family lives there permanently) and is not an error. A `graded` key
-   reading `{'error': …}` means the backtests were written but nothing was graded; re-run
-   § 5 on its own, it needs no backtest.
+   non-zero (the pairs family lives there permanently) and is not an error. **A `graded`
+   block carrying an `error` key means the backtests were written but nothing was graded,
+   and — this is the point — nothing was overwritten either: a grading pass that cannot
+   read the persisted returns writes no verdict at all rather than blanking every stored
+   one to `pending`. Re-run § "Grading on its own" once the cause is fixed; it needs no
+   backtest.**
 3. **`ARCHIMEDES_ARTIFACT_DIR` was set.** The packaged `/app/analytics-engine/artifacts` is
    **not writable** by the nonroot task user. Unset, the script falls back to a temp dir and
    logs a WARNING; before that fallback existed this was a silent `PermissionError` that froze
@@ -218,7 +222,8 @@ rather than the ~15 a library backtest run costs.
 same verdict it already has, and `run_backtests` already grades as part of its own run, so
 a backtest run does not need a grading run after it.
 
-Production, same one-off Fargate task as § 2 with a different command override:
+Production, same one-off Fargate task as § "How to run it — production" with a different
+command override:
 
 ```bash
 TASK_ARN=$(aws ecs run-task \
@@ -240,9 +245,11 @@ cd backend
 DATABASE_URL=postgresql://... python -m archimedes.scripts.grade_curated
 ```
 
-**What to check.** The script prints its summary as JSON and exits non-zero only if it
-wrote nothing at all. Then verify on the API — the point of the whole exercise is that the
-two routes agree:
+**What to check.** The script prints its summary as JSON and exits non-zero if it wrote
+nothing at all — which is what a run that could not read the persisted returns does, on
+purpose: it aborts before the write loop rather than stamping the whole library `pending`
+and wiping every `graded_at`. Then verify on the API — the point of the whole exercise is
+that the two routes agree:
 
 ```bash
 curl -s $BASE/api/strategies/$SID            | jq '{status, rigor_gate_status, passes_rigor_gate, sharpe_ratio}'
@@ -251,12 +258,19 @@ curl -s $BASE/api/strategies/passports/$SID  | jq '{status, served_status, rigor
 
 `rigor_gate_status`, `passes_rigor_gate` and `sharpe_ratio` must match, and the detail
 route's `status` must equal the passport's `served_status`. `graded_at` and `gate_version`
-being non-null is the proof a real gate ran; a row still showing `graded_at: null` was not
-graded, and the honest reasons are in § 1 (no persisted series) — not a reason to re-run.
+being non-null is the proof a real gate ran.
+
+**Read the summary before you read the rows.** If it carried an `error` key, the run wrote
+nothing — every row still holds whatever verdict it held before, and the run needs
+repeating once the cause is fixed. Only for a run that reported **no** error does
+`graded_at: null` mean "this strategy was looked at and had nothing gradeable"; the honest
+reasons for that are in § "When to run it" (no persisted series), and it is not a reason to
+re-run.
 
 **A strategy this cannot help.** No persisted returns means no verdict, permanently, until
 the code that refuses to persist its artifact is fixed. The pairs family is the standing
-example (§ 1). `pending` is the correct surface for it and re-running changes nothing.
+example (§ "When to run it"). `pending` is the correct surface for it and re-running
+changes nothing.
 
 ## 5. What this must never do
 

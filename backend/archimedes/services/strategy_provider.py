@@ -552,18 +552,26 @@ class LocalStrategyProvider:
         once, and both endpoints now read the answer.
         """
         try:
-            from archimedes.services.curated_metrics import with_display_metrics
+            from archimedes.services.curated_metrics import display_metrics_source, with_display_metrics
             from archimedes.services.passport_loader import ingest_passport
 
             with get_session() as session:
                 synced = 0
                 for strategy in strategies.values():
                     try:
+                        bt = self._backtests.get(strategy.id)
                         ingest_passport(
                             session,
-                            with_display_metrics(strategy, self._backtests.get(strategy.id)),
+                            with_display_metrics(strategy, bt),
                             generation_method="curated",
                             force_update=True,
+                            # The label travels with the numbers. Derived from
+                            # the SAME (strategy, bt) pair `with_display_metrics`
+                            # resolves from, and written in the same call, so no
+                            # reader has to re-derive it from a provider memo of
+                            # a different vintage — and so the passport payload
+                            # can say which link a number came from at all.
+                            display_metrics_source=display_metrics_source(strategy, bt),
                         )
                         synced += 1
                     except Exception as exc:

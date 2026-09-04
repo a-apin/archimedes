@@ -116,6 +116,25 @@ class StrategyPassportRecord(Base):
     correlation_to_spy = Column(Float, nullable=True)
     backtest_start = Column(String(32), nullable=True)
     backtest_end = Column(String(32), nullable=True)
+    # WHICH LINK of the curated display chain supplied the numbers above —
+    # "strategy_record" (the #1187 fixture snapshot) | "persisted_backtest" |
+    # "stub_placeholder" (a BACKTEST_* constant hand-declared in the strategy
+    # file) | "unavailable". One of ``services.curated_metrics.SOURCE_*``.
+    #
+    # Stored rather than derived per read (#1746 PR-B follow-up). The chain is
+    # resolved once, on the write side, and the ANSWER is written to the columns
+    # above; the label naming which link produced it has to be written by the
+    # same event or the two can disagree. Two ways they did: the passport
+    # payload published the numbers with no label at all — so a hand-declared
+    # stub was indistinguishable from a measured Sharpe on the agent-facing
+    # route — and the detail route derived the label from the provider's
+    # boot-time backtest memo, which in a task whose memo predates the write
+    # could label a real persisted-backtest number "stub_placeholder".
+    #
+    # NULL on a row written before this column existed, and on every GENERATED
+    # row: the chain is a curated-library construct, and a generated strategy's
+    # numbers come from its own pipeline backtest. Never backfilled with a guess.
+    display_metrics_source = Column(String(32), nullable=True)
 
     # ── Rigor gate results ───────────────────────────────────
     deflated_sharpe_ratio = Column(Float, nullable=True)
@@ -263,6 +282,12 @@ class StrategyPassportRecord(Base):
             "sharpe_ratio": self.sharpe_ratio,
             "sortino_ratio": self.sortino_ratio,
             "max_drawdown": self.max_drawdown,
+            # WHICH link of the display chain the numbers above came from.
+            # Published because they are resolved through it: without the label
+            # a `stub_placeholder` constant declared in a strategy file reads
+            # here exactly like a measured backtest number. `GET
+            # /api/strategies/{id}` serves the same value under the same name.
+            "display_metrics_source": self.display_metrics_source,
             "paper_refs": [r.to_dict() for r in (self.paper_refs or [])],
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

@@ -484,7 +484,13 @@ def run_backtests() -> dict:
     # never had one, and a cohort-scoped input (PBO, average correlation) that
     # moved because SOMEONE ELSE got a new row is a real reason to re-grade the
     # neighbours. Failing to grade does not fail the run: the rows are written,
-    # the evidence is real, and the passports stay honestly `pending`.
+    # the evidence is real, and the passports keep the verdict they already had.
+    #
+    # A grading pass that could not reach its data writes NOTHING and returns a
+    # summary carrying an `error` key (services/curated_grading — it must never
+    # blank the library's verdicts just because the DB blinked), so both the
+    # except branch below and that key put the same shape in `summary["graded"]`
+    # and the runbook's "check the summary" step catches either.
     try:
         with get_session() as session:
             grade_summary = grade_curated_library(session)
