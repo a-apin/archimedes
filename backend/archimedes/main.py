@@ -1118,9 +1118,15 @@ def _risk_data_read():
 #
 # The value is each probe's ``absent`` — what /health reports when the probe
 # misses AND nothing was ever cached. Restated here (identically) rather than
-# left to the two call sites to keep in step, because both endpoints write the
-# SAME shared memo: a divergent ``absent`` would mean the reading a task serves
-# depends on which endpoint last filled the cache.
+# left to the two call sites to keep in step.
+#
+# Note what the reason is NOT. ``absent`` never enters the shared memo, so a
+# divergent one could not leak from one endpoint to the other through it:
+# ``HealthProbeCache.probe`` RETURNS ``absent`` on a miss with nothing stored,
+# and only a COMPLETED read reaches ``self._entries`` (services/health_cache.py).
+# The reason is plainer, and it is about what a reader is told rather than about
+# cache state: two endpoints answering the same question must publish the same
+# "we do not know" value, and neither of them may publish an optimistic one.
 _READINESS_ABSENT: dict[str, object] = {
     _CORPUS_PROBE: 0,
     _CORPUS_DB_PROBE: 0,
@@ -1193,6 +1199,27 @@ def _stale_unready_probes(outcomes: dict[str, object], threshold_s: float) -> li
     event log, every replacement logs HEALTH_READINESS_STALE naming the probe,
     and an operator stops it with ``HEALTH_STALE_UNREADY_S=0``. The cost of ALL
     is another ten-hour outage nobody is told about.
+
+    ``risk_data`` is the member of the set whose cost GROWS WITH THE DATA, and
+    it is named here so nobody has to rediscover it during an incident. Four of
+    the five are scalar COUNTs or a single-row read; ``risk_data_health()``
+    (api/risk_routes.py) is ``list_strategies()`` followed by one
+    ``get_backtest_result`` per strategy — an N+1 — under the same shared 0.8s
+    ``_LOCAL_PROBE_BUDGET_SECONDS``. It also catches every exception internally,
+    so it can never be ``probe_error``: past the budget it goes ``stale_cached``
+    and STAYS there, its age growing without bound, and this rule then replaces
+    every backend task about once per threshold interval on a fleet that is
+    serving fine. Prod as of 2026-09-03 is nowhere near it (34 strategies, 30
+    persisted backtests, the probe ``live``), so this is a tripwire and not a
+    defect today.
+
+    The tripwire: ``risk_data_probe_state`` on /health sitting persistently at
+    ``stale_cached`` while the other four stay ``live``. That shape is the N+1
+    outgrowing its budget, NOT a wedged database — the fix is to bound or drop
+    the per-strategy read, not to raise the threshold. If it has to be stopped
+    before then, ``risk_data`` is the one member of ``_READINESS_PROBES`` that
+    can be removed without weakening the incident's own coverage; the other four
+    read the exact tables (``papers``, ``strategy_store``) the DDL wedged.
 
     Only ``stale_cached`` counts, and that is a deliberate line:
 
@@ -1881,17 +1908,38 @@ async def health(response: Response):
     # /health/ready is acting on, computed from the very outcomes above rather
     # than from a second set of probes. See the READINESS block above main's
     # /health handler for why the status code lives on the other endpoint.
-    _readiness_threshold_s = _stale_unready_threshold_s()
-    _stale_unready = _stale_unready_probes(
-        {
-            _CORPUS_PROBE: corpus_outcome,
-            _CORPUS_DB_PROBE: corpus_db_outcome,
-            _CORPUS_META_PROBE: corpus_meta_outcome,
-            _PAPER_RAG_PROBE: paper_rag_outcome,
-            _RISK_DATA_PROBE: risk_data_outcome,
-        },
-        _readiness_threshold_s,
-    )
+    #
+    # Wrapped, like the reveal-reconcile read above it, because THIS endpoint's
+    # contract is that it always answers 200 (infra/alb.tf ``matcher = "200"``,
+    # pinned by test_health_always_answers.py). An exception escaping here would
+    # turn the ALB's check into a 500 and drain every target at once — the exact
+    # fleet-wide failure this PR avoided by putting the 503 on /health/ready.
+    # A reporting field must not be able to outrank the endpoint reporting it.
+    #
+    # ``ready`` is None, not True, when the verdict could not be computed: a
+    # display failure must not publish an optimistic verdict (same rule as the
+    # ``absent`` values above). /health/ready is the authority either way — it
+    # computes this independently and is what the scheduler acts on.
+    _readiness_threshold_s: float | None = None
+    _stale_unready: list[tuple[str, float]] = []
+    _readiness_known = False
+    try:
+        _readiness_threshold_s = _stale_unready_threshold_s()
+        _stale_unready = _stale_unready_probes(
+            {
+                _CORPUS_PROBE: corpus_outcome,
+                _CORPUS_DB_PROBE: corpus_db_outcome,
+                _CORPUS_META_PROBE: corpus_meta_outcome,
+                _PAPER_RAG_PROBE: paper_rag_outcome,
+                _RISK_DATA_PROBE: risk_data_outcome,
+            },
+            _readiness_threshold_s,
+        )
+        _readiness_known = True
+    except Exception:
+        _readiness_threshold_s = None
+        _stale_unready = []
+        logger.debug("readiness verdict for /health failed", exc_info=True)
 
     return {
         # "ok" requires BOTH a connected chain and a LIVE reading of it (#1592).
@@ -1999,7 +2047,9 @@ async def health(response: Response):
         # that gets the task replaced is /health/ready's, which the container
         # health check polls. `stale_unready_threshold_s: 0` means the rule is
         # switched off by env, so `ready: true` under it is not a verdict.
-        "ready": not _stale_unready,
+        # `ready: null` (with a null threshold) means the verdict could not be
+        # computed on this poll at all — never read that as ready.
+        "ready": (not _stale_unready) if _readiness_known else None,
         "stale_unready_probes": [{"probe": name, "age_s": age_s} for name, age_s in _stale_unready],
         "stale_unready_threshold_s": _readiness_threshold_s,
     }

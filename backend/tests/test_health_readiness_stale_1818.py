@@ -23,7 +23,13 @@ representation:
    transient into a fleet-wide outage.
 3. Stale but *within* the threshold, a never-completed probe (cold start), and
    a raising probe are all **ready** — the rule fires on a task that used to be
-   able to read and stopped, never on one that has not read yet.
+   able to read and stopped, never on one that has not read yet. The
+   ``probe_error`` case is pinned on the dangerous shape specifically: a probe
+   whose memo is ALREADY ten hours stale and which now raises.
+4. The readiness fields cannot break ``/health``. They are reporting, and a
+   raising verdict must leave the ALB's check answering 200 with ``ready:
+   null`` — never a 500 (which drains every target at once) and never an
+   optimistic ``ready: true``.
 
 **These are guards, not coverage.** Each was demonstrated to REJECT: with
 ``main._stale_unready_probes`` stubbed to ``return []`` the 503 cases below go
@@ -231,6 +237,45 @@ class TestStaleWithinThresholdStaysReady:
             assert body["probes"][name]["state"] == "probe_timeout"
             assert body["probes"][name]["age_s"] is None  # nothing cached ⇒ no age
 
+    async def test_a_raising_probe_is_not_unready_even_when_its_cache_is_hours_old(self):
+        """A broken PROBE must not be able to take the fleet down.
+
+        ``probe_error`` is a defect in the probe, not a verdict about the
+        database (services/health_cache.py draws the same line). The dangerous
+        shape is this one: a probe whose memo is already hours stale AND which
+        now raises — a naive rule would count the stale age and start replacing
+        tasks because someone shipped a bad probe.
+
+        The stale age here (10h) is deliberately past the threshold, so this
+        test cannot pass by the age being small; it passes only because the
+        state is ``probe_error``.
+
+        MUTATION: in ``_stale_unready_probes``, make the ``BaseException`` branch
+        append instead of skip ⇒ 503, red."""
+
+        def _raises(*_args, **_kwargs):
+            raise RuntimeError("probe blew up")
+
+        _seed_stale(["corpus_db"], age_s=35797.0)
+        stalled = [_READINESS_READS["corpus_db"]]
+        healthy = [target for target in _READINESS_READS.values() if target not in stalled]
+
+        def _quick(*_args, **_kwargs):
+            return 0
+
+        with _patch_all(stalled, _raises), _patch_all(healthy, _quick):
+            status, body = await _get("/health/ready")
+
+        assert status == 200, "a raising probe must not replace a task that can still read"
+        assert body["ready"] is True
+        assert body["stale_probes"] == []
+        # The break is REPORTED, not swallowed — 200 here means "not wedged",
+        # and the operator still sees which probe is broken.
+        entry = body["probes"]["corpus_db"]
+        assert entry["state"] == "probe_error", entry
+        assert entry["age_s"] is None, entry
+        assert "probe blew up" in entry["reason"], entry
+
 
 class TestFreshProbesAreReady:
     async def test_a_healthy_task_answers_200_and_live(self):
@@ -311,6 +356,44 @@ class TestHealthItselfIsUnchanged:
         assert body["ready"] is False
         assert {entry["probe"] for entry in body["stale_unready_probes"]} == set(_READINESS_READS)
         assert body["stale_unready_threshold_s"] == _DEFAULT_THRESHOLD_S
+
+    async def test_a_raising_readiness_verdict_cannot_turn_health_into_a_500(self):
+        """The readiness fields are REPORTING. They must not be able to outrank
+        the endpoint reporting them.
+
+        /health is the ALB target-group check with ``matcher = "200"``, so an
+        exception escaping the readiness block would answer 500 on every target
+        at once and drain the service — the fleet-wide failure this PR avoided
+        by putting the 503 on /health/ready instead. And the fallback must not
+        be optimistic: ``ready`` goes null, never true, because "we could not
+        compute the verdict" is not "the task is ready".
+
+        MUTATION: drop the try/except around the readiness block in the /health
+        handler ⇒ 500, red."""
+
+        def _explodes(*_args, **_kwargs):
+            raise RuntimeError("readiness verdict blew up")
+
+        _seed_stale(_READINESS_READS, age_s=35797.0)
+        with (
+            _stalling(*_READINESS_READS),
+            patch.object(chain_client, "is_connected", _returns_connected),
+            patch.object(oracle_health_mod, "oracle_health", _fast_oracle),
+            patch("archimedes.services.llm_backend.make_llm_backend", _fake_llm_backend),
+            patch("archimedes.main._stale_unready_probes", _explodes),
+        ):
+            status, body = await _get("/health")
+
+        assert status == 200, "/health is the ALB's check — it answers 200 or the fleet drains"
+        assert body["ready"] is None, "an uncomputable verdict must not publish `ready: true`"
+        assert body["stale_unready_threshold_s"] is None
+        assert body["stale_unready_probes"] == []
+        # Everything else /health reports still came through — the failure is
+        # confined to the three readiness fields.
+        assert body["service"] == "archimedes-backend"
+        for name in _READINESS_READS:
+            assert body[f"{name}_probe_state"] == "stale_cached", name
+            assert body[f"{name}_probe_age_s"] >= 35797.0, name
 
 
 class TestTheProbeIsActuallyWiredToTheContainerCheck:
