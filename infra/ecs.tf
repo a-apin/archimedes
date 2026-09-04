@@ -527,6 +527,17 @@ resource "aws_ecs_task_definition" "backend" {
       # group keeps polling /health (still unconditionally 200 — the N2 argument
       # in main.py's chain block) and only the container check acts on
       # staleness. 3 retries x 30s => ~90s of continuous 503 before ECS acts.
+      #
+      # THIS FILE IS NOT WHAT SHIPS IT (#1799). deploy.yml clones the LIVE
+      # revision and .github/scripts/ecs_rewrite_task_def.py rewrites the clone;
+      # it does not apply terraform. On top of that, #1799 puts
+      # `lifecycle { ignore_changes = [container_definitions] }` on this
+      # resource, so terraform stops writing container settings altogether — a
+      # targeted apply of this block is neither needed nor safe (it would carry
+      # the whole accumulated container drift with it). The effective writer is
+      # ecs_rewrite_task_def.READINESS_HEALTH_CHECK_COMMAND; the lines below are
+      # the documented twin, kept in step by
+      # backend/tests/test_ecs_readiness_deploy_pin.py.
       healthCheck = {
         command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')\" || exit 1"]
         interval    = 30
@@ -547,9 +558,13 @@ resource "aws_ecs_task_definition" "backend" {
         # (#1818 P3). Stated here at its code default rather than left implicit
         # so the knob is visible where the check that uses it is: seconds of
         # continuous `stale_cached` DB probes before this task reports 503 and
-        # ECS replaces it. Set to "0" to DISABLE the rule — the pull-back if it
-        # ever starts replacing healthy tasks — which is a task-def change and a
-        # restart, not a code change.
+        # ECS replaces it.
+        #
+        # Twin of ecs_rewrite_task_def.HEALTH_STALE_UNREADY_VALUE, which is what
+        # actually ships it (see the healthCheck note above, #1799). To pull the
+        # rule back: "0" on the live revision disables it immediately and holds
+        # until the next deploy; the DURABLE pull-back is "0" in BOTH places,
+        # because the pipeline re-pins this name on every deploy.
         { name = "HEALTH_STALE_UNREADY_S", value = "900" },
         { name = "FEATURE_QUANT", value = "false" },
         { name = "ARCHIMEDES_FUSION_ENABLED", value = "true" },

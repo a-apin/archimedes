@@ -1154,9 +1154,14 @@ def _stale_unready_threshold_s() -> float:
     That escape hatch is not decoration. The cost of getting this threshold
     wrong is a task replaced once per threshold-length interval, forever, and an
     operator has to be able to stop that with an env change and a restart rather
-    than a code change and an image build. A value that will not parse falls
-    back to the default and says so — silently disabling a safety rule because
-    someone typo'd a number is the worse failure.
+    than a code change and an image build. Setting it on the live task
+    definition does exactly that and holds until the next deploy; because
+    ``.github/scripts/ecs_rewrite_task_def.py`` re-pins the name on every deploy
+    (#1799 — terraform no longer writes container settings at all), the DURABLE
+    pull-back is ``HEALTH_STALE_UNREADY_VALUE = "0"`` in that script. A value
+    that will not parse falls back to the default and says so — silently
+    disabling a safety rule because someone typo'd a number is the worse
+    failure.
     """
     raw = os.getenv(_STALE_UNREADY_ENV, "").strip()
     if not raw:
