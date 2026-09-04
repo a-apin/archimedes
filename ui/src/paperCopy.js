@@ -107,8 +107,8 @@ export function paperErrorMessage(err, fallback = 'Something went wrong.') {
 // not a re-decision, and NOT a claim about what the strategy is holding right
 // now (see MARK_BASIS_DISCLOSURE: v1 has no position vector, so a strategy
 // sitting in cash is still marked as if invested). The settled daily ledger is
-// the track record that carries to mainnet; a mark is an unsettled decoration
-// the backend deletes past 90 days.
+// the paper track record — Arc testnet, no real funds (#1807); a mark is an
+// unsettled decoration the backend deletes past 90 days.
 // Every helper below exists so the card can never state more than that:
 //
 //   - markLabel: never a bare number. Always value + as-of time, and the word
@@ -304,11 +304,20 @@ export function marksUnavailableNote(err) {
  * without any job that is not deployed. `advance_all` settles one graded
  * trading day at a time; a mark, when one exists, is decoration on top of it
  * and is labelled unsettled.
+ *
+ * It says what the settled series IS — a paper track record on Arc testnet,
+ * with no real funds — never what it may one day become. An earlier draft of
+ * this constant promised the series would carry over at a cutover that #1240
+ * cancelled by owner call, with no date scheduled; #1822 retracted that promise
+ * from every paper-trading copy surface, and this wording is what it pins. The
+ * sentence is written across a `' + '` concatenation on purpose: #1822's guard
+ * flattens that before reading it, so where this line happens to wrap can never
+ * decide the verdict.
  */
 export const PAPER_SETTLE_CADENCE =
-  'The ledger settles once per trading day from the graded replay — that settled series is the track ' +
-  'record that carries to mainnet. A live value is shown beneath it only when one has been marked, ' +
-  'and it is always unsettled.'
+  'The ledger settles once per trading day from the graded replay — that settled series is a paper ' +
+  'track record on Arc testnet, with no real funds. A live value is shown beneath it only when one ' +
+  'has been marked, and it is always unsettled.'
 
 /**
  * The conditional sentence. Only rendered when `paperCadenceCopy` is handed a

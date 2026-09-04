@@ -283,14 +283,14 @@ GitHub Pages.**
 The build already exists and stays: `mkdocs.yml` mounts this tree via
 `.github/scripts/mkdocs_hooks.py`, and `.github/workflows/docs-site.yml` runs
 `mkdocs build --strict` on every docs-path push and PR. That wiring, landed by
-[#1624](https://github.com/a-apin/archimedes/pull/1624), becomes the **build step** and is
+[#1624](https://github.com/aprin-labs/archimedes/pull/1624), becomes the **build step** and is
 not being replaced.
 
 What changes is the **serving**. The GitHub Pages deploy job — gated on
 `vars.DOCS_SITE_ENABLED` behind three manual console steps, and dark since 2026-08-20 —
 is replaced by S3 + CloudFront + Route 53 in our own account, on the pattern already applied
 for `aprin.ai` in `company-site/infra/main.tf`. That is separate infrastructure work,
-tracked as [#1634](https://github.com/a-apin/archimedes/issues/1634), which also adds the
+tracked as [#1634](https://github.com/aprin-labs/archimedes/issues/1634), which also adds the
 docs link to the landing footer (`ui/src/components/Landing.jsx`) and the public header
 (`ui/src/components/PublicLayout.jsx`).
 

@@ -83,6 +83,23 @@ test("the settle sentence states what actually runs, and never a 15-minute caden
 	assert.doesNotMatch(PAPER_SETTLE_CADENCE, /15 minutes/);
 });
 
+test("the settle sentence names what the series is today, not a cancelled cutover", () => {
+	// #1822 retracted "the track record that carries to mainnet" from every
+	// paper-trading copy surface: the cutover was cancelled by owner call (#1240)
+	// and no date is scheduled, so the promise is about an unscheduled event.
+	// This constant is one of those surfaces — it is the sentence PaperTrading.jsx
+	// used to hold inline — so it must say what the settled series IS.
+	//
+	// ui/test/no-mainnet-track-record.test.js enforces the same property across
+	// all of ui/src by scanning source text. It is pinned again here, on the
+	// exported VALUE, because that scan reads the file and this one reads the
+	// string: a rewrap of the `' + '` concatenation, or a move of the sentence to
+	// another module, changes what the scanner sees and changes nothing here.
+	assert.match(PAPER_SETTLE_CADENCE, /paper track record on Arc testnet/);
+	assert.match(PAPER_SETTLE_CADENCE, /no real funds/);
+	assert.doesNotMatch(PAPER_SETTLE_CADENCE, /mainnet/i);
+});
+
 // ── newestMark: the input the gate is computed from ─────────────────────────
 
 test("newestMark: nothing to show when no deployment carries a mark", () => {

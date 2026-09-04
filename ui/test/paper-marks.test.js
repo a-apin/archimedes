@@ -195,8 +195,8 @@ test("PaperTrading.jsx never carries stale marks forward across a failed poll", 
 });
 
 test("PaperTrading.jsx draws the intraday tail distinguishably from the settled line", () => {
-	// Only the settled daily ledger carries to mainnet, so the visual break is
-	// load-bearing, not decoration.
+	// Only the settled daily ledger is the recorded track record, so the visual
+	// break is load-bearing, not decoration.
 	assert.match(paperTrading, /<Sparkline series=\{dep\.series\} intraday=\{marks\[dep\.deployment_id\]\}/);
 	assert.match(paperTrading, /strokeDasharray=/);
 });
