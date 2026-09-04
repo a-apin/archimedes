@@ -116,10 +116,11 @@ class TestAssocSchemaIsSingleShape:
         for a in stored:
             assert_assoc(a)
 
-    def test_the_in_process_only_keys_do_not_reach_the_column(self, session):
-        """``mechanism``/``spec_elements`` are read from the CANDIDATE, never
-        from the stored column (``generation_pipeline._passport_paper_refs``),
-        so keeping them would reintroduce per-writer variation for no reader."""
+    def test_the_1739_attribution_pair_survives_the_write(self, session):
+        """``mechanism``/``spec_elements`` are DURABLE (#1739), not
+        request-scoped: ``_resolve_source_papers`` carries both to the API
+        response. Normalizing them away would have been a silent regression —
+        so they are part of the record, not extras a normalizer may drop."""
         record = upsert_strategy(
             session,
             generation_method="debate",
@@ -129,8 +130,19 @@ class TestAssocSchemaIsSingleShape:
             asset_universe=["SPY"],
         )
         stored = json.loads(record.source_papers)[0]
-        assert "mechanism" not in stored
-        assert "spec_elements" not in stored
+        assert stored["mechanism"] == "trend filter"
+        assert stored["spec_elements"] == ["sma_200"]
+
+    def test_mechanism_is_not_contribution(self, session):
+        """The raw claim and the ATTRIBUTED statement are different fields.
+
+        ``_passport_paper_refs`` shows ``mechanism`` as ``contribution`` only
+        when ``spec_elements`` backs it; collapsing the two here would launder
+        an unverified claim into the cited-paper column (#1739).
+        """
+        a = normalize_assoc({"arxiv_id": "2401.1", "mechanism": "carry", "spec_elements": []})
+        assert a["mechanism"] == "carry"
+        assert a["contribution"] is None
 
     def test_blank_strings_normalize_to_null_not_to_empty(self):
         """``""`` is not a value. ``None`` is the honest absence."""

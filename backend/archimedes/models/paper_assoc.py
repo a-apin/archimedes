@@ -32,11 +32,7 @@ The fix is one shape and one identity:
   whatever a writer handed it, so the stored column holds ``assoc/v1``
   whichever historical shape arrived. (``main.py``'s example seed builds a
   ``StrategyRecord`` directly, bypassing that choke point, so it normalizes
-  itself via :func:`paper_ref_to_assoc`.) A pre-store carrier may still hold
-  extra keys for its own in-process consumers — ``_CandidateResult.
-  source_papers`` carries ``mechanism`` / ``spec_elements`` for
-  ``generation_pipeline._passport_paper_refs`` (#1739) — and they are dropped
-  on the way into the column, where nothing has ever read them.
+  itself via :func:`paper_ref_to_assoc`.)
 * **Identity** — :func:`assoc_identity` projects an association list down to
   ``(handle, role)`` pairs, where the handle is the arXiv id, or — for the
   curated papers that have none — the DOI or the case-folded title
@@ -59,6 +55,27 @@ Honesty rules baked into the normalizer, not left to call sites:
 * Nothing here fabricates. A missing hash stays ``None``; the corpus's
   ``content_hash`` / ``pdf_sha256`` columns are NULL in production (#1091), so
   ``None`` is the *correct* answer until hydration lands, not a gap to fill.
+
+The ``mechanism`` / ``spec_elements`` pair is #1739's per-paper attribution,
+and it is part of the record rather than a passing detail because #1739 made
+it **durable on purpose**: ``_resolve_source_papers`` carries both to the API
+response, and ``test_persisted_source_papers_carry_title_and_mechanism`` pins
+that the link survives the write. Note that ``mechanism`` is NOT
+``contribution`` and the two must not be collapsed:
+
+* ``mechanism`` is the model's raw claim about what a paper supplies, and
+  ``spec_elements`` are the indicator aliases from the validated spec that
+  back it. Either can be present without the other.
+* ``contribution`` is the **attributed** statement — the one a reader is
+  shown. ``generation_pipeline._passport_paper_refs`` derives it as
+  ``mechanism if mechanism and spec_elements else None``, so a mechanism the
+  spec never used stays an em-dash on the passport. Writing the unbacked prose
+  into ``contribution`` would launder an unverified claim into a cited-paper
+  column, which is the defect #1739 removed.
+
+Neither is identity. :func:`assoc_identity` sees the handle and the role and
+nothing else, so a mechanism arriving late cannot fork a strategy any more
+than a title can.
 
 Ordering note for hashing: :func:`assoc_identity` sorts and de-duplicates, so
 two writers listing the same papers in different orders — or listing one twice
@@ -99,6 +116,8 @@ ASSOC_KEYS: frozenset[str] = frozenset(
         "venue",
         "doi",
         "contribution",
+        "mechanism",
+        "spec_elements",
         "selection_rank",
         "semantic_score",
         "schema",
@@ -168,6 +187,8 @@ def make_assoc(
     venue: str | None = None,
     doi: str | None = None,
     contribution: str | None = None,
+    mechanism: str | None = None,
+    spec_elements: Iterable[str] | None = None,
     selection_rank: int | None = None,
     semantic_score: float | None = None,
 ) -> dict[str, Any]:
@@ -190,6 +211,8 @@ def make_assoc(
         "venue": _text(venue),
         "doi": _text(doi),
         "contribution": _text(contribution),
+        "mechanism": _text(mechanism),
+        "spec_elements": _authors(spec_elements),
         "selection_rank": _int(selection_rank),
         "semantic_score": _float(semantic_score),
         "schema": ASSOC_SCHEMA,
@@ -223,6 +246,8 @@ def normalize_assoc(raw: Mapping[str, Any] | str | None) -> dict[str, Any]:
         venue=raw.get("venue"),
         doi=raw.get("doi"),
         contribution=raw.get("contribution"),
+        mechanism=raw.get("mechanism"),
+        spec_elements=raw.get("spec_elements"),
         selection_rank=raw.get("selection_rank"),
         semantic_score=raw.get("semantic_score"),
     )

@@ -27,7 +27,7 @@ A "source paper" used to be a string in three incompatible dict shapes, and the
 | writer | shape it emitted |
 |---|---|
 | `main.py` (example seed) | `{arxiv_id, title, authors}` |
-| `agents/debate_engine.py` | `{arxiv_id, title: ""}` — since #1739, `{arxiv_id, title, mechanism, spec_elements}` |
+| `agents/debate_engine.py` | `{arxiv_id, title: ""}` — since #1739, `{arxiv_id, title, mechanism, spec_elements}` (this one is a subset of `assoc/v1`, not a rival shape) |
 | `api/strategies_routes.py` (fusion job) | `{arxiv_id, sha256: ""}` — route deleted by #1595 |
 | `agents/generation_pipeline.py` (fixture) | `{arxiv_id, title}` |
 | the `source_papers` column comment | `[{arxiv_id, sha256}]` — a fourth shape nothing emitted |
@@ -50,17 +50,38 @@ the moment anyone backfilled a title onto one writer's output.
   "year":           int | None,
   "venue":          str | None,
   "doi":            str | None,
-  "contribution":   str | None,   # what this paper contributed to the synthesis
+  "contribution":   str | None,   # the ATTRIBUTED statement a reader is shown
+  "mechanism":      str | None,   # #1739: the model's raw claim
+  "spec_elements":  list[str],    # #1739: validated indicator aliases backing it
   "selection_rank": int | None,   # 1-based rank in the selection list
   "semantic_score": float | None, # reranker score, when a rerank ran
   "schema":         "assoc/v1",
 }
 ```
 
-Key set is **closed and complete**: every writer emits all twelve keys, absent
-facts as `None`, so `set(a) == set(b)` for any two associations. A missing key
-is a bug, not a shrug. Unknown keys are dropped by the normalizer — a shape
-that carried extra fields carried them unhashed and unread.
+Key set is **closed and complete**: every writer emits all fourteen keys,
+absent facts as `None` (or `[]` for the two collections), so `set(a) == set(b)`
+for any two associations. A missing key is a bug, not a shrug. Unknown keys are
+dropped by the normalizer — a shape that carried extra fields carried them
+unhashed and unread.
+
+### `mechanism` is not `contribution`
+
+The two look alike and must not be collapsed:
+
+- **`mechanism`** is the model's raw claim about what a paper supplies, and
+  **`spec_elements`** are the indicator aliases from the *validated* spec that
+  back it. Either can be present without the other.
+- **`contribution`** is the attributed statement — the one a reader is shown.
+  `generation_pipeline._passport_paper_refs` derives it as
+  `mechanism if mechanism and spec_elements else None`, so a mechanism the spec
+  never used stays an em-dash on the passport. Writing the unbacked prose into
+  `contribution` would launder an unverified claim into a cited-paper column,
+  which is the defect #1739 removed.
+
+Both are durable on purpose: `_resolve_source_papers` carries them to the API
+response, and `test_persisted_source_papers_carry_title_and_mechanism` pins that
+the link survives the write. Neither is identity — see § 3.
 
 **Honesty rules, baked into the normalizer rather than left to call sites:**
 
@@ -84,10 +105,9 @@ holds `assoc/v1` whichever historical shape arrived. `main.py`'s example seed
 builds a `StrategyRecord` directly, bypassing that choke point, so it
 normalizes itself via `paper_ref_to_assoc`.
 
-A **pre-store carrier** may still hold extra keys for its own in-process
-consumers — `_CandidateResult.source_papers` carries `mechanism` /
-`spec_elements` for `generation_pipeline._passport_paper_refs` (#1739). They
-are dropped on the way into the column, where nothing has ever read them.
+`_CandidateResult.source_papers` is the pre-store carrier, and it holds exactly
+these keys — the `mechanism` / `spec_elements` pair included, because #1739 made
+that link durable rather than request-scoped.
 
 ## 3. Identity: what the hash may see
 
@@ -99,8 +119,8 @@ That projection, and nothing else, reaches `_compute_content_hash`'s canonical
 JSON. Consequences, all of them intended:
 
 - **Enrichment cannot fork a strategy.** Backfilling a title, author list,
-  year, venue, DOI, contribution, rank or score leaves the hash, the id and the
-  dedup behaviour unchanged. A title is a fact *about* a paper; it is not what
+  year, venue, DOI, contribution, mechanism, spec elements, rank or score
+  leaves the hash, the id and the dedup behaviour unchanged. A title is a fact *about* a paper; it is not what
   makes the association a different association.
 - **Order and duplicates do not matter.** Two writers listing the same papers
   in different orders — or one listing a paper twice — produce one identity.
