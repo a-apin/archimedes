@@ -208,9 +208,7 @@ class TestTheValueIsTerraformsName:
     def test_the_pinned_value_is_the_configuration_sets_terraform_name(self):
         mod = _load_rewrite()
         hcl = SES_EVENTS_TF.read_text(encoding="utf-8")
-        block = re.search(
-            r'resource "aws_sesv2_configuration_set" "mail" \{(.*?)\n\}', hcl, re.S
-        )
+        block = re.search(r'resource "aws_sesv2_configuration_set" "mail" \{(.*?)\n\}', hcl, re.S)
         assert block is not None, "aws_sesv2_configuration_set.mail is gone from infra/ses_events.tf"
         name_expr = re.search(r'configuration_set_name\s*=\s*"([^"]+)"', block.group(1))
         assert name_expr is not None
