@@ -169,6 +169,7 @@ nav:
       - runbooks/docs-site-setup.md
       - runbooks/email-verification-validation.md
       - runbooks/ses-suppression.md
+      - runbooks/dmarc-reports.md
       - runbooks/curated-backtests.md
       # Incidents are evidence rather than procedure (docs/CONVENTIONS.md § 1),
       # but an operator looking for "what went wrong last time" looks here.
