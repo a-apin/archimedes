@@ -145,7 +145,7 @@ function PapersTable({ papers, methodologyHash, distinctMechanismPapers }) {
 	// em-dashes. The sub-line is no longer conditional on `rows.length > 1`
 	// either: it was the claim "One methodology synthesized from every row
 	// below", which is the same overclaim in a sentence.
-	const attribution = paperAttributionHeader(rows, distinctMechanismPapers);
+	const attribution = paperAttributionHeader(rows, distinctMechanismPapers, "passport");
 	// `null` only for an empty `rows`, which the one call site already routes to
 	// its own "no source papers are recorded" panel. Guarded anyway so a second
 	// call site can never white-screen the passport on an empty list.

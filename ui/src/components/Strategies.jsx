@@ -228,7 +228,7 @@ export function fmtUsd(n, fractionDigits = 0) {
 // the passport prints over its source-papers table. One vocabulary, three
 // surfaces, one helper.
 function PapersCitedChip({ papers, distinctMechanismPapers, style }) {
-  const attribution = paperAttributionHeader(papers, distinctMechanismPapers)
+  const attribution = paperAttributionHeader(papers, distinctMechanismPapers, 'library')
   // Single-paper rows show their arxiv link / "Source paper" block instead —
   // a "1 paper cited" pill next to a name is noise, not information.
   if (!attribution || attribution.cited <= 1) return null
@@ -529,9 +529,19 @@ function StrategyDetailContent({ s, onOpenRigorExplainer, onOpenPassport, extraA
   // nothing after it reads as a rendering bug, and the zero case is the one a
   // reader most needs told (#1636's honest-shortfall rule).
   //
+  // The 'library' surface is not decoration. The COUNTS are the same on both
+  // panels; the sentence under them is not, because a different thing is
+  // underneath it. The passport's note says "the table below cites them",
+  // pointing at a Contribution column the reader can scan. This panel renders
+  // one italic title and an arXiv link per reference and nothing else — no
+  // contribution cell, no per-paper split — so the passport's sentence would
+  // describe a table that is not on the page. That is the same class of defect
+  // as the header this replaced, one surface over. The helper owns both
+  // wordings so neither can be retyped out of agreement with the other.
+  //
   // `null` for an empty `papers`, which the `length > 1` branch below never
   // reaches — the single-paper "Source paper" block owns that case.
-  const attribution = paperAttributionHeader(s.papers, s.distinct_mechanism_papers)
+  const attribution = paperAttributionHeader(s.papers, s.distinct_mechanism_papers, 'library')
   return (
     <>
       <div className="text-[0.82rem]" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
