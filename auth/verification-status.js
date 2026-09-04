@@ -46,6 +46,11 @@ export const SPAM_HINT_AFTER_SENDS = 2
 
 export const VERIFICATION_STATES = Object.freeze({
   VERIFIED: 'verified',
+  // #1804 — SES itself told us this address is dead, through the bounce /
+  // complaint feedback queue. Distinct from `suppressed`, which is the PULL
+  // half (#1790 asking the account suppression list at status time) and can
+  // only ever answer while the lookup is permitted and healthy.
+  BOUNCED: 'bounced',
   SUPPRESSED: 'suppressed',
   FAILED: 'failed',
   RATE_LIMITED: 'rate_limited',
@@ -78,6 +83,11 @@ export async function resolveVerificationStatus({ user, deliveryLog, suppression
     return {
       state: VERIFICATION_STATES.VERIFIED,
       email,
+      // Reported here too so the body has ONE shape across every state. A
+      // verified account can still carry an old stamp (it bounced, the owner
+      // fixed their mailbox, the link then landed) and the fact stays visible
+      // — it just stops being the headline, because mail demonstrably arrives.
+      bounce: { at: isoOrNull(user?.emailBouncedAt), kind: user?.emailBounceKind ?? null },
       sends: null,
       sendsInWindow: 0,
       lastSentAt: null,
@@ -128,6 +138,10 @@ export async function resolveVerificationStatus({ user, deliveryLog, suppression
 
   const base = {
     email,
+    // #1804. The push half's fact, reported on EVERY state so a surface can
+    // show it without having to be in the `bounced` branch. `at` is an ISO
+    // string or null; `kind` is `bounce` | `complaint` | null.
+    bounce: { at: isoOrNull(user?.emailBouncedAt), kind: user?.emailBounceKind ?? null },
     sends,
     sendsInWindow: inWindow.length,
     lastSentAt: isoOrNull(lastSent?.createdAt),
@@ -147,7 +161,20 @@ export async function resolveVerificationStatus({ user, deliveryLog, suppression
 
   // ── State precedence, most-dominant fact first ──────────────────────────
   //
-  // SUPPRESSED first: it is the only state where sending again cannot work,
+  // BOUNCED first (#1804). It outranks `suppressed` because it is the same
+  // conclusion reached from a STRONGER source: SES pushed the bounce to us,
+  // rather than us asking the suppression list and hoping the lookup was
+  // permitted and healthy. It is also available when that lookup is not — a
+  // missing IAM grant makes `suppression.checked` false, and the pull half
+  // then correctly refuses to guess, which is exactly when the pushed fact is
+  // the only one there is. And it is the state the signup / resend refusal in
+  // auth.js keys off, so this endpoint saying anything softer would contradict
+  // the 422 the same account gets from the button next to it.
+  if (base.bounce.at) {
+    return { ...base, state: VERIFICATION_STATES.BOUNCED, checkSpam: false }
+  }
+
+  // SUPPRESSED next: it is the only other state where sending again cannot work,
   // so nothing below it is worth telling the user instead. It is asserted
   // ONLY when the lookup actually ran (`checked && suppressed`); a failed
   // lookup falls through to the states below rather than guessing either way.

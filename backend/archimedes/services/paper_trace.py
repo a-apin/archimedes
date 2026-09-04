@@ -437,8 +437,11 @@ def resolve_paper_hashes(session, arxiv_ids: list[str]) -> list[str]:
     ``except Exception`` would catch a ``PendingRollbackError`` for every
     remaining deployment and the final ``session.commit()`` would raise, i.e.
     the fail-soft return below would be a lie about a whole wedged cycle.
-    ``session.begin_nested()`` scopes the damage to this query, so the caller's
-    work before it survives and its work after it still commits. A
+    ``session.begin_nested()`` scopes the CORPUS QUERY's damage, so the
+    caller's work after it still commits. What the savepoint does NOT scope is
+    the caller's work BEFORE it: ``begin_nested()`` flushes any pending ORM
+    state first, outside the savepoint it is about to open — see the comment at
+    the call, which is why that call sits outside the ``try``. A
     connection-level failure is not recoverable either way — but then the
     cycle's own writes were never going to commit, so nothing is being
     laundered.
@@ -467,8 +470,26 @@ def resolve_paper_hashes(session, arxiv_ids: list[str]) -> list[str]:
 
     from archimedes.models.corpus_store import PaperRecord
 
+    # The savepoint is opened OUTSIDE the ``try``, deliberately.
+    # ``begin_nested()`` FLUSHES before it emits any SAVEPOINT:
+    # ``SessionTransaction.__init__`` calls ``_take_snapshot``, which runs
+    # ``self.session.flush()`` for a BEGIN_NESTED origin (sqlalchemy 2.0,
+    # ``orm/session.py``), and ``SessionLocal`` is ``autoflush=False`` — so the
+    # caller's pending ORM rows are written by this function's own savepoint,
+    # before that savepoint exists and outside its protection.
+    #
+    # With this call inside the ``try``, an ``IntegrityError`` from THAT flush
+    # — a ``DBAPIError`` like any other — was caught by the corpus handler
+    # below. Two lies at once: the trace was stored and HASHED with
+    # ``consulted_paper_hashes=[]`` while the corpus was perfectly healthy, and
+    # on PostgreSQL the caller's transaction was already aborted with no
+    # savepoint to roll back to — exactly the wedge the savepoint exists to
+    # prevent, manufactured by the savepoint's own flush. Out here that failure
+    # reaches the caller as the honest per-deployment failure it is, and the
+    # catch covers the corpus query and nothing else.
+    nested = session.begin_nested()
     try:
-        with session.begin_nested():
+        with nested:
             rows = session.query(PaperRecord).filter(PaperRecord.arxiv_id.in_(sorted(set(wanted)))).all()
     except DBAPIError:
         logger.warning("paper trace: corpus content-hash lookup failed — recording no consulted hashes", exc_info=True)
