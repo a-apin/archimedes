@@ -101,13 +101,24 @@ resource "aws_s3_bucket_lifecycle_configuration" "dmarc_reports" {
 #
 # Both conditions matter and they are not redundant: SourceAccount stops another
 # AWS account's SES from writing into our bucket, and SourceArn narrows the
-# grant to this one receipt rule rather than every rule we ever add.
+# grant to this one receipt rule rather than every rule we ever add. Those two
+# ARE the boundary here — not the object key.
 #
-# DenyNonTLS mirrors alb.tf's bucket policy. SES's PutObject is an HTTPS call,
-# so this should be inert — but it is a statement on the exact write path the
-# whole feature depends on and it has NOT been exercised against live SES yet.
-# If the first reports never land, this statement is the first thing to test
-# (drop it, re-apply, send a test report) — the runbook says so explicitly.
+# WHY THE RESOURCE IS THE WHOLE BUCKET AND NOT `/reports/*`. That is the policy
+# AWS documents for this exact action (SES developer guide, "Give SES permission
+# to write to an S3 bucket": Resource "arn:aws:s3:::bucket/*", the same two
+# conditions). SES validates the write when the receipt rule is CREATED, not on
+# the first message, and the documented grant is bucket-wide — a prefix-scoped
+# Resource risks failing that validation with "Could not write to bucket" at the
+# owner's apply, for no gain: the only principal admitted is SES, only from this
+# account, only acting as this one rule, and that rule is configured below to
+# write under reports/ and nowhere else. alb.tf's log-delivery grant has the
+# same bucket-wide shape.
+#
+# DenyNonTLS also mirrors alb.tf, where it is live and does not block AWS's own
+# log delivery. SES's PutObject is likewise an HTTPS call, so this should be
+# inert — but that is reasoning, not a live observation on THIS write path, so
+# the runbook makes it step 5 of the "no reports are arriving" ladder.
 resource "aws_s3_bucket_policy" "dmarc_reports" {
   bucket = aws_s3_bucket.dmarc_reports.id
 
@@ -119,7 +130,7 @@ resource "aws_s3_bucket_policy" "dmarc_reports" {
         Effect    = "Allow"
         Principal = { Service = "ses.amazonaws.com" }
         Action    = "s3:PutObject"
-        Resource  = "${aws_s3_bucket.dmarc_reports.arn}/reports/*"
+        Resource  = "${aws_s3_bucket.dmarc_reports.arn}/*"
         Condition = {
           StringEquals = {
             "AWS:SourceAccount" = data.aws_caller_identity.current.account_id

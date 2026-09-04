@@ -213,13 +213,19 @@ it is ordered by how likely each cause is, and every step is read-only.
    ```
 
 5. **Is SES failing to write to the bucket?** A rule that matches but whose action fails
-   still leaves you with an empty bucket. The policy in
-   [`infra/dmarc_reports.tf`](../../infra/dmarc_reports.tf) carries a `DenyNonTLS` statement
-   mirroring [`infra/alb.tf`](../../infra/alb.tf); SES's `PutObject` is an HTTPS call so it
-   should be inert, but **it has not been exercised against live SES**. If steps 1–4 are
+   still leaves you with an empty bucket, and SES reports that failure to itself, not to us.
+   The `Allow` in [`infra/dmarc_reports.tf`](../../infra/dmarc_reports.tf) is the policy AWS
+   documents for this action verbatim, so it is unlikely to be the cause. The `DenyNonTLS`
+   statement alongside it mirrors [`infra/alb.tf`](../../infra/alb.tf), where the same shape
+   is live and does not block AWS's own log delivery — but that is a *different* service's
+   write path, and this one **has not been exercised against live SES**. If steps 1–4 are
    clean and reports still never land, drop that statement, re-apply, and re-test before
-   looking further — it is the one condition in this stack that has never been proven on the
-   live write path.
+   looking further; it is the one condition in this stack not proven on the live write path.
+
+   Note that a broken write shows up at **apply** time, not silently: SES validates the
+   `PutObject` when the receipt rule is created, and a rule that cannot write fails the
+   create with `Could not write to bucket`. So a clean apply is itself evidence this step is
+   not your problem.
 
 6. **Are you looking at the right prefix?** The receipt rule writes under `reports/`, which is
    the parser's default `--prefix`. `aws s3 ls s3://<bucket>/reports/` settles it.
