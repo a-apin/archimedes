@@ -16,10 +16,16 @@ second implementation.
 from __future__ import annotations
 
 import archimedes.marketplace.service as mkt
-from archimedes.chain.agent_runner import _DRIFT_THRESHOLD
-from archimedes.execution.core import compute_trades as runner_compute_trades
-from archimedes.marketplace.service import compute_trades
+from archimedes.execution.core import DRIFT_THRESHOLD
+from archimedes.execution.core import compute_trades as core_compute_trades
 from archimedes.models.portfolio import Portfolio, PortfolioHolding, TradeDirection
+
+# Bound through the module object, not `from ... import compute_trades`: one of
+# the tests below asserts on the module's ATTRIBUTES (that it no longer declares
+# its own ``_DRIFT_THRESHOLD``), so the module has to be in hand anyway, and
+# importing it twice two different ways is the smell the code-quality bot
+# flagged. `mkt.compute_trades` also keeps every call site visibly labelled with
+# which of the two implementations-that-are-now-one it is entering.
 
 USDC_ADDR = "0x" + "11" * 20
 TSLA_ADDR = "0x" + "22" * 20
@@ -63,7 +69,7 @@ class TestUnpricedHoldingGuard:
     """#1080's skip now applies on the marketplace path too."""
 
     def test_unpriced_holding_is_not_traded(self):
-        trades = _by_symbol(compute_trades(_portfolio(priced_aapl=False), UNPRICED_TARGETS, ADDR_MAP))
+        trades = _by_symbol(mkt.compute_trades(_portfolio(priced_aapl=False), UNPRICED_TARGETS, ADDR_MAP))
 
         assert "sAAPL" not in trades, (
             "sized a trade against an unpriced holding: its weight is 0 by construction, not truth (#1080)"
@@ -71,7 +77,7 @@ class TestUnpricedHoldingGuard:
 
     def test_the_priced_legs_of_the_same_tick_still_trade(self):
         """The skip is per-symbol, not a tick-wide bail-out."""
-        trades = _by_symbol(compute_trades(_portfolio(priced_aapl=False), UNPRICED_TARGETS, ADDR_MAP))
+        trades = _by_symbol(mkt.compute_trades(_portfolio(priced_aapl=False), UNPRICED_TARGETS, ADDR_MAP))
 
         assert set(trades) == {"USDC", "sTSLA"}
         assert trades["USDC"].direction is TradeDirection.SELL
@@ -86,7 +92,7 @@ class TestUnpricedHoldingGuard:
         UNPRICED portfolio above, because it never looked at the flag. If this
         BUY ever disappears, the test above has stopped proving anything.
         """
-        trades = _by_symbol(compute_trades(_portfolio(priced_aapl=True), UNPRICED_TARGETS, ADDR_MAP))
+        trades = _by_symbol(mkt.compute_trades(_portfolio(priced_aapl=True), UNPRICED_TARGETS, ADDR_MAP))
 
         assert trades["sAAPL"].direction is TradeDirection.BUY
         assert trades["sAAPL"].estimated_usdc_value == 400.0
@@ -98,7 +104,7 @@ class TestUnpricedHoldingGuard:
         fork re-bought the same 400 USDC of sAAPL on every tick.
         """
         for _ in range(5):
-            trades = compute_trades(_portfolio(priced_aapl=False), UNPRICED_TARGETS, ADDR_MAP)
+            trades = mkt.compute_trades(_portfolio(priced_aapl=False), UNPRICED_TARGETS, ADDR_MAP)
             assert all(t.symbol != "sAAPL" for t in trades)
 
 
@@ -113,15 +119,15 @@ class TestRunnerParity:
     def test_identical_to_the_runner_on_the_unpriced_tick(self):
         portfolio = _portfolio(priced_aapl=False)
 
-        assert sorted(compute_trades(portfolio, UNPRICED_TARGETS, ADDR_MAP), key=lambda t: t.symbol) == sorted(
-            runner_compute_trades(portfolio, self._targets(UNPRICED_TARGETS)), key=lambda t: t.symbol
+        assert sorted(mkt.compute_trades(portfolio, UNPRICED_TARGETS, ADDR_MAP), key=lambda t: t.symbol) == sorted(
+            core_compute_trades(portfolio, self._targets(UNPRICED_TARGETS)), key=lambda t: t.symbol
         )
 
     def test_identical_to_the_runner_on_a_fully_priced_tick(self):
         portfolio = _portfolio(priced_aapl=True)
 
-        assert sorted(compute_trades(portfolio, UNPRICED_TARGETS, ADDR_MAP), key=lambda t: t.symbol) == sorted(
-            runner_compute_trades(portfolio, self._targets(UNPRICED_TARGETS)), key=lambda t: t.symbol
+        assert sorted(mkt.compute_trades(portfolio, UNPRICED_TARGETS, ADDR_MAP), key=lambda t: t.symbol) == sorted(
+            core_compute_trades(portfolio, self._targets(UNPRICED_TARGETS)), key=lambda t: t.symbol
         )
 
     def test_one_drift_threshold_not_two(self):
@@ -132,11 +138,11 @@ class TestRunnerParity:
         no longer be edited apart.
         """
         portfolio = _portfolio(priced_aapl=True)
-        under = {"USDC": 0.4 - (_DRIFT_THRESHOLD - 0.01), "sTSLA": 0.6, "sAAPL": _DRIFT_THRESHOLD - 0.01}
-        over = {"USDC": 0.4 - (_DRIFT_THRESHOLD + 0.01), "sTSLA": 0.6, "sAAPL": _DRIFT_THRESHOLD + 0.01}
+        under = {"USDC": 0.4 - (DRIFT_THRESHOLD - 0.01), "sTSLA": 0.6, "sAAPL": DRIFT_THRESHOLD - 0.01}
+        over = {"USDC": 0.4 - (DRIFT_THRESHOLD + 0.01), "sTSLA": 0.6, "sAAPL": DRIFT_THRESHOLD + 0.01}
 
-        assert compute_trades(portfolio, under, ADDR_MAP) == []
-        assert {t.symbol for t in compute_trades(portfolio, over, ADDR_MAP)} == {"USDC", "sAAPL"}
+        assert mkt.compute_trades(portfolio, under, ADDR_MAP) == []
+        assert {t.symbol for t in mkt.compute_trades(portfolio, over, ADDR_MAP)} == {"USDC", "sAAPL"}
 
         assert not hasattr(mkt, "_DRIFT_THRESHOLD"), "marketplace re-declared its own drift threshold"
 
@@ -153,7 +159,7 @@ class TestMarketplaceOnlyAddressGuard:
         portfolio = _portfolio(priced_aapl=True)
         partial = {"USDC": USDC_ADDR, "sTSLA": TSLA_ADDR}  # sAAPL unresolved
 
-        trades = compute_trades(portfolio, UNPRICED_TARGETS, partial)
+        trades = mkt.compute_trades(portfolio, UNPRICED_TARGETS, partial)
 
         assert all(t.symbol != "sAAPL" for t in trades)
         assert {t.symbol for t in trades} == {"USDC", "sTSLA"}
@@ -161,7 +167,7 @@ class TestMarketplaceOnlyAddressGuard:
     def test_usdc_is_exempt_from_the_address_guard(self):
         portfolio = _portfolio(priced_aapl=True)
 
-        trades = compute_trades(portfolio, {"USDC": 0.0, "sTSLA": 1.0}, {"sTSLA": TSLA_ADDR})
+        trades = mkt.compute_trades(portfolio, {"USDC": 0.0, "sTSLA": 1.0}, {"sTSLA": TSLA_ADDR})
 
         assert {t.symbol for t in trades} == {"USDC", "sTSLA"}
         assert _by_symbol(trades)["USDC"].token_address == ""
