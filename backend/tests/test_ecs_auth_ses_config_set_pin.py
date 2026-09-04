@@ -33,8 +33,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REWRITE_PY = REPO_ROOT / ".github" / "scripts" / "ecs_rewrite_task_def.py"
 SES_EVENTS_TF = REPO_ROOT / "infra" / "ses_events.tf"
@@ -218,7 +216,7 @@ class TestTheValueIsTerraformsName:
         assert project is not None
         expected = name_expr.group(1).replace("${var.project_name}", project.group(1))
         assert "${" not in expected, f"unresolved interpolation in {name_expr.group(1)!r}"
-        assert mod.SES_CONFIGURATION_SET_VALUE == expected
+        assert expected == mod.SES_CONFIGURATION_SET_VALUE
 
     def test_the_mailer_reads_exactly_this_env_name(self):
         mod = _load_rewrite()
@@ -243,8 +241,8 @@ class TestTheCliPath:
         mod = _load_rewrite()
         src = tmp_path / "td.json"
         src.write_text(json.dumps(_last_good_task_def()), encoding="utf-8")
-        import io
         import contextlib
+        import io
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
