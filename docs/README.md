@@ -80,7 +80,6 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`analysis/insights-analytics-gap-2026-08-31.md`](analysis/insights-analytics-gap-2026-08-31.md) | findings | Dan Browne | 2026-08-31 | Which Insights tiles are really measured, and the one structural gap (`settled_volume_usd`, blocked on unwritten `amount_usdc` + #975). Companion to the #1648 admin-gate fix. |
 | [`benchmarks/stockbench-results.md`](benchmarks/stockbench-results.md) | findings | Önder Akkaya | — | StockBench evaluation results (`stockbench-results.json`, `stockbench-vs-baselines.png`). |
 | [`specs/selection-bias-corrections-spec.md`](specs/selection-bias-corrections-spec.md) | spec | Önder Akkaya | 2026-07-28 | DSR + PBO + walk-forward + look-ahead audit math and thresholds. |
-| [`specs/mnemonik-integration-scoping.md`](specs/mnemonik-integration-scoping.md) | current | Dan Browne | 2026-08-30 | #714 sub-task C verdict: borrow patterns, do not integrate Mnemonik; residual gaps listed. |
 | [`specs/transaction-cost-turnover-model.md`](specs/transaction-cost-turnover-model.md) | shipped | Önder Akkaya | 2026-06-11 | Transaction-cost and turnover model in the analytics engine. |
 | [`cited-literature.md`](cited-literature.md) | current | Dan Browne | 2026-08-20 | The five load-bearing papers behind the gate, including the two that are cited against us. |
 
@@ -116,6 +115,7 @@ Owners: **Dan Browne** — contracts, on-chain, infrastructure, architecture. **
 | [`specs/vault-semantics-spec.md`](specs/vault-semantics-spec.md) | spec | Dan Browne | 2026-07-28 | Vault lifecycle and trade-window semantics. |
 | [`specs/commit-reveal-trace-spec.md`](specs/commit-reveal-trace-spec.md) | spec | Dan Browne | 2026-09-01 | Commit-before-trade reasoning-trace anchoring. Live `storagePointer` is empty (hash-only); IPFS pinning is not live ([ADR](adr/ipfs-pinning-not-live.md)). Contract review: Bogdan Sivochkin. |
 | [`specs/ipfs-reasoning-traces-design-note.md`](specs/ipfs-reasoning-traces-design-note.md) | archived (superseded) | Dan Browne | 2026-09-01 | Proposed IPFS pinning via Pinata. Superseded by [`adr/ipfs-pinning-not-live.md`](adr/ipfs-pinning-not-live.md): the pin client was never wired into prod and is now removed. |
+| [`specs/mnemonik-integration-scoping.md`](specs/mnemonik-integration-scoping.md) | current | Dan Browne | 2026-08-30 | #714 sub-task C verdict: borrow patterns, do not integrate Mnemonik; residual gaps listed. |
 | [`specs/execution-trading-agent-society-spec.md`](specs/execution-trading-agent-society-spec.md) | draft | Dan Browne | 2026-06-28 | Execution/trading agent society. Seed-and-refine draft. |
 
 ## Security

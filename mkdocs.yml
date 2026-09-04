@@ -153,6 +153,7 @@ nav:
       - specs/vault-semantics-spec.md
       - specs/commit-reveal-trace-spec.md
       - specs/ipfs-reasoning-traces-design-note.md
+      - specs/mnemonik-integration-scoping.md
       - specs/execution-trading-agent-society-spec.md
 
   - Security:
