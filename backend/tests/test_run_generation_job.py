@@ -352,9 +352,18 @@ class TestBothRunPathsReleaseTheSameThings:
     docstring too, next to the instruction a future author will actually read.
     """
 
+    #: Every shape a refund helper is allowed to be named. Deliberately wider
+    #: than the two that exist (``_release_credit_…``, ``_release_free_slot_…``):
+    #: an author reaching for ``_void_…`` or ``_refund_…`` should be caught by
+    #: the tripwire, not silently exempted by it. Proved rather than assumed —
+    #: an unwired ``_void_free_slot_when_undelivered`` added to
+    #: ``generate_routes`` passed 21/21 under the old ``_release_\w+`` pattern
+    #: and fails the discovery test under this one.
+    _HELPER_PATTERN = r"_(release|void|refund|restore)_\w+_(if|when)_undelivered"
+
     async def test_every_release_helper_is_reached_through_the_shared_seam(self):
-        helpers = sorted(n for n in dir(generate_routes) if re.fullmatch(r"_release_\w+_if_undelivered", n))
-        assert helpers, "no _release_*_if_undelivered helpers found — has the naming convention moved?"
+        helpers = sorted(n for n in dir(generate_routes) if re.fullmatch(self._HELPER_PATTERN, n))
+        assert helpers, f"nothing in generate_routes matches {self._HELPER_PATTERN} — has the convention moved?"
 
         reached: list[str] = []
         with ExitStack() as stack:

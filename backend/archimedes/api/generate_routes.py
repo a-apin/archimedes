@@ -872,12 +872,19 @@ async def release_entitlements_if_undelivered(job_id: str, store) -> None:
     **A new release goes HERE, not into a caller's ``finally``.** That is the
     whole point of the seam, and it is enforced rather than asked for:
     ``test_run_generation_job.py::TestBothRunPathsReleaseTheSameThings``
-    discovers every ``_release_*_if_undelivered`` coroutine in this module and
-    fails if one of them is not reached through this function. #1785's
+    discovers every release helper in this module and fails if one of them is
+    not reached through this function. #1785's
     ``_release_free_slot_if_undelivered`` — the free tier's equivalent — landed
     on main in ``_run_with_cleanup``'s ``finally``, i.e. the serving path only,
     which is the very shape that test fails on; moving it into this function is
     what gives the offload entrypoint the free slot back too.
+
+    **The limit of that discovery, stated where the next author will read it:**
+    it matches a NAMING CONVENTION —
+    ``_(release|void|refund|restore)_<thing>_(if|when)_undelivered`` on this
+    module — not reachability. A refund helper named outside that pattern is
+    invisible to the tripwire and can be given to one run path only without
+    anything going red. Name a new one ``_release_<thing>_if_undelivered``.
 
     ``store`` is a parameter rather than a ``get_job_store()`` call because the
     offload worker binds its store from the environment *as it is at run time*
