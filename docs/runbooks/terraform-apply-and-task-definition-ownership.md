@@ -50,11 +50,21 @@ pipeline's clone carries plus whatever `.github/scripts/ecs_rewrite_task_def.py`
 
 1. If the value must be *pinned on every deploy* (a kill switch, a flag whose "unset" state
    is dangerous), put it in `ecs_rewrite_task_def.py` alongside `PAPER_ADVANCE_ENABLED`, with
-   a test in `backend/tests/test_ecs_paper_advance_deploy_pin.py`. That file is the only
-   thing that decides the value on every revision.
-2. If the value is a *one-time addition* to the live definition (a new `secrets` entry, say
-   the Tiingo key of #1798), it must be added to the **live** definition once, because the
-   clone is what propagates it forward. Two ways:
+   a test beside the pin guards that already exist —
+   `backend/tests/test_ecs_paper_advance_deploy_pin.py`,
+   `test_ecs_free_generations_pin.py`, `test_ecs_backend_secrets.py`,
+   `test_ecs_readiness_deploy_pin.py`. That script is the only thing that decides the value
+   on every revision, and it is the route this repo has taken every time since #1799 was
+   filed: `FREE_GENERATIONS_PER_ACCOUNT` (#1643 A5), the `TIINGO_API_TOKEN` secret entry
+   (#1798), and the `/health/ready` container healthcheck with its `HEALTH_STALE_UNREADY_S`
+   threshold (#1818 P3) are all pinned there. Every one of them writes inside
+   `containerDefinitions`, which is why the `ignore_changes` list is still exactly
+   `[container_definitions]`.
+2. If the value is a *one-time addition* to the live definition — something you do **not**
+   want re-asserted on every deploy — it must be added to the **live** definition once,
+   because the clone is what propagates it forward. Prefer route 1 wherever you can: a
+   one-time addition survives only until somebody registers a revision from a clone that
+   predates it. Two ways:
    - Register it by hand: `aws ecs describe-task-definition --task-definition
      archimedes-backend --query taskDefinition > td.json`, edit, strip the describe-only
      fields, `aws ecs register-task-definition --cli-input-json file://td.json`, then
@@ -72,8 +82,10 @@ pipeline's clone carries plus whatever `.github/scripts/ecs_rewrite_task_def.py`
    change that lands live and not in `ecs.tf` is a landmine for the next rebuild.
 
 That last point is the cost of this ownership split, stated plainly: `ecs.tf` and production
-can now disagree without Terraform telling you. #1798 is exactly that shape — a secret that
-must land in **both** places.
+can now disagree without Terraform telling you. #1798's Tiingo secret is exactly that shape —
+a secret that has to land in **both** places — and it did, via route 1:
+`ecs_rewrite_task_def.py` re-asserts it on every deploy and `ecs.tf` carries the declared
+twin that `test_ecs_backend_secrets.py` pins.
 
 ## Running an apply
 
