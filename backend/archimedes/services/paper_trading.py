@@ -1027,7 +1027,14 @@ def trace_coverage(session, dep: PaperDeployment) -> dict:
     }
 
 
-def deployment_summary(session, dep: PaperDeployment) -> dict:
+def deployment_summary(session, dep: PaperDeployment, *, verdict: dict | None = None) -> dict:
+    """One deployment's payload: the forward record and the verdict that qualifies it.
+
+    ``verdict`` lets a LIST-shaped caller hand in the rigor verdict it already
+    read for the whole page (``passport_loader.stored_rigor_verdicts`` — one
+    query for N rows instead of one per row). When it is ``None`` this reads the
+    single row itself, which is what the create and detail routes want.
+    """
     rows = (
         session.query(PaperDailyReturn)
         .filter(PaperDailyReturn.deployment_id == dep.id)
@@ -1093,7 +1100,7 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
         # disclosure, it is decoration that trains a reader to ignore it. What
         # actually carries the staleness is `graded_at` beside `deployed_at`,
         # both of which are on this payload and both of which the card renders.
-        **stored_rigor_verdict(session, dep.strategy_id),
+        **(verdict if verdict is not None else stored_rigor_verdict(session, dep.strategy_id)),
         "drift_detected_at": dep.drift_detected_at.isoformat() if dep.drift_detected_at else None,
         # The engine-version half of the drift story (#1449). Separate keys from
         # `drift_detected_at` on purpose: a client must be able to render "we

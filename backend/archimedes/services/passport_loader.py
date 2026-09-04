@@ -454,10 +454,21 @@ def stored_rigor_verdict(session: Session, strategy_id: str) -> dict:
     verdict-of-record migration rather than produced by a gate run.
 
     Fails CLOSED and never raises: a missing row or a DB-level failure returns
-    :data:`UNGRADED_RIGOR_VERDICT`. This feeds read paths that must keep serving
-    the ledger they already have (``GET /api/paper/deployments``); degrading to
-    "not graded" is honest, while 500ing would take a correct track record down
-    with it. What is never produced on the failure path is a ``pass``.
+    :data:`UNGRADED_RIGOR_VERDICT`. Degrading THIS field to "not graded" is
+    honest — what is never produced on the failure path is a ``pass``.
+
+    **It never calls ``session.rollback()``, deliberately.** It is called from
+    :func:`archimedes.services.paper_trading.deployment_summary`, which the
+    CREATE route runs on a session that has just written a deployment; a
+    rollback here discarded that deployment while the route still returned 201
+    with its id (the #1764 review's blocker — a 201 for a row that no longer
+    existed). Un-poisoning a session is a decision only the request boundary
+    can make safely, because only it knows whether there is uncommitted work to
+    lose: ``paper_routes.list_paper_deployments`` and
+    ``leaderboard_routes._live_paper_ledgers`` do it explicitly, on read-only
+    paths, around :func:`stored_rigor_verdicts`. If a failure here also poisoned
+    a caller's transaction, that caller fails loudly — which beats silently
+    throwing away its write.
     """
     try:
         row = get_passport(session, strategy_id)
@@ -467,11 +478,18 @@ def stored_rigor_verdict(session: Session, strategy_id: str) -> dict:
             strategy_id,
             type(exc).__name__,
         )
-        try:
-            session.rollback()
-        except Exception:
-            logger.debug("rollback after a failed passport verdict read also failed", exc_info=True)
         return dict(UNGRADED_RIGOR_VERDICT)
+    return _verdict_fields(row)
+
+
+def _verdict_fields(row) -> dict:
+    """One passport row -> the four verdict fields. The single derivation.
+
+    ``passes_rigor_gate`` is computed from the stored four-state here and
+    nowhere else, so the singular read, the batched read and
+    ``strategies_routes._passport_verdicts_for`` cannot start disagreeing about
+    what a stored row means.
+    """
     if row is None:
         return dict(UNGRADED_RIGOR_VERDICT)
     status = row.rigor_gate_status or STATUS_PENDING
@@ -481,6 +499,41 @@ def stored_rigor_verdict(session: Session, strategy_id: str) -> dict:
         "graded_at": row.graded_at.isoformat() if row.graded_at else None,
         "gate_version": row.gate_version,
     }
+
+
+def stored_rigor_verdicts(session: Session, strategy_ids: list[str]) -> dict[str, dict]:
+    """Stored rigor verdicts for MANY strategies — ONE query, keyed by id.
+
+    The batched twin of :func:`stored_rigor_verdict`, for list-shaped surfaces
+    (``GET /api/paper/deployments``, the live-paper leaderboard). A per-row read
+    on a board of 50 deployments is 50 round trips for a field that is one
+    ``WHERE id IN (…)`` away.
+
+    Ids with no passport row are simply ABSENT from the result: the caller
+    substitutes :data:`UNGRADED_RIGOR_VERDICT`, so "no row" and "row says
+    pending" stay the same rendered answer without this function inventing an
+    entry for a strategy it never saw.
+
+    Unlike the singular read, this one RAISES on a DB-level failure. Recovery —
+    whether to roll back a poisoned session, and whether that is safe — belongs
+    to the caller: every caller here is a read-only request path with nothing
+    uncommitted to lose, and each does it explicitly beside its own honest
+    degradation (all rows ungraded, the ledger still served).
+    """
+    if not strategy_ids:
+        return {}
+    rows = session.query(StrategyPassportRecord).filter(StrategyPassportRecord.id.in_(set(strategy_ids))).all()
+    return {row.id: _verdict_fields(row) for row in rows}
+
+
+def ungraded_verdicts_for(strategy_ids) -> dict[str, dict]:
+    """Every requested id mapped to the ungraded verdict — the fail-closed page.
+
+    What a caller substitutes when the batched read raised: every row reads
+    "not graded", none reads as a pass, and the surface keeps serving the
+    numbers it does have.
+    """
+    return {sid: dict(UNGRADED_RIGOR_VERDICT) for sid in set(strategy_ids)}
 
 
 def list_passports(

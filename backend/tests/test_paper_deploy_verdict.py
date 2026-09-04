@@ -42,7 +42,12 @@ from archimedes.api import account_auth, paper_routes
 from archimedes.models.chat import Base
 from archimedes.models.strategy_passport_record import StrategyPassportRecord
 from archimedes.services.paper_trading import create_deployment, deployment_summary
-from archimedes.services.passport_loader import UNGRADED_RIGOR_VERDICT, stored_rigor_verdict
+from archimedes.services.passport_loader import (
+    UNGRADED_RIGOR_VERDICT,
+    stored_rigor_verdict,
+    stored_rigor_verdicts,
+    ungraded_verdicts_for,
+)
 from archimedes.services.rigor_gate_version import LEGACY_DERIVED
 from fastapi import FastAPI
 from sqlalchemy import create_engine
@@ -212,22 +217,75 @@ def test_a_strategy_with_no_passport_row_reads_as_ungraded_never_as_a_pass():
         assert summary["gate_version"] is None
 
 
+class _Boom:
+    """A session whose every query raises, and which records any rollback."""
+
+    def __init__(self):
+        self.rolled_back = False
+
+    def query(self, *_a, **_k):
+        raise RuntimeError("passport table is unreadable")
+
+    def rollback(self):
+        self.rolled_back = True
+
+
 def test_a_broken_verdict_read_degrades_to_pending_and_never_raises():
     """The ledger is the user's track record; a passport read that blows up must
     not take a correct ledger down with it. What is never produced on this path
     is a ``pass``."""
-
-    class _Boom:
-        def query(self, *_a, **_k):
-            raise RuntimeError("passport table is unreadable")
-
-        def rollback(self):
-            return None
-
     verdict = stored_rigor_verdict(_Boom(), "s-any")
 
     assert verdict == UNGRADED_RIGOR_VERDICT
     assert verdict["passes_rigor_gate"] is not True
+
+
+def test_the_verdict_read_never_rolls_back_its_callers_transaction():
+    """The #1764 review's blocker, at the unit level.
+
+    ``deployment_summary`` runs on the CREATE route's session. A
+    ``session.rollback()`` in this helper's failure arm therefore discarded the
+    deployment that had just been written — and the route still returned 201
+    carrying its id. Un-poisoning a session is a decision only a caller with
+    nothing uncommitted can make (``paper_routes._page_verdicts``,
+    ``leaderboard_routes._live_paper_verdicts``); this helper must never make it.
+    """
+    session = _Boom()
+
+    stored_rigor_verdict(session, "s-any")
+
+    assert session.rolled_back is False, "a verdict read must never roll back its caller's transaction"
+
+
+def test_the_batched_read_is_one_query_and_omits_ids_it_never_saw():
+    """``stored_rigor_verdicts`` is the list-shaped twin: one ``IN (…)`` for a
+    whole page. An id with no passport row is ABSENT rather than invented, so
+    the caller — not this function — decides what an unknown strategy reads as."""
+    with _session() as s:
+        _passport(s, "s-graded", rigor_gate_status="fail", graded_at=_GRADED_AT, gate_version="gate-v1-abc")
+
+        verdicts = stored_rigor_verdicts(s, ["s-graded", "s-never-graded"])
+
+        assert set(verdicts) == {"s-graded"}
+        assert verdicts["s-graded"]["rigor_gate_status"] == "fail"
+        assert verdicts["s-graded"]["passes_rigor_gate"] is False
+        assert verdicts["s-graded"]["graded_at"] == "2026-08-30T11:22:33"
+        assert verdicts["s-graded"]["gate_version"] == "gate-v1-abc"
+        # And the caller's fail-closed page: every id, all ungraded, no passes.
+        page = ungraded_verdicts_for(["s-graded", "s-never-graded"])
+        assert page == {
+            "s-graded": dict(UNGRADED_RIGOR_VERDICT),
+            "s-never-graded": dict(UNGRADED_RIGOR_VERDICT),
+        }
+
+
+def test_the_batched_read_raises_rather_than_deciding_recovery_for_its_caller():
+    """The counterpart of the rule above: this one RAISES on a DB failure
+    instead of quietly rolling back, because only the caller knows whether a
+    rollback would discard a write. Its two callers are read-only paths that
+    catch this and degrade every row to ungraded."""
+    with pytest.raises(RuntimeError):
+        stored_rigor_verdicts(_Boom(), ["s-any"])
 
 
 def test_a_row_whose_status_column_is_empty_reads_as_pending(monkeypatch):
@@ -367,3 +425,114 @@ async def test_every_read_route_carries_the_verdict_not_just_the_create(app):
             assert payload["passes_rigor_gate"] is False
             assert payload["graded_at"] == "2026-08-30T11:22:33"
             assert "gate_version" in payload
+
+
+# ── 7. The verdict read can never cost the caller its write (#1764 review) ───
+
+
+@pytest.mark.asyncio
+async def test_a_broken_passport_read_never_discards_the_deployment(app, monkeypatch):
+    """THE regression guard for the review's blocker.
+
+    Before the fix, ``deploy_paper`` summarised BEFORE committing, and the
+    summary's passport read rolled the session back on failure. A statement
+    error from ``strategy_passports`` — the ``gate_version`` column behind its
+    migration, a connection blip, a statement timeout — therefore threw away the
+    just-created deployment AND its first advance, while the route still
+    returned 201 carrying that deployment_id: a receipt for a row that did not
+    exist.
+
+    The write is now durable before anything reads the passport, so the worst a
+    broken read can do is degrade THIS payload's verdict to "not graded".
+    Mutation: move ``session.commit()`` back below ``deployment_summary`` and
+    this goes red on the list route (0 deployments) and the detail route (404).
+    """
+
+    def _boom(session, *_a, **_k):
+        # EXACTLY what the shipped helper used to do on a DB failure: undo the
+        # session, then report the read as failed. Modelling it here rather
+        # than only raising is the point — a raise alone is harmless, and the
+        # defect was never the exception but what was done to the caller's
+        # transaction on the way out of it. The Postgres shape (a statement
+        # error leaves the transaction unusable, so the route's own commit
+        # cannot save the write either) has the same consequence and the same
+        # fix; SQLite cannot reproduce that half, so this reproduces the half
+        # it can, exactly.
+        session.rollback()
+        raise RuntimeError("strategy_passports.gate_version does not exist")
+
+    monkeypatch.setattr("archimedes.services.passport_loader.get_passport", _boom)
+
+    async with _client(app) as client:
+        created = await client.post("/api/paper/deployments", json={"strategy_id": "s-fail"})
+
+        assert created.status_code == 201
+        dep_id = created.json()["deployment_id"]
+        # Honest degradation on the payload — never a fabricated pass.
+        assert created.json()["rigor_gate_status"] == "pending"
+        assert created.json()["passes_rigor_gate"] is None
+
+        listed = (await client.get("/api/paper/deployments")).json()["deployments"]
+        detail = await client.get(f"/api/paper/deployments/{dep_id}")
+
+    assert [d["deployment_id"] for d in listed] == [dep_id], "the 201 must not be a receipt for a discarded row"
+    assert detail.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_the_list_route_degrades_every_row_to_ungraded_when_the_read_breaks(app, monkeypatch):
+    """The other half: where recovery IS safe, it still happens.
+
+    ``GET /api/paper/deployments`` is a pure read with nothing uncommitted, so
+    it catches the batched read's failure, rolls the session back itself, and
+    serves the ledger with every verdict degraded to "not graded". The track
+    record is the user's; a broken passport read must not take it down."""
+    _seed_failed_passport("s-fail")
+
+    async with _client(app) as client:
+        dep_id = (await client.post("/api/paper/deployments", json={"strategy_id": "s-fail"})).json()["deployment_id"]
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("passport table is unreadable")
+
+        monkeypatch.setattr(paper_routes, "stored_rigor_verdicts", _boom)
+        listed = await client.get("/api/paper/deployments")
+
+    assert listed.status_code == 200
+    (row,) = listed.json()["deployments"]
+    assert row["deployment_id"] == dep_id
+    assert row["rigor_gate_status"] == "pending"
+    assert row["passes_rigor_gate"] is None, "a broken read must never fabricate a pass"
+    # The forward record itself is untouched by the verdict's failure.
+    assert row["total_return"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_the_deployments_page_reads_the_passport_table_once_not_once_per_row(app):
+    """The page cost, pinned. ``deployment_summary`` reads the verdict per row
+    by default; the list route hands it one batched read instead, so a user with
+    ten deployments pays one ``strategy_passports`` query, not ten."""
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    _seed_failed_passport("s-fail")
+    async with _client(app) as client:
+        for _ in range(3):
+            await client.post("/api/paper/deployments", json={"strategy_id": "s-fail"})
+
+        seen: list[str] = []
+
+        def _record(_conn, _cursor, statement, *_a):
+            # SELECTs only — SQLite's schema reflection issues PRAGMAs against
+            # the same table name and they are not page cost.
+            if "strategy_passports" in statement and statement.lstrip().upper().startswith("SELECT"):
+                seen.append(statement)
+
+        event.listen(Engine, "before_cursor_execute", _record)
+        try:
+            listed = (await client.get("/api/paper/deployments")).json()["deployments"]
+        finally:
+            event.remove(Engine, "before_cursor_execute", _record)
+
+    assert len(listed) == 3
+    assert len(seen) == 1, f"expected ONE passport query for the page, saw {len(seen)}"
