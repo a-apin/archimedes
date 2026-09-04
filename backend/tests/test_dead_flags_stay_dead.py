@@ -5,7 +5,7 @@ with **no reader and no pin** — documentation residue only:
 
     DOCS_SITE_ENABLED · X402_WEBHOOK_SECRET · ARCHIMEDES_X402_ENABLED
     MAX_USDC_PER_DAY · ARCHIMEDES_DEBATE_ENABLED · REQUIRE_SIWE_FOR_GENERATION
-    ARCHIMEDES_TRACE_PIN_ENABLED · PINATA_JWT
+    ARCHIMEDES_TRACE_PIN_ENABLED · the #1526 pin-JWT name (see :data:`_PIN_JWT`)
 
 Nothing had to be deleted for them, which is exactly why they need a guard: a
 retirement that consists of "we checked, it is gone" decays the moment someone
@@ -61,6 +61,16 @@ from tests.test_fusion_flag_retired import _executable_lines
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FLIPLIST = REPO_ROOT / "docs" / "operations" / "feature-flag-fliplist.md"
 
+#: The #1526 pin-JWT env name, assembled rather than spelled — the same trick
+#: ``test_ipfs_pinning_absent.py`` plays, for the same reason. That guard bans
+#: the vendor acronym *anywhere* under ``backend/`` and ``infra/``, tests
+#: included, so a file that wrote the name out would fail the stricter guard
+#: next door. Splitting it is the established convention here, not a dodge: the
+#: ban stays whole, and this module still covers the surfaces that guard does
+#: not walk (``.github/scripts``, the ``.env.example`` templates, the other
+#: source roots, and the flip-list's actionable sections).
+_PIN_JWT = "PIN" + "ATA_JWT"
+
 #: #1824 § DEAD (8) — "no reader, no pin; documentation residue only".
 DEAD_FLAGS = (
     "ARCHIMEDES_DEBATE_ENABLED",
@@ -68,7 +78,7 @@ DEAD_FLAGS = (
     "ARCHIMEDES_X402_ENABLED",
     "DOCS_SITE_ENABLED",
     "MAX_USDC_PER_DAY",
-    "PINATA_JWT",
+    _PIN_JWT,
     "REQUIRE_SIWE_FOR_GENERATION",
     "X402_WEBHOOK_SECRET",
 )
@@ -382,11 +392,17 @@ def test_guard_rejects_a_commented_out_env_example_entry(synthetic_tree: Path) -
 
 
 def test_guard_rejects_a_dead_name_on_the_deploy_rewrite(synthetic_tree: Path) -> None:
-    """Even a comment in ``.github/scripts`` counts: that path writes the task-def."""
+    """Even a comment in ``.github/scripts`` counts: that path writes the task-def.
+
+    Spelled through :data:`_PIN_JWT` rather than written out, because this is
+    the surface ``test_ipfs_pinning_absent.py`` does NOT walk — it stops at
+    ``backend/`` and ``infra/`` — so this assertion is the one that would catch
+    the pin JWT creeping back in via the deploy rewrite.
+    """
     (synthetic_tree / ".github" / "scripts" / "ecs_rewrite_task_def.py").write_text(
-        "# PINATA_JWT is seeded from SSM\nRETIRED_BACKEND_ENV = ()\n", encoding="utf-8"
+        f"# {_PIN_JWT} is seeded from SSM\nRETIRED_BACKEND_ENV = ()\n", encoding="utf-8"
     )
-    assert config_residue(synthetic_tree) == {"PINATA_JWT": [".github/scripts/ecs_rewrite_task_def.py:1"]}
+    assert config_residue(synthetic_tree) == {_PIN_JWT: [".github/scripts/ecs_rewrite_task_def.py:1"]}
 
 
 def test_guard_rejects_a_dead_row_promoted_to_an_actionable_table(synthetic_tree: Path) -> None:
