@@ -34,7 +34,17 @@ This script is the path that actually ships. It:
    [container_definitions]`` makes terraform stop writing container settings at
    ALL and this script becomes not merely the first writer but the only one —
    a strengthening, not a premise.
-6. Drops the describe-only fields ``register-task-definition`` rejects.
+6. Strips the retired env names in :data:`RETIRED_BACKEND_ENV` from the
+   backend container. This runs AFTER the pins above, so the retired tuple is
+   the last word on what ships; a name that ever landed on both lists would
+   lose its pin, which ``test_no_pinned_name_is_also_retired`` forbids rather
+   than leaves to the reading order. #1766 deleted
+   ``services/backtest_scheduler.py``; nothing on main reads
+   ``BACKTEST_REFRESH_*``/``BACKTEST_MAX_AGE_HOURS`` any more, but the owner's
+   hand-pinned ``BACKTEST_REFRESH_ENABLED=false`` (task-def 216, the #1760
+   mitigation) rides forward on every clone. Cleanups ship with the deploy
+   rather than as an operator ritual, so the clone drops them here.
+7. Drops the describe-only fields ``register-task-definition`` rejects.
 
 The pinned value is ``"true"`` as of 2026-09-01 (#1778, the #1632 lift): the
 paper-advance tick is ARMED. It never runs in the web interpreter —
@@ -118,6 +128,22 @@ BACKEND_CONTAINER = "backend"
 # sources by backend/tests/test_ecs_backend_secrets.py.
 TIINGO_SECRET_NAME = "TIINGO_API_TOKEN"
 TIINGO_SSM_PATH = "parameter/archimedes/prod/TIINGO_API_TOKEN"
+
+# Env names the backend container must no longer carry. Every name here has
+# zero readers under ``backend/archimedes`` — asserted by
+# ``backend/tests/test_ecs_paper_advance_deploy_pin.py``, so re-adding a
+# reader without taking the name off this tuple goes red rather than shipping
+# a flag the deploy silently deletes.
+#
+# ``BACKTEST_REFRESH_ENABLED`` is the live pin: the owner set it by hand as
+# task-def revision 216 during the 2026-09-01 #1760 storm, #1766 deleted the
+# loop it switched, and the deploy has cloned it forward ever since.
+RETIRED_BACKEND_ENV = (
+    "BACKTEST_REFRESH_ENABLED",
+    "BACKTEST_REFRESH_INTERVAL_HOURS",
+    "BACKTEST_MAX_AGE_HOURS",
+    "BACKTEST_REFRESH_STARTUP_DELAY_S",
+)
 
 # Same drop-list the previous inline jq used. These fields come back from
 # ``describe-task-definition`` and ``register-task-definition`` will not
@@ -290,6 +316,30 @@ def ensure_backend_tiingo_secret(secrets: list[dict[str, Any]] | None, arn: str)
     return kept
 
 
+def strip_retired_backend_env(
+    environment: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return ``environment`` without any :data:`RETIRED_BACKEND_ENV` name.
+
+    Idempotent: a clone that already lost them comes back unchanged with an
+    empty removal list, so the deploy after the first one is a no-op. Entries
+    that survive keep their order and their objects untouched.
+
+    Returns the filtered list and the names that were actually removed, so
+    the caller can say what it deleted instead of deleting silently.
+    """
+    retired = set(RETIRED_BACKEND_ENV)
+    kept: list[dict[str, Any]] = []
+    removed: list[str] = []
+    for entry in environment or []:
+        name = entry.get("name")
+        if name in retired:
+            removed.append(name)
+        else:
+            kept.append(entry)
+    return kept, removed
+
+
 def rewrite_registered_task_definition(
     task_def: dict[str, Any],
     *,
@@ -298,7 +348,7 @@ def rewrite_registered_task_definition(
     auth_image: str,
 ) -> dict[str, Any]:
     """Clone ``task_def``, retag application images, pin the tick + allowance
-    flags, the Tiingo secret and the readiness check.
+    flags, the Tiingo secret and the readiness check, and drop retired env.
 
     Raises :class:`RewriteError` if there is no backend container — a silent
     skip would register a revision whose ``PAPER_ADVANCE_ENABLED`` and whose
@@ -324,9 +374,22 @@ def rewrite_registered_task_definition(
         if name == BACKEND_CONTAINER:
             saw_backend = True
             next_container["image"] = backend_image
-            next_container["environment"] = pin_backend_health_stale_unready(
+            pinned = pin_backend_health_stale_unready(
                 pin_backend_free_generations(pin_backend_paper_advance(container.get("environment")))
             )
+            # Strip LAST, on the already-pinned list: the retired tuple is the
+            # final word on what the backend container may carry, so a name
+            # that ever lands on both lists loses rather than shipping a knob
+            # nothing reads. The two lists are held disjoint by
+            # ``test_no_pinned_name_is_also_retired``, so today the strip
+            # cannot reach a pin at all.
+            environment, removed = strip_retired_backend_env(pinned)
+            if removed:
+                print(
+                    f"::notice::dropping retired backend env from the cloned task definition: {', '.join(removed)}",
+                    file=sys.stderr,
+                )
+            next_container["environment"] = environment
             next_container["secrets"] = ensure_backend_tiingo_secret(container.get("secrets"), secret_arn)
             next_container["healthCheck"] = rewrite_backend_health_check(container.get("healthCheck"))
         elif name == "nginx":

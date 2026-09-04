@@ -6,11 +6,17 @@
 > **superseded-by:** —
 
 A change to `infra/cloudfront.tf`'s cache behaviours does **nothing** when the PR merges.
-CI never runs `terraform plan` or `apply` — `infra-gate.yml` is `fmt -check` + `validate`
-only, deliberately (a plan needs credentials and reads a state file that holds a private
-key). Until someone runs `infra/apply.sh --apply`, the merged file describes an edge
-configuration that is not live, and the tests that guard it are asserting about the *repo*,
-not about production.
+CI never runs `terraform apply` — `infra-gate.yml` is `fmt -check` + `validate` only,
+deliberately (a plan needs credentials and reads a state file that holds a private key).
+Until someone runs `infra/apply.sh --apply`, the merged file describes an edge configuration
+that is not live, and the tests that guard it are asserting about the *repo*, not about
+production.
+
+Since #1799 CI *can* run a plan, in one place: `terraform-drift.yml`, a separate advisory
+workflow on a separate read-only role, which reports drift and still applies nothing. See
+[`terraform-apply-and-task-definition-ownership.md`](terraform-apply-and-task-definition-ownership.md)
+for that and for the ECS task-definition ownership split, which changes what an `infra/ecs.tf`
+edit means but leaves everything on this page intact.
 
 This runbook is the step between those two facts. It carries one section per change —
 the applied ones kept as worked examples, the pending one first in the operator's mind —

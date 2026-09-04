@@ -98,13 +98,23 @@ TIINGO_SECRET = "TIINGO_API_TOKEN"
 # can never be forbidden without one.
 FORBIDDEN_WHY = {
     "REVENUE_SWEEP_ENABLED": "arming the revenue sweep is a separate, owner-gated decision (#1463 anti-goal)",
+    "MARKET_DATA_DAILY_PROVIDER": (
+        "this is THE cutover switch (#1798): it moves daily bars — strategy signal evaluation, "
+        "the generation fusion panel and the portfolio backtester — onto the named vendor. "
+        "Flipping it is the owner's proof step, not a side effect of wiring the token, and the "
+        "proof is a pasted run of scripts/verify_market_data.py (docs/runbooks/"
+        "market-data-provider-proof.md). Set it here deliberately, with the cold "
+        "asset_daily_bars cache understood, by editing FORBIDDEN_WHY first"
+    ),
     "MARKET_DATA_PROVIDER": (
-        "flipping the market-data seam is the owner's proof step (#1798), not a side effect of "
-        "wiring the token. It is a GLOBAL switch: TiingoProvider raises NotImplementedError for "
-        "intraday quotes and arbitrary-interval series, so setting it to 'tiingo' also takes the "
-        "oracle push's provider leg, the VIX/S&P regime reads and the Explore history modal "
-        "(docs/adr/market-data-sourcing.md § Consequences). Set it here deliberately, with that "
-        "consequence understood, by editing FORBIDDEN_WHY first"
+        "since #1798 this names the INTRADAY/history seam — the oracle push's provider leg, the "
+        "paper-marks loop, the VIX/S&P regime reads, the Explore history modal — AND is the "
+        "daily seam's fallback when MARKET_DATA_DAILY_PROVIDER is unset, so setting it here "
+        "flips daily bars too, by the back door and without naming them. It no longer BREAKS "
+        "intraday (a vendor that cannot serve a seam is substituted with a logged line, "
+        "docs/adr/market-data-sourcing.md § Amendment), which is exactly why it now needs a "
+        "guard rather than an adapter's NotImplementedError to stop it. Prefer the daily "
+        "variable; set this one deliberately by editing FORBIDDEN_WHY first"
     ),
 }
 FORBIDDEN_NAMES = tuple(FORBIDDEN_WHY)

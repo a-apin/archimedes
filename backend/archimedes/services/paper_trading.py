@@ -1032,7 +1032,14 @@ def trace_coverage(session, dep: PaperDeployment) -> dict:
     }
 
 
-def deployment_summary(session, dep: PaperDeployment) -> dict:
+def deployment_summary(session, dep: PaperDeployment, *, verdict: dict | None = None) -> dict:
+    """One deployment's payload: the forward record and the verdict that qualifies it.
+
+    ``verdict`` lets a LIST-shaped caller hand in the rigor verdict it already
+    read for the whole page (``passport_loader.stored_rigor_verdicts`` — one
+    query for N rows instead of one per row). When it is ``None`` this reads the
+    single row itself, which is what the create and detail routes want.
+    """
     rows = (
         session.query(PaperDailyReturn)
         .filter(PaperDailyReturn.deployment_id == dep.id)
@@ -1062,6 +1069,7 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
     # deployment created between ticks, or one on SPY before the open), and
     # the UI must render it as an em-dash with a reason rather than +0.00%.
     from archimedes.services.paper_marks import latest_mark, mark_to_dict
+    from archimedes.services.passport_loader import stored_rigor_verdict
 
     newest = latest_mark(session, dep.id)
     return {
@@ -1071,6 +1079,33 @@ def deployment_summary(session, dep: PaperDeployment) -> dict:
         "status": dep.status,
         "days": len(rows),
         "total_return": equity - 1.0,
+        # THE VERDICT OF RECORD, BESIDE THE FORWARD RECORD (#1764). Deploy is
+        # at will — a strategy can be paper-traded whether its gate said pass,
+        # fail, pending or degenerate (paper_routes checks ownership and spec
+        # validity, and nothing else). That freedom is only honest if the
+        # verdict travels with the numbers: "Paper: +2.1% over 12 days" beside
+        # "Gate: failed (graded 2026-08-30)" is the whole point — the forward
+        # record is the evidence that TESTS the gate, and neither re-labels the
+        # other.
+        #
+        # A pure READ of strategy_passports (docs/adr/rigor-verdict-of-record.md),
+        # never a recompute: a strategy is graded once, at backtest time. If this
+        # re-ran the gate, a deployment card and its own passport could show two
+        # different verdicts for the same strategy — the #1746/#1747 split, on a
+        # new surface. `stored_rigor_verdict` fails closed to "pending", so a
+        # strategy with no passport row reads as ungraded and never as a pass.
+        #
+        # Deliberately NOT here: `outside_window`. Nothing in this product
+        # declares a deployment time window — not the DSL spec, not
+        # strategy_store, not strategy_passports, not paper_deployments. The only
+        # windows in the tree are the VAULT window (docs/specs/vault-semantics-spec.md,
+        # explicitly out of scope for the paper-only cut) and the BACKTEST window
+        # (`backtest_start`/`backtest_end`), which every forward paper deployment
+        # is outside of by construction — a flag that is always true is not a
+        # disclosure, it is decoration that trains a reader to ignore it. What
+        # actually carries the staleness is `graded_at` beside `deployed_at`,
+        # both of which are on this payload and both of which the card renders.
+        **(verdict if verdict is not None else stored_rigor_verdict(session, dep.strategy_id)),
         "drift_detected_at": dep.drift_detected_at.isoformat() if dep.drift_detected_at else None,
         # The engine-version half of the drift story (#1449). Separate keys from
         # `drift_detected_at` on purpose: a client must be able to render "we

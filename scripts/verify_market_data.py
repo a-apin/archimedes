@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""Pull one known window of daily bars through the ACTIVE market-data seam (#1798).
+"""Pull one known window of daily bars through the DAILY market-data seam (#1798).
 
 **What this is for.** `docs/claims-ledger.md` carries the row "paid analysis
 runs on licensed data". Until something *pulls* bars and says which vendor
 answered, that row is a statement of intent. This script is the verified-pull
 record the ledger is missing: it asks the live seam
-(`services.market_data_provider.get_provider()` — the same object every
-backtest, ledger and oracle cross-check uses, not a private copy) for a fixed
-symbol over a fixed, fully-historical window, and prints the vendor name, the
-row count, and the first and last bar dates. Paste that output on the issue.
+(`services.market_data_provider.get_provider(seam="daily")` — the same object
+every backtest and marketplace tick uses, not a private copy) for a fixed
+symbol over a fixed, fully-historical window, and prints the seam, the vendor
+name, the row count, and the first and last bar dates. Paste that output on the
+issue.
+
+**Which seam, and why it is named here.** Since #1798 there is no single
+"active provider": `daily` (bars — this script's subject, and the licensed-data
+cutover) and `intraday` (the live oracle push, paper marks, Explore history)
+resolve their vendors independently, so a call that did not name its seam would
+be picking one by accident. This script proves the DAILY seam and says so on
+its own first output line. It proves nothing about intraday — which is the
+point of the split: the two no longer move together.
 
 **Why a FIXED window rather than "the last N days".** A relative window makes
 every run's expected answer a fresh calculation, so nothing can be asserted and
@@ -43,11 +52,14 @@ possible with nothing but the token:
     # in-repo, against whatever this shell's env selects
     python scripts/verify_market_data.py --no-cache
 
-    # the Tiingo rehearsal — token from SSM, one process, nothing else touched
+    # the Tiingo rehearsal — token from SSM, one process, nothing else touched.
+    # MARKET_DATA_DAILY_PROVIDER is the cutover switch (#1798); the older
+    # MARKET_DATA_PROVIDER still moves this seam when the daily one is unset,
+    # but it names the INTRADAY seam too, so prefer the specific variable here.
     export TIINGO_API_TOKEN=$(aws ssm get-parameter \
       --name /archimedes/prod/TIINGO_API_TOKEN --with-decryption \
       --query Parameter.Value --output text)
-    MARKET_DATA_PROVIDER=tiingo python scripts/verify_market_data.py --no-cache
+    MARKET_DATA_DAILY_PROVIDER=tiingo python scripts/verify_market_data.py --no-cache
 
 Note it does NOT run inside the backend container today: `backend/Dockerfile`
 COPYs `backend` into `/app`, so `/app/scripts` is `backend/scripts` and this
@@ -80,34 +92,47 @@ EXPECTED_ROWS = 10
 EXPECTED_FIRST_BAR = "2026-06-01"
 EXPECTED_LAST_BAR = "2026-06-12"
 
+#: Daily bars are what this script proves, so it asks the daily seam by name.
+SEAM = mdp.DAILY_SEAM
+
 
 def _provider(*, no_cache: bool):
-    """The active provider — cache-wrapped like production, or the bare vendor.
+    """The daily seam's provider — cache-wrapped like production, or the bare
+    vendor underneath it.
 
-    `--no-cache` reaches past `get_provider()`'s `CachingMarketDataProvider`
-    to the vendor it wraps, so the pull is unambiguously a live vendor call.
-    It asks the wrapper for its inner provider rather than re-selecting the
-    vendor from the env, so the two modes can never disagree about WHICH
-    vendor is active — only about whether the cache was allowed to answer.
+    `--no-cache` reaches past every wrapper to the vendor adapter, so the pull
+    is unambiguously a live vendor call. It unwraps ALL the way rather than one
+    layer, because since #1798 `get_provider(seam=...)` nests two deep —
+    `SeamRoutedProvider` → `CachingMarketDataProvider` → the vendor — and
+    stopping at the first `_inner` would hand back the cache while this script
+    printed "bypassed". It unwraps the object `get_provider()` returned rather
+    than re-selecting a vendor from the env, so the two modes can never
+    disagree about WHICH vendor is active — only about whether the cache was
+    allowed to answer.
     """
-    provider = mdp.get_provider()
+    provider = mdp.get_provider(seam=SEAM)
     if not no_cache:
         return provider
-    inner = getattr(provider, "_inner", None)
-    if inner is None:
+    unwrapped = provider
+    depth = 0
+    while (inner := getattr(unwrapped, "_inner", None)) is not None:
+        unwrapped = inner
+        depth += 1
+    if depth == 0:
         raise RuntimeError(
             "--no-cache: get_provider() no longer returns a cache wrapper with an "
             "inner provider; drop the flag or update this script"
         )
-    return inner
+    return unwrapped
 
 
 def verify(*, symbol: str, start: str, end: str, no_cache: bool = False, out=sys.stdout) -> int:
     """Fetch, report, and return the process exit code."""
-    vendor = mdp.provider_name()
+    vendor = mdp.provider_name(SEAM)
     known_window = (symbol, start, end) == (DEFAULT_SYMBOL, DEFAULT_START, DEFAULT_END)
 
     print(f"provider     : {vendor}", file=out)
+    print(f"seam         : {SEAM}", file=out)
     print(f"symbol       : {symbol}", file=out)
     print(f"window       : {start} .. {end} (end-exclusive){'' if known_window else '  [custom]'}", file=out)
     print(f"cache        : {'bypassed (--no-cache)' if no_cache else 'through the production wrapper'}", file=out)

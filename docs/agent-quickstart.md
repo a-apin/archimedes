@@ -604,6 +604,10 @@ HTTP **201**:
   "days": 0,
   "total_return": 0.0,
   "drift_detected_at": null,
+  "rigor_gate_status": "fail",
+  "passes_rigor_gate": false,
+  "graded_at": "2026-08-30T11:22:33",
+  "gate_version": "gate-v1-4f2a9c1e07b3d5a8",
   "series": []
 }
 ```
@@ -611,6 +615,18 @@ HTTP **201**:
 `series` starts empty and fills one row per day — `{"date", "daily_return",
 "equity_index"}` — appended by the scheduler, never rewritten. `days: 0` on the first read
 is normal, not a failure.
+
+**Deploy has no rigor precondition, and the payload says so.** A strategy the
+gate REJECTED can be paper-traded — that is deliberate (#1764): a rejected
+strategy performing poorly forward is evidence about the gate's call. The
+verdict of record travels on every deployment payload precisely so that freedom
+stays honest, and an agent rendering, publishing or reasoning over
+`total_return` must carry `rigor_gate_status` (`pass` | `fail` | `pending` |
+`degenerate`) and `graded_at` with it. The verdict is READ from the passport,
+never recomputed here, and it fails closed to `pending` — so this payload never
+reports a pass it did not find. There is no deployment-window flag; nothing in
+the product declares a deployment window, and `graded_at` beside `deployed_at`
+is what carries staleness. Full field table: `docs/api/paper-trading.md`.
 
 ### 11. Read the ledger back (and stop it when you are done)
 

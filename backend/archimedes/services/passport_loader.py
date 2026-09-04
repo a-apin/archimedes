@@ -415,6 +415,127 @@ def get_passport(session: Session, strategy_id: str) -> StrategyPassportRecord |
     return session.query(StrategyPassportRecord).filter_by(id=strategy_id).first()
 
 
+#: The verdict a surface serves for a strategy ``strategy_passports`` has never
+#: heard of, and the fail-closed answer when the read itself breaks.
+#:
+#: ``passes_rigor_gate`` is ``None``, never ``False``: ``False`` is a VERDICT
+#: ("the gate ran and this lost") and no gate ran. That is the same distinction
+#: ``rigor_gate_status == "pending"`` makes in words, and the same one
+#: ``strategies_routes._UNGRADED_VERDICT_FIELDS`` makes for the Library page —
+#: ``backend/tests/test_paper_deploy_verdict.py`` pins the two agree on the
+#: three keys they share, so the paper surface and the library surface can never
+#: start describing an ungraded row differently.
+UNGRADED_RIGOR_VERDICT: dict = {
+    "passes_rigor_gate": None,
+    "rigor_gate_status": STATUS_PENDING,
+    "graded_at": None,
+    "gate_version": None,
+}
+
+
+def stored_rigor_verdict(session: Session, strategy_id: str) -> dict:
+    """The STORED rigor verdict for one strategy, as JSON-ready fields.
+
+    A pure read of ``strategy_passports`` — the verdict of record
+    (``docs/adr/rigor-verdict-of-record.md``). It never runs the gate, never
+    touches a return series, and never derives a verdict from metrics: a
+    strategy is graded once, at backtest time, and every surface reads THAT
+    row. A read-time recompute here would be a second gate answering the same
+    question, which is exactly the split #1746/#1747 closed.
+
+    ``passes_rigor_gate`` is derived from the stored four-state rather than
+    copied from the stored boolean — the same rule
+    ``strategies_routes._passport_verdicts_for`` follows, so a legacy row whose
+    two columns were written apart cannot be served apart.
+
+    ``gate_version`` rides along because a stored verdict is only comparable to
+    another one graded by the same gate; the literal
+    ``rigor_gate_version.LEGACY_DERIVED`` means the verdict was INFERRED by the
+    verdict-of-record migration rather than produced by a gate run.
+
+    Fails CLOSED and never raises: a missing row or a DB-level failure returns
+    :data:`UNGRADED_RIGOR_VERDICT`. Degrading THIS field to "not graded" is
+    honest — what is never produced on the failure path is a ``pass``.
+
+    **It never calls ``session.rollback()``, deliberately.** It is called from
+    :func:`archimedes.services.paper_trading.deployment_summary`, which the
+    CREATE route runs on a session that has just written a deployment; a
+    rollback here discarded that deployment while the route still returned 201
+    with its id (the #1764 review's blocker — a 201 for a row that no longer
+    existed). Un-poisoning a session is a decision only the request boundary
+    can make safely, because only it knows whether there is uncommitted work to
+    lose: ``paper_routes.list_paper_deployments`` and
+    ``leaderboard_routes._live_paper_ledgers`` do it explicitly, on read-only
+    paths, around :func:`stored_rigor_verdicts`. If a failure here also poisoned
+    a caller's transaction, that caller fails loudly — which beats silently
+    throwing away its write.
+    """
+    try:
+        row = get_passport(session, strategy_id)
+    except Exception as exc:  # pragma: no cover — defensive; DB-level failure
+        logger.warning(
+            "passport verdict read failed for strategy %s (%s) — reported as ungraded, never as a pass",
+            strategy_id,
+            type(exc).__name__,
+        )
+        return dict(UNGRADED_RIGOR_VERDICT)
+    return _verdict_fields(row)
+
+
+def _verdict_fields(row) -> dict:
+    """One passport row -> the four verdict fields. The single derivation.
+
+    ``passes_rigor_gate`` is computed from the stored four-state here and
+    nowhere else, so the singular read, the batched read and
+    ``strategies_routes._passport_verdicts_for`` cannot start disagreeing about
+    what a stored row means.
+    """
+    if row is None:
+        return dict(UNGRADED_RIGOR_VERDICT)
+    status = row.rigor_gate_status or STATUS_PENDING
+    return {
+        "passes_rigor_gate": status == STATUS_PASS,
+        "rigor_gate_status": status,
+        "graded_at": row.graded_at.isoformat() if row.graded_at else None,
+        "gate_version": row.gate_version,
+    }
+
+
+def stored_rigor_verdicts(session: Session, strategy_ids: list[str]) -> dict[str, dict]:
+    """Stored rigor verdicts for MANY strategies — ONE query, keyed by id.
+
+    The batched twin of :func:`stored_rigor_verdict`, for list-shaped surfaces
+    (``GET /api/paper/deployments``, the live-paper leaderboard). A per-row read
+    on a board of 50 deployments is 50 round trips for a field that is one
+    ``WHERE id IN (…)`` away.
+
+    Ids with no passport row are simply ABSENT from the result: the caller
+    substitutes :data:`UNGRADED_RIGOR_VERDICT`, so "no row" and "row says
+    pending" stay the same rendered answer without this function inventing an
+    entry for a strategy it never saw.
+
+    Unlike the singular read, this one RAISES on a DB-level failure. Recovery —
+    whether to roll back a poisoned session, and whether that is safe — belongs
+    to the caller: every caller here is a read-only request path with nothing
+    uncommitted to lose, and each does it explicitly beside its own honest
+    degradation (all rows ungraded, the ledger still served).
+    """
+    if not strategy_ids:
+        return {}
+    rows = session.query(StrategyPassportRecord).filter(StrategyPassportRecord.id.in_(set(strategy_ids))).all()
+    return {row.id: _verdict_fields(row) for row in rows}
+
+
+def ungraded_verdicts_for(strategy_ids) -> dict[str, dict]:
+    """Every requested id mapped to the ungraded verdict — the fail-closed page.
+
+    What a caller substitutes when the batched read raised: every row reads
+    "not graded", none reads as a pass, and the surface keeps serving the
+    numbers it does have.
+    """
+    return {sid: dict(UNGRADED_RIGOR_VERDICT) for sid in set(strategy_ids)}
+
+
 def list_passports(
     session: Session,
     *,
